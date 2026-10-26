@@ -1,0 +1,88 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/build/install/${presetName}"
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "inherits": "base",
+      "description": "Visual Studio 2022's MSVC, Qt from C:/Qt/6.8.3/msvc2022_64, FFmpeg from vcpkg (change them in CMakeUserPresets.json)",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl.exe",
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.8.3/msvc2022_64",
+        "RENO_FFMPEG_DIR": "C:/vcpkg/installed/x64-windows"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "vendor": { "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "Windows" ] } }
+    },
+    { "name": "windows-debug",   "displayName": "Windows x64 Debug (MSVC)",   "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
+    { "name": "windows-release", "displayName": "Windows x64 Release (MSVC)", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
+    {
+      "name": "windows-clangcl-release",
+      "displayName": "Windows x64 Release (clang-cl)",
+      "inherits": "windows-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_CXX_COMPILER": "clang-cl.exe" }
+    },
+
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "inherits": "base",
+      "description": "Qt 6 and FFmpeg from the system (or set CMAKE_PREFIX_PATH / RENO_FFMPEG_DIR); in Visual Studio pick a WSL or SSH target",
+      "cacheVariables": { "CMAKE_PREFIX_PATH": "$env{HOME}/Qt/6.8.3/gcc_64" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "Linux" ] },
+        "microsoft.com/VisualStudioRemoteSettings/CMake/1.0": { "sourceDir": "$env{HOME}/.vs/$ms{projectDirName}" }
+      }
+    },
+    { "name": "linux-debug",         "displayName": "Linux Debug (GCC)",     "inherits": "linux-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug",   "CMAKE_CXX_COMPILER": "g++" } },
+    { "name": "linux-release",       "displayName": "Linux Release (GCC)",   "inherits": "linux-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_CXX_COMPILER": "g++" } },
+    { "name": "linux-clang-release", "displayName": "Linux Release (Clang)", "inherits": "linux-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_CXX_COMPILER": "clang++" } },
+
+    {
+      "name": "macos-release",
+      "displayName": "macOS Release (Apple Clang)",
+      "description": "Qt from ~/Qt/6.8.3/macos, FFmpeg from Homebrew. Not tested yet.",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_PREFIX_PATH": "$env{HOME}/Qt/6.8.3/macos" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "vendor": { "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "macOS" ] } }
+    },
+
+    {
+      "name": "windows-cross",
+      "displayName": "Windows x64 Release, cross-compiled from Linux (clang-cl)",
+      "description": "Needs RENO_XWIN (MSVC + Windows SDK files), RENO_QT_WIN (Qt msvc2022_64), RENO_QT_HOST (the same Qt version for Linux) and RENO_FFMPEG_WIN in the environment",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-clangcl.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RENO_XWIN": "$env{RENO_XWIN}",
+        "CMAKE_PREFIX_PATH": "$env{RENO_QT_WIN}",
+        "QT_HOST_PATH": "$env{RENO_QT_HOST}",
+        "RENO_FFMPEG_DIR": "$env{RENO_FFMPEG_WIN}"
+      },
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "vendor": { "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "Linux", "macOS" ] } }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-debug",           "configurePreset": "windows-debug" },
+    { "name": "windows-release",         "configurePreset": "windows-release" },
+    { "name": "windows-clangcl-release", "configurePreset": "windows-clangcl-release" },
+    { "name": "linux-debug",             "configurePreset": "linux-debug" },
+    { "name": "linux-release",           "configurePreset": "linux-release" },
+    { "name": "linux-clang-release",     "configurePreset": "linux-clang-release" },
+    { "name": "macos-release",           "configurePreset": "macos-release" },
+    { "name": "windows-cross",           "configurePreset": "windows-cross" }
+  ]
+}

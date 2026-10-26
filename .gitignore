@@ -1,0 +1,108 @@
+# ---- build output
+/build/
+/out/
+/obj/
+/bin/
+/lib.a
+/CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+build_log.txt
+
+# ---- Visual Studio
+.vs/
+x64/
+Win32/
+ARM64/
+Debug/
+Release/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+*.ipch
+*.aps
+*.pdb
+*.ilk
+*.idb
+*.tlog
+*.log
+/vs/Reno.user.props
+
+# ---- compiler and linker output
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.so
+*.dll
+*.exe
+*.res
+*.spv
+# programs built by hand at the top level
+/*_test
+/*_bench
+/a.out
+/reno
+/reno_cli
+/reno_vst32
+/mediatest
+/vegasfiles_test
+/vk_test
+/vkfx_test
+
+# ---- test and tool output
+/out_*/
+out_*/
+/eout/
+/media_test_out/
+/plugin_report.*
+/vegasfx_report.*
+/fx-log.txt
+__pycache__/
+*.pyc
+
+# ---- SDKs and toolchains kept beside the code
+/Qt/
+/6.8.3/
+/msvc2022_64/
+/x64-windows/
+/vcpkg/
+/vcpkg_installed/
+/ffmpeg/
+/xwin/
+
+# ---- files VEGAS and Reno write beside media and projects
+*.sfk
+*.sfk[0-9]
+*.sfl
+*.sfap0
+*.sfap[0-9]
+*.veg.bak
+*.veg.reno.bak
+*.reno.bak
+# ... except the fixtures the tests read
+!/tests/media/vegasfiles/*
+
+# ---- editors and operating systems
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# output folders of the VEGAS comparison scripts, if run inside the repo
+/Reno Zoom Bar Log/
+/Reno Plugin Fuzz/
+/Reno Effect Reference/
+/Reno Settings Matrix/
+
+# ---- downloaded dependencies (tools/get_ffmpeg.*)
+/deps/

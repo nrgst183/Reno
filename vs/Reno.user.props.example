@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy this file to vs\Reno.user.props (not committed) to build against Qt and FFmpeg somewhere else. -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <RenoQtDir>C:\Qt\6.8.3\msvc2022_64</RenoQtDir>
+    <RenoFFmpegDir>C:\vcpkg\installed\x64-windows</RenoFFmpegDir>
+  </PropertyGroup>
+</Project>

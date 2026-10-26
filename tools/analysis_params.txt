@@ -1,0 +1,90 @@
+Parameters of VEGAS's analysis effects from the plug-ins' resource XML (MagixCVFx.xml, MagixAiFx.xml, Stabilize.xml):
+type, name, label, choices. Defaults and ranges are not in the XML; they come from the plug-in binaries. Smart Noise Reduction
+is in no resource file here, so its two parameters (Noise, EnableEnhancement) are a guess. tools/ofxparams/xmlparams.py rebuilds
+this list and compare_defs.py diffs it against analysis_test's DUMPDEFS output.
+
+== de.magix:FlickerReducer
+  Choice Mode | Mode | Reduction / Addition
+  Choice Model | Reduction Mode | Temporal blend / Histogram smoothing
+  Choice Type | Type | Highlights / Midtones / Shadow / All
+  Boolean UseMotion | Use motion compensation
+  Double Frequency | Flicker Frequency
+  Double TimeWindow | Analysis Window
+  Double Sensitivity | Sensitivity
+  Double Threshold | Threshold
+  PushButton Calc | Calculate
+  PushButton Clear | Reset
+  Boolean ShowMask | Show mask only
+== de.magix:DenoisingNLM
+  Group Noise Reduction | Noise Reduction
+  Double Luminance | Luminance
+  Double Color | Chrominance
+  Group Sharpening | Sharpening
+  Double Amount | Amount
+== de.magix:MotionTracker
+== de.magix:Stabilize
+  Group GroupParameters | Parameters
+  Choice Views | User View | Basic / Professional / Expert
+  PushButton AnalyzeMotionBasic | Stabilize
+  PushButton CLearMotionBasic | Reset
+  Group GroupSmoothing | Stabilization options
+  Boolean IsStaticCamera | Static Camera
+  Integer StaticReference | Reference Frame Number
+  Choice Presets | Method | Fast / Accurate
+  Choice MotionCompensation | Motion Compensation | Translation / Translation + Rotation / Translation + Rotation + Scale / Warp
+  Double SmoothingMagnitude | Smoothing
+  PushButton AnalyzeMotion | Analyze Motion
+  PushButton CLearMotion | Clear Motion Data
+  Group GroupBorders | Borders
+  Boolean AvoidBlackBorders | Auto Zoom
+  Double2D AdditionalTranslation | Additional Translation
+  Double AdditionalRotation | Additional Rotation
+  Double AdditionalScale | Additional Zoom
+  Choice Zoom_Filling | Edge Filling | Transparent / Mirror Padding / Repeat / Clamp to Edge
+  RGBA Zoom_ColorPicker | Color
+  Group GroupMotionBlur | Motion Blur
+  Boolean MotionBlur | Add Motion Blur
+  Double MotionBlurThreshold | Threshold
+  Group GroupExpertMode | Expert Mode
+  Double XScale | Width (Region of Interest)
+  Double YScale | Height (Region of Interest)
+  Integer NumGridsX | Number of Grids in X
+  Integer NumGridsY | Number of Grids in Y
+  Integer PointsPerGridCell | Number of Points per Grid Cell
+  Choice ChoiceTrackerType | Tracker Type | Lucas-Kanade / Sum of Absolute Differences / Hybrid
+  Group GroupLockState | Smoothing Parameters
+  Boolean LockTranslateX | Translate X
+  Boolean LockTranslateY | Translate Y
+  Boolean LockAngle | Rotation Angle
+  Boolean LockScaleX | Scale X
+  Boolean LockScaleY | Scale Y
+  Boolean LockShear | Shear
+  Group GroupVisualization | Visualization
+  Boolean ShowFeatures | Show Points
+  Integer ShowFeaturesMinLen | Minimum track length
+== de.magix:Colorization
+  Choice Localization |  | This plugin requires additional data. Please install the VEGAS AI bundle, which you can download at www.vegascreativesoftware.com.
+  Choice Preprocess | Luminance enhancement | None / Estimation only (do not apply to output) / Apply to output
+  Choice Precision | Precision | Low / Medium / High / Match Input Size
+  Boolean InvertColorA | Invert Green and Red
+  Boolean InvertColorB | Invert Blue and Yellow
+  Double ColorShiftA | Shift between Green and Red
+  Double ColorShiftB | Shift between Blue and Yellow
+  Double ColorMagnificationA | Gain on Green and Red
+  Double ColorMagnificationB | Gain on Blue and Yellow
+== de.magix:StyleTransfer
+  Choice Model not found |  | This plugin requires additional data. Please install the VEGAS AI bundle, which you can download at www.vegascreativesoftware.com.
+  Choice Style | Style | Self Portrait (Picasso) / Night Alley Walk (Afremov) / The Great Wave of Kanagawa (Hokusai) / Fruit (Hunt) / Light (Afremov) / Small Worlds 1 (Kandinsky) / Floral pattern / Sunrise Flowers (Lambert) / Abstract Painting (Picasso) / Black and White (KLH) / The Starry Night (van Gogh) / The Pandorica Opens (van Gogh) / The Weeping Woman (Picasso) / Bark pattern / Font pattern / Leaf pattern / Rick and Morty
+  Double Mean Red | Mean Red
+  Double Mean Green | Mean Green
+  Double Mean Blue | Mean Blue
+  Choice Details | Details | Low / Medium / High / Original
+  Choice Method | Method | Accurate / Fast
+  Integer DetailSwitch | Detail Level
+  Choice CustomSwitch | Style source | Pre-defined Reference / Custom Reference
+  Image StyleRefImg | Reference Style
+== com.vegascreativesoftware:Stabilize
+  Double PanSmoothing | Pan smoothing
+  Double ViewScale | Stabilization amount
+  Boolean RollingShutterCorrection | Rolling shutter correction
+  PushButton AnalyzeButton | Apply

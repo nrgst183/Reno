@@ -1,0 +1,7 @@
+# Mesa's software OpenGL (llvmpipe) keeps its own worker threads and synchronises them in ways ThreadSanitizer cannot see
+# (it is not instrumented): the races it reports inside the driver are not Reno's.
+called_from_lib:libgallium-*
+called_from_lib:libLLVM*
+called_from_lib:libGLX_mesa*
+called_from_lib:libEGL_mesa*
+called_from_lib:libdrm.so*

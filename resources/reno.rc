@@ -1,0 +1,2 @@
+// The program file's icon (resources/reno.ico is made by tools/make_logo.cpp from src/app/logo.cpp)
+IDI_ICON1 ICON "reno.ico"

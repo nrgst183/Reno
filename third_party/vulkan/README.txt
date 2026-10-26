@@ -1,0 +1,1 @@
+Vulkan-Headers (https://github.com/KhronosGroup/Vulkan-Headers) commit 73814d006638aa00bd553215b054f0f02e457e22 (Vulkan 1.4.366). Only vulkan_core.h and vk_platform.h are kept: Reno loads the Vulkan loader at run time and needs no platform headers or import library.

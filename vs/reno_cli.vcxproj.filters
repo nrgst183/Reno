@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="cli">
+      <UniqueIdentifier>{498A8E96-FECF-5842-B93B-BC411FC79BB4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="resources">
+      <UniqueIdentifier>{A07442A4-F177-594C-A7F4-2AF8428F322C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="app">
+      <UniqueIdentifier>{4EBA6A78-5C23-5343-B106-DE258BCEC884}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\cli\*.cpp">
+      <Filter>cli</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\app\appstate.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\app\builtintext.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\app\rendertemplates.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\app\logo.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+    <ClInclude Include="..\src\cli\*.h">
+      <Filter>cli</Filter>
+    </ClInclude>
+    <ResourceCompile Include="..\resources\reno.rc">
+      <Filter>resources</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+</Project>

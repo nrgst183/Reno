@@ -1,0 +1,123 @@
+Reno Bridge
+===========
+
+"Reno Bridge.cs" is a VEGAS Pro 18 script that runs unattended. Once started it shows a small window ("Reno Bridge
+running - watching ...") and does what job files in a folder ask: open a project, render it, take snapshots, describe it,
+build test projects and save them as .veg, list render templates and plug-ins. This lets Reno be compared with real VEGAS
+on many test projects without clicking in VEGAS.
+
+It only writes inside its own folder (DefaultFolder in Reno Bridge.cs, or folder= in Reno Bridge.ini). Projects it opens are closed without
+saving. It shows no message boxes while running, except one question at start if the open project has unsaved changes.
+
+
+Setup
+-----
+1. Copy Reno Bridge.cs, Export to Reno.cs and Import Reno Project.cs from Reno's tools\vegas folder to
+   C:\Program Files\VEGAS\VEGAS Pro 18.0\Script Menu (Windows asks for administrator permission), then in VEGAS use
+   Tools > Scripting > Rescan Script Menu Folder. Or run tools\vegas\Reno Bridge.cs with Tools > Scripting > Run Script...;
+   the other two scripts are found in the same folder.
+
+2. Create the bridge folder. For a different folder, put a "Reno Bridge.ini" next to Reno Bridge.cs with the line
+   folder = D:\wherever (see Settings).
+
+3. Keep the machine awake: plug it in; set "When plugged in, put my device to sleep after" to Never; set the lid action
+   (Power Options > Choose what closing the lid does) to Do nothing; pause Windows updates. The bridge asks Windows not
+   to sleep, but the lid and Windows Update ignore that.
+
+4. Start VEGAS Pro 18, then Tools > Scripting > Reno Bridge. Leave VEGAS and the window alone (minimizing is fine).
+
+To stop it, use the Stop button or put a file named STOP in the jobs folder. If VEGAS shows an error window of its own, the
+bridge waits behind it until you close it.
+
+
+The folder
+----------
+  jobs\<id>.job.json        waiting jobs (run one at a time, in name order)
+  jobs\done\                finished jobs
+  jobs\STOP, jobs\PAUSE     files that stop or pause the bridge
+  results\<id>.result.json  what each job did: ok or the error, step times, files made, log
+  heartbeat.json            rewritten every 5 s (and during renders)
+  bridge.log                everything (kept under 5 MB; the older part is in bridge.log.1)
+  suite\, renders\, info\   test projects, media and job output
+
+
+Jobs
+----
+A job is a JSON object. Relative paths are inside the bridge folder, and files are only written there.
+
+  { "timeout": 600,                 seconds (default: the ini's, 1800)
+    "continue_on_error": false,     go on with the next action after a failure
+    "keep_open": false,             leave the project open after the job
+    "tag": "anything",              copied into the result
+    "project": "suite\\x.veg",      open this first (same as an "open" action)
+    "actions": [ {"do": ...}, ... ] }
+
+Actions:
+  open           project: a .veg (or anything VEGAS opens). The open project is closed without saving. Missing media
+                 is left offline and listed.
+  new            settings: {width, height, fps, sample_rate} (optional)
+  close          closes the project (without saving)
+  render         out: file; renderer: name or list of names to try ("Video for Windows", "Wave (Microsoft)",
+                 "MAGIX AVC/AAC MP4" ...; default Video for Windows); template: name or list (default "Default
+                 Template (uncompressed)"; "project" = VEGAS's templates that match the project); start, length or
+                 end (seconds; default the whole project); stretch; overwrite (default true). A render past the
+                 job's time limit is cancelled.
+  snapshot       times: [seconds ...]; out: pattern with {i} (index), {t} (seconds) or {f} (frame), default
+                 snapshots\<job>_{i}.png; quality: best (default), good, preview, draft. (Takes the preview picture
+                 at full size by changing Video Preview's settings.)
+  project_info   tracks, events, media, effects with parameter values, project properties; out: file (else in the result)
+  export_reno    the project as a Reno project (Export to Reno.cs); out: file
+  build          reno: a .reno file; save_as: a .veg. Builds it in a new project with Import Reno Project.cs and saves
+                 it, giving a .veg written by VEGAS. "problems" in the result lists what scripting could not set.
+  save_as        out: a .veg inside the bridge folder
+  list_templates filter: text (optional); out: file. Every renderer and its templates (size, rate, sample rate ...)
+  list_plugins   params: true also lists every OpenFX effect's and generator's parameters (names, labels, types,
+                 defaults, choices); out: file. Video FX, audio FX, transitions, generators and compositors with
+                 names, ids and presets
+  run_script     file: a .cs script (in the bridge folder or the script folders), run like VEGAS runs scripts
+                 (FromVegas). engine: "vegas" uses VEGAS's own RunScriptFile. A script that shows a message box
+                 waits for a click.
+  media_info     file: what VEGAS says about a media file
+  list_files     dir, pattern, recursive: what is in a folder of the bridge
+  write_text     out, text
+  ping           the bridge answers (host and folder in the result)
+  wait           seconds (for tests)
+
+
+Settings ("Reno Bridge.ini" next to the script; all optional)
+------------------------------------------------------------
+  folder = D:\vegas_bridge     (default: Documents\Reno Bridge)
+  poll_seconds = 1
+  heartbeat_seconds = 5
+  job_timeout_seconds = 1800
+  keep_awake = 1
+  scripts = D:\my scripts       more folders to look for Export to Reno.cs etc.
+Export to Reno.cs and Import Reno Project.cs are looked for next to Reno Bridge.cs, in <folder>\scripts and in
+<folder>\..\tools\vegas.
+
+
+The comparison suite (tests/compare)
+------------------------------------
+  make_media.sh        small media files that show frame numbers, tones and clicks (uncompressed AVI, WAV, PNG, one H.264)
+  makesuite            about 100 one-feature projects: <id>.reno for VEGAS to build, Reno's own <id>.reno.veg, the jobs,
+                       manifest.json
+  run_reno.sh          renders each project with Reno's renderer on Linux
+  compare.py           VEGAS's renders against Reno's: PSNR/SSIM per frame, timing offsets, sound offset/level/difference,
+                       worst frames side by side; index.html, report.md, summary.json
+  compare_selftest.sh  checks the tools: Reno against Reno (must match) and against altered copies (each change must be found)
+  bridge_test.sh       compiles the scripts against ScriptPortal.Vegas.dll and tests job handling without VEGAS
+
+A comparison run
+----------------
+  1. tests/compare/make_media.sh <b>/suite; makesuite <b>      (<b> is a bridge folder; makesuite is built with Reno's engine)
+  2. tests/compare/pack_upload.sh <b> upload.tar.gz [--renoveg]
+  3. Copy upload.tar.gz into the bridge folder on the VEGAS machine and run there:
+       tar xzf upload.tar.gz && mv jobs_pending/*.job.json jobs/ && rmdir jobs_pending
+     (000_setup lists templates and plug-ins first; then each test is built, saved as suite/<id>.veg, described,
+     exported and rendered)
+  4. Watch heartbeat.json and results/. When done, run there:
+       tar czf back.tar.gz results info renders suite/*.veg bridge.log
+     and unpack it into <b>.
+  5. tests/compare/run_reno.sh <b>           (Reno renders VEGAS's own .veg files)
+     python3 tests/compare/compare.py <b> --a vegas --b reno
+     -> <b>/report_vegas_vs_reno/index.html

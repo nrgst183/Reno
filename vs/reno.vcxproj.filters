@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="app">
+      <UniqueIdentifier>{6C805A3A-07AF-5178-B3DC-FC47FBF59051}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="resources">
+      <UniqueIdentifier>{A07442A4-F177-594C-A7F4-2AF8428F322C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\app\*.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+    <ClInclude Include="..\src\app\*.h">
+      <Filter>app</Filter>
+    </ClInclude>
+    <ResourceCompile Include="..\resources\reno.rc">
+      <Filter>resources</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+</Project>

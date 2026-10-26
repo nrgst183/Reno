@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Settings every Reno project shares. Qt and FFmpeg are looked for where build_msvc.bat looks for them; to use other
+     folders, set RENO_QT_DIR / RENO_FFMPEG_DIR in the environment, or copy vs\Reno.user.props.example to
+     vs\Reno.user.props and change them there (that file is not committed). -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(MSBuildThisFileDirectory)Reno.user.props" Condition="Exists('$(MSBuildThisFileDirectory)Reno.user.props')" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros">
+    <RenoQtDir Condition="'$(RenoQtDir)'=='' And '$(RENO_QT_DIR)'!=''">$(RENO_QT_DIR)</RenoQtDir>
+    <RenoQtDir Condition="'$(RenoQtDir)'==''">C:\Qt\6.8.3\msvc2022_64</RenoQtDir>
+    <RenoFFmpegDir Condition="'$(RenoFFmpegDir)'=='' And '$(RENO_FFMPEG_DIR)'!=''">$(RENO_FFMPEG_DIR)</RenoFFmpegDir>
+    <RenoFFmpegDir Condition="'$(RenoFFmpegDir)'=='' And Exists('$(MSBuildThisFileDirectory)..\deps\ffmpeg\include')">$(MSBuildThisFileDirectory)..\deps\ffmpeg</RenoFFmpegDir>
+    <RenoFFmpegDir Condition="'$(RenoFFmpegDir)'==''">C:\vcpkg\installed\x64-windows</RenoFFmpegDir>
+    <RenoRootDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))</RenoRootDir>
+    <RenoRoot>$(RenoRootDir)\</RenoRoot>
+    <!-- Qt's debug libraries end in d -->
+    <RenoQtSuffix Condition="'$(Configuration)'=='Debug'">d</RenoQtSuffix>
+    <RenoQtSuffix Condition="'$(Configuration)'!='Debug'"></RenoQtSuffix>
+  </PropertyGroup>
+  <PropertyGroup>
+    <!-- reno.exe, reno_cli.exe, scripting\ and the DLLs all in one folder -->
+    <OutDir>$(RenoRoot)build\vs\$(Configuration)\</OutDir>
+    <IntDir>$(RenoRoot)build\vs\obj\$(Configuration)\$(ProjectName)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <ConformanceMode>false</ConformanceMode>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <AdditionalOptions>/utf-8 /bigobj %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;_CRT_SECURE_NO_WARNINGS;NOMINMAX;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(RenoRoot)third_party\openfx;$(RenoRoot)third_party\vst2;$(RenoRoot)src\ofx;$(RenoFFmpegDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(RenoFFmpegDir)\lib;$(RenoQtDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>avformat.lib;avcodec.lib;avutil.lib;swscale.lib;swresample.lib;msdmo.lib;dmoguids.lib;strmiids.lib;wmcodecdspuuid.lib;mfplat.lib;mfuuid.lib;ole32.lib;oleaut32.lib;uuid.lib;shell32.lib;shlwapi.lib;advapi32.lib;user32.lib;gdi32.lib;comdlg32.lib;comctl32.lib;version.lib;propsys.lib;winmm.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(RenoRoot)resources;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <PreprocessorDefinitions>NDEBUG;QT_NO_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

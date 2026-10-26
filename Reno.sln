@@ -1,0 +1,74 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "reno", "vs\reno.vcxproj", "{767F90ED-C1C3-4033-9F91-F49432A72DFF}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "reno_cli", "vs\reno_cli.vcxproj", "{55708BBD-206F-4BF6-9612-29F3BFF44B0F}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "reno_lib", "vs\reno_lib.vcxproj", "{40F22FF3-F8E0-42C6-A11C-A41CCDF5B5E2}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "reno_linux", "vs\reno_linux.vcxproj", "{5928C88F-DDFC-4711-962C-323DDE74FB0A}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "reno_vst32", "vs\reno_vst32.vcxproj", "{8E1D6A52-3B0F-4C77-A1D4-5F6E2B9C0A31}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Build files", "Build files", "{1E7D52C4-6A1B-4C0F-9E35-6B0B4C2A7F10}"
+	ProjectSection(SolutionItems) = preProject
+		CMakeLists.txt = CMakeLists.txt
+		CMakePresets.json = CMakePresets.json
+		README.md = README.md
+		docs\NOTES.md = docs\NOTES.md
+		build_msvc.bat = build_msvc.bat
+		vs\Reno.props = vs\Reno.props
+		vs\RenoQt.props = vs\RenoQt.props
+		vs\Reno.user.props.example = vs\Reno.user.props.example
+		cmake\toolchains\windows-clangcl.cmake = cmake\toolchains\windows-clangcl.cmake
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+		Debug|Linux = Debug|Linux
+		Release|Linux = Release|Linux
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{767F90ED-C1C3-4033-9F91-F49432A72DFF}.Debug|x64.ActiveCfg = Debug|x64
+		{767F90ED-C1C3-4033-9F91-F49432A72DFF}.Debug|x64.Build.0 = Debug|x64
+		{767F90ED-C1C3-4033-9F91-F49432A72DFF}.Release|x64.ActiveCfg = Release|x64
+		{767F90ED-C1C3-4033-9F91-F49432A72DFF}.Release|x64.Build.0 = Release|x64
+		{767F90ED-C1C3-4033-9F91-F49432A72DFF}.Debug|Linux.ActiveCfg = Debug|x64
+		{767F90ED-C1C3-4033-9F91-F49432A72DFF}.Release|Linux.ActiveCfg = Release|x64
+		{55708BBD-206F-4BF6-9612-29F3BFF44B0F}.Debug|x64.ActiveCfg = Debug|x64
+		{55708BBD-206F-4BF6-9612-29F3BFF44B0F}.Debug|x64.Build.0 = Debug|x64
+		{55708BBD-206F-4BF6-9612-29F3BFF44B0F}.Release|x64.ActiveCfg = Release|x64
+		{55708BBD-206F-4BF6-9612-29F3BFF44B0F}.Release|x64.Build.0 = Release|x64
+		{55708BBD-206F-4BF6-9612-29F3BFF44B0F}.Debug|Linux.ActiveCfg = Debug|x64
+		{55708BBD-206F-4BF6-9612-29F3BFF44B0F}.Release|Linux.ActiveCfg = Release|x64
+		{40F22FF3-F8E0-42C6-A11C-A41CCDF5B5E2}.Debug|x64.ActiveCfg = Debug|x64
+		{40F22FF3-F8E0-42C6-A11C-A41CCDF5B5E2}.Debug|x64.Build.0 = Debug|x64
+		{40F22FF3-F8E0-42C6-A11C-A41CCDF5B5E2}.Release|x64.ActiveCfg = Release|x64
+		{40F22FF3-F8E0-42C6-A11C-A41CCDF5B5E2}.Release|x64.Build.0 = Release|x64
+		{40F22FF3-F8E0-42C6-A11C-A41CCDF5B5E2}.Debug|Linux.ActiveCfg = Debug|x64
+		{40F22FF3-F8E0-42C6-A11C-A41CCDF5B5E2}.Release|Linux.ActiveCfg = Release|x64
+		{8E1D6A52-3B0F-4C77-A1D4-5F6E2B9C0A31}.Debug|x64.ActiveCfg = Debug|Win32
+		{8E1D6A52-3B0F-4C77-A1D4-5F6E2B9C0A31}.Debug|x64.Build.0 = Debug|Win32
+		{8E1D6A52-3B0F-4C77-A1D4-5F6E2B9C0A31}.Release|x64.ActiveCfg = Release|Win32
+		{8E1D6A52-3B0F-4C77-A1D4-5F6E2B9C0A31}.Release|x64.Build.0 = Release|Win32
+		{8E1D6A52-3B0F-4C77-A1D4-5F6E2B9C0A31}.Debug|Linux.ActiveCfg = Debug|Win32
+		{8E1D6A52-3B0F-4C77-A1D4-5F6E2B9C0A31}.Release|Linux.ActiveCfg = Release|Win32
+		{5928C88F-DDFC-4711-962C-323DDE74FB0A}.Debug|x64.ActiveCfg = Debug|x64
+		{5928C88F-DDFC-4711-962C-323DDE74FB0A}.Release|x64.ActiveCfg = Release|x64
+		{5928C88F-DDFC-4711-962C-323DDE74FB0A}.Debug|Linux.ActiveCfg = Debug|x64
+		{5928C88F-DDFC-4711-962C-323DDE74FB0A}.Debug|Linux.Build.0 = Debug|x64
+		{5928C88F-DDFC-4711-962C-323DDE74FB0A}.Release|Linux.ActiveCfg = Release|x64
+		{5928C88F-DDFC-4711-962C-323DDE74FB0A}.Release|Linux.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {F6122063-06AA-4D6C-92D4-734B29BC4D57}
+	EndGlobalSection
+EndGlobal

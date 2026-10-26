@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The engine, the plug-in hosts (OpenFX, VST, DirectX), media files (FFmpeg) and .veg files: every .cpp of src\core, ofx, audiofx, media, engine and vegas. No Qt. -->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{40F22FF3-F8E0-42C6-A11C-A41CCDF5B5E2}</ProjectGuid>
+    <RootNamespace>reno_lib</RootNamespace>
+    <ProjectName>reno_lib</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="Reno.props" />
+  </ImportGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\core\*.cpp" />
+    <ClCompile Include="..\src\ofx\*.cpp" />
+    <ClCompile Include="..\src\audiofx\*.cpp" />
+    <ClCompile Include="..\src\media\*.cpp" />
+    <ClCompile Include="..\src\engine\*.cpp" />
+    <ClCompile Include="..\src\vegas\*.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\src\core\*.h" />
+    <ClInclude Include="..\src\ofx\*.h" />
+    <ClInclude Include="..\src\audiofx\*.h" />
+    <ClInclude Include="..\src\media\*.h" />
+    <ClInclude Include="..\src\engine\*.h" />
+    <ClInclude Include="..\src\vegas\*.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

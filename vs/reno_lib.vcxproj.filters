@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="core">
+      <UniqueIdentifier>{4A4B042C-EB45-5D08-9F38-2295D1703464}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ofx">
+      <UniqueIdentifier>{B24226DD-8699-5E26-BD73-543AE2FA4956}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="audiofx">
+      <UniqueIdentifier>{71E93E73-26BB-54D3-A853-FA1FB63338D6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="media">
+      <UniqueIdentifier>{F1B362B4-42D1-5FE0-AA5B-26D64F52ED25}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="engine">
+      <UniqueIdentifier>{CF347142-C24F-5DC6-A8B1-738DF675990F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="vegas">
+      <UniqueIdentifier>{0DA8B13F-3729-5151-9884-D09EA45784BF}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\core\*.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\ofx\*.cpp">
+      <Filter>ofx</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\audiofx\*.cpp">
+      <Filter>audiofx</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\media\*.cpp">
+      <Filter>media</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\engine\*.cpp">
+      <Filter>engine</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\vegas\*.cpp">
+      <Filter>vegas</Filter>
+    </ClCompile>
+    <ClInclude Include="..\src\core\*.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\ofx\*.h">
+      <Filter>ofx</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\audiofx\*.h">
+      <Filter>audiofx</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\media\*.h">
+      <Filter>media</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\engine\*.h">
+      <Filter>engine</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\vegas\*.h">
+      <Filter>vegas</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>
