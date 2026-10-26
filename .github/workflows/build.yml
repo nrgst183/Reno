@@ -62,7 +62,7 @@ jobs:
           sudo apt-get install -y ninja-build libgl-dev libxkbcommon-dev patchelf
 
       - name: Install FFmpeg (full GPL build)
-        run: ./tools/get_ffmpeg.sh
+        run: bash tools/get_ffmpeg.sh
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
