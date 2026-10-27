@@ -1,5 +1,3 @@
-<p align="center"><img src="resources/reno_256.png" width="128" alt="Reno logo"></p>
-
 # Reno
 
 A video editor that works like VEGAS Pro 18. It opens and saves `.veg` projects, uses the same menus and shortcuts,
@@ -22,27 +20,21 @@ VEGAS Pro installed; without it Reno uses its own versions of the common ones.
 Keep backups: Reno saves the previous file as `<name>.veg.bak`, but its `.veg` output isn't tested against every
 VEGAS version. Known gaps are listed in [docs/NOTES.md](docs/NOTES.md).
 
-## Downloads
-
-Builds are on the [Releases](../../releases) page. Every push to `main` updates the "Nightly build" prerelease;
-versioned releases come from pushing a `v*` tag (for example `v0.1.0`) or from Actions > Build > Run workflow with a
-version filled in. The macOS build is new and untested.
-
 ## Building on Windows
 
-You need Visual Studio 2022 (C++ workload) and Qt 6.8.3 for `msvc2022_64` with Multimedia. Get a full FFmpeg build
-(all codecs) into `deps\ffmpeg` with:
+You need Visual Studio 2022 (C++ workload), Qt 6.8.3 for `msvc2022_64` with Multimedia, and FFmpeg from vcpkg:
 
-    powershell -ExecutionPolicy Bypass -File tools\get_ffmpeg.ps1
+    vcpkg install ffmpeg:x64-windows
 
 Then either run `build_msvc.bat` (output in `build\out\`) or open `Reno.sln` and build x64 Release.
-Qt is expected in `C:\Qt\6.8.3\msvc2022_64`; set `RENO_QT_DIR` (and `RENO_FFMPEG_DIR` for another FFmpeg) to use
-other folders.
+Qt is expected in `C:\Qt\6.8.3\msvc2022_64` and FFmpeg in `C:\vcpkg\installed\x64-windows`; set `RENO_QT_DIR` and
+`RENO_FFMPEG_DIR` to use other folders.
+
+For more codecs (x264, x265, VP9, AV1, Opus...), install FFmpeg from vcpkg with those features enabled.
 
 ## Building on Linux
 
-    sudo apt install cmake ninja-build g++ libgl-dev
-    tools/get_ffmpeg.sh
+    sudo apt install cmake ninja-build g++ libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libgl-dev
     pip install aqtinstall
     aqt install-qt linux desktop 6.8.3 linux_gcc_64 -m qtmultimedia -O ~/Qt
     cmake --preset linux-release
