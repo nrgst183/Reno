@@ -1,5 +1,9 @@
 // Writing the envelopes and the effects (OpenFX, audio plug-in chains) of a .veg.
 #include "vegwrite_internal.h"
+#include "../audiofx/vegas_trkfx.h"
+#include "../audiofx/vegaspack3.h"
+#include "../audiofx/vegasfx_pack2.h"
+#include "../audiofx/vegaspack1.h"
 
 namespace reno {
 namespace vegwrite {
@@ -276,8 +280,31 @@ bool Writer::audioChain(const FxChain& chain, const Bytes* original, const char*
     }
     std::string entries;
     size_t n = 0;
-    for (const auto& s : chain) {
-        if (s.kind != "audio") continue;
+    for (const auto& slot : chain) {
+        if (slot.kind != "audio") continue;
+        // Reno's reproductions of VEGAS's DirectX effects save as those effects (same settings)
+        FxSlot asDx;
+        // (builtinaudio.cpp's Distortion: VEGAS Distortion's settings and saved form, vegasdistortion.h)
+        auto dxUidForBuiltin = [](const std::string& uid) {
+            const std::string pack1 = vegpack1::dxForUid(uid);      // sfppack1's effects (vegaspack1.h)
+            if (!pack1.empty()) return pack1;
+            if (const std::string p2 = pack2DxForBuiltin(uid); !p2.empty()) return p2;     // sfppack2 / sfresfilter (vegasfx_pack2.h)
+            const std::string trk = vegtrk::dxUidForBuiltin(uid);      // Volume, Pan, Track EQ... (vegas_trkfx.h)
+            if (!trk.empty()) return trk;
+            if (uid == "reno.distortion") return std::string("dshow:{39224540-6F92-11D0-AEBC-00A0C9053912}");
+            const vegpack3::Entry* e = vegpack3::entryForBuiltin(uid);      // the other sfppack3 effects (vegaspack3.h)
+            return e ? std::string(e->dxUid) : std::string();
+        };
+        const bool reproduced = slot.audio.format == "BUILTIN" && !dxUidForBuiltin(slot.audio.uid).empty();
+        if (reproduced) {
+            asDx = slot;
+            asDx.audio.format = "DX";
+            asDx.audio.uid = dxUidForBuiltin(slot.audio.uid);
+            asDx.audio.name = "VEGAS " + slot.audio.name;
+            if (const vegpack3::Entry* e = vegpack3::entryForBuiltin(slot.audio.uid)) asDx.audio.name = e->dxName;
+            if (asDx.name == slot.audio.name) asDx.name = asDx.audio.name;
+        }
+        const FxSlot& s = reproduced ? asDx : slot;
         const auto* o = originOf<VegFxOrigin>(s.veg, VegOrigin::FxK);
         if (o && sameFxState(s, o->asRead) && s.name == o->asRead.name) {
             entries += bytesOf(o->chunk->data.sub(o->entryOff, o->entryLen));

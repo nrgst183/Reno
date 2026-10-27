@@ -105,6 +105,7 @@
 #include "audioproxyui.h"
 #include "mainwindow.h"
 #include "mainwindow_internal.h"
+#include "logo.h"
 #include "readoutlabel.h"
 #include "vprefs.h"
 #include "prefsapply.h"
@@ -171,8 +172,10 @@
 #include <QStyleHints>
 #include <QStorageInfo>
 #include <QStyleFactory>
+#include <QTextDocument>
 #include <QTextEdit>
 #include <QTimer>
+#include <QUrl>
 #include "automationctl.h"
 #include <QToolBar>
 #include <QToolButton>
@@ -2800,7 +2803,12 @@ void MainWindow::showHelp()
             }
         }
         if (text.isEmpty()) text = "README.md was not found next to reno.exe or the folder above it.";
+        // the README starts with an HTML <img> of the logo for GitHub; Qt's Markdown skips raw HTML, so make it a
+        // Markdown image and draw the logo instead of looking for the PNG
+        text.replace(QRegularExpression("^<p[^\\n]*<img [^\\n]*src=\"([^\"]+)\"[^\\n]*\\n"), "![Reno](\\1)\n");
         readme->setMarkdown(text);
+        readme->document()->addResource(QTextDocument::ImageResource, QUrl("resources/reno_256.png"), renoLogo(96));
+        readme->document()->markContentsDirty(0, readme->document()->characterCount());
         tabs->addTab(readme, "Read Me");
         auto* keysView = new QTextBrowser(tabs);
         keysView->setObjectName("helpShortcuts");

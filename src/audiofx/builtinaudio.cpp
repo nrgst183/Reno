@@ -4,6 +4,11 @@
 // rest of Reno (format "BUILTIN"): the effects window shows their sliders and presets and the project stores
 // their settings. The sound is Reno's own.
 #include "audioplugin.h"
+#include "vegasdistortion.h"
+#include "vegaspack1.h"
+#include "vegas_trkfx.h"
+#include "vegaspack3_all.h"
+#include "vegasfx_pack2.h"          // the sfppack2 / sfresfilter reproductions
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -13,6 +18,7 @@
 #include <deque>
 #include <string>
 #include <memory>
+#include <mutex>
 #include <sstream>
 
 namespace reno {
@@ -165,6 +171,7 @@ public:
 
 protected:
     double v(int i) const { return values_[i].load(); }
+    void setRaw(int i, double x) { if (valid(i) && std::isfinite(x)) values_[i] = (float)x; }       // exactly x, not through 0..1
     double sr_ = 0;
     virtual void prepare() {}       // buffers for sr_
     virtual void reset() {}         // silence in the buffers, filters at rest
@@ -181,406 +188,229 @@ private:
 
 double dbToGain(double db) { return std::pow(10.0, db / 20.0); }
 
-// ------------------------------------------------------------------------------------------ Pitch Shift
-// Two read heads sweep a short delay line at the new speed, each faded in and out with a raised cosine while the
-// other takes over: pitch changes, length stays (VEGAS's Pitch Shift works this way, with a window size).
-class PitchShift : public BuiltinAudio {
-public:
-    PitchShift()
-        : BuiltinAudio({{"Semitones", -24, 24, 0, "semitones", {}, 0}, {"Cents", -100, 100, 0, "cents", {}, 0},
-                        {"Window", 10, 100, 40, "ms", {}, 0}, {"Dry out", -60, 0, -60, "dB", {}, 1}, {"Effect out", -60, 6, 0, "dB", {}, 1}},
-                       {{"Up an octave", {12}}, {"Down an octave", {-12}}, {"Up a fifth", {7}}, {"Chipmunk", {9, 0, 20}}, {"Monster", {-7, 0, 60}},
-                        {"Detuned double", {0, 12, 40, 0, 0}}})
-    {
-    }
-
-protected:
-    DelayLine dl_[2];
-    double phase_ = 0;
-    void prepare() override
-    {
-        for (auto& d : dl_) d.resize((size_t)(sr_ * 0.25));
-    }
-    void reset() override
-    {
-        for (auto& d : dl_) d.clear();
-        phase_ = 0;
-    }
-    void run(float* l, float* r, int n) override
-    {
-        const double ratio = std::pow(2.0, (v(0) + v(1) / 100.0) / 12.0);
-        const double win = std::max(16.0, v(2) / 1000.0 * sr_);
-        const float dry = (float)(v(3) <= -59.9 ? 0.0 : dbToGain(v(3))), wet = (float)(v(4) <= -59.9 ? 0.0 : dbToGain(v(4)));
-        // head A's delay goes from 'win' down to 0 (or up, for lower notes) once per window
-        const double step = (1.0 - ratio) / win;
-        float* io[2] = {l, r};
-        for (int k = 0; k < n; ++k) {
-            phase_ += step;
-            phase_ -= std::floor(phase_);
-            const double pa = phase_, pb = std::fmod(phase_ + 0.5, 1.0);
-            const double ga = std::sin(kPi * pa), gb = std::sin(kPi * pb);
-            for (int c = 0; c < 2; ++c) {
-                dl_[c].push(io[c][k]);
-                const float a = dl_[c].at(1 + pa * win), b = dl_[c].at(1 + pb * win);
-                const float out = (float)(a * ga * ga + b * gb * gb);
-                io[c][k] = io[c][k] * dry + out * wet;
-            }
-        }
-    }
-};
-
-// ------------------------------------------------------------------------------------------ Chorus
-class Chorus : public BuiltinAudio {
-public:
-    Chorus()
-        : BuiltinAudio({{"Dry out", -60, 0, 0, "dB", {}, 1}, {"Chorus out", -60, 0, -3, "dB", {}, 1}, {"Voices", 1, 4, 2, "", {}, 0},
-                        {"Delay", 5, 50, 20, "ms", {}, 1}, {"Depth", 0, 15, 4, "ms", {}, 1}, {"Rate", 0.05, 10, 0.8, "Hz", {}, 2},
-                        {"Feedback", 0, 90, 0, "%", {}, 0}, {"Stereo spread", 0, 100, 50, "%", {}, 0}},
-                       {{"Subtle doubling", {0, -6, 1, 15, 2, 0.4, 0, 30}}, {"Thick chorus", {0, -3, 4, 22, 6, 0.9, 10, 80}},
-                        {"Seasick", {-60, 0, 2, 25, 12, 3.5, 20, 100}}, {"Robot", {0, -2, 1, 10, 0, 0.1, 80, 0}}})
-    {
-    }
-
-protected:
-    DelayLine dl_[2];
-    double lfo_ = 0;
-    void prepare() override { for (auto& d : dl_) d.resize((size_t)(sr_ * 0.1)); }
-    void reset() override { for (auto& d : dl_) d.clear(); lfo_ = 0; }
-    void run(float* l, float* r, int n) override
-    {
-        const float dry = (float)(v(0) <= -59.9 ? 0.0 : dbToGain(v(0))), wet = (float)(v(1) <= -59.9 ? 0.0 : dbToGain(v(1)));
-        const int voices = std::max(1, std::min(4, (int)std::lround(v(2))));
-        const double base = v(3) / 1000.0 * sr_, depth = v(4) / 1000.0 * sr_, inc = v(5) / sr_, fb = v(6) / 100.0, spread = v(7) / 100.0;
-        float* io[2] = {l, r};
-        for (int k = 0; k < n; ++k) {
-            lfo_ += inc;
-            lfo_ -= std::floor(lfo_);
-            for (int c = 0; c < 2; ++c) {
-                double sum = 0;
-                for (int vo = 0; vo < voices; ++vo) {
-                    const double ph = lfo_ + (double)vo / voices + (c ? spread * 0.25 : 0.0);
-                    const double d = base + depth * 0.5 * (1 + std::sin(2 * kPi * ph));
-                    sum += dl_[c].at(d);
-                }
-                const float x = io[c][k];
-                const float ch = (float)(sum / std::sqrt((double)voices));
-                dl_[c].push((float)(x + ch * fb));
-                io[c][k] = x * dry + ch * wet;
-            }
-        }
-    }
-};
-
-// ------------------------------------------------------------------------------------------ Flange/Wah-wah
-class FlangeWah : public BuiltinAudio {
-public:
-    FlangeWah()
-        : BuiltinAudio({{"Effect", 0, 2, 0, "", {"Flange", "Wah-wah", "Phaser"}, 0}, {"Rate", 0.05, 10, 0.5, "Hz", {}, 2},
-                        {"Depth", 0, 100, 70, "%", {}, 0}, {"Delay / frequency", 0, 100, 40, "%", {}, 0},
-                        {"Feedback / resonance", 0, 95, 50, "%", {}, 0}, {"Dry out", -60, 0, -6, "dB", {}, 1}, {"Effect out", -60, 0, -6, "dB", {}, 1}},
-                       {{"Jet flange", {0, 0.2, 90, 30, 80}}, {"Fast wah", {1, 4, 80, 50, 70, -60, 0}}, {"Slow wah", {1, 0.7, 90, 40, 80, -60, 0}},
-                        {"Phaser", {2, 0.4, 80, 50, 60}}})
-    {
-    }
-
-protected:
-    DelayLine dl_[2];
-    double lfo_ = 0;
-    // state-variable filters (wah) and all-pass stages (phaser)
-    double lp_[2] = {0, 0}, bp_[2] = {0, 0};
-    double ap_[2][6] = {{0}}, last_[2] = {0, 0};
-    void prepare() override { for (auto& d : dl_) d.resize((size_t)(sr_ * 0.05)); }
-    void reset() override
-    {
-        for (auto& d : dl_) d.clear();
-        lfo_ = 0;
-        lp_[0] = lp_[1] = bp_[0] = bp_[1] = last_[0] = last_[1] = 0;
-        std::memset(ap_, 0, sizeof ap_);
-    }
-    void run(float* l, float* r, int n) override
-    {
-        const int mode = (int)std::lround(v(0));
-        const double inc = v(1) / sr_, depth = v(2) / 100.0, centre = v(3) / 100.0, fb = v(4) / 100.0;
-        const float dry = (float)(v(5) <= -59.9 ? 0.0 : dbToGain(v(5))), wet = (float)(v(6) <= -59.9 ? 0.0 : dbToGain(v(6)));
-        float* io[2] = {l, r};
-        for (int k = 0; k < n; ++k) {
-            lfo_ += inc;
-            lfo_ -= std::floor(lfo_);
-            for (int c = 0; c < 2; ++c) {
-                const double sw = 0.5 * (1 + std::sin(2 * kPi * (lfo_ + (c ? 0.1 : 0.0))));    // 0..1
-                const float x = io[c][k];
-                double y = x;
-                if (mode == 0) {
-                    // a 0.1 .. 10 ms delay swept, fed back
-                    const double ms = 0.1 + (centre * 5.0) * (1 - depth) + (centre * 5.0 + 5.0 * depth) * sw * depth;
-                    const double d = std::max(1.0, ms / 1000.0 * sr_);
-                    const float del = dl_[c].at(d);
-                    dl_[c].push((float)(x + del * fb));
-                    y = del;
-                } else if (mode == 1) {
-                    // a band-pass swept between 300 Hz and 3 kHz
-                    const double lo = 200 + 600 * centre, hi = lo * (1 + 9 * depth);
-                    const double f = lo * std::pow(hi / lo, sw);
-                    const double g = 2 * std::sin(kPi * std::min(f, sr_ * 0.24) / sr_);
-                    const double q = 1.0 - 0.95 * fb;   // damping (lower: sharper)
-                    const double hp = x - lp_[c] - q * bp_[c];
-                    bp_[c] += g * hp;
-                    lp_[c] += g * bp_[c];
-                    y = bp_[c] * (1.5 + 2 * fb);
-                } else {
-                    // six first-order all-passes swept together, fed back
-                    const double f = (200 + 1800 * centre) * std::pow(2.0, 3 * depth * (sw - 0.5));
-                    const double t = std::tan(kPi * std::min(f, sr_ * 0.24) / sr_), a = (t - 1) / (t + 1);
-                    double s = x + last_[c] * fb;
-                    for (int st = 0; st < 6; ++st) {
-                        const double o = a * s + ap_[c][st];
-                        ap_[c][st] = s - a * o;
-                        s = o;
-                    }
-                    last_[c] = s;
-                    y = s;
-                }
-                io[c][k] = (float)(x * dry + y * wet);
-            }
-        }
-    }
-};
-
 // ------------------------------------------------------------------------------------------ Distortion
+// VEGAS's Distortion, worked out from sfppack3_x64.dll: two transfer graphs (one for samples >= 0, one for the rest)
+// become gain tables in 0.1 dB steps, then a slew limit, a one-pole low-pass and the dry/wet mix. Same settings and
+// saved form as VEGAS's (vegasdistortion.h).
 class Distortion : public BuiltinAudio {
 public:
     Distortion()
-        : BuiltinAudio({{"Drive", 0, 60, 20, "dB", {}, 1}, {"Shape", 0, 3, 0, "", {"Soft clip", "Hard clip", "Fold", "Bit crush"}, 0},
-                        {"Tone", 500, 20000, 8000, "Hz", {}, 0}, {"Crush bits", 1, 16, 6, "bits", {}, 0},
-                        {"Dry out", -60, 0, -60, "dB", {}, 1}, {"Effect out", -60, 24, -6, "dB", {}, 1}},
-                       {{"Warm", {10, 0, 6000, 6, -60, -3}}, {"Fuzz", {35, 1, 9000, 6, -60, -9}}, {"Earrape", {60, 1, 20000, 6, -60, 12}},
-                        {"Bit crusher", {0, 3, 20000, 4, -60, 0}}, {"Wave folder", {24, 2, 12000, 6, -60, -6}}})
+        : BuiltinAudio({{"Slew Rate Enable", 0, 1, 0, "", {"Off", "On"}, 0}, {"Slew Rate", 1, 100, 100, "", {}, 0},
+                        {"Low-pass Filter Enable", 0, 1, 0, "", {"Off", "On"}, 0}, {"Low-pass Filter Frequency", 100, 10000, 400, "Hz", {}, 0},
+                        {"Dry Out", -60, 0, -60, "dB", {}, 1}, {"Wet Out", -60, 24, 0, "dB", {}, 1}},
+                       {})
     {
+        applyAll(vegdist::presets()[0].s);
+        program_ = 0;
+    }
+
+    std::string paramText(int i) override
+    {
+        if ((i == 4 || i == 5) && v(i) <= -59.95) return "-Inf.";
+        return BuiltinAudio::paramText(i);
+    }
+    // VEGAS keeps these as whole numbers (dB in tenths)
+    void paramSet(int i, float v) override
+    {
+        double lo = 0, hi = 1;
+        if (!paramRange(i, &lo, &hi) || !std::isfinite(v)) return;
+        double x = lo + std::max(0.f, std::min(1.f, v)) * (hi - lo);
+        x = (i == 4 || i == 5) ? std::round(x * 10) / 10 : std::round(x);
+        BuiltinAudio::paramSet(i, (float)((x - lo) / (hi - lo)));
+    }
+    std::string saveState() override { return vegdist::encode(settings()); }
+    bool loadState(const std::string& st) override
+    {
+        vegdist::Settings s;
+        if (vegdist::decode(st, &s)) {
+            applyAll(s);
+            return true;
+        }
+        // settings saved by older Reno versions (other parameters): start from VEGAS's defaults
+        if (st.compare(0, 18, "reno-builtin-audio") == 0) {
+            applyAll(vegdist::presets()[0].s);
+            return true;
+        }
+        return false;
+    }
+    int programCount() override { return (int)vegdist::presets().size(); }
+    std::string programName(int i) override { return i >= 0 && i < programCount() ? vegdist::presets()[(size_t)i].name : std::string(); }
+    int currentProgram() override { return program_; }
+    bool setProgram(int i) override
+    {
+        if (i < 0 || i >= programCount()) return false;
+        applyAll(vegdist::presets()[(size_t)i].s);
+        program_ = i;
+        return true;
     }
 
 protected:
-    double lp_[2] = {0, 0};
-    double hold_[2] = {0, 0};
-    int count_ = 0;
-    void reset() override { lp_[0] = lp_[1] = hold_[0] = hold_[1] = 0; count_ = 0; }
-    void run(float* l, float* r, int n) override
-    {
-        const double drive = dbToGain(v(0));
-        const int shape = (int)std::lround(v(1));
-        const double a = 1 - std::exp(-2 * kPi * std::min(v(2), sr_ * 0.45) / sr_);
-        const double levels = std::pow(2.0, std::lround(v(3)) - 1);
-        const float dry = (float)(v(4) <= -59.9 ? 0.0 : dbToGain(v(4))), wet = (float)(v(5) <= -59.9 ? 0.0 : dbToGain(v(5)));
-        // bit crush also lowers the sample rate with Drive (0 dB: unchanged, 60 dB: a 64th)
-        const int every = shape == 3 ? std::max(1, (int)std::lround(std::pow(2.0, v(0) / 10.0))) : 1;
-        float* io[2] = {l, r};
-        for (int k = 0; k < n; ++k) {
-            const bool take = (count_++ % every) == 0;
-            for (int c = 0; c < 2; ++c) {
-                const float x = io[c][k];
-                double y;
-                switch (shape) {
-                    case 1: y = std::max(-1.0, std::min(1.0, x * drive)); break;
-                    case 2: {
-                        // folded back at +-1, repeatedly
-                        double t = x * drive * 0.25 + 0.25;
-                        t -= std::floor(t);
-                        y = 4 * std::fabs(t - 0.5) - 1;
-                        break;
-                    }
-                    case 3:
-                        if (take) hold_[c] = std::round(x * levels) / levels;
-                        y = hold_[c];
-                        break;
-                    default: y = std::tanh(x * drive); break;
-                }
-                lp_[c] += a * (y - lp_[c]);
-                io[c][k] = (float)(x * dry + lp_[c] * wet);
-            }
-        }
-    }
-};
-
-// ------------------------------------------------------------------------------------------ Vibrato
-class Vibrato : public BuiltinAudio {
-public:
-    Vibrato()
-        : BuiltinAudio({{"Rate", 0.1, 20, 5, "Hz", {}, 2}, {"Depth", 0, 200, 40, "cents", {}, 0}, {"Waveform", 0, 2, 0, "", {"Sine", "Triangle", "Square"}, 0},
-                        {"Stereo phase", 0, 180, 0, "degrees", {}, 0}, {"Output gain", -60, 24, 0, "dB", {}, 1}},
-                       {{"Gentle", {5, 20}}, {"Opera", {6, 60}}, {"Warped tape", {0.6, 120, 1}}, {"Seasick", {1.5, 200}}, {"Trill", {8, 100, 2}}})
-    {
-    }
-
-protected:
-    DelayLine dl_[2];
-    double lfo_ = 0;
-    void prepare() override { for (auto& d : dl_) d.resize((size_t)(sr_ * 0.2)); }
-    void reset() override { for (auto& d : dl_) d.clear(); lfo_ = 0; }
-    static double wave(int w, double ph)
-    {
-        ph -= std::floor(ph);
-        if (w == 1) return ph < 0.5 ? 4 * ph - 1 : 3 - 4 * ph;
-        if (w == 2) return ph < 0.5 ? 1 : -1;
-        return std::sin(2 * kPi * ph);
-    }
-    void run(float* l, float* r, int n) override
-    {
-        const double rate = v(0), inc = rate / sr_;
-        // a delay swinging by D samples at rate f shifts pitch by at most 2*pi*f*D/sr: D for the requested cents
-        const double maxRatio = std::pow(2.0, v(1) / 1200.0) - 1;
-        const double depth = std::min(maxRatio * sr_ / (2 * kPi * std::max(0.1, rate)), sr_ * 0.09);
-        const int w = (int)std::lround(v(2));
-        const double off = v(3) / 360.0;
-        const float out = (float)(v(4) <= -59.9 ? 0.0 : dbToGain(v(4)));      // Output gain, applied last
-        float* io[2] = {l, r};
-        for (int k = 0; k < n; ++k) {
-            lfo_ += inc;
-            lfo_ -= std::floor(lfo_);
-            for (int c = 0; c < 2; ++c) {
-                dl_[c].push(io[c][k]);
-                io[c][k] = dl_[c].at(2 + depth * (1 + wave(w, lfo_ + (c ? off : 0.0)))) * out;
-            }
-        }
-    }
-};
-
-// ------------------------------------------------------------------------------------------ Amplitude Modulation
-class AmpMod : public BuiltinAudio {
-public:
-    AmpMod()
-        : BuiltinAudio({{"Rate", 0.1, 2000, 6, "Hz", {}, 2}, {"Depth", 0, 100, 100, "%", {}, 0}, {"Waveform", 0, 3, 0, "", {"Sine", "Triangle", "Square", "Sawtooth"}, 0},
-                        {"Stereo pan", 0, 1, 0, "", {"Off", "On"}, 0}, {"Output", -24, 12, 0, "dB", {}, 1}},
-                       {{"Tremolo", {6, 60}}, {"Helicopter", {14, 100, 2}}, {"Stutter gate", {8, 100, 2}}, {"Ring modulator", {440, 100}},
-                        {"Auto pan", {1, 100, 0, 1}}})
-    {
-    }
-
-protected:
-    double ph_ = 0;
-    void reset() override { ph_ = 0; }
-    void run(float* l, float* r, int n) override
-    {
-        const double inc = v(0) / sr_, depth = v(1) / 100.0, out = dbToGain(v(4));
-        const int w = (int)std::lround(v(2));
-        const bool pan = v(3) > 0.5;
-        for (int k = 0; k < n; ++k) {
-            ph_ += inc;
-            ph_ -= std::floor(ph_);
-            double m;
-            if (w == 1) m = ph_ < 0.5 ? 4 * ph_ - 1 : 3 - 4 * ph_;
-            else if (w == 2) m = ph_ < 0.5 ? 1 : -1;
-            else if (w == 3) m = 1 - 2 * ph_;
-            else m = std::sin(2 * kPi * ph_);
-            if (v(0) > 100 && !pan) {
-                // fast: a ring modulator (the carrier multiplies the sound)
-                const double g = (1 - depth) + depth * m;
-                l[k] = (float)(l[k] * g * out);
-                r[k] = (float)(r[k] * g * out);
-            } else {
-                const double gl = 1 - depth * 0.5 * (1 - m);
-                const double gr = pan ? 1 - depth * 0.5 * (1 + m) : gl;
-                l[k] = (float)(l[k] * gl * out);
-                r[k] = (float)(r[k] * gr * out);
-            }
-        }
-    }
-};
-
-// ------------------------------------------------------------------------------------------ Simple Delay
-class SimpleDelay : public BuiltinAudio {
-public:
-    SimpleDelay()
-        : BuiltinAudio({{"Dry out", -60, 0, 0, "dB", {}, 1}, {"Delay out", -60, 0, -6, "dB", {}, 1}, {"Delay time", 1, 2000, 300, "ms", {}, 0},
-                        {"Feedback", 0, 95, 30, "%", {}, 0}, {"Ping-pong", 0, 1, 0, "", {"Off", "On"}, 0}},
-                       {{"Slap back", {0, -6, 90, 0}}, {"Echo canyon", {0, -4, 450, 55}}, {"Ping-pong", {0, -6, 250, 50, 1}}, {"Infinite", {0, -3, 600, 95}}})
-    {
-    }
-
-protected:
-    DelayLine dl_[2];
-    void prepare() override { for (auto& d : dl_) d.resize((size_t)(sr_ * 2.1)); }
-    void reset() override { for (auto& d : dl_) d.clear(); }
-    void run(float* l, float* r, int n) override
-    {
-        const float dry = (float)(v(0) <= -59.9 ? 0.0 : dbToGain(v(0))), wet = (float)(v(1) <= -59.9 ? 0.0 : dbToGain(v(1)));
-        const double d = std::max(1.0, v(2) / 1000.0 * sr_);
-        const float fb = (float)(v(3) / 100.0);
-        const bool pp = v(4) > 0.5;
-        for (int k = 0; k < n; ++k) {
-            const float el = dl_[0].at(d), er = dl_[1].at(d);
-            const float xl = l[k], xr = r[k];
-            if (pp) {
-                dl_[0].push((xl + xr) * 0.5f + er * fb);
-                dl_[1].push(el * fb);
-            } else {
-                dl_[0].push(xl + el * fb);
-                dl_[1].push(xr + er * fb);
-            }
-            l[k] = xl * dry + el * wet;
-            r[k] = xr * dry + er * wet;
-        }
-    }
-};
-
-// ------------------------------------------------------------------------------------------ Reverb
-// Schroeder-Moorer: eight damped combs and four all-passes per side (Freeverb's tunings).
-class Reverb : public BuiltinAudio {
-public:
-    Reverb()
-        : BuiltinAudio({{"Room size", 0, 100, 60, "%", {}, 0}, {"Damping", 0, 100, 50, "%", {}, 0}, {"Width", 0, 100, 100, "%", {}, 0},
-                        {"Dry out", -60, 0, 0, "dB", {}, 1}, {"Reverb out", -60, 0, -9, "dB", {}, 1}},
-                       {{"Small room", {35, 60, 80, 0, -12}}, {"Hall", {80, 40, 100, 0, -8}}, {"Cathedral", {95, 25, 100, -3, -4}},
-                        {"Only the reverb", {85, 40, 100, -60, 0}}})
-    {
-    }
-
-protected:
-    struct Comb { DelayLine d; double store = 0; };
-    Comb comb_[2][8];
-    DelayLine ap_[2][4];
-    void prepare() override
-    {
-        static const int combs[8] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617}, aps[4] = {556, 441, 341, 225};
-        const double s = sr_ / 44100.0;
-        for (int c = 0; c < 2; ++c) {
-            for (int k = 0; k < 8; ++k) comb_[c][k].d.resize((size_t)((combs[k] + (c ? 23 : 0)) * s) + 2);
-            for (int k = 0; k < 4; ++k) ap_[c][k].resize((size_t)((aps[k] + (c ? 23 : 0)) * s) + 2);
-        }
-    }
+    void prepare() override { applied_ = false; }
     void reset() override
     {
-        for (auto& side : comb_) for (auto& cb : side) { cb.d.clear(); cb.store = 0; }
-        for (auto& side : ap_) for (auto& a : side) a.clear();
+        s1_ = s2_ = 0;
+        for (double& x : lp_) x = 0;
     }
     void run(float* l, float* r, int n) override
     {
-        const double room = 0.7 + 0.28 * v(0) / 100.0, damp = 0.4 * v(1) / 100.0, width = v(2) / 100.0;
-        const float dry = (float)(v(3) <= -59.9 ? 0.0 : dbToGain(v(3))), wet = (float)(v(4) <= -59.9 ? 0.0 : dbToGain(v(4)));
-        const double w1 = width / 2 + 0.5, w2 = (1 - width) / 2;
+        update();
+        // VEGAS gets the samples interleaved; its slew state is shared by the channels, so it runs L, R, L, R...
         for (int k = 0; k < n; ++k) {
-            const double in = (l[k] + r[k]) * 0.015;
-            double out[2];
-            for (int c = 0; c < 2; ++c) {
-                double s = 0;
-                for (Comb& cb : comb_[c]) {
-                    const double y = cb.d.at((double)cb.d.buf.size() - 2);
-                    cb.store = y * (1 - damp) + cb.store * damp;
-                    cb.d.push((float)(in + cb.store * room));
-                    s += y;
-                }
-                for (DelayLine& a : ap_[c]) {
-                    const double b = a.at((double)a.buf.size() - 2);
-                    a.push((float)(s + b * 0.5));
-                    s = b - s;
-                }
-                out[c] = s;
-            }
-            const float yl = (float)(out[0] * w1 + out[1] * w2), yr = (float)(out[1] * w1 + out[0] * w2);
-            l[k] = l[k] * dry + yl * wet;
-            r[k] = r[k] * dry + yr * wet;
+            l[k] = (float)sample((double)l[k], 0);
+            r[k] = (float)sample((double)r[k], 1);
         }
     }
-};
 
+private:
+    std::mutex graphMutex_;
+    vegdist::Settings graph_;           // the graphs, polarity mode and the settings that are not parameters
+    std::atomic<int> graphVersion_{1};
+    int program_ = 0;
+
+    // processing state (audio thread)
+    bool applied_ = false;
+    int usedVersion_ = 0;
+    int used_[6] = {};
+    double sr_used_ = 0;
+    double tpos_[841] = {}, tneg_[841] = {};
+    double dry_ = 0, wet_ = 1, maxDelta_ = 0, a_ = 0, b_ = 1;
+    bool slewOn_ = false;
+    double s1_ = 0, s2_ = 0;
+    double lp_[2] = {0, 0};
+
+    vegdist::Settings settings()
+    {
+        vegdist::Settings s;
+        {
+            std::lock_guard<std::mutex> lk(graphMutex_);
+            s = graph_;
+        }
+        s.slewOn = (int)std::lround(v(0));
+        s.slewRate = (int)std::lround(v(1));
+        s.lpOn = (int)std::lround(v(2));
+        s.lpFreq = (int)std::lround(v(3));
+        s.dry = (int)std::lround(v(4) * 10);
+        s.wet = (int)std::lround(v(5) * 10);
+        return s;
+    }
+    void applyAll(const vegdist::Settings& in)
+    {
+        vegdist::Settings s = in;
+        vegdist::sanitize(s);
+        auto setReal = [this](int i, double x) {
+            double lo = 0, hi = 1;
+            paramRange(i, &lo, &hi);
+            paramSet(i, (float)((x - lo) / (hi - lo)));
+        };
+        setReal(0, s.slewOn);
+        setReal(1, s.slewRate);
+        setReal(2, s.lpOn);
+        setReal(3, s.lpFreq);
+        setReal(4, s.dry / 10.0);
+        setReal(5, s.wet / 10.0);
+        {
+            std::lock_guard<std::mutex> lk(graphMutex_);
+            graph_ = s;
+        }
+        ++graphVersion_;
+        program_ = -1;
+    }
+
+    // One graph as VEGAS turns it into gains: entry j is the gain at -j/10 dB in, in tenths of a dB, between the
+    // points by straight lines; then made linear (exactly -84 dB: silence).
+    static void buildTable(double* t, const vegdist::Point* p, int n)
+    {
+        for (int j = 0; j < 841; ++j) t[j] = 0;
+        auto fill = [t](int a, int b) {
+            if (a > b) std::swap(a, b);
+            if (b - a == 0) return;
+            const double slope = (t[b] - t[a]) / (double)(b - a);
+            for (int k = a + 1; k < b; ++k) t[k] = (double)(k - a) * slope + t[a];
+        };
+        for (int i = 0; i + 1 < n; ++i) {
+            const vegdist::Point p0 = p[i], p1 = p[i + 1];
+            t[-p0.x] = (double)(p0.y - p0.x);
+            t[-p1.x] = (double)(p1.y - p1.x);
+            if (p1.y == vegdist::kInf && p0.y == vegdist::kInf) {
+                t[-p1.x] = vegdist::kInf;
+                t[-p0.x] = vegdist::kInf;
+            }
+            if (i == 0 && p[0].y == vegdist::kInf && t[-p1.x] < -200.0) t[-p0.x] = vegdist::kInf;
+            fill(-p1.x, -p0.x);
+        }
+        for (int j = 0; j < 841; ++j) t[j] = t[j] == -840.0 ? 0.0 : std::pow(10.0, t[j] / 200.0);
+    }
+
+    void update()
+    {
+        const int ver = graphVersion_.load();
+        const int now[6] = {(int)std::lround(v(0)), (int)std::lround(v(1)), (int)std::lround(v(2)), (int)std::lround(v(3)),
+                            (int)std::lround(v(4) * 10), (int)std::lround(v(5) * 10)};
+        const bool paramsSame = applied_ && sr_used_ == sr_ && std::equal(now, now + 6, used_);
+        if (paramsSame && ver == usedVersion_) return;
+        if (ver != usedVersion_ || !applied_) {
+            std::unique_lock<std::mutex> lk(graphMutex_, std::try_to_lock);
+            if (lk.owns_lock()) {
+                buildTable(tpos_, graph_.pos, graph_.posCount);
+                buildTable(tneg_, graph_.neg, graph_.negCount);
+                usedVersion_ = ver;
+            } else if (applied_ && paramsSame) {
+                return;     // the page is writing the graph: next block
+            }
+        }
+        std::copy(now, now + 6, used_);
+        sr_used_ = sr_;
+        slewOn_ = now[0] != 0;
+        maxDelta_ = (double)now[1] * 0.0005;
+        dry_ = now[4] <= -600 ? 0.0 : std::pow(10.0, (double)now[4] / 200.0);
+        wet_ = now[5] <= -600 ? 0.0 : std::pow(10.0, (double)now[5] / 200.0);
+        const int rate = (int)std::lround(sr_);
+        if (now[2] && now[3] <= rate / 2) {
+            a_ = std::exp((double)now[3] * -6.28318530718 / (double)rate);
+            b_ = 1.0 - a_;
+        } else {
+            a_ = 0;
+            b_ = 1;
+        }
+        applied_ = true;
+    }
+
+    // the gain for x from table t, in a line between its 0.1 dB entries
+    static double lookup(double x, const double* t)
+    {
+        const double a = std::fabs(x);
+        double pos;
+        if (a < 3.051758e-05) pos = -840.0;
+        else {
+            const double l = std::log10(a) * 200.0;
+            pos = l < -840.0 ? -840.0 : (l > 0.0 ? 0.0 : l);
+        }
+        const int i = (int)pos;
+        const double t0 = t[-i];
+        if (pos > -840.0) return (t[-i + 1] - t0) * ((double)i - pos) + t0;
+        return t0;
+    }
+
+    double sample(double x, int ch)
+    {
+        const double dryPart = x * dry_;
+        const double g = lookup(x, x >= 0.0 ? tpos_ : tneg_);
+        double d = x * g - s1_;
+        const double prev = s1_ - s2_;
+        if (slewOn_) {
+            const double lo = prev - maxDelta_, hi = maxDelta_ + prev;
+            if (d < lo) d = lo;
+            else if (d > hi) d = hi;
+        }
+        s2_ = s1_;
+        const double y = s1_ + d;
+        s1_ = y;
+        double o = y * b_ + lp_[ch] * a_;
+        if (std::fabs(o) < 2e-11) o = 0;
+        lp_[ch] = o;
+        return o * wet_ + dryPart;
+    }
+};
 
 // ------------------------------------------------------------------------------------------ Modern Equalizer
 // VEGAS Pro 23's Modern Equalizer: up to eight bands (high pass, low pass, low shelf, high shelf, band pass,
@@ -731,6 +561,11 @@ protected:
     }
 };
 
+// ---- Reno's versions of the other sfppack3_x64.dll effects (Amplitude Modulation, Flange/Wah-wah, Gapper/Snipper, Smooth/Enhance, Vibrato)
+#include "builtin_pack3.inc"
+// VEGAS sfppack2 / sfresfilter reproductions
+#include "vegasfx_pack2.inc"
+
 struct Kind {
     const char* uid;
     const char* name;
@@ -738,16 +573,19 @@ struct Kind {
 };
 template <class T> std::unique_ptr<AudioPlugin> makeOne() { return std::unique_ptr<AudioPlugin>(new T()); }
 
+#include "builtinaudio_vegastrk.inc"
+
 const Kind kKinds[] = {
-    {"reno.pitchshift", "Pitch Shift", makeOne<PitchShift>},
-    {"reno.chorus", "Chorus", makeOne<Chorus>},
-    {"reno.flangewah", "Flange/Wah-wah", makeOne<FlangeWah>},
+    {"reno.flangewah", "Flange/Wah-wah", makeOne<Flange>},
     {"reno.distortion", "Distortion", makeOne<Distortion>},
     {"reno.vibrato", "Vibrato", makeOne<Vibrato>},
     {"reno.ampmod", "Amplitude Modulation", makeOne<AmpMod>},
-    {"reno.simpledelay", "Simple Delay", makeOne<SimpleDelay>},
-    {"reno.reverb", "Reverb", makeOne<Reverb>},
+    {"reno.gapsnip", "Gapper/Snipper", makeOne<GapperSnipper>},
+    {"reno.smooth", "Smooth/Enhance", makeOne<SmoothEnhance>},
     {"reno.moderneq", "Modern Equalizer", makeOne<ModernEq>},
+    VEGASTRK_KINDS
+    {"reno.noisegate", "Noise Gate", makeOne<NoiseGate>},
+    RENO_PACK2_KINDS          // the other sfppack2 / sfresfilter reproductions (vegasfx_pack2.inc)
 };
 
 }  // namespace
@@ -766,11 +604,27 @@ std::vector<AudioPluginDesc> builtinAudioPlugins()
         d.numInputs = d.numOutputs = 2;
         out.push_back(d);
     }
+    // the effects of VEGAS's sfppack1 (vegaspack1.cpp): Simple Delay...
+    for (const vegpack1::Info* i : vegpack1::allInfos()) {
+        AudioPluginDesc d;
+        d.format = "BUILTIN";
+        d.uid = i->uid;
+        d.name = i->name;
+        d.vendor = kBuiltinAudioVendor;
+        d.numInputs = d.numOutputs = 2;
+        out.push_back(d);
+    }
     return out;
 }
 
 std::unique_ptr<AudioPlugin> builtinAudioCreate(const AudioPluginDesc& desc, std::string* error)
 {
+    if (std::unique_ptr<AudioPlugin> p = vegpack1::create(desc.uid)) {
+        p->desc = desc;
+        if (p->desc.name.empty()) p->desc.name = vegpack1::findInfo(desc.uid)->name;
+        p->desc.vendor = kBuiltinAudioVendor;
+        return p;
+    }
     for (const Kind& k : kKinds)
         if (desc.uid == k.uid) {
             std::unique_ptr<AudioPlugin> p = k.make();

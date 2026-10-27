@@ -81,8 +81,15 @@ static int setByName(AudioPlugin& p, const std::string& name, double value, doub
 int main()
 {
     const std::vector<AudioPluginDesc> all = builtinAudioPlugins();
-    check(all.size() == 9, "list: nine built-in audio effects (Modern Equalizer the ninth)");
+    // (the exact reproductions of VEGAS's track effects, "reno.trk...", have their own tests: vegasfx_<name>_test)
+    const auto isTrk = [](const std::string& uid) { return uid.compare(0, 8, "reno.trk") == 0; };
+    // (so are the ExpressFX ones of sfxpfx2, "reno.xp...": vegasfx_xp<name>_test; they get the generic checks below, not the count)
+    const auto isXp = [](const std::string& uid) { return uid.compare(0, 7, "reno.xp") == 0; };
+    size_t standIns = 0;
+    for (const AudioPluginDesc& d : all) if (!isTrk(d.uid) && !isXp(d.uid)) ++standIns;
+    check(standIns == 14, "list: fourteen built-in audio effects besides the track and ExpressFX ones");
     for (const AudioPluginDesc& d : all) {
+        if (isTrk(d.uid)) continue;
         std::unique_ptr<AudioPlugin> p = make(d.uid);
         check(p != nullptr && p->desc.name == d.name && p->desc.vendor == kBuiltinAudioVendor, d.name + ": made");
         if (!p) continue;
@@ -129,34 +136,45 @@ int main()
     Catalog::get().scanInProcess({}, {});
     int listed = 0;
     for (const AudioFxEntry& e : Catalog::get().audio())
-        if (e.desc.format == "BUILTIN" && e.ok) ++listed;
+        if (e.desc.format == "BUILTIN" && e.ok && !isTrk(e.desc.uid) && !isXp(e.desc.uid)) ++listed;
     check(listed == 9, "catalog: listed", std::to_string(listed));
 
-    // Pitch Shift: 440 Hz up 12 -> 880, down 7 -> 293.7, +3 semitones 50 cents -> 538.8
+    // Pitch Shift (the exact reproduction of VEGAS's, with Preserve duration the sound trails by its latency): 440 Hz up 12
+    // -> 880, down 7 -> 293.7, +3 semitones 50 cents -> 538.8
     {
         auto p = make("reno.pitchshift");
-        setByName(*p, "Semitones", 12, -24, 24);
-        const double f = peakFreq(run(*p, 440, 1.0), 200, 1200);
-        check(std::fabs(f / 880 - 1) <= 0.02, "pitch shift: an octave up (within 2%: the two heads' cross-fades spread the tone a little)", std::to_string(f));
+        setByName(*p, "Preserve Duration", 1, 0, 1);
+        setByName(*p, "Semitones", 12, -50, 50);
+        const double f = peakFreq(run(*p, 440, 2.5), 200, 1200);
+        check(std::fabs(f / 880 - 1) <= 0.01, "pitch shift: an octave up", std::to_string(f));
+        check(p->latencySamples() > 20000, "pitch shift: reports its latency", std::to_string(p->latencySamples()));
         auto q = make("reno.pitchshift");
-        setByName(*q, "Semitones", -7, -24, 24);
-        const double g = peakFreq(run(*q, 440, 1.0), 200, 1200);
-        check(std::fabs(g / 293.66 - 1) <= 0.02, "pitch shift: a fifth down", std::to_string(g));
+        setByName(*q, "Preserve Duration", 1, 0, 1);
+        setByName(*q, "Semitones", -7, -50, 50);
+        const double g = peakFreq(run(*q, 440, 2.0), 200, 1200);
+        check(std::fabs(g / 293.66 - 1) <= 0.01, "pitch shift: a fifth down", std::to_string(g));
         auto c = make("reno.pitchshift");
-        setByName(*c, "Semitones", 3, -24, 24);
+        setByName(*c, "Preserve Duration", 1, 0, 1);
+        setByName(*c, "Semitones", 3, -50, 50);
         setByName(*c, "Cents", 50, -100, 100);
-        const double h = peakFreq(run(*c, 440, 1.0), 200, 1200);
-        check(std::fabs(h / (440 * std::pow(2.0, 3.5 / 12)) - 1) <= 0.02, "pitch shift: semitones and cents", std::to_string(h));
-        // 0: the tone as it was, its level kept (the two heads' fades add up to 1)
+        const double h = peakFreq(run(*c, 440, 2.0), 200, 1200);
+        check(std::fabs(h / (440 * std::pow(2.0, 3.5 / 12)) - 1) <= 0.01, "pitch shift: semitones and cents", std::to_string(h));
+        // 0: the tone as it was, its level kept
         auto z = make("reno.pitchshift");
-        std::vector<float> o = run(*z, 440, 1.0);
-        check(std::fabs(peakFreq(o, 200, 1200) - 440) <= 2 && std::fabs(rms(o) - 0.5 / std::sqrt(2.0)) < 0.02, "pitch shift: 0 leaves the tone");
+        setByName(*z, "Preserve Duration", 1, 0, 1);
+        std::vector<float> o = run(*z, 440, 2.0);
+        check(std::fabs(peakFreq(o, 200, 1200) - 440) <= 2 && std::fabs(rms(o) - 0.5 / std::sqrt(2.0)) < 0.05, "pitch shift: 0 leaves the tone");
+        // the box unticked: Reno still keeps the length (see PitchEngine), so the same latency and a tone all the way
+        auto w = make("reno.pitchshift");
+        setByName(*w, "Semitones", 12, -50, 50);
+        check(w->latencySamples() > 20000, "pitch shift: without Preserve duration the sound is still held in step");
+        check(std::fabs(peakFreq(run(*w, 440, 2.5), 200, 1200) / 880 - 1) <= 0.01, "pitch shift: an octave up without Preserve duration");
     }
     // Simple Delay: an impulse comes back after the delay time
     {
         auto p = make("reno.simpledelay");
-        setByName(*p, "Delay time", 100, 1, 2000);
-        setByName(*p, "Feedback", 0, 0, 95);
+        setByName(*p, "Delay Time", 100, 1, 5000);
+        setByName(*p, "Multiple Delays", 0, 0, 1);
         std::vector<float> l(9600, 0.f), r(9600, 0.f);
         l[0] = r[0] = 1.f;
         for (int at = 0; at < 9600; at += 480) p->process(l.data() + at, r.data() + at, 480, at, true);
@@ -190,8 +208,9 @@ int main()
     // Amplitude modulation at 100% depth, square: half the time silent
     {
         auto p = make("reno.ampmod");
-        setByName(*p, "Waveform", 2, 0, 3);
-        setByName(*p, "Rate", 4, 0.1, 2000);
+        p->setProgram(5);       // Hard square
+        setByName(*p, "Amplitude", -80, -80, 0);
+        setByName(*p, "Modulation Frequency", 4, 0.001, 5000);
         std::vector<float> o = run(*p, 1000, 1.0);
         int quiet = 0;
         for (size_t k = 0; k < o.size(); k += 480) {

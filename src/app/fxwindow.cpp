@@ -9,6 +9,7 @@
 // under us (New Project), so a
 // panel never trusts its pointer: before every use it asks the runtime again and checks it got the same object
 // (OfxPanel::live, AudioPanel::live).
+#include "../audiofx/vegaspack1.h"
 #include "fxwindow.h"
 #include "vprefs.h"
 #include "fxlibrary.h"
@@ -17,9 +18,11 @@
 #include "panels.h"
 #include "pluginchooser.h"
 #include "playback.h"
+#include "../audiofx/vegaspack3.h"
 #include "../engine/audionews.h"
 #include "../engine/fxnames.h"
 #include "../ofx/vegas_ext.h"
+#include "../audiofx/vegasfx_pack2.h"
 #include "strconv.h"
 #include <QAbstractButton>
 #include <QAbstractItemView>
@@ -2743,7 +2746,19 @@ private:
     {
         const AudioPluginDesc& d = plugin_->desc;
         QString text = QString("<b>%1</b><br>").arg(title.toHtmlEscaped());
-        if (d.format == "BUILTIN")
+        if (builtinPageUid(d) == "reno.distortion")
+            text += "Reno's version of VEGAS Distortion: the same settings and the same sound. It saves as VEGAS Distortion, and "
+                    "projects with VEGAS Distortion use it where VEGAS's own is not installed.";
+        else if (const vegpack3::Entry* e = vegpack3::entryForBuiltin(builtinPageUid(d)))
+            text += QString("Reno's version of %1: the same settings and the same sound. It saves as %1, and "
+                            "projects with %1 use it where VEGAS's own is not installed.").arg(QString::fromUtf8(e->dxName));
+        else if (const vegpack1::Info* pi = vegpack1::findInfo(builtinPageUid(d)))
+            text += QString("Reno's version of VEGAS %1: the same settings and the same sound. It saves as VEGAS %1, and "
+                            "projects with VEGAS %1 use it where VEGAS's own is not installed.").arg(QString::fromUtf8(pi->name));
+        else if (!pack2VegasName(builtinPageUid(d)).empty())
+            text += qs("Reno's version of " + pack2VegasName(builtinPageUid(d)) + ": the same settings and the same sound. It saves as " +
+                       pack2VegasName(builtinPageUid(d)) + ", and projects with it use it where VEGAS's own is not installed.");
+        else if (d.format == "BUILTIN")
             text += "A Reno audio effect that stands in for VEGAS's DirectX effect of the same name, with similar settings. "
                     "Projects made with the VEGAS effect use it when VEGAS's own is not installed. Its sound is Reno's own.";
         else {
@@ -2755,7 +2770,7 @@ private:
 
     bool buildPage()
     {
-        if (plugin_->desc.format != "BUILTIN" || !hasBuiltinPage(plugin_->desc.uid)) return false;
+        if (!hasBuiltinPage(builtinPageUid(plugin_->desc))) return false;
         count_ = plugin_->paramCount();
         makeFrame(true);
         DxHost host;
@@ -2791,7 +2806,24 @@ private:
         host.end = [this] {
             if (AppState::get().fxEditOpen(slotId)) AppState::get().endFxEdit(slotId, editName_);
         };
-        page_ = makeBuiltinPage(body_, plugin_->desc.uid, host);
+        host.state = [this] {
+            AudioPlugin* p = live();
+            return p ? p->saveState() : std::string();
+        };
+        host.setState = [this](const std::string& st, const std::string& what) {
+            AudioPlugin* p = live();
+            if (closed_ || !p) return;
+            AppState& app = AppState::get();
+            if (app.fxEditOpen(slotId)) p->loadState(st);
+            else app.fxEditStep(slotId, what, [&] { p->loadState(st); });
+        };
+        host.beginEdit = [this](const std::string& what) {
+            AudioPlugin* p = live();
+            if (closed_ || !p || AppState::get().fxEditOpen(slotId)) return;
+            editName_ = what;
+            AppState::get().beginFxEdit(slotId);
+        };
+        page_ = makeBuiltinPage(body_, builtinPageUid(plugin_->desc), host);
         if (!page_) {
             frame_->deleteLater();
             frame_ = nullptr;
@@ -4385,7 +4417,7 @@ public:
         AudioPlugin* plugin = app.fx.audio(s->id);
         if (!plugin) return "failed:" + id + ":" + app.fx.error(s->id);
         const bool editor = kHostPluginWindows && plugin->hasEditor() && !preferSliders && !editorFailed.count(s->id);
-        const bool page = !preferSliders && plugin->desc.format == "BUILTIN" && hasBuiltinPage(plugin->desc.uid);
+        const bool page = !preferSliders && hasBuiltinPage(builtinPageUid(plugin->desc));
         return (editor ? "audio-window:" : page ? "audio-page:" : "audio-sliders:") + id;
     }
 
@@ -4483,7 +4515,7 @@ public:
         if (s && s->kind == "audio")
             if (AudioPlugin* plugin = app.fx.audio(s->id)) {
                 if (kHostPluginWindows) choice = plugin->hasEditor() && !editorFailed.count(s->id);
-                if (plugin->desc.format == "BUILTIN" && hasBuiltinPage(plugin->desc.uid)) choice = true;
+                if (hasBuiltinPage(builtinPageUid(plugin->desc))) choice = true;
             }
         if (modeBtn->isHidden() == choice) modeBtn->setVisible(choice);
 

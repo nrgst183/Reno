@@ -145,6 +145,7 @@ if(RENO_WITH_APP AND TARGET reno_media)
     add_custom_command(TARGET reno POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:reno>/scripting "$<TARGET_FILE_DIR:reno>/Script Menu"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different ${RENO_SCRIPTING_FILES} $<TARGET_FILE_DIR:reno>/scripting
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/README.md $<TARGET_FILE_DIR:reno>
       VERBATIM)
 
     # Windows: Qt's and FFmpeg's DLLs next to reno.exe, so it runs from the build folder and the debugger

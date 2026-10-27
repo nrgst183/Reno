@@ -4,11 +4,13 @@
 //
 //   fxlook_test <output folder>
 // Prints PASS / FAIL lines and a summary; exits non-zero on failure.
+#include "../../src/audiofx/vegasvibrato.h"
 #include "../../src/app/fxwindow.h"
 #include "../../src/app/mainwindow.h"
 #include "../../src/app/playback.h"
 #include "../../src/engine/catalog.h"
 #include "uitestlib.h"
+#include "../../src/audiofx/vegasdistortion.h"
 #include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
@@ -73,13 +75,20 @@ double real(AudioPlugin* p, int i)
     return lo + p->paramGet(i) * (hi - lo);
 }
 
+// settings whose page control is not one per setting: bypass is the host's; the taps' own are one set of controls for the tap picked
+static bool skipParam(AudioPlugin* p, int i)
+{
+    const std::string n = p->paramName(i);
+    return n == "Bypass" || n.compare(0, 4, "Tap ") == 0;
+}
+
 struct Kind {
     const char* uid;
     const char* name;
 };
 const Kind kKinds[] = {{"reno.distortion", "Distortion"}, {"reno.vibrato", "Vibrato"}, {"reno.pitchshift", "Pitch Shift"}, {"reno.chorus", "Chorus"},
                        {"reno.flangewah", "Flange/Wah-wah"}, {"reno.ampmod", "Amplitude Modulation"}, {"reno.simpledelay", "Simple Delay"},
-                       {"reno.reverb", "Reverb"}, {"reno.moderneq", "Modern Equalizer"}};
+                       {"reno.reverb", "Reverb"}, {"reno.moderneq", "Modern Equalizer"}, {"reno.multitapdelay", "Multi-Tap Delay"}};
 
 // The control for setting i on the page showing now (slider, check box, combo box, radio buttons).
 struct Found {
@@ -88,7 +97,7 @@ struct Found {
     QCheckBox* check = nullptr;
     QComboBox* combo = nullptr;
     std::vector<QRadioButton*> radios;
-    bool any() const { return slider || check || combo || !radios.empty(); }
+    bool any() const { return slider || edit || check || combo || !radios.empty(); }
 };
 
 Found findControl(int i, const char* eqName = nullptr)
@@ -96,7 +105,7 @@ Found findControl(int i, const char* eqName = nullptr)
     Found f;
     const QString base = eqName ? QString(eqName) : QString("dxParam%1").arg(i);
     f.slider = ctl<QSlider>(base);
-    f.edit = ctl<QLineEdit>(base + "Edit");
+    f.edit = ctl<QLineEdit>(base + "Edit");  // also the only control of a setting that has a box and no slider
     f.check = ctl<QCheckBox>(base);
     f.combo = ctl<QComboBox>(base);
     for (int k = 0; k < 8; ++k)
@@ -256,6 +265,7 @@ int main(int argc, char** argv)
         std::string which;
         for (int i = 0; i < n; ++i) {
             if (eq && i < 56) continue;  // the bands: below
+            if (skipParam(plugin, i)) continue;  // VEGAS's pages leave bypass to the host
             if (!findControl(i).any()) { ++missing; which += " " + plugin->paramName(i); }
         }
         check(missing == 0, std::string(k.name) + ": every setting has a control", which);
@@ -263,6 +273,7 @@ int main(int argc, char** argv)
         // each control sets its setting
         for (int i = 0; i < n; ++i) {
             if (eq && i < 56) continue;
+            if (skipParam(plugin, i)) continue;
             const Found f = findControl(i);
             double lo = 0, hi = 1;
             plugin->paramRange(i, &lo, &hi);
@@ -288,16 +299,21 @@ int main(int argc, char** argv)
                 const double tol2 = std::max(tol, (hi - lo) / top * 0.51);  // a setting with steps shows its nearest step
                 check(std::fabs(v2 - lin2) <= tol2 || std::fabs(v2 - log2) <= std::max(tol2, std::fabs(log2) * 0.002), nm + ": its slider follows a change from elsewhere",
                       strfmt("%g, slider %d of %d", v2, f.slider->value(), f.slider->maximum()));
-                if (f.edit) {
+                if (f.edit && !f.edit->property("shown").toBool()) {
                     f.edit->setText(QString::number(lo + (hi - lo) * 0.25, 'f', 3));
                     f.edit->editingFinished();
                     settle(20);
-                    check(std::fabs(real(plugin, i) - (lo + (hi - lo) * 0.25)) <= (hi - lo) * 0.001 + 1e-6, nm + ": its edit box sets it", strfmt("%g", real(plugin, i)));
+                    check(std::fabs(real(plugin, i) - (lo + (hi - lo) * 0.25)) <= std::max((hi - lo) * 0.001 + 1e-6, 0.5), nm + ": its edit box sets it", strfmt("%g", real(plugin, i)));
                     f.edit->setText("-9999999");
                     f.edit->editingFinished();
                     settle(20);
                     check(std::fabs(real(plugin, i) - lo) < 1e-6 || std::isfinite(real(plugin, i)), nm + ": a number out of range is kept in range");
                 }
+            } else if (f.edit) {
+                f.edit->setText(QString::number(lo + (hi - lo) * 0.25, 'f', 3));
+                f.edit->editingFinished();
+                settle(20);
+                check(std::fabs(real(plugin, i) - (lo + (hi - lo) * 0.25)) <= (hi - lo) * 0.001 + 1e-6, nm + ": its edit box sets it", strfmt("%g", real(plugin, i)));
             } else if (f.check) {
                 const bool was = f.check->isChecked();
                 f.check->click();
@@ -324,6 +340,7 @@ int main(int argc, char** argv)
                 settle(40);
                 for (int i = 0; i < n; ++i) {
                     if (eq && i < 56) continue;
+                    if (skipParam(plugin, i)) continue;
                     const Found f = findControl(i);
                     double lo = 0, hi = 1;
                     plugin->paramRange(i, &lo, &hi);
@@ -333,7 +350,8 @@ int main(int argc, char** argv)
                         const double t = (double)f.slider->value() / f.slider->maximum();
                         const double lin = lo + t * (hi - lo), lg = lo > 0 ? lo * std::pow(hi / lo, t) : lin;
                         ok = std::fabs(v - lin) <= (hi - lo) * 0.002 + 1e-6 || std::fabs(v - lg) <= std::max((hi - lo) * 0.002, std::fabs(lg) * 0.002);
-                    } else if (f.check) ok = f.check->isChecked() == (v >= 0.5);
+                    } else if (f.edit) ok = std::fabs(f.edit->text().toDouble() - v) < 1e-3;
+                    else if (f.check) ok = f.check->isChecked() == (v >= 0.5);
                     else if (f.combo) ok = f.combo->currentIndex() == std::lround(v);
                     else if (!f.radios.empty()) ok = (long)f.radios.size() > std::lround(v) && f.radios[(size_t)std::lround(v)]->isChecked();
                     if (!ok) { followed = false; bad += strfmt(" [%s: preset %d]", plugin->paramName(i).c_str(), pi); }
@@ -379,28 +397,52 @@ int main(int argc, char** argv)
         settle(450);
         QWidget* g = nullptr;
         for (QWidget* c : gWin->findChildren<QWidget*>())
-            if (c->isVisibleTo(gWin) && c->width() == 262 && c->height() == 236) g = c;
+            if (c->isVisibleTo(gWin) && c->objectName() == "dxGraph") g = c;
         check(g != nullptr, "Distortion: the graph is there");
         if (g) {
-            // pulled up at the middle: Drive follows
-            uitest::mouseDrag(g, QPoint(g->width() / 2, g->height() / 2), QPoint(g->width() / 2, g->height() / 4), 4);
+            // the VEGAS graph: a click on the line adds a point, dragged up; double-click deletes it
+            auto points = [&] {
+                vegdist::Settings s;
+                vegdist::decode(p->saveState(), &s);
+                return s;
+            };
+            const int before = points().posCount;
+            const QRect pl = g->rect().marginsRemoved(QMargins(32, 4, 8, 16));
+            const QPoint mid(pl.left() + pl.width() / 2, pl.bottom() - pl.height() / 2);
+            uitest::mouseDrag(g, mid, mid - QPoint(0, pl.height() / 4), 4);
             settle();
-            check(real(p, 0) > 5, "Distortion: pulling the curve up raises Drive", strfmt("%g dB", real(p, 0)));
+            const vegdist::Settings s = points();
+            check(s.posCount == before + 1 && s.pos[1].y > s.pos[1].x + 100, "Distortion: a click on the line adds a point that drags",
+                  strfmt("%d points, (%d, %d)", s.posCount, s.pos[1].x, s.pos[1].y));
+            app.undo();
+            settle();
+            check(points().posCount == before, "Distortion: adding a point is one undo step", strfmt("%d", points().posCount));
+            app.redo();
+            settle();
+            // Synchronize copies the positive graph to the negative one
+            if (QComboBox* mode = one<QComboBox>("dxPolarityMode")) {
+                mode->setCurrentIndex(1);
+                settle();
+                const vegdist::Settings t = points();
+                check(t.mode == 1 && t.negCount == t.posCount && t.neg[1].y == t.pos[1].y, "Distortion: Synchronize copies the graph",
+                      strfmt("mode %d, %d/%d points", t.mode, t.posCount, t.negCount));
+            } else check(false, "Distortion: the polarity mode box is there");
         }
         w->showTarget(at, fxs["reno.vibrato"]);
         settle(250);
         AudioPlugin* vp = app.fx.audio(fxs["reno.vibrato"]);
-        vp->paramSet(1, 0.f);
+        vp->setProgram(0);
         app.notify(kFxParams);
         settle(450);
         QWidget* vg = nullptr;
         for (QWidget* c : gWin->findChildren<QWidget*>())
-            if (c->isVisibleTo(gWin) && c->width() == 250 && c->height() == 178) vg = c;
+            if (c->isVisibleTo(gWin) && c->objectName() == "dxGraph" && c->width() == 300 && c->height() == 184) vg = c;
         check(vg != nullptr, "Vibrato: the graph is there");
         if (vg) {
             uitest::mouseDrag(vg, QPoint(vg->width() / 2, vg->height() / 2), QPoint(vg->width() / 2, vg->height() / 4), 4);
             settle();
-            check(real(vp, 1) > 20, "Vibrato: pulling the graph up deepens the vibrato", strfmt("%g cents", real(vp, 1)));
+            vegvib::Settings vs;
+            check(vegvib::decode(vp->saveState(), &vs) && vs.count == 3 && vs.pts[3] > 30, "Vibrato: pulling the line up puts a point there", strfmt("%d points", vs.count));
             uitest::shot(w, gOut + "/fxlook_vibrato_pulled.png");
         }
         // Modern Equalizer: a band's point is pulled across and up

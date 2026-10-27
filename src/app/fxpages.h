@@ -18,6 +18,9 @@ struct DxHost {
     std::function<std::string(int)> name;                    // setting's name (for the undo step)
     std::function<void(int)> begin;                          // a drag starts: one undo step until end()
     std::function<void()> end;
+    std::function<std::string()> state;                      // the plug-in's saved form (pages with more than settings)
+    std::function<void(const std::string&, const std::string&)> setState;   // (saved form, undo name): one undo step unless a drag is open
+    std::function<void(const std::string&)> beginEdit;       // like begin(), with the undo step's name
 };
 
 class DxPage : public QWidget {

@@ -1,3 +1,5 @@
+<p align="center"><img src="resources/reno_256.png" width="128" alt="Reno logo"></p>
+
 # Reno
 
 A video editor that works like VEGAS Pro 18. It opens and saves `.veg` projects, uses the same menus and shortcuts,

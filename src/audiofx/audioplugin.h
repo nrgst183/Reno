@@ -130,6 +130,13 @@ std::unique_ptr<AudioPlugin> dxCreate(const AudioPluginDesc& desc, std::string* 
 std::vector<AudioPluginDesc> builtinAudioPlugins();
 std::unique_ptr<AudioPlugin> builtinAudioCreate(const AudioPluginDesc& desc, std::string* error);
 extern const char* const kBuiltinAudioVendor;
+// Reno's version of a VEGAS DirectX effect it reproduces exactly (now: Distortion), used for a "DX" slot when the
+// DirectX one cannot be made (not Windows, VEGAS not installed). The plug-in keeps the slot's DX description with
+// vendor kBuiltinAudioVendor. Empty uid: none.
+std::string builtinUidForDx(const std::string& dxUid);
+std::string dxUidForBuiltin(const std::string& builtinUid);     // the other way: "dshow:{...}" or ""
+// The built-in effect whose page shows this plug-in ("reno.distortion"...), or "" for one with no page.
+std::string builtinPageUid(const AudioPluginDesc& desc);
 
 // Reno's versions of VEGAS's MAGIX essentialFX effects (efx.h; Limiter, Compressor, Reverb, Tube Stage, Phaser,
 // Chorus/Flanger). The real ones are VST2 plug-ins that only run unrestricted inside VEGAS, so a slot whose VST2 id

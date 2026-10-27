@@ -50,6 +50,7 @@
 if exist "$(RenoFFmpegDir)\bin\avcodec*.dll" copy /y "$(RenoFFmpegDir)\bin\*.dll" "$(OutDir)." &gt;nul
 if not exist "$(OutDir)scripting" mkdir "$(OutDir)scripting"
 copy /y "$(RenoRoot)src\scripting\*.cs" "$(OutDir)scripting" &gt;nul
+copy /y "$(RenoRoot)README.md" "$(OutDir)." &gt;nul
 if not exist "$(OutDir)Script Menu" mkdir "$(OutDir)Script Menu"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>

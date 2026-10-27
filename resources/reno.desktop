@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Reno
+GenericName=Video Editor
+Comment=Edit VEGAS Pro projects
+Exec=reno %f
+Icon=reno
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;

@@ -1,4 +1,9 @@
 #include "audioplugin.h"
+#include "vegasdistortion.h"
+#include "vegas_trkfx.h"
+#include "vegaspack3.h"
+#include "vegasfx_pack2.h"
+#include "vegaspack1.h"
 #include <algorithm>
 #include <set>
 #include <cstdlib>
@@ -55,6 +60,42 @@ static bool isVst3Path(const std::string& path)
     return p.find(".vst3/contents/") != std::string::npos;
 }
 
+std::string builtinUidForDx(const std::string& dxUid)
+{
+    const std::string pack1 = vegpack1::uidForDx(dxUid);       // the sfppack1 effects (vegaspack1.cpp)
+    if (!pack1.empty()) return pack1;
+    {
+        const std::string p2 = pack2BuiltinForDx(toLower(dxUid));      // sfppack2 / sfresfilter effects (vegasfx_pack2.h)
+        if (!p2.empty()) return p2;
+    }
+    const std::string trk = vegtrk::builtinUidForDx(dxUid);       // Volume, Pan, Track EQ... (vegas_trkfx.h)
+    if (!trk.empty()) return trk;
+    if (toLower(dxUid).find(vegdist::kClsid) != std::string::npos) return "reno.distortion";
+    return vegpack3::builtinUidForDx(dxUid);        // Amplitude Modulation, Flange/Wah-wah, Gapper/Snipper, Smooth/Enhance, Vibrato
+}
+
+std::string dxUidForBuiltin(const std::string& builtinUid)
+{
+    const std::string pack1 = vegpack1::dxForUid(builtinUid);
+    if (!pack1.empty()) return pack1;
+    {
+        const std::string p2 = pack2DxForBuiltin(builtinUid);
+        if (!p2.empty()) return p2;
+    }
+    const std::string trk = vegtrk::dxUidForBuiltin(builtinUid);
+    if (!trk.empty()) return trk;
+    if (builtinUid == "reno.distortion") return vegdist::kDxUid;
+    const vegpack3::Entry* e = vegpack3::entryForBuiltin(builtinUid);
+    return e ? std::string(e->dxUid) : std::string();
+}
+
+std::string builtinPageUid(const AudioPluginDesc& desc)
+{
+    if (desc.format == "BUILTIN") return desc.uid;
+    if (desc.format == "DX" && desc.vendor == kBuiltinAudioVendor) return builtinUidForDx(desc.uid);
+    return std::string();
+}
+
 std::vector<AudioPluginDesc> describeAudioPluginFile(const std::string& path, std::string* error)
 {
     if (isVst3Path(path)) return vst3Describe(path, error);
@@ -67,7 +108,17 @@ std::unique_ptr<AudioPlugin> createAudioPlugin(const AudioPluginDesc& desc, std:
     if (desc.format == "VST2" && efxPreferBuiltin() && efxReproducedId(desc.uid)) return efxCreate(desc, error);
     if (desc.format == "VST2") return (desc.bridged32 || vst32Wanted(desc.path)) ? vst32Create(desc, error) : vst2Create(desc, error);
     if (desc.format == "VST3") return vst3Create(desc, error);
-    if (desc.format == "DX") return dxCreate(desc, error);
+    if (desc.format == "DX") {
+        const std::string mine = builtinUidForDx(desc.uid);
+        if (mine.empty()) return dxCreate(desc, error);
+        std::string dxError;
+        if (auto p = dxCreate(desc, &dxError)) return p;
+        AudioPluginDesc b = desc;
+        b.uid = mine;
+        auto p = builtinAudioCreate(b, error);
+        if (p) p->desc = desc, p->desc.vendor = kBuiltinAudioVendor;
+        return p;
+    }
     if (desc.format == "BUILTIN") return builtinAudioCreate(desc, error);
     if (error) *error = "unknown kind of audio plug-in: " + desc.format;
     return nullptr;
@@ -264,16 +315,22 @@ std::string audioPluginFileHint(const AudioPluginDesc& desc)
         {"28d9f1e0-6ecc-11d0-aebc-00a0c9053912", "sfppack1_x64.dll"},     // Chorus
         {"54f29260-79b1-11d0-aebc-00a0c9053912", "sfppack1_x64.dll"},     // Simple Delay
         {"8b7226ee-4584-11d1-b4cb-00a0c9270a10", "sfppack2_x64.dll"},     // Graphic EQ
+        {"b97c0f23-196d-11d1-b99b-00a0c9053912", "sfppack2_x64.dll"},     // Noise Gate
+        {"a8448720-96fd-11d0-aebc-00a0c9053912", "sfppack2_x64.dll"},     // Parametric EQ
         {"23c9f225-40ec-11d2-9d36-00c04f8edc1e", "sftrkfx1_x64.dll"},     // Track Compressor
         {"8cb69a0a-10e8-11d2-9b89-00104b8d13c2", "sftrkfx1_x64.dll"},     // Track EQ
         {"869419dd-501f-11d3-8cdc-00c04f6b8e4c", "sftrkfx1_x64.dll"},     // Track Noise Gate
         {"a6a78627-d619-48bf-ad26-0c6b44b5c7d8", "sfresfilter_x64.dll"},  // Resonant Filter
         {"ee38ca88-d78e-4bfb-b05e-577892730c83", "sffrgpnv_x64.dll"},     // Volume
+        {"eb6213db-08ff-4510-9f8d-3058b0ece4c6", "sffrgpnv_x64.dll"},     // Pan
+        {"260df3e1-ac77-11d2-9e93-00c04f68be44", "sftrkfx1_x64.dll"},     // Dither
         {"00000000-0f56-11d2-9887-00a0c969725b", "sfxpfx2_x64.dll"},      // ExpressFX Chorus
         {"00000001-0f56-11d2-9887-00a0c969725b", "sfxpfx2_x64.dll"},      // ExpressFX Delay
         {"00000003-0f56-11d2-9887-00a0c969725b", "sfxpfx2_x64.dll"},      // ExpressFX Equalization
         {"00000002-0f56-11d2-9887-00a0c969725b", "sfxpfx1_x64.dll"},      // ExpressFX Distortion
         {"00000006-0f56-11d2-9887-00a0c969725b", "sfxpfx1_x64.dll"},      // ExpressFX Reverb
+        {"00000004-0f56-11d2-9887-00a0c969725b", "sfxpfx1_x64.dll"},      // ExpressFX Flange/Wah-Wah
+        {"00000007-0f56-11d2-9887-00a0c969725b", "sfxpfx1_x64.dll"},      // ExpressFX Stutter
         {"00000009-0f56-11d2-9887-00a0c969725b", "sfxpfx3_x64.dll"},      // ExpressFX Graphic EQ
     };
     if (desc.format == "DX") {

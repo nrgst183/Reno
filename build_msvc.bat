@@ -34,6 +34,7 @@ for %%p in (av sw postproc) do if exist "%FFDIR%\bin\%%p*.dll" copy /Y "%FFDIR%\
 rem Tools > Scripting: the ScriptPortal.Vegas source (compiled on first use) and an empty Script Menu folder
 if not exist build\out\scripting mkdir build\out\scripting
 copy /Y src\scripting\*.cs build\out\scripting\ >nul
+copy /Y README.md build\out\ >nul
 if not exist "build\out\Script Menu" mkdir "build\out\Script Menu"
 echo.
 echo Built: build\out\reno.exe
