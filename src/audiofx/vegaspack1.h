@@ -37,7 +37,7 @@ struct ParamDesc {
     int slot;
     int scale;
     Kind kind;
-    const char* choices;             // Choice: names separated by commas (Dbl: a double kept in slot and slot + 1, 'scale' unused)
+    const char* choices;             // Choice: names separated by commas (Dbl: a double kept in slot and slot + 1; the setting is that double divided by 'scale')
     int decimals;                    // digits shown after the point
     bool infAtMin;                   // the lowest value reads "-Inf."
     const char* atMaxText = nullptr; // the highest value reads this instead of its number ("Inf.:1")
@@ -58,6 +58,14 @@ public:
     // Frames the sound comes out later than it went in with these settings (an effect that holds the sound back); the host
     // plays the track earlier by as much. Asked before the engine has seen the settings.
     virtual int latency(const int32_t* settings, uint32_t sampleRate) const { (void)settings; (void)sampleRate; return 0; }
+    // Effects that make the sound longer or shorter (AudioPlugin::processWhole): a fresh engine, just set up, takes the
+    // whole sound and gives everything it delivers.
+    virtual bool changesLength(const int32_t* settings) const { (void)settings; return false; }
+    virtual bool whole(const float* inL, const float* inR, int64_t frames, std::vector<float>& outL, std::vector<float>& outR)
+    {
+        (void)inL; (void)inR; (void)frames; (void)outL; (void)outR;
+        return false;
+    }
 };
 
 struct Info {

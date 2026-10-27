@@ -3,14 +3,15 @@
 //   1. the matrix, in the frame as it lies in memory (bottom row first, x across, y up): offsets (Horizontal / Vertical: half the setting in frame widths / heights, the other view
 //      the other way), Zoom (left view scale 1 - Zoom / 2 about the middle), Keystone (frame corners moved up and down, a perspective transform through four point pairs),
 //      Rotation (Rotation / -365 * 3.141592654 about the middle), each multiplied in on the right;
-//   2. the crop: a scale about a point (the other view's x and this view's y of the middle's image) by 1 + the crop. Automatic: for both views the segments from the other
-//      view's middle to the frame's corners are cut with the edges of the transformed frame (Graphics Gems' segment intersection, rounding half a unit away from zero); the part
+//   2. the crop: a scale about a point (x from the left view's inverse matrix applied to the middle, y from the other view's; the flips are in those matrices) by 1 + the crop. Automatic: for both views the segments from the
+//      view's own middle (its inverse matrix applied to the middle) to the frame's corners are cut with the edges of the transformed frame (Graphics Gems' segment intersection, rounding half a unit away from zero); the part
 //      from the corner to the cut over the part from the cut to the middle is the crop wanted at that corner; the largest of the eight is taken (times 1 + 1.4 |Keystone|);
 //   3. no Keystone and no Rotation: the frame is a rectangle drawn by VEGAS's 14-bit fixed point bilinear stretch (edge pixels by coverage), the middle pixels two at a time in
 //      16-bit steps; otherwise OpenCV 2.1's warpPerspective (INTER_LINEAR, constant border: 5 bit places, 15 bit weights; transparent outside);
 //   4. the Left floating window: black over the columns of that part of the width.
 // The flips are done to the source picture first.
 #include "builtins_mask_internal.h"
+#include "vkfilters.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -65,6 +66,28 @@ void mApply(const Mat3& m, double x, double y, double& ox, double& oy)
 
 // The perspective transform that takes four points (single-precision, as VEGAS gives them) to four others: the eight unknowns of
 // OpenCV's getPerspectiveTransform (the last element 1), by Gaussian elimination with pivoting.
+Mat3 mInverse(const Mat3& a)
+{
+    const double (*m)[3] = a.m;
+    const double c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+    const double c01 = m[1][2] * m[2][0] - m[1][0] * m[2][2];
+    const double c02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+    const double det = m[0][0] * c00 + m[0][1] * c01 + m[0][2] * c02;
+    Mat3 r = mIdent();
+    if (det == 0) return r;
+    const double id = 1.0 / det;
+    r.m[0][0] = c00 * id;
+    r.m[0][1] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * id;
+    r.m[0][2] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * id;
+    r.m[1][0] = c01 * id;
+    r.m[1][1] = (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * id;
+    r.m[1][2] = (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * id;
+    r.m[2][0] = c02 * id;
+    r.m[2][1] = (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * id;
+    r.m[2][2] = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * id;
+    return r;
+}
+
 Mat3 mPerspective(const double src[4][2], const double dst[4][2])
 {
     double a[8][9];
@@ -124,9 +147,10 @@ bool segIntersect(const double* p1, const double* p2, const double* p3, const do
 
 // The left view's matrix (memory coordinates) with its crop; b the other view's, built the same way.
 struct StereoMats {
-    Mat3 a;
+    Mat3 a;   // without the flips (the picture is flipped first)
+    Mat3 af;  // with the flips in it (x -> W - x, y -> H - y), for the unflipped picture
 };
-StereoMats stereoMatrix(double W, double H, double hz, double vt, double zoom, double key, double rot, bool autoCrop, double crop)
+StereoMats stereoMatrix(double W, double H, double hz, double vt, double zoom, double key, double rot, int flipHc, int flipVc, bool autoCrop, double crop)
 {
     Mat3 A = mIdent(), B = mIdent();
     if (hz != 0) {
@@ -158,16 +182,26 @@ StereoMats stereoMatrix(double W, double H, double hz, double vt, double zoom, d
         A = mMul(mMul(mMul(A, mTrans(W / 2, H / 2)), Ra), mTrans(-W / 2, -H / 2));
         B = mMul(mMul(mMul(B, mTrans(W / 2, H / 2)), Rb), mTrans(-W / 2, -H / 2));
     }
+    // the real code multiplies the flips in last (x -> W - x, y -> H - y; view A for 1 and 3, view B for 2 and 3) and the crop is worked out with them in
+    // the matrices; here the picture is flipped before the matrix, so the crop's point is mirrored back and the flips are left out of the returned matrix
+    const bool fAx = flipHc == 1 || flipHc == 3, fBx = flipHc == 2 || flipHc == 3, fAy = flipVc == 1 || flipVc == 3, fBy = flipVc == 2 || flipVc == 3;
+    Mat3 Af = A, Bf = B;
+    if (fAx) { Mat3 F = mIdent(); F.m[0][0] = -1; F.m[0][2] = W; Af = mMul(Af, F); }
+    if (fBx) { Mat3 F = mIdent(); F.m[0][0] = -1; F.m[0][2] = W; Bf = mMul(Bf, F); }
+    if (fAy) { Mat3 F = mIdent(); F.m[1][1] = -1; F.m[1][2] = H; Af = mMul(Af, F); }
+    if (fBy) { Mat3 F = mIdent(); F.m[1][1] = -1; F.m[1][2] = H; Bf = mMul(Bf, F); }
     if (crop != 0 || autoCrop) {
-        double cA[2], cB[2];
-        mApply(A, W / 2, H / 2, cA[0], cA[1]);
-        mApply(B, W / 2, H / 2, cB[0], cB[1]);
+        double iA[2], iB[2];
+        const Mat3 Ainv = mInverse(Af), Binv = mInverse(Bf);
+        mApply(Ainv, W / 2, H / 2, iA[0], iA[1]);
+        mApply(Binv, W / 2, H / 2, iB[0], iB[1]);
         double zc;
         if (autoCrop) {
             double best = 0.0;
             bool any = false;
-            const Mat3* ms[2] = {&A, &B};
-            const double* cs[2] = {cB, cA};
+            // each view: its own frame's corners through its matrix, cut by segments from the middle of the frame pushed through the inverse of that matrix
+            const Mat3* ms[2] = {&Af, &Bf};
+            const double* cs[2] = {iA, iB};
             const double corners[4][2] = {{0, 0}, {W, 0}, {W, H}, {0, H}};
             for (int v = 0; v < 2; ++v) {
                 double q[4][2];
@@ -191,10 +225,16 @@ StereoMats stereoMatrix(double W, double H, double hz, double vt, double zoom, d
             zc = crop;
         }
         const double s = 1 + zc;
-        A = mMul(mMul(mMul(A, mTrans(cB[0], cA[1])), mScale(s)), mTrans(-cB[0], -cA[1]));
+        // the scale is about (x of A's inverse middle, y of B's inverse middle), in the source picture
+        double px = iA[0], py = iB[1];
+        if (fAx) px = W - px;
+        if (fAy) py = H - py;
+        A = mMul(mMul(mMul(A, mTrans(px, py)), mScale(s)), mTrans(-px, -py));
+        Af = mMul(mMul(mMul(Af, mTrans(iA[0], iB[1])), mScale(s)), mTrans(-iA[0], -iB[1]));
     }
     StereoMats r;
     r.a = A;
+    r.af = Af;
     return r;
 }
 
@@ -226,11 +266,19 @@ i64 floor14(i64 v) { return (v & ~(i64)0x3fff) >> 14; }
 // a * b / 16384 the way VEGAS has it: the doubles' product times 2^-14, cut to a whole number
 i64 mulStep(i64 v, i64 st) { return (i64)((double)v * (double)st * 6.103515625e-05); }
 
-// VEGAS's stretch of a whole picture into the rectangle dR (x0, y0, x1, y1 in 1/16384 pixels, rows from the top) of dst: bilinear in
-// 14-bit fixed point, the edge pixels mixed in by the part of them the rectangle covers; false when either is too small to draw.
-bool stretch8(Pic8& dst, const Pic8& src, const i64* dR)
+// Where each pixel of the result takes its colour from. kind 0: nothing is drawn; 1 and 2: the stretch's bilinear sample (1: the plain one, 2: the two-at-a-time one) of the texels
+// (x0, y0), (x1, y0), (x0, y1), (x1, y1) with the 14-bit fractions fx, fy, mixed in by the coverage cov (0..255); 3: OpenCV's warp, texel (x0, y0) and the 5-bit fractions fx, fy
+// (the texels outside the picture are nothing).
+struct Tap {
+    int kind = 0;
+    int x0 = 0, x1 = 0, y0 = 0, y1 = 0, fx = 0, fy = 0, cov = 0;
+};
+
+// VEGAS's stretch of a whole picture (W x H) into the rectangle dR (x0, y0, x1, y1 in 1/16384 pixels, rows from the top): bilinear in
+// 14-bit fixed point, the edge pixels mixed in by the part of them the rectangle covers; the taps of the pixels it draws. False when either is too small to draw.
+bool stretchTaps(int W, int H, const i64* dR, std::vector<Tap>& taps)
 {
-    const int dh = dst.h, dw = dst.w, sh = src.h, sw = src.w;
+    const int dh = H, dw = W, sh = H, sw = W;
     const i64 sFull[4] = {0, 0, (i64)sw << 14, (i64)sh << 14}, dFull[4] = {0, 0, (i64)dw << 14, (i64)dh << 14};
     i64 cs[4];
     inter(sFull, sFull, cs);
@@ -278,36 +326,19 @@ bool stretch8(Pic8& dst, const Pic8& src, const i64* dR)
         }
         if (nX > 2) xpos[(size_t)nX - 1] = xpos[(size_t)nX - 2] + mulStep(covX1, sx);
     }
-    auto pxl = [&](i64 y, i64 x) -> const uint8_t* {
-        const i64 yy = y < 0 ? 0 : (y >= sh ? sh - 1 : y), xx = x < 0 ? 0 : (x >= sw ? sw - 1 : x);
-        return src.at((int)xx, (int)yy);
-    };
-    auto sample = [&](i64 y14, i64 x14, int* out) {
-        const i64 yi = y14 >> 14, fy = y14 & 0x3fff, xi = x14 >> 14, fx = x14 & 0x3fff;
+    auto clampc = [](i64 v, int n) -> int { return (int)(v < 0 ? 0 : (v >= n ? n - 1 : v)); };
+    auto tapOf = [&](i64 y14, i64 x14, int kind) {
+        Tap t;
+        const i64 yi = y14 >> 14, xi = x14 >> 14;
         const i64 yb = yi + (yi != lastR - 1 ? 1 : 0), xb = xi + (xi != lastC - 1 ? 1 : 0);
-        const i64 w00 = ((16384 - fy) * (16384 - fx)) >> 4, w01 = ((16384 - fy) * fx) >> 4, w10 = ((16384 - fx) * fy) >> 4, w11 = (fx * fy) >> 4;
-        const uint8_t *p00 = pxl(yi, xi), *p01 = pxl(yi, xb), *p10 = pxl(yb, xi), *p11 = pxl(yb, xb);
-        for (int c = 0; c < 4; ++c) out[c] = (int)((p00[c] * w00 + p01[c] * w01 + p10[c] * w10 + p11[c] * w11 + 0x800000) >> 24);
-    };
-    auto sampleSimd = [&](i64 y14, i64 x14, int* out) {
-        const i64 yi = y14 >> 14, fy = y14 & 0x3fff, xi = x14 >> 14, fx = x14 & 0x3fff;
-        const i64 yb = yi + (yi != lastR - 1 ? 1 : 0), xb = xi + (xi != lastC - 1 ? 1 : 0);
-        const i64 A = ((0x3fff - fy) << 2) & 0xffff, B = (fy << 2) & 0xffff;
-        const i64 w0 = ((0x3fff - fx) * A) >> 16, w1 = (fx * A) >> 16, w2 = ((0x3fff - fx) * B) >> 16, w3 = (fx * B) >> 16;
-        const uint8_t *p00 = pxl(yi, xi), *p01 = pxl(yi, xb), *p10 = pxl(yb, xi), *p11 = pxl(yb, xb);
-        for (int c = 0; c < 4; ++c) {
-            auto t = [](i64 p, i64 w) { return (p * 32 * w) >> 16; };
-            i64 r = t(p10[c], w2) + 4;
-            if (r > 65535) r = 65535;
-            r += t(p11[c], w3);
-            if (r > 65535) r = 65535;
-            i64 q = t(p01[c], w1) + t(p00[c], w0);
-            if (q > 65535) q = 65535;
-            r += q;
-            if (r > 65535) r = 65535;
-            r >>= 3;
-            out[c] = (int)(r > 255 ? 255 : r);
-        }
+        t.kind = kind;
+        t.fx = (int)(x14 & 0x3fff);
+        t.fy = (int)(y14 & 0x3fff);
+        t.x0 = clampc(xi, sw);
+        t.x1 = clampc(xb, sw);
+        t.y0 = clampc(yi, sh);
+        t.y1 = clampc(yb, sh);
+        return t;
     };
     const i64 simdCols = (nX - 2) / 2 * 2;
     for (i64 r = 0; r < nY; ++r) {
@@ -325,24 +356,19 @@ bool stretch8(Pic8& dst, const Pic8& src, const i64* dR)
             const i64 cc = k == 0 ? covX0 : (k == nX - 1 && nX > 1 ? covX1 : 0x4000);
             int a = (int)((double)rc * (double)cc * 6.103515625e-05) * 255;
             a = a >= 0 ? (a + ((a >> 31) & 0x3fff)) >> 14 : -((-a) >> 14);
-            int v[4];
-            if (simdRow && k >= 1 && k <= nX - 2 && k - 1 < simdCols) sampleSimd(y, x, v);
-            else sample(y, x, v);
-            uint8_t* d = dst.at((int)(X0 + k), (int)(Y0 + r));
-            for (int c = 0; c < 4; ++c) {
-                const int xx = (v[c] - d[c]) * a + 128;
-                int m = d[c] + ((xx + (xx >> 8)) >> 8);
-                d[c] = (uint8_t)(m < 0 ? 0 : (m > 255 ? 255 : m));
-            }
+            Tap t = tapOf(y, x, simdRow && k >= 1 && k <= nX - 2 && k - 1 < simdCols ? 2 : 1);
+            t.cov = a;
+            taps[(size_t)(Y0 + r) * W + (size_t)(X0 + k)] = t;
         }
     }
     return true;
 }
 
-// OpenCV 2.1's warpPerspective (linear, constant border 0) of the picture (rows in memory order) by the forward matrix m.
-void warpPerspective8(const Pic8& src, Pic8& dst, const Mat3& m)
+
+// OpenCV 2.1's warpPerspective (linear, constant border 0) by the forward matrix m: the taps of every pixel (the picture's rows are in memory order, from the bottom;
+// the taps are given for the rows from the top).
+void warpTaps(int W, int H, const Mat3& m, std::vector<Tap>& taps)
 {
-    const int W = dst.w, H = dst.h;
     const double (*S)[3] = m.m;
     const double det = S[0][0] * (S[1][1] * S[2][2] - S[1][2] * S[2][1]) - S[0][1] * (S[1][0] * S[2][2] - S[1][2] * S[2][0]) +
                        S[0][2] * (S[1][0] * S[2][1] - S[1][1] * S[2][0]);
@@ -358,7 +384,6 @@ void warpPerspective8(const Pic8& src, Pic8& dst, const Mat3& m)
     M[6] = (S[1][0] * S[2][1] - S[1][1] * S[2][0]) * d;
     M[7] = (S[0][1] * S[2][0] - S[0][0] * S[2][1]) * d;
     M[8] = (S[0][0] * S[1][1] - S[0][1] * S[1][0]) * d;
-    const int sw = src.w, sh = src.h;
     for (int y = 0; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
             const double X0 = M[0] * x + M[1] * y + M[2], Y0 = M[3] * x + M[4] * y + M[5], W0 = M[6] * x + M[7] * y + M[8];
@@ -368,47 +393,79 @@ void warpPerspective8(const Pic8& src, Pic8& dst, const Mat3& m)
             fY = std::max(-2147483648.0, std::min(2147483647.0, fY));
             const int X = (int)std::nearbyint(fX), Y = (int)std::nearbyint(fY);
             const int xi = X >> 5, yi = Y >> 5, ax = X & 31, ay = Y & 31;
-            const int w00 = (32 - ay) * (32 - ax) * 32, w01 = (32 - ay) * ax * 32, w10 = ay * (32 - ax) * 32, w11 = ay * ax * 32;
-            uint8_t* o = dst.at(x, y);
-            for (int c = 0; c < 4; ++c) {
-                auto px = [&](int yy, int xx) -> int { return (xx >= 0 && xx < sw && yy >= 0 && yy < sh) ? src.at(xx, yy)[c] : 0; };
-                const int acc = px(yi, xi) * w00 + px(yi, xi + 1) * w01 + px(yi + 1, xi) * w10 + px(yi + 1, xi + 1) * w11;
-                o[c] = (uint8_t)((acc + 16384) >> 15);
-            }
+            Tap t;
+            t.kind = 3;
+            // (the texels far outside are all nothing; the numbers stay small)
+            auto lim = [](int v, int n) { return v < -2 ? -2 : (v > n + 1 ? n + 1 : v); };
+            t.x0 = lim(xi, W);
+            t.x1 = lim(xi + 1, W);
+            t.y0 = H - 1 - lim(yi, H);
+            t.y1 = H - 1 - lim(yi + 1, H);
+            t.fx = ax;
+            t.fy = ay;
+            taps[(size_t)(H - 1 - y) * W + x] = t;
         }
     }
 }
 
-}  // namespace
 
-void vegasStereo3dAdjust(Ctx& c)
+// The colour of channel c a tap gives (before the coverage), from the 8-bit picture (rows from the top)
+int tapValue(const Pic8& src, const Tap& t, int c)
 {
-    const int W = c.out.w, H = c.out.h;
-    if (W <= 1 || H <= 1) {
-        c.out.px = c.src.px;
-        return;
+    if (t.kind == 1) {
+        const i64 fy = t.fy, fx = t.fx;
+        const i64 w00 = ((16384 - fy) * (16384 - fx)) >> 4, w01 = ((16384 - fy) * fx) >> 4, w10 = ((16384 - fx) * fy) >> 4, w11 = (fx * fy) >> 4;
+        const i64 p00 = src.at(t.x0, t.y0)[c], p01 = src.at(t.x1, t.y0)[c], p10 = src.at(t.x0, t.y1)[c], p11 = src.at(t.x1, t.y1)[c];
+        return (int)((p00 * w00 + p01 * w01 + p10 * w10 + p11 * w11 + 0x800000) >> 24);
     }
+    if (t.kind == 2) {
+        const i64 fy = t.fy, fx = t.fx;
+        const i64 A = ((0x3fff - fy) << 2) & 0xffff, B = (fy << 2) & 0xffff;
+        const i64 w0 = ((0x3fff - fx) * A) >> 16, w1 = (fx * A) >> 16, w2 = ((0x3fff - fx) * B) >> 16, w3 = (fx * B) >> 16;
+        const i64 p00 = src.at(t.x0, t.y0)[c], p01 = src.at(t.x1, t.y0)[c], p10 = src.at(t.x0, t.y1)[c], p11 = src.at(t.x1, t.y1)[c];
+        auto tt = [](i64 p, i64 w) { return (p * 32 * w) >> 16; };
+        i64 r = tt(p10, w2) + 4;
+        if (r > 65535) r = 65535;
+        r += tt(p11, w3);
+        if (r > 65535) r = 65535;
+        i64 q = tt(p01, w1) + tt(p00, w0);
+        if (q > 65535) q = 65535;
+        r += q;
+        if (r > 65535) r = 65535;
+        r >>= 3;
+        return (int)(r > 255 ? 255 : r);
+    }
+    // kind 3: OpenCV's weights; the texels outside the picture are nothing
+    const int ax = t.fx, ay = t.fy;
+    const int w00 = (32 - ay) * (32 - ax) * 32, w01 = (32 - ay) * ax * 32, w10 = ay * (32 - ax) * 32, w11 = ay * ax * 32;
+    auto px = [&](int yy, int xx) -> int { return (xx >= 0 && xx < src.w && yy >= 0 && yy < src.h) ? src.at(xx, yy)[c] : 0; };
+    const int acc = px(t.y0, t.x0) * w00 + px(t.y0, t.x1) * w01 + px(t.y1, t.x0) * w10 + px(t.y1, t.x1) * w11;
+    return (acc + 16384) >> 15;
+}
+
+// Everything about the picture that does not depend on its colours: the taps of every pixel and the floating window's columns
+struct StereoTaps {
+    std::vector<Tap> taps;
+    bool stretchPath = false, flipH = false, flipV = false;
+    int full = 0, part = 0;
+};
+
+bool stereoTaps(Ctx& c, int W, int H, StereoTaps& out)
+{
+    if (W <= 1 || H <= 1) return false;
     const double hz = clampd(c.d("Horizontal"), -1, 1), vt = clampd(c.d("Vertical"), -1, 1), zoom = clampd(c.d("Zoom"), -0.95, 10);
     const double key = clampd(c.d("Keystone"), -1, 1), rot = clampd(c.d("Rotation"), -180, 180);
     const int fhc = c.i("FlipHorizontal"), fvc = c.i("FlipVertical");
-    const bool flipH = fhc == 1 || fhc == 3, flipV = fvc == 1 || fvc == 3;
+    out.flipH = fhc == 1 || fhc == 3;
+    out.flipV = fvc == 1 || fvc == 3;
     const bool autoCrop = c.b("AutoCrop");
     const double crop = clampd(c.d("Crop"), 0, 0.5);
     const double fw = clampd(c.d("FloatingWindowLeft"), 0, 0.5);
-    const StereoMats sm = stereoMatrix(W, H, hz, vt, zoom, key, rot, autoCrop, crop);
-    Pic8 src, dst;
-    src.make(W, H);
-    dst.make(W, H);
-    for (int y = 0; y < H; ++y) {
-        const int sy = flipV ? H - 1 - y : y;
-        for (int x = 0; x < W; ++x) {
-            const int sx = flipH ? W - 1 - x : x;
-            const float* p = c.src.at(sx, sy);
-            uint8_t* q = src.at(x, y);
-            for (int k = 0; k < 4; ++k) q[k] = (uint8_t)std::nearbyint(std::min(1.f, std::max(0.f, p[k])) * 255.f);
-        }
-    }
-    if (key == 0 && rot == 0) {
+    const StereoMats sm = stereoMatrix(W, H, hz, vt, zoom, key, rot, fhc, fvc, autoCrop, crop);
+    out.taps.assign((size_t)W * H, Tap());
+    // the rectangle (no Keystone, no Rotation) is drawn from the flipped picture; the warp has the flips in its matrix
+    out.stretchPath = key == 0 && rot == 0;
+    if (out.stretchPath) {
         double x0, y0, x1, y1;
         mApply(sm.a, 0, 0, x0, y0);
         mApply(sm.a, W, H, x1, y1);
@@ -416,19 +473,54 @@ void vegasStereo3dAdjust(Ctx& c)
         i64 dR[4] = {(i64)(x0 * 16384), (i64)(((double)H - y1) * 16384), (i64)(x1 * 16384), (i64)(((double)H - y0) * 16384)};
         if (dR[0] > dR[2]) std::swap(dR[0], dR[2]);
         if (dR[1] > dR[3]) std::swap(dR[1], dR[3]);
-        stretch8(dst, src, dR);
+        stretchTaps(W, H, dR, out.taps);
     } else {
-        // in memory order (bottom row first)
-        Pic8 ms, md;
-        ms.make(W, H);
-        md.make(W, H);
-        for (int m = 0; m < H; ++m) std::memcpy(ms.at(0, m), src.at(0, H - 1 - m), (size_t)W * 4);
-        warpPerspective8(ms, md, sm.a);
-        for (int m = 0; m < H; ++m) std::memcpy(dst.at(0, H - 1 - m), md.at(0, m), (size_t)W * 4);
+        warpTaps(W, H, sm.af, out.taps);
     }
     const double fcols = fw * W;
-    const int full = (int)fcols;
-    const int part = (int)((fcols - full) * 255.0 + 0.5);
+    out.full = (int)fcols;
+    out.part = (int)((fcols - out.full) * 255.0 + 0.5);
+    return true;
+}
+
+}  // namespace
+
+void vegasStereo3dAdjust(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    StereoTaps st;
+    if (!stereoTaps(c, W, H, st)) {
+        c.out.px = c.src.px;
+        return;
+    }
+    Pic8 src, dst;
+    src.make(W, H);
+    dst.make(W, H);
+    for (int y = 0; y < H; ++y) {
+        const int sy = st.flipV && st.stretchPath ? H - 1 - y : y;
+        for (int x = 0; x < W; ++x) {
+            const int sx = st.flipH && st.stretchPath ? W - 1 - x : x;
+            const float* p = c.src.at(sx, sy);
+            uint8_t* q = src.at(x, y);
+            for (int k = 0; k < 4; ++k) q[k] = (uint8_t)std::nearbyint(std::min(1.f, std::max(0.f, p[k])) * 255.f);
+        }
+    }
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            const Tap& t = st.taps[(size_t)y * W + x];
+            if (t.kind == 0) continue;
+            uint8_t* d = dst.at(x, y);
+            for (int k = 0; k < 4; ++k) {
+                int v = tapValue(src, t, k);
+                if (t.kind != 3) {                              // mixed in by the coverage (over nothing)
+                    const int xx = v * t.cov + 128;
+                    v = (xx + (xx >> 8)) >> 8;
+                    v = v < 0 ? 0 : (v > 255 ? 255 : v);
+                }
+                d[k] = (uint8_t)v;
+            }
+        }
+    const int full = st.full, part = st.part;
     for (int y = 0; y < H; ++y) {
         uint8_t* row = dst.at(0, y);
         for (int x = 0; x < full && x < W; ++x) {
@@ -446,6 +538,31 @@ void vegasStereo3dAdjust(Ctx& c)
         float* o = c.out.at(0, y);
         for (int i = 0; i < W * 4; ++i) o[i] = (float)q[i] / 255.f;
     }
+}
+
+// For the GPU (vkfilters.cpp): 8 floats a pixel (kind, x0, x1, y0, y1, fx, fy, coverage) with the picture's flips in the texel positions, and the floating window's columns.
+// False where the effect copies the picture.
+bool stereoTapsGpu(Ctx& c, int W, int H, std::vector<float>& rec, unsigned& full, unsigned& part)
+{
+    StereoTaps st;
+    if (!stereoTaps(c, W, H, st)) return false;
+    rec.assign((size_t)W * H * 8, 0.f);
+    for (size_t i = 0; i < st.taps.size(); ++i) {
+        const Tap& t = st.taps[i];
+        float* r = &rec[i * 8];
+        r[0] = (float)t.kind;
+        const bool fx = st.flipH && st.stretchPath, fy = st.flipV && st.stretchPath;
+        r[1] = (float)(fx ? W - 1 - t.x0 : t.x0);
+        r[2] = (float)(fx ? W - 1 - t.x1 : t.x1);
+        r[3] = (float)(fy ? H - 1 - t.y0 : t.y0);
+        r[4] = (float)(fy ? H - 1 - t.y1 : t.y1);
+        r[5] = (float)t.fx;
+        r[6] = (float)t.fy;
+        r[7] = (float)t.cov;
+    }
+    full = (unsigned)std::max(0, st.full);
+    part = (unsigned)std::max(0, st.part);
+    return true;
 }
 
 }  // namespace builtin

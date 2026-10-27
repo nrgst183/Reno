@@ -6,8 +6,10 @@
 //
 // The shapes are drawn and edited on the preview (builtins_mask_overlay.cpp) while Edit Mode is on for a mask.
 #include "builtins_mask_internal.h"
+#include "builtins_deriche.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace reno {
@@ -97,19 +99,141 @@ void fillPolygonCoverage(const std::vector<double>& xy, int w, int h, std::vecto
     }
 }
 
+
+// ------------------------------------------------------------------ VEGAS's coverage of a Bezier outline
+namespace {
+
+struct Crossing {
+    double x;
+    int dir;
+};
+
+// The outline's crossings with the horizontal line y (pixels, from the bottom): each monotone piece of every cubic, half open (low <= y < high), the curve solved exactly.
+void outlineCrossings(const std::vector<double>& cp, double y, std::vector<Crossing>& out)
+{
+    out.clear();
+    for (size_t i = 0; i + 8 <= cp.size(); i += 8) {
+        const double x0 = cp[i], y0 = cp[i + 1], x1 = cp[i + 2], y1 = cp[i + 3], x2 = cp[i + 4], y2 = cp[i + 5], x3 = cp[i + 6], y3 = cp[i + 7];
+        if (x1 == x0 && y1 == y0 && x2 == x3 && y2 == y3) {            // straight
+            const double lo = std::min(y0, y3), hi = std::max(y0, y3);
+            if (lo <= y && y < hi) out.push_back({x0 + (x3 - x0) * ((y - y0) / (y3 - y0)), y3 > y0 ? 1 : -1});
+            continue;
+        }
+        // y(t) = ((a t + b) t + c) t + d; its turning points cut [0, 1] into monotone pieces
+        const double a = -y0 + 3 * y1 - 3 * y2 + y3, b = 3 * y0 - 6 * y1 + 3 * y2, c = -3 * y0 + 3 * y1;
+        double ts[4] = {0, 0, 0, 1};
+        int nt = 1;
+        const double qa = 3 * a, qb = 2 * b, qc = c;
+        if (std::fabs(qa) > 1e-12) {
+            const double disc = qb * qb - 4 * qa * qc;
+            if (disc > 0) {
+                const double sq = std::sqrt(disc);
+                double r1 = (-qb - sq) / (2 * qa), r2 = (-qb + sq) / (2 * qa);
+                if (r1 > r2) std::swap(r1, r2);
+                if (r1 > 0 && r1 < 1) ts[nt++] = r1;
+                if (r2 > 0 && r2 < 1) ts[nt++] = r2;
+            }
+        } else if (std::fabs(qb) > 1e-12) {
+            const double r = -qc / qb;
+            if (r > 0 && r < 1) ts[nt++] = r;
+        }
+        ts[nt++] = 1.0;
+        auto Y = [&](double t) { return ((a * t + b) * t + c) * t + y0; };
+        auto X = [&](double t) {
+            const double u = 1 - t;
+            return u * u * u * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x3;
+        };
+        for (int k = 0; k + 1 < nt; ++k) {
+            double ta = ts[k], tb = ts[k + 1];
+            const double ya = k == 0 ? y0 : Y(ta), yb = k + 2 == nt ? y3 : Y(tb);
+            const double lo = std::min(ya, yb), hi = std::max(ya, yb);
+            if (!(lo <= y && y < hi)) continue;
+            const bool up = yb > ya;
+            double l = ta, h = tb;
+            for (int it = 0; it < 80; ++it) {
+                const double m = 0.5 * (l + h);
+                if ((Y(m) < y) == up) l = m; else h = m;
+            }
+            out.push_back({X(0.5 * (l + h)), up ? 1 : -1});
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const Crossing& p, const Crossing& q) { return p.x < q.x; });
+}
+
+}  // namespace
+
+// VEGAS draws a mask's outline (cubics, exactly) with sixteen scanlines to a pixel row, each sampled in the middle of its sixteenth; the part of a pixel a scanline's inside covers is exact
+// across, and the sixteen are averaged. 'path' is placed (fractions of the frame, y up).
+void fillBezierCoverage(const BezPath& path, int W, int H, std::vector<float>& cover)
+{
+    cover.assign((size_t)W * H, 0.f);
+    const size_t n = path.pts.size();
+    if (n < 2 || W <= 0 || H <= 0) return;
+    std::vector<double> cp;
+    const size_t segs = path.closed ? n : n - 1;
+    for (size_t i = 0; i < segs; ++i) {
+        const BezPoint& a = path.pts[i];
+        const BezPoint& b = path.pts[(i + 1) % n];
+        const double v[8] = {a.x * W, a.y * H, a.ox * W, a.oy * H, b.ix * W, b.iy * H, b.x * W, b.y * H};
+        bool fin = true;
+        for (double d : v) fin = fin && std::isfinite(d);
+        if (fin) cp.insert(cp.end(), v, v + 8);
+    }
+    if (!path.closed && n >= 3) {                                  // (an open outline is closed by a straight line)
+        const BezPoint& a = path.pts[n - 1];
+        const BezPoint& b = path.pts[0];
+        const double v[8] = {a.x * W, a.y * H, a.x * W, a.y * H, b.x * W, b.y * H, b.x * W, b.y * H};
+        cp.insert(cp.end(), v, v + 8);
+    }
+    double ymin = 1e300, ymax = -1e300;
+    for (size_t i = 1; i < cp.size(); i += 2) { ymin = std::min(ymin, cp[i]); ymax = std::max(ymax, cp[i]); }
+    // (the control points bound the curve)
+    const int j0 = std::max(0, (int)std::floor(ymin)), j1 = std::min(H - 1, (int)std::floor(ymax));
+    std::vector<Crossing> cr;
+    std::vector<float> row((size_t)W + 2);
+    for (int j = j0; j <= j1; ++j) {
+        std::fill(row.begin(), row.end(), 0.f);
+        bool any = false;
+        for (int k = 15; k >= 0; --k) {                                // (from the top of the row down: the sums are in floats, so the order shows)
+            outlineCrossings(cp, j + (k + 0.5) / 16.0, cr);
+            int wind = 0;
+            for (size_t i = 0; i + 1 < cr.size(); ++i) {
+                wind += cr[i].dir;
+                if (wind == 0) continue;
+                const double lo = std::min(std::max(cr[i].x, 0.0), (double)W), hi = std::min(std::max(cr[i + 1].x, 0.0), (double)W);
+                if (!(hi > lo)) continue;
+                any = true;
+                const int ia = (int)lo, ib = (int)hi;
+                if (ia == ib) {
+                    row[(size_t)ia] += (float)(hi - lo);
+                } else {
+                    row[(size_t)ia] += (float)(ia + 1 - lo);
+                    for (int x = ia + 1; x < ib; ++x) row[(size_t)x] += 1.f;
+                    row[(size_t)ib] += (float)(hi - ib);
+                }
+            }
+        }
+        if (!any) continue;
+        float* o = &cover[(size_t)(H - 1 - j) * W];
+        for (int x = 0; x < W; ++x) {
+            const float v = std::min(1.f, row[(size_t)x] / 16.f);
+            o[x] = std::floor(v * 255.f + 0.5f) / 255.f;
+        }
+    }
+}
+
 namespace {
 
 const char* const kGroup = "Reno Built-in";
 const int kMasks = 5;
 
-void bezierMasking(Ctx& c)
+// The masks together: 'total' (empty when no mask is on). Does not depend on the picture.
+void bezierTotal(Ctx& c, int W, int H, std::vector<float>& total, bool& any)
 {
-    const int W = c.out.w, H = c.out.h;
-    if (W <= 0 || H <= 0) return;
     const size_t N = (size_t)W * H;
-    std::vector<float> total;
+    total.clear();
     std::vector<float> cover, soft;
-    bool any = false;
+    any = false;
     std::vector<double> xy;
     for (int i = 0; i < kMasks; ++i) {
         if (!c.b(maskParam("Enable", i).c_str())) continue;
@@ -150,15 +274,18 @@ void bezierMasking(Ctx& c)
                     if (x >= bx0 && x < bx1) cover[(size_t)y * W + x] = 1.f;
             }
         } else {
-            flattenBezPath(xfPath(path, xf, false), W, H, xy);
-            fillPolygonCoverage(xy, W, H, cover);
+            fillBezierCoverage(xfPath(path, xf, false), W, H, cover);
         }
-        // the feather (0..50 as in VEGAS) is a Gaussian of 0.54 pixels a step at 180 rows (measured), a fraction of the frame's height, so it is the same at any render scale
+        // the feather (0..50 as in VEGAS) is VEGAS's Gaussian (Deriche's recursive filter) reaching Feather / 100 of the frame's height out to 1/255 (sigma = that over sqrt(2 ln 255)), so it is the same at any render scale
         const double feather = clampd(c.d(maskParam("Feather", i).c_str()), 0, 50);
         if (feather > 0 && !empty) {
             soft = cover;
-            const double sigma = feather * 0.003 * H;
-            gaussianBlurPlane(soft, W, H, sigma, sigma);
+            const double sigma = feather * 0.01 * H / std::sqrt(-2.0 * std::log(1.0 / 255.0));
+            Buf tb;
+            tb.resize(W, H);
+            for (size_t k = 0; k < N; ++k) tb.px[k * 4] = soft[k];
+            vegasDericheBlurSigma(tb, sigma, sigma, true);
+            for (size_t k = 0; k < N; ++k) soft[k] = tb.px[k * 4];
             const int style = c.i(maskParam("FeatherStyle", i).c_str());       // In, Out, Both
             for (size_t k = 0; k < N; ++k) {
                 if (style == 0) cover[k] = std::min(cover[k], soft[k]);
@@ -176,6 +303,18 @@ void bezierMasking(Ctx& c)
             total[k] = 1.f - (1.f - total[k]) * (1.f - o);
         }
     }
+    // VEGAS's masks are 8-bit pictures: the picture is multiplied by a whole-level mask
+    if (any && c.levels)
+        for (size_t k = 0; k < N; ++k) total[k] = std::floor(total[k] * 255.f + 0.5f) / 255.f;
+}
+
+void bezierMasking(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    std::vector<float> total;
+    bool any = false;
+    if (!c.b("MaskFx")) bezierTotal(c, W, H, total, any);
     if (c.b("MaskFx")) {
         c.out.px = c.src.px;
         return;
@@ -199,6 +338,37 @@ void bezierMasking(Ctx& c)
 }
 
 }  // namespace
+
+// For the GPU (vkfilters.cpp): what the picture is multiplied by (mode 2: the masks' total; 1: nothing shows; 0: copied) and a key that tells when the total changes
+void bezierMaskGpu(Ctx& c, int W, int H, int& mode, bool& invert, float& blend, std::string& key, std::vector<float>* total)
+{
+    invert = c.b("Invert");
+    blend = (float)clampd(c.d("Blend"), 0, 1);
+    char buf[64];
+    key.clear();
+    if (c.b("MaskFx")) { mode = 0; return; }
+    std::snprintf(buf, sizeof buf, "%dx%d;", W, H);
+    key += buf;
+    bool anyOn = false;
+    for (int i = 0; i < kMasks; ++i) {
+        if (!c.b(maskParam("Enable", i).c_str())) continue;
+        anyOn = true;
+        double x, y;
+        const char* nums[] = {"Angle", "Type", "Width", "Height", "Feather", "FeatherStyle", "Opacity"};
+        for (const char* n : nums) { std::snprintf(buf, sizeof buf, "%a,", c.d(maskParam(n, i).c_str())); key += buf; }
+        c.xy(maskParam("Location", i).c_str(), x, y);
+        std::snprintf(buf, sizeof buf, "%a,%a,", x, y);
+        key += buf;
+        c.xy(maskParam("AnchorScale", i).c_str(), x, y);
+        std::snprintf(buf, sizeof buf, "%a,%a;", x, y);
+        key += buf;
+        key += c.s(maskParam("AnchorList", i).c_str());
+        key += "|";
+    }
+    if (!anyOn) { mode = 1; return; }
+    mode = 2;
+    if (total) { bool any = false; bezierTotal(c, W, H, *total, any); }
+}
 
 void addMaskBezier(std::vector<Def>& out)
 {

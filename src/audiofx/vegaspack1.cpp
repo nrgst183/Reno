@@ -3,6 +3,7 @@
 #include "vegaschorus.h"
 #include "vegasmultitap.h"
 #include "vegaspitch.h"
+#include "vegastime.h"
 #include "vegasreverb.h"
 #include "vegassimpledelay.h"
 #include "vegasxpdistor.h"
@@ -25,26 +26,18 @@ namespace reno {
 namespace vegpack1 {
 
 // ------------------------------------------------------------------------------------------ tempo
-namespace {
-std::atomic<double> g_bpm{120.0};
-std::atomic<int> g_beats{4};
-}  // namespace
-
 Tempo tempo()
 {
+    const ProjectTempo p = projectTempo();
     Tempo t;
     t.flags = 5;
-    t.bpm = g_bpm.load();
-    t.num = g_beats.load();
-    t.den = 4;
+    t.bpm = p.bpm;
+    t.num = p.beatsPerMeasure;
+    t.den = p.beatUnit;
     return t;
 }
 
-void setTempo(double bpm, int beatsPerMeasure)
-{
-    if (bpm >= 1.0 && bpm <= 1000.0) g_bpm = bpm;
-    if (beatsPerMeasure >= 1 && beatsPerMeasure <= 64) g_beats = beatsPerMeasure;
-}
+void setTempo(double bpm, int beatsPerMeasure) { setProjectTempo(bpm, beatsPerMeasure, 4); }
 
 // ------------------------------------------------------------------------------------------ registry
 const std::vector<const Info*>& allInfos()
@@ -62,6 +55,8 @@ const std::vector<const Info*>& allInfos()
         &multiTapInfo(),
         &reverbInfo(),
         &pitchInfo(),
+        &xpTimeInfo(),
+        &timeInfo(),
         &xpDistorInfo(),
         &xpFlangeInfo(),
         &xpReverbInfo(),
@@ -155,14 +150,18 @@ public:
         std::vector<int32_t>& cur = cur_;
         cur.resize((size_t)info_.nInts);
         for (int k = 0; k < info_.nInts; ++k) cur[(size_t)k] = s_[(size_t)k].load();
+        const ProjectTempo pt = projectTempo();
         if (!started_ || samplePos != expected_) {
             // a jump in time (seek, loop, first block): VEGAS starts the effect again with silent buffers
             engine_->setup(cur.data(), rate_, false);
             applied_ = cur;
+            appliedTempo_ = pt;
             started_ = true;
-        } else if (cur != applied_) {
+        } else if (cur != applied_ || pt != appliedTempo_) {
+            // new settings, or a new project tempo (the effects with tempo sync work their times out when they are set up)
             engine_->setup(cur.data(), rate_, true);
             applied_ = cur;
+            appliedTempo_ = pt;
         }
         expected_ = samplePos + frames;
         if (info_.bypassSlot >= 0 && cur[(size_t)info_.bypassSlot] != 0) return;
@@ -171,6 +170,21 @@ public:
             if (!std::isfinite(left[k])) left[k] = 0.f;
             if (!std::isfinite(right[k])) right[k] = 0.f;
         }
+    }
+    bool changesLength() override
+    {
+        std::vector<int32_t> cur((size_t)info_.nInts);
+        for (int k = 0; k < info_.nInts; ++k) cur[(size_t)k] = s_[(size_t)k].load();
+        return engine_ && engine_->changesLength(cur.data());
+    }
+    bool processWhole(const float* inL, const float* inR, int64_t frames, std::vector<float>& outL, std::vector<float>& outR) override
+    {
+        if (!changesLength() || !inL || !inR || frames < 0) return false;
+        std::vector<int32_t> cur((size_t)info_.nInts);
+        for (int k = 0; k < info_.nInts; ++k) cur[(size_t)k] = s_[(size_t)k].load();
+        std::unique_ptr<Engine> fresh = info_.make();
+        fresh->setup(cur.data(), rate_ ? rate_ : 48000u, false);
+        return fresh->whole(inL, inR, frames, outL, outR);
     }
     int paramCount() override { return (int)info_.params.size(); }
     std::string paramName(int i) override { return valid(i) ? info_.params[(size_t)i].name : std::string(); }
@@ -181,7 +195,7 @@ public:
             int32_t w[2] = {s_[(size_t)p.slot].load(), s_[(size_t)p.slot + 1].load()};
             double d;
             std::memcpy(&d, w, 8);
-            return d;
+            return d / (double)(p.scale > 0 ? p.scale : 1);
         }
         return (double)s_[(size_t)p.slot].load() / (double)p.scale;
     }
@@ -274,6 +288,7 @@ private:
     std::unique_ptr<Engine> engine_;
     std::vector<std::atomic<int32_t>> s_;
     std::vector<int32_t> cur_, applied_;
+    ProjectTempo appliedTempo_;
     uint32_t rate_ = 0;
     bool started_ = false;
     int64_t expected_ = -1;
@@ -283,16 +298,22 @@ private:
     void setSlot(const ParamDesc& p, double real)
     {
         if (p.kind == Dbl) {
-            real = std::max(p.lo, std::min(p.hi, real));
-            int32_t w[2];
-            std::memcpy(w, &real, 8);
-            s_[(size_t)p.slot] = w[0];
-            s_[(size_t)p.slot + 1] = w[1];
+            setRaw(p, real * (double)(p.scale > 0 ? p.scale : 1));
             return;
         }
         const long lo = std::lround(p.lo * p.scale), hi = std::lround(p.hi * p.scale);
         const long v = std::lround(real * p.scale);
         s_[(size_t)p.slot] = (int32_t)std::max(lo, std::min(hi, v));
+    }
+    // a Dbl setting as the plug-in keeps it (Time Stretch: percent times 100), clamped to its range
+    void setRaw(const ParamDesc& p, double raw)
+    {
+        const double k = (double)(p.scale > 0 ? p.scale : 1);
+        raw = std::max(p.lo * k, std::min(p.hi * k, raw));
+        int32_t w[2];
+        std::memcpy(w, &raw, 8);
+        s_[(size_t)p.slot] = w[0];
+        s_[(size_t)p.slot + 1] = w[1];
     }
     // every slot a setting covers is clamped to its range; the others are kept as they are
     void applyAll(const int32_t* v)
@@ -302,7 +323,7 @@ private:
             if (p.kind == Dbl) {
                 double d;
                 std::memcpy(&d, v + p.slot, 8);
-                setSlot(p, d);
+                setRaw(p, d);
             } else {
                 setSlot(p, (double)v[p.slot] / (double)p.scale);
             }

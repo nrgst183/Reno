@@ -319,6 +319,76 @@ void lensFlare(Ctx& c)
     }
 }
 
+// Lens Flare for the GPU: what the CPU function above works out per flare (positions and boxes in the exact float / double arithmetic), as a table for the kernel, which does the
+// per-pixel sums in the same order. 0 = the CPU does it, 1 = the frame is copied, 2 = the table is 64 ray lengths, the hexagon (x y nx ny, 6 each) at 64 and the flares from 96, 16 floats each
+// (type, first row, first box row, end box row, first column, first box column, end box column, fy, fx, r, colour R G B, strength * intensity, 1).
+int lensFlareGpu(Ctx& c, int W, int H, std::vector<float>& tab, int& nflares, float& blend)
+{
+    
+    nflares = 0;
+    if (W < 1 || H < 1) return 1;
+    const Color lc = c.color("LightColor");
+    double lpx, lpy;
+    c.xy("LightPosition", lpx, lpy);
+    const int lens = std::min(4, std::max(0, c.i("LensType")));
+    const float tint = (float)c.d("Tint"), inten = (float)c.d("Intensity"), bl = (float)c.d("Blend"), size = (float)c.d("Size"), persp = (float)c.d("Perspective");
+    const float lx = (float)lpx, ly = (float)-lpy;
+    blend = bl;
+    if (!(inten != 0.f) || !std::isfinite(lx) || !std::isfinite(ly)) return 1;
+    static const Hexagon hex;
+    static const RayTable rays;
+    static const Flare* const lists[5] = {kLens0, kLens1, kLens2, kLens3, kLens4};
+    static const int counts[5] = {(int)(sizeof(kLens0) / sizeof(Flare)), (int)(sizeof(kLens1) / sizeof(Flare)), (int)(sizeof(kLens2) / sizeof(Flare)),
+                                  (int)(sizeof(kLens3) / sizeof(Flare)), (int)(sizeof(kLens4) / sizeof(Flare))};
+    tab.assign(96, 0.f);
+    for (int i = 0; i < 64; ++i) tab[(size_t)i] = (float)rays.t[i];
+    for (int i = 0; i < 6; ++i) {
+        tab[64 + (size_t)i] = hex.x[i];
+        tab[70 + (size_t)i] = hex.y[i];
+        tab[76 + (size_t)i] = hex.nx[i];
+        tab[82 + (size_t)i] = hex.ny[i];
+    }
+    const float lcb[3] = {(float)lc.b, (float)lc.g, (float)lc.r};
+    const float sinP = (float)std::sin((double)(-persp) * 1.5707963267948966);
+    const float Wf = (float)W, Hf = (float)H, mn = (float)std::min(W, H);
+    const float one = 1.f;
+    const float om = one - tint;
+    for (int n = 0; n < counts[lens]; ++n) {
+        const Flare& fl = lists[lens][n];
+        const float yoff = (-ly) * fl.place + ly, xoff = (-lx) * fl.place + lx;
+        const float Y = Hf * yoff * 0.5f + Hf * 0.5f;
+        const float cx = Wf * xoff * 0.5f + Wf * 0.5f;
+        const float e = (fl.place - one) * sinP;
+        const float sc = (float)std::pow(2.0, (double)e);
+        const float r = sc * size * fl.size * mn;
+        if (!(r > 0.f) || r > 1.0e5f || !std::isfinite(Y) || !std::isfinite(cx) || std::fabs(Y) > 1.0e6f || std::fabs(cx) > 1.0e6f) continue;
+        const int a = (int)(Y - r), b = (int)(r + Y);
+        const int edx = H - a, ecx = H - b;
+        const float fy = (Hf - (Y - r)) - (float)edx;
+        const double rx = (double)r, pxd = (double)cx;
+        int ebx = (int)(pxd - rx);
+        const float fx = (float)(pxd - rx) - (float)ebx;
+        int r12 = (int)(rx + pxd) - ebx;
+        const int rows = edx - ecx;
+        int r14 = 0;
+        if (((W - r12 - ebx - 1) | ebx) < 0) {
+            r14 = ebx < 0 ? -ebx : 0;
+            const int e2 = ebx >= 0 ? ebx : 0;
+            if (e2 + r12 > W) r12 = r14 - e2 + W;
+            ebx = e2;
+        }
+        const int edi = std::max(ecx, 0), r13 = ecx < 0 ? -ecx : 0;
+        int endy = rows;
+        if (rows + edi > H) endy = r13 - edi + H;
+        if (endy <= r13 || r12 <= r14) continue;
+        const float col[3] = {om * fl.c0 + tint * lcb[0], om * fl.c1 + tint * lcb[1], om * fl.c2 + tint * lcb[2]};
+        const float rec[16] = {(float)fl.type, (float)edi, (float)r13, (float)endy, (float)ebx, (float)r14, (float)r12, fy, fx, r, col[2], col[1], col[0], inten * fl.strength, 1.f, 0.f};
+        tab.insert(tab.end(), rec, rec + 16);
+        ++nflares;
+    }
+    return nflares ? 2 : 1;
+}
+
 }  // namespace more
 }  // namespace builtin
 }  // namespace ofx

@@ -440,6 +440,20 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
             };
         }
     }
+    if (d.generator && d.gpu && ov.ok() && ov.x1 == fx1 && ov.y1 == fy1 && ov.rowBytes > 0) {
+        // a generator on the GPU (Vulkan): no input frame, the plan makes the picture; false when it cannot and the CPU below runs
+        GpuFrame gf;
+        gf.out = ov.data;
+        gf.outRowBytes = (size_t)ov.rowBytes;
+        gf.isFloat = ov.isFloat;
+        gf.bgra = ov.bgra;
+        gf.noInput = true;
+        gf.outSerial = (uint64_t)propDouble(outImg, "RenoImageSerial");
+        if (gpuRender(d, c, gf)) {
+            gEff->clipReleaseImage(outImg);
+            return kOfxStatOK;
+        }
+    }
     if (d.overwritesOut || d.rows) c.out.ensure(c.frameW, c.frameH);
     else c.out.resize(c.frameW, c.frameH);
     try {
@@ -785,6 +799,8 @@ static std::vector<float> gaussKernel(double sigma)
     for (auto& v : k) v = (float)(v / sum);
     return k;
 }
+
+std::vector<float> gaussKernelTable(double sigma) { return gaussKernel(sigma); }      // (for the Vulkan plans)
 
 #ifdef RENO_PIXROWS_SSE2
 // The picture a blur pass writes into, kept by the calling thread between blurs (a fresh 33 MB vector per pass was dominated by clearing and page

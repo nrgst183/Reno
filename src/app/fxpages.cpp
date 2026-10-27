@@ -19,6 +19,7 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QLinearGradient>
 #include <QPainterPath>
 #include <QPalette>
 #include <QPen>
@@ -29,6 +30,7 @@
 #include <QRadioButton>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QTimer>
 #include <QTabWidget>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -350,6 +352,84 @@ Ix fixed(int i) { return [i] { return i; }; }
 // ------------------------------------------------------------------------------------------ the page
 #include "fxpages_pack3_graph.inc"
 
+// A level meter as VEGAS's pages have them: one or two bars (the channels) filled to a level, green into yellow into red,
+// with a slow fall back. Level meters show dB between 'lo' and 0 (the bar grows up or to the right); a reduction meter
+// shows how many dB are taken off, 0 .. -'lo' (the bar grows down or to the left of the full bar). The page feeds it.
+class LevelMeter : public QWidget {
+public:
+    LevelMeter(QWidget* parent, bool vertical, int channels, double lo, bool reduction)
+        : QWidget(parent), vertical_(vertical), reduction_(reduction), lo_(lo), shown_((size_t)std::max(1, channels), reduction ? 0.0 : lo)
+    {
+        setAttribute(Qt::WA_OpaquePaintEvent);
+    }
+    // a new reading in dB (reduction meters: a positive number of dB taken off); falls by 'fall' dB a call
+    void feed(int ch, double db, double fall = 1.2)
+    {
+        if (ch < 0 || ch >= (int)shown_.size()) return;
+        double& v = shown_[(size_t)ch];
+        if (reduction_) v = std::max(db, v - fall);
+        else v = std::max(db, v - fall);
+        v = std::max(reduction_ ? 0.0 : lo_, std::min(reduction_ ? -lo_ : 0.0, v));
+        update();
+    }
+    double shown(int ch) const { return ch >= 0 && ch < (int)shown_.size() ? shown_[(size_t)ch] : 0.0; }
+    void clear()
+    {
+        for (double& v : shown_) v = reduction_ ? 0.0 : lo_;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.fillRect(rect(), QColor(24, 24, 24));
+        const int n = (int)shown_.size();
+        const QRectF in = QRectF(rect()).adjusted(1, 1, -1, -1);
+        for (int c = 0; c < n; ++c) {
+            QRectF bar = in;
+            if (vertical_) {
+                const double w = in.width() / n;
+                bar = QRectF(in.left() + c * w + 0.5, in.top(), w - 1, in.height());
+            } else {
+                const double h = in.height() / n;
+                bar = QRectF(in.left(), in.top() + c * h + 0.5, in.width(), h - 1);
+            }
+            p.fillRect(bar, QColor(44, 44, 44));
+            const double range = reduction_ ? -lo_ : -lo_;
+            const double f = reduction_ ? shown_[(size_t)c] / range : (shown_[(size_t)c] - lo_) / range;
+            const double fr = std::max(0.0, std::min(1.0, f));
+            QRectF fill = bar;
+            if (vertical_) {
+                const double h = bar.height() * fr;
+                fill = reduction_ ? QRectF(bar.left(), bar.top(), bar.width(), h) : QRectF(bar.left(), bar.bottom() - h, bar.width(), h);
+            } else {
+                const double w = bar.width() * fr;
+                fill = reduction_ ? QRectF(bar.right() - w, bar.top(), w, bar.height()) : QRectF(bar.left(), bar.top(), w, bar.height());
+            }
+            // colours by position along the scale: green, yellow from -12 dB, red from -3 dB (reduction: all orange)
+            if (reduction_) {
+                p.fillRect(fill, QColor(230, 140, 30));
+            } else {
+                QLinearGradient g(vertical_ ? QPointF(0, bar.bottom()) : QPointF(bar.left(), 0),
+                                  vertical_ ? QPointF(0, bar.top()) : QPointF(bar.right(), 0));
+                g.setColorAt(0.0, QColor(30, 190, 60));
+                g.setColorAt(std::max(0.0, std::min(1.0, (-12.0 - lo_) / range)), QColor(60, 200, 60));
+                g.setColorAt(std::max(0.0, std::min(1.0, (-6.0 - lo_) / range)), QColor(230, 210, 40));
+                g.setColorAt(1.0, QColor(235, 50, 40));
+                p.fillRect(fill, g);
+            }
+        }
+        p.setPen(QColor(90, 90, 90));
+        p.drawRect(rect().adjusted(0, 0, -1, -1));
+    }
+
+private:
+    bool vertical_, reduction_;
+    double lo_;
+    std::vector<double> shown_;
+};
+
 class Page : public DxPage {
 public:
     Page(QWidget* parent, const std::string& uid, const DxHost& host) : DxPage(parent), h_(host)
@@ -399,6 +479,8 @@ public:
         if (uid == "reno.distortion") distortion();
         else if (uid == "reno.vibrato") vibrato();
         else if (uid == "reno.pitchshift") pitchShift();
+        else if (uid == "reno.timestretch") timeStretch(false);
+        else if (uid == "reno.xptimestretch") timeStretch(true);
         else if (uid == "reno.chorus") chorus();
         else if (uid == "reno.flangewah") flangeWah();
         else if (uid == "reno.ampmod") ampMod();
@@ -421,8 +503,33 @@ public:
 
     void refresh() override { syncAll(); }
 
+    // Meters: pollMeters() reads the plug-in's meters (about 25 times a second while the page is shown) and feeds the bars.
+    void addMeterPoll(std::function<void()> f)
+    {
+        meterPolls_.push_back(std::move(f));
+        if (!meterTimer_) {
+            meterTimer_ = new QTimer(this);
+            meterTimer_->setInterval(40);
+            QObject::connect(meterTimer_, &QTimer::timeout, this, [this] { pollMeters(); });
+            meterTimer_->start();
+        }
+    }
+    void pollMeters()
+    {
+        if (!h_.meter || !isVisible()) return;
+        for (auto& f : meterPolls_) f();
+    }
+    // linear peak -> dB for a meter ('lo' for silence)
+    static double meterDb(float lin, double lo)
+    {
+        if (!(lin > 0.f)) return lo;
+        return std::max(lo, 20.0 * std::log10((double)lin));
+    }
+
 private:
     DxHost h_;
+    std::vector<std::function<void()>> meterPolls_;
+    QTimer* meterTimer_ = nullptr;
     QVBoxLayout* root_ = nullptr;
     bool updating_ = false;
     std::vector<std::function<void()>> sync_;
@@ -852,6 +959,142 @@ private:
     }
 
 #include "fxpages_pack3.inc"
+
+    // VEGAS's Time Stretch page (dialog 1001): the Mode, the final length as a percentage with its slider, the Input format
+    // (Percentage, Tempo or Time) which turns that same value into a final tempo or a final time worked out from the initial
+    // tempo or initial time, and the percentage of the original it comes to. The initial time is kept in samples at 44100
+    // a second, as the dialog does without an input pin.
+    void timeStretch(bool express = false)
+    {
+        const int W = express ? 245 : 225;
+        const double kx = 1.75, ky = 1.875;
+        QWidget* box = new QWidget(this);
+        box->setFixedSize((int)std::lround(W * kx), (int)std::lround((115 - 14) * ky));
+        root_->addWidget(box);
+        auto put = [=](QWidget* w, int x, int y, int cw, int ch) {
+            w->setParent(box);
+            w->setGeometry((int)std::lround(x * kx), (int)std::lround((y - 14) * ky), (int)std::lround(cw * kx), (int)std::lround(ch * ky));
+            w->show();
+            return w;
+        };
+        auto label = [=](const QString& t, int x, int y, int cw, int ch, Qt::Alignment a = Qt::AlignLeft | Qt::AlignVCenter) {
+            QLabel* l = text(t, a);
+            put(l, x, y, cw, ch);
+            return l;
+        };
+
+        const std::string uid = express ? "reno.xptimestretch" : "reno.timestretch";
+        QLabel* ml = label("<u>M</u>ode:", 5, 19, 24, 8);
+        QComboBox* mode = combo(fixed(1), choicesOf(uid.c_str(), 1), "dxParam1");
+        put(mode, express ? 60 : 40, 17, 180, 14);
+        ml->setBuddy(mode);
+
+        QLabel* fl = label(QString(), 5, 36, 158, 8);
+        SMap pm;
+        pm.dec = 1;
+        pm.comma = false;
+        DxSlider* pS = slider(Qt::Horizontal, fixed(0), pm, "dxParam0", nullptr, nullptr);
+        put(pS, 5, 48, W - 10, 12);
+        fl->setBuddy(pS);
+        QLineEdit* fBox = editBox((int)std::lround(55 * kx));
+        fBox->setObjectName("dxParam0Edit");
+        put(fBox, W - 60, 34, 55, 12);
+
+        QFrame* ln = new QFrame(this);
+        ln->setFrameShape(QFrame::HLine);
+        ln->setFrameShadow(QFrame::Sunken);
+        put(ln, 5, 64, W - 10, 2);
+
+        QLabel* tl = label("Input forma<u>t</u>:", 5, 71, 110, 8);
+        QComboBox* fmt = combo(fixed(4), choicesOf(uid.c_str(), 4), "dxParam4");
+        put(fmt, W - (express ? 95 : 95), 69, 90, 14);
+        tl->setBuddy(fmt);
+        QLabel* il = label(QString(), 5, 87, 140, 8);
+        QLineEdit* iBox = editBox((int)std::lround(55 * kx));
+        iBox->setObjectName("dxParam2Edit");
+        put(iBox, W - 60, 85, 55, 12);
+        il->setBuddy(iBox);
+        label("Percent of original:", 5, 102, 116, 8);
+        QLabel* pct = label(QString(), W - 47, 102, 42, 8, Qt::AlignRight | Qt::AlignVCenter);
+
+        const double kRate = 44100.0;
+        auto clock = [](double sec) {
+            sec = std::max(0.0, sec);
+            const long long ms = (long long)std::floor(sec * 1000.0 + 0.5);
+            return QString("%1:%2:%3.%4").arg(ms / 3600000, 2, 10, QChar('0')).arg(ms / 60000 % 60, 2, 10, QChar('0')).arg(ms / 1000 % 60, 2, 10, QChar('0')).arg(ms % 1000, 3, 10, QChar('0'));
+        };
+        auto parseClock = [](const QString& t, double* out) {
+            double sec = 0;
+            const QStringList parts = t.trimmed().split(':');
+            if (parts.isEmpty() || parts.size() > 3) return false;
+            for (const QString& p : parts) {
+                double v = 0;
+                if (!parseNumber(p, &v) || v < 0) return false;
+                sec = sec * 60.0 + v;
+            }
+            *out = sec;
+            return true;
+        };
+        // the final length edit, in whichever unit the Input format asks for
+        QObject::connect(fBox, &QLineEdit::editingFinished, fBox, [=] {
+            if (updating_) return;
+            const int f = (int)std::lround(get(4));
+            const double ini = get(3) / kRate, tempo = get(2);
+            double v = 0;
+            double p = 0;
+            bool ok = false;
+            if (f == 1) {
+                ok = parseNumber(fBox->text().trimmed(), &v) && v > 0;
+                p = ok ? tempo * 100.0 / v : 0;
+            } else if (f == 2) {
+                ok = parseClock(fBox->text(), &v) && ini > 0;
+                p = ok ? v / ini * 100.0 : 0;
+            } else {
+                ok = parseNumber(fBox->text().trimmed(), &v);
+                p = v;
+            }
+            if (!ok) { syncAll(); return; }
+            commit(0, std::min(500.0, std::max(50.0, p)));
+        });
+        // the initial tempo or the initial time
+        QObject::connect(iBox, &QLineEdit::editingFinished, iBox, [=] {
+            if (updating_) return;
+            const int f = (int)std::lround(get(4));
+            double v = 0;
+            if (f == 1) {
+                if (!parseNumber(iBox->text().trimmed(), &v) || v < 0 || v > 500) { syncAll(); return; }
+                commit(2, v);
+            } else if (f == 2) {
+                if (!parseClock(iBox->text(), &v)) { syncAll(); return; }
+                commit(3, std::min(793800000.0, v * kRate));
+            } else {
+                syncAll();
+            }
+        });
+        sync_.push_back([=] {
+            const int f = (int)std::lround(get(4));
+            const double p = get(0), tempo = get(2), tm = get(3) / kRate;
+            iBox->setEnabled(f != 0);
+            if (f == 1) {
+                const double lo = tempo * 0.2, hi = tempo * 2.0;
+                fl->setText(QString("<u>F</u>inal Tempo (%1 to %2 bpm):").arg(lo, 0, 'f', 2).arg(hi, 0, 'f', 2));
+                il->setText("<u>I</u>nitial Tempo (bpm):");
+                if (!fBox->hasFocus()) fBox->setText(QString::number(tempo * 100.0 / p, 'f', 2));
+                if (!iBox->hasFocus()) iBox->setText(QString::number(tempo, 'f', 2));
+            } else if (f == 2) {
+                fl->setText(QString("<u>F</u>inal Time (%1 to %2):").arg(clock(tm * 0.5), clock(tm * 5.0)));
+                il->setText("<u>I</u>nitial Time (hr:mn:sc.xxx):");
+                if (!fBox->hasFocus()) fBox->setText(clock(tm * p / 100.0));
+                if (!iBox->hasFocus()) iBox->setText(clock(tm));
+            } else {
+                fl->setText("<u>F</u>inal Percentage  (50.0 to 500.0 %):");
+                il->setText("Unavailable with Percentage");
+                if (!fBox->hasFocus()) fBox->setText(QString::number(p, 'f', 1));
+                iBox->setText(QString::number(tempo, 'f', 2));
+            }
+            pct->setText(QString::number(p, 'f', 0) + " %");
+        });
+    }
 
     // ============================================================================================ the other effects
     // VEGAS's Pitch Shift page (dialog 2001): Semitones and Cents (slider and box each), Accuracy (1 to 3), the anti-alias
@@ -1661,7 +1904,7 @@ private:
 #include "fxpages_xp3.inc"
 };
 
-const char* const kUids[] = {"reno.distortion", "reno.vibrato", "reno.pitchshift", "reno.chorus", "reno.flangewah",
+const char* const kUids[] = {"reno.xptimestretch", "reno.timestretch", "reno.distortion", "reno.vibrato", "reno.pitchshift", "reno.chorus", "reno.flangewah",
                              "reno.ampmod", "reno.simpledelay", "reno.reverb", "reno.moderneq", "reno.smooth", "reno.gapsnip", "reno.multitapdelay"};
 
 }

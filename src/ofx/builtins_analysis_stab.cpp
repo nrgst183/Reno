@@ -526,6 +526,11 @@ void stabilizeRender(Ctx& c, const Settings& S, bool oldPlugin)
 {
     const int W = c.out.w, H = c.out.h;
     if (W <= 0 || H <= 0 || c.src.px.size() != c.out.px.size()) return;
+    // VEGAS's plug-ins leave the picture as it is until the motion has been analysed (the Analyze / Apply button sets these flags); checked against VEGAS's own output.
+    if (!(oldPlugin ? (c.b("HasM10StabData") || c.b("HasM20StabData")) : c.b("HasMotionData"))) {
+        c.out.px = c.src.px;
+        return;
+    }
     const double fps = c.fps > 0 ? c.fps : 30.0;
     const double aspect = (double)W / H;
     Xf S0;
@@ -704,7 +709,7 @@ void analyzeClip(Change& ch, bool oldPlugin)
         if (hi <= n) break;
         n = hi;
     }
-    ch.setI("HasMotionData", 1);
+    ch.setI(oldPlugin ? "HasM20StabData" : "HasMotionData", 1);
 }
 
 void stabilizeChanged(Change& ch)

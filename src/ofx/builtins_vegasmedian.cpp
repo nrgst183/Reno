@@ -2,6 +2,7 @@
 // pixel), target rank T = 8192 + (total - 16384) * Offset, output the mean value over ranks T - 8192 .. T + 8192, rounded. The window's whole-weight runs slide along the row (one pixel in,
 // one out per window row) and the few part-weight pixels at its rim are added per pixel and taken out again.
 #include "builtins_deriche.h"
+#include "vkfilters.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -99,6 +100,28 @@ static void medianRun(const std::vector<uint16_t>& planes, Buf& out, int W, int 
             }
         }
     });
+}
+
+void medianIntSetup(int W, int H, double rxd, double ryd, bool round, double offset, MedianSetup& m)
+{
+    const float rx = (float)std::max(0.0, rxd), ry = (float)std::max(0.0, ryd);
+    int kx = 1, ky = 1;
+    const std::vector<int> q = medianKernel(rx, ry, round, kx, ky);
+    auto weight = [&](int i, int j) { return std::abs(i) < kx && std::abs(j) < ky ? q[(size_t)std::abs(j) * kx + std::abs(i)] : 0; };
+    m.kx = kx; m.ky = ky;
+    m.cells.clear(); m.steps.clear();
+    long long whole = 0;
+    for (int j = -(ky - 1); j <= ky - 1; ++j) {
+        for (int t = -(kx - 1); t <= kx; ++t) {
+            const int dw = weight(t - 1, j) - weight(t, j);
+            if (dw) { m.steps.push_back(j); m.steps.push_back(t); m.steps.push_back(dw); }
+        }
+        for (int i = -(kx - 1); i <= kx - 1; ++i)
+            if (weight(i, j) > 0) { m.cells.push_back(j); m.cells.push_back(i); m.cells.push_back(weight(i, j)); whole += weight(i, j); }
+    }
+    m.whole = whole;
+    m.r12 = (int)((float)std::min(1.0, std::max(0.0, offset)) * 16384.f);
+    (void)W; (void)H;
 }
 
 void vegasMedian(const Buf& src, Buf& out, double rxd, double ryd, bool round, double offset)

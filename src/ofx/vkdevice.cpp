@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <vector>
 #include <memory>
 #include <mutex>
 
@@ -20,7 +21,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 double msSince(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
-const int kBindings = 4;                    // in0, in1, out, table
+const int kBindings = 4;
+const uint32_t kMaxPasses = 4096;                // passes (and so descriptor sets) in one frame's plan: Radial Blur runs hundreds of small steps                    // in0, in1, out, table
 const uint32_t kMaxPush = 128;
 const size_t kPoolKeepBytes = (size_t)768 << 20;
 const size_t kAlign = 256;
@@ -145,12 +147,20 @@ bool makeInstance(VkApi& api, VkInstance& inst, std::string* why)
     app.applicationVersion = 1;
     app.pEngineName = "Reno";
     app.engineVersion = 1;
-    app.apiVersion = VK_MAKE_API_VERSION(0, 1, 0, 0);
+    // Vulkan 1.2 (float controls are core in it); a loader or driver that does not take that gets 1.0, as before
+    app.apiVersion = VK_MAKE_API_VERSION(0, 1, 2, 0);
     VkInstanceCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ci.pApplicationInfo = &app;
     inst = VK_NULL_HANDLE;
-    const VkResult r = api.vkCreateInstance(&ci, nullptr, &inst);
+    api.instanceApiVersion = app.apiVersion;
+    VkResult r = api.vkCreateInstance(&ci, nullptr, &inst);
+    if (r != VK_SUCCESS || !inst) {
+        app.apiVersion = VK_MAKE_API_VERSION(0, 1, 0, 0);
+        api.instanceApiVersion = app.apiVersion;
+        inst = VK_NULL_HANDLE;
+        r = api.vkCreateInstance(&ci, nullptr, &inst);
+    }
     if (r != VK_SUCCESS || !inst) {
         if (why) *why = strfmt("vkCreateInstance failed (%d)", (int)r);
         inst = VK_NULL_HANDLE;
@@ -191,6 +201,26 @@ void describeDevices(VkApi& api, VkInstance inst, std::vector<VkPhysicalDevice>&
             if (low.find("swiftshader") != std::string::npos || low.find("llvmpipe") != std::string::npos || low.find("lavapipe") != std::string::npos ||
                 low.find("software") != std::string::npos || low.find("warp") != std::string::npos || low.find("basic render") != std::string::npos)
                 d.software = true;
+        }
+        // the float controls: how 32-bit floating point behaves in the kernels (asked with Vulkan 1.2's properties)
+        if (api.vkGetPhysicalDeviceProperties2 && api.instanceApiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0) && pr.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
+            VkPhysicalDeviceFloatControlsProperties fc = {};
+            fc.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
+            VkPhysicalDeviceProperties2 p2 = {};
+            p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            p2.pNext = &fc;
+            api.vkGetPhysicalDeviceProperties2(phys[k], &p2);
+            d.fcKnown = true;
+            d.fcRteF32 = fc.shaderRoundingModeRTEFloat32 != 0;
+            d.fcRtzF32 = fc.shaderRoundingModeRTZFloat32 != 0;
+            d.fcDenormPreserveF32 = fc.shaderDenormPreserveFloat32 != 0;
+            d.fcDenormFlushF32 = fc.shaderDenormFlushToZeroFloat32 != 0;
+            d.fcSignedZeroInfNanF32 = fc.shaderSignedZeroInfNanPreserveFloat32 != 0;
+            d.fcDenormIndependence = (int)fc.denormBehaviorIndependence;
+            d.fcRoundingIndependence = (int)fc.roundingModeIndependence;
+            const char* off = std::getenv("RENO_VK_NO_FLOAT_CONTROLS");
+            const char* force = std::getenv("RENO_VK_FORCE_FLOAT_CONTROLS");        // (for trying the fallback on a driver that does not have them)
+            d.floatControlsUsed = ((d.fcRteF32 && d.fcDenormPreserveF32) || (force && force[0] && force[0] != '0')) && !(off && off[0] && off[0] != '0');
         }
         d.maxStorageRange = pr.limits.maxStorageBufferRange;
         d.maxPushConstants = pr.limits.maxPushConstantsSize;
@@ -366,6 +396,41 @@ void giveBuffer(Core& c, Buffer& b)
 }
 
 // ---------------------------------------------------------------------------------------------------- pipelines
+// The kernel with the 32-bit float controls added: capabilities DenormPreserve and RoundingModeRTE (with the SPV_KHR_float_controls extension, which a SPIR-V 1.0 module needs)
+// and, for every entry point, the execution modes DenormPreserve 32 and RoundingModeRTE 32.
+std::vector<uint32_t> withFloatControls(const uint32_t* w, size_t n)
+{
+    std::vector<uint32_t> out;
+    if (n < 5) return out;
+    size_t capEnd = 5, modeEnd = 0;
+    std::vector<uint32_t> entries;
+    for (size_t i = 5; i < n;) {
+        const uint32_t len = w[i] >> 16, op = w[i] & 0xffff;
+        if (len == 0 || i + len > n) return std::vector<uint32_t>();
+        if (op == 17 && capEnd == i) capEnd = i + len;
+        if (op == 15) { entries.push_back(w[i + 2]); modeEnd = i + len; }
+        if (op == 16) modeEnd = i + len;
+        i += len;
+    }
+    if (entries.empty() || modeEnd == 0) return std::vector<uint32_t>();
+    out.reserve(n + 16 + entries.size() * 8);
+    out.insert(out.end(), w, w + capEnd);
+    out.push_back((2u << 16) | 17u); out.push_back(4464u);              // DenormPreserve
+    out.push_back((2u << 16) | 17u); out.push_back(4467u);              // RoundingModeRTE
+    const char* ext = "SPV_KHR_float_controls";
+    std::vector<uint32_t> str((std::strlen(ext) + 1 + 3) / 4, 0u);
+    std::memcpy(str.data(), ext, std::strlen(ext));
+    out.push_back(((uint32_t)(1 + str.size()) << 16) | 10u);
+    out.insert(out.end(), str.begin(), str.end());
+    out.insert(out.end(), w + capEnd, w + modeEnd);
+    for (uint32_t id : entries) {
+        out.push_back((4u << 16) | 16u); out.push_back(id); out.push_back(4459u); out.push_back(32u);     // DenormPreserve 32
+        out.push_back((4u << 16) | 16u); out.push_back(id); out.push_back(4462u); out.push_back(32u);     // RoundingModeRTE 32
+    }
+    out.insert(out.end(), w + modeEnd, w + n);
+    return out;
+}
+
 VkPipeline pipelineFor(Core& c, const std::string& name, uint32_t& lx, uint32_t& ly)
 {
     std::lock_guard<std::mutex> lk(c.mu);
@@ -380,26 +445,38 @@ VkPipeline pipelineFor(Core& c, const std::string& name, uint32_t& lx, uint32_t&
     if (!blob) return VK_NULL_HANDLE;
     uint32_t x = 0, y = 0, z = 0;
     if (!shaderLocalSize(*blob, x, y, z) || x * y * z > c.info.maxGroupInvocations || x == 0 || y == 0) return VK_NULL_HANDLE;
-    VkShaderModuleCreateInfo mi = {};
-    mi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    mi.codeSize = blob->count * 4;
-    mi.pCode = blob->words;
-    VkShaderModule mod = VK_NULL_HANDLE;
-    if (c.api.vkCreateShaderModule(c.dev, &mi, nullptr, &mod) != VK_SUCCESS) return VK_NULL_HANDLE;
-    VkComputePipelineCreateInfo pi = {};
-    pi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    pi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    pi.stage.module = mod;
-    pi.stage.pName = "main";
-    pi.layout = c.layout;
     VkPipeline pipe = VK_NULL_HANDLE;
-    const VkResult r = c.api.vkCreateComputePipelines(c.dev, c.cache, 1, &pi, nullptr, &pipe);
-    c.api.vkDestroyShaderModule(c.dev, mod, nullptr);
-    if (r != VK_SUCCESS || !pipe) {
-        if (r == VK_ERROR_DEVICE_LOST) c.lost = true;
-        return VK_NULL_HANDLE;
+    VkResult r = VK_ERROR_INITIALIZATION_FAILED;
+    bool triedFc = false;
+    for (int attempt = 0; attempt < 2 && !pipe; ++attempt) {
+        std::vector<uint32_t> fcWords;
+        if (attempt == 0 && c.info.floatControlsUsed) { fcWords = withFloatControls(blob->words, blob->count); triedFc = !fcWords.empty(); }
+        if (attempt == 1 && !triedFc) break;
+        VkShaderModuleCreateInfo mi = {};
+        mi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        mi.codeSize = (fcWords.empty() ? blob->count : fcWords.size()) * 4;
+        mi.pCode = fcWords.empty() ? blob->words : fcWords.data();
+        VkShaderModule mod = VK_NULL_HANDLE;
+        if (c.api.vkCreateShaderModule(c.dev, &mi, nullptr, &mod) != VK_SUCCESS) {
+            if (!fcWords.empty()) { c.info.floatControlsUsed = false; }      // (the driver does not take them: no more tries with them)
+            continue;
+        }
+        VkComputePipelineCreateInfo pi = {};
+        pi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pi.stage.module = mod;
+        pi.stage.pName = "main";
+        pi.layout = c.layout;
+        r = c.api.vkCreateComputePipelines(c.dev, c.cache, 1, &pi, nullptr, &pipe);
+        c.api.vkDestroyShaderModule(c.dev, mod, nullptr);
+        if (r != VK_SUCCESS || !pipe) {
+            pipe = VK_NULL_HANDLE;
+            if (r == VK_ERROR_DEVICE_LOST) { c.lost = true; return VK_NULL_HANDLE; }
+            if (!fcWords.empty()) c.info.floatControlsUsed = false;
+        }
     }
+    if (!pipe) return VK_NULL_HANDLE;
     c.pipelines[name] = pipe;
     c.localSizes[name] = std::make_pair(x, y);
     c.cacheDirty = true;
@@ -596,10 +673,10 @@ ThreadState* stateFor(Core& c)
     ai.commandBufferCount = 1;
     VkFenceCreateInfo fi = {};
     fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64 * kBindings};
+    VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kMaxPasses * kBindings};
     VkDescriptorPoolCreateInfo dpi = {};
     dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpi.maxSets = 64;
+    dpi.maxSets = kMaxPasses;
     dpi.poolSizeCount = 1;
     dpi.pPoolSizes = &ps;
     bool ok = c.api.vkAllocateCommandBuffers(c.dev, &ai, &st->cb) == VK_SUCCESS && c.api.vkCreateFence(c.dev, &fi, nullptr, &st->fence) == VK_SUCCESS
@@ -812,7 +889,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     Core& c = *cp;
     const VkApi& a = c.api;
     if (c.lost) return false;
-    if (plan.w != io.w || plan.h != io.h || io.w < 1 || io.h < 1 || !io.in || !io.out || plan.bufs.size() < 2 || plan.passes.empty()) return false;
+    if (plan.w != io.w || plan.h != io.h || io.w < 1 || io.h < 1 || (!io.in && !io.noInput) || !io.out || plan.bufs.size() < 2 || plan.passes.empty()) return false;
     if (plan.bufs[0].w != io.w || plan.bufs[0].h != io.h || plan.bufs[0].comps != 4 || plan.bufs[1].w != io.w || plan.bufs[1].h != io.h || plan.bufs[1].comps != 4) return false;
     const size_t bpp = io.isFloat ? 16 : 4;
     const size_t rawBytes = (size_t)io.w * io.h * bpp;
@@ -825,7 +902,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         if (!hasShader(p.shader)) return false;
     }
     if (!hasShader(io.isFloat ? "unpack_f32" : "unpack_u8") || !hasShader(io.isFloat ? "pack_f32" : "pack_u8")) return false;
-    if (plan.passes.size() + 2 > 64) return false;
+    if (plan.passes.size() + 2 > kMaxPasses) return false;
 
     ThreadState* ts = stateFor(c);
     if (!ts) return false;
@@ -845,7 +922,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         }
     } release{c, held, stageUp, stageDown, tableBuf, haveStageUp, haveStageDown, haveTable};
 
-    const bool reuseInput = io.inSerial != 0 && ts->resident.serial == io.inSerial && ts->resident.epoch == c.residentEpoch.load() && ts->resident.buf.buf && ts->resident.w == io.w &&
+    const bool reuseInput = !io.noInput && io.inSerial != 0 && ts->resident.serial == io.inSerial && ts->resident.epoch == c.residentEpoch.load() && ts->resident.buf.buf && ts->resident.w == io.w &&
                             ts->resident.h == io.h && ts->resident.isFloat == io.isFloat && ts->resident.bgra == io.bgra &&
                             ts->resident.hash == sampleHash(io.in, io.inRowBytes, io.w, io.h, bpp);
     Buffer rawIn;
@@ -878,7 +955,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         okAlloc = tableBytes <= c.info.maxStorageRange && takeBuffer(c, tableBytes, Kind::Device, tableBuf);
         haveTable = okAlloc;
     }
-    const bool needFrameUpload = !reuseInput;
+    const bool needFrameUpload = !reuseInput && !io.noInput;
     const size_t upBytes = (needFrameUpload ? rawBytes : 0) + tableBytes;
     if (okAlloc && upBytes) { okAlloc = takeBuffer(c, upBytes, Kind::StageUp, stageUp); haveStageUp = okAlloc; }
     if (okAlloc) { okAlloc = takeBuffer(c, rawBytes, Kind::StageDown, stageDown); haveStageDown = okAlloc; }
@@ -909,7 +986,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     // ---- the passes, with the buffers they use
     std::vector<Bound> bound;
     auto dummyInfo = [&](Bound& b, int k) { b.buf[k] = c.dummy.buf; b.off[k] = 0; b.range[k] = c.dummy.size; };
-    {
+    if (!io.noInput) {
         Bound u;
         u.shader = io.isFloat ? "unpack_f32" : "unpack_u8";
         for (int k = 0; k < kBindings; ++k) dummyInfo(u, k);

@@ -10,6 +10,7 @@ Every kernel mirrors the CPU effect it is named for (src/ofx/builtins*.cpp) form
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from spvdsl import compile_kernel, c_array
+from sf64 import SF
 
 KERNELS = []
 
@@ -90,18 +91,95 @@ def unpremul(S, p):
     b = S.select(has, p.z / a, S.f(0.0))
     return r, g, b, a, valid
 
-def pixel_row(S, body):
+def pixel_row(S, body, xy=False):
     """The per-pixel colour effects: body(S, r, g, b) -> (r, g, b) on the straight colour; the pixel is premultiplied again,
     and a pixel with no alpha becomes all zeros (v4::pixelRow in builtins_vec.h)."""
     with S.in_range(S.p.w, S.p.h):
         i = S.gy * S.p.w + S.gx
         p = S.buf('in0').load(i)
         r, g, b, a, valid = unpremul(S, p)
-        r, g, b = body(S, r, g, b)
+        r, g, b = body(S, r, g, b, S.gx, S.gy) if xy else body(S, r, g, b)
         z = S.f(0.0)
         S.buf('out').store(i, S.vec4(S.select(valid, r * a, z), S.select(valid, g * a, z), S.select(valid, b * a, z), S.select(valid, a, z)))
 
+
+# ---- 8-bit (VEGAS's whole-level maths, src/ofx/vegas8.h): a picture value as the level it came from, and back
+def to_level(S, v):
+    """v8::toLevel: the value clamped to 0..1 times 255, halves rounded up; an int."""
+    c = S.min(S.max(v, 0.0), 1.0)
+    sc = c * 255.0
+    i = S.to_i(sc)
+    return i + S.select((sc - S.to_f(i)) >= 0.5, S.i(1), S.i(0))
+
+def from_level(S, i):
+    return S.to_f(i) * S.f(1.0 / 255.0)
+
+
+
+def round_magic(S, x):
+    """v8::roundMagic of a float: the nearest whole number with halves up (the nudge of 1.5e-8 only decides exact halves); an int"""
+    fl = S.floor(x)
+    return S.to_i(fl) + S.select((x - fl) >= 0.5, S.i(1), S.i(0))
+
+
+
+def fpow(S, x, y):
+    """powf of floats, x >= 0: the double power rounded to a float (what a C library's powf gives but for a rare last bit)"""
+    from sf64 import sf_pow
+    return sf_pow(S, SF.from_f32(S, x), SF.from_f32(S, y)).to_f32()
+
+def fsqrt(S, x):
+    """the float square root, correctly rounded (computed in double)"""
+    return SF.from_f32(S, x).sqrt().to_f32()
+
+def fmin(S, a, b):
+    """std::min(a, b): b < a ? b : a"""
+    return S.select(b < a, b, a)
+
+def fmax(S, a, b):
+    """std::max(a, b): a < b ? b : a"""
+    return S.select(a < b, b, a)
+
+def dpush(*names):
+    """push constant fields for doubles: name_h, name_l (the halves of the bits)"""
+    out = []
+    for n in names:
+        out += [(n + '_h', 'u'), (n + '_l', 'u')]
+    return out
+
+def pd(P, name):
+    """the double of dpush's two fields, as an SF"""
+    return SF(P.S, getattr(P, name + '_h'), getattr(P, name + '_l'))
+
+def ld_sf(S, tab, i):
+    """a double from two table words (the bits of its high and low halves held in floats)"""
+    return SF(S, S.f_to_bits(tab.load(i)), S.f_to_bits(tab.load(i + 1)))
+
+def sdiv_pos(S, a, b):
+    """a / b for ints with b >= 0 (0 where b is 0), like the CPU's guarded integer division"""
+    return S.select(S.ne(b, 0), a / S.max(b, S.i(1)), S.i(0))
+
 # ---------------------------------------------------------------------------------------------------------- effects
+@kernel("invert8", WH + [('wt', 'i')], [PIC_IN, PIC_OUT])
+def invert8(S):
+    # invertRows() with c.levels (Vfx1's invertProcessor): integer steps on the levels
+    P = S.p
+    with S.in_range(P.w, P.h):
+        i = S.gy * P.w + S.gx
+        p = S.buf('in0').load(i)
+        a = to_level(S, p.w)
+        out = []
+        for k in range(3):
+            v = to_level(S, p[k])
+            opaque = S.eq(a, 255)
+            t = S.select(S.eq(a, 0), S.i(0), S.min(S.i(255), sdiv_pos(S, v * 255, a)))
+            pr = S.select(opaque, 255 - v, ((255 - t) * a) >> 8)
+            prod = (v - pr) * P.wt
+            lv = (pr + ((prod + S.select(prod < 0, S.i(255), S.i(0))) >> 8)) & 255
+            out.append(from_level(S, lv))
+        S.buf('out').store(i, S.vec4(out[0], out[1], out[2], from_level(S, a)))
+
+
 @kernel("invert", WH + [('k', 'f')], [PIC_IN, PIC_OUT])
 def invert(S):
     # invertRows() in builtins_filters.cpp: 8-bit levels, a step of floor(|d| * k) + 1 towards the inverse
@@ -111,7 +189,7 @@ def invert(S):
             d = 255.0 - 2.0 * lv
             ad = S.abs(d)
             step = S.min(ad, S.floor(ad * S.p.k + 0.0001) + 1.0)
-            return (lv + S.select(d < 0.0, S.f(0.0) - step, step)) * (1.0 / 255.0)
+            return (lv + S.select(d < 0.0, S.f(0.0) - step, step)) / 255.0
         return one(r), one(g), one(b)
     pixel_row(S, body)
 
@@ -155,32 +233,23 @@ def brightnessandcontrast(S):
 
 @kernel("blackandwhite", WH + [('k', 'f')], [PIC_IN, PIC_OUT])
 def blackandwhite(S):
-    # blackAndWhiteRows() in builtins_filters.cpp: 8-bit levels, grey = floor(mean), steps of ceil(|d| * k)
-    def body(S, r, g, b):
-        lr = S.floor(r * 255.0 + 0.5)
-        lg = S.floor(g * 255.0 + 0.5)
-        lb = S.floor(b * 255.0 + 0.5)
-        grey = S.floor((lr + lg + lb) * (1.0 / 3.0) + 0.0001)
-        def one(l):
-            d = grey - l
-            step = S.ceil(S.abs(d) * S.p.k - 0.00001)
-            return (l + S.select(d < 0.0, S.f(0.0) - step, step)) * (1.0 / 255.0)
-        return one(lr), one(lg), one(lb)
-    pixel_row(S, body)
-
-@kernel("sepia", WH + [('cr', 'f'), ('cg', 'f'), ('cb', 'f'), ('p', 'f'), ('q0', 'f'), ('falloff', 'f')], [PIC_IN, PIC_OUT])
-def sepia(S):
-    # sepiaRows() in builtins_filters.cpp
-    def body(S, r, g, b):
-        P = S.p
-        m = (r + g + b) * (1.0 / 3.0)
-        q = S.min(S.f(1.0), S.max(S.f(0.0), P.q0 - P.falloff * m))
-        iq = 1.0 - q
-        def mix(x, cv):
-            grey = x + (m - x) * P.p
-            return iq * grey + q * cv
-        return mix(r, P.cr), mix(g, P.cg), mix(b, P.cb)
-    pixel_row(S, body)
+    # blackAndWhiteRows() in builtins_filters.cpp: 8-bit levels, grey = floor(sum / 3), steps of ceil(|d| * k - 1e-5); the divisions are the CPU's
+    P = S.p
+    with S.in_range(P.w, P.h):
+        i = S.gy * P.w + S.gx
+        p = S.buf('in0').load(i)
+        a = p.w
+        has = a > 1e-6
+        lv = [S.floor(S.select(has, p[k] / a, S.f(0.0)) * 255.0 + 0.5) for k in range(3)]
+        grey = S.floor((lv[0] + lv[1] + lv[2]) / 3.0)
+        out = []
+        for k in range(3):
+            d = grey - lv[k]
+            step = S.ceil(S.abs(d) * P.k - 0.00001)
+            o = lv[k] + S.select(d < 0.0, S.f(0.0) - step, step)
+            out.append(o / 255.0 * a)
+        z = S.f(0.0)
+        S.buf('out').store(i, S.select(a > 0.0, S.vec4(out[0], out[1], out[2], a), S.vec4(z, z, z, z)))
 
 @kernel("threshold", WH + [('t', 'f')], [PIC_IN, PIC_OUT])
 def threshold(S):
@@ -245,11 +314,12 @@ def hsladjust(S):
         return hsl_to_rgb(S, h + P.hue, clamp01(S, s * P.sat), clamp01(S, l * P.lum))
     pixel_row(S, body)
 
-@kernel("levels", WH + [('channel', 'u'), ('i0', 'f'), ('i1', 'f'), ('o0', 'f'), ('o1', 'f'), ('curve', 'u')], [PIC_IN, PIC_OUT, TABLE])
+@kernel("levels", WH + [('channel', 'u'), ('straight', 'u'), ('glt1', 'u')] + dpush('i0', 'i1', 'o0', 'domain', 'width', 'k0', 'slope', 'a1', 'a', 'inv', 'G'), [PIC_IN, PIC_OUT])
 def levels(S):
-    # levels() in builtins_filters.cpp: the straight colour (0 where alpha is tiny), the chosen channels through the curve, premultiplied again
-    with S.in_range(S.p.w, S.p.h):
-        P = S.p
+    # levels() in builtins_filters.cpp: the straight colour (0 where alpha is tiny), the chosen channels through the curve (in doubles, as the CPU does), premultiplied again
+    P = S.p
+    from sf64 import sf_pow
+    with S.in_range(P.w, P.h):
         i = S.gy * P.w + S.gx
         p = S.buf('in0').load(i)
         a = p.w
@@ -257,23 +327,144 @@ def levels(S):
         r = S.select(has, p.x / a, S.f(0.0))
         g = S.select(has, p.y / a, S.f(0.0))
         b = S.select(has, p.z / a, S.f(0.0))
-        span = P.i1 - P.i0
-        den = S.select(S.abs(span) < 0.003921568859368563, S.f(0.003921568859368563), span)
+        i0, i1, o0, domain, width = pd(P, 'i0'), pd(P, 'i1'), pd(P, 'o0'), pd(P, 'domain'), pd(P, 'width')
+        k0, slope, a1, aa, inv, G = pd(P, 'k0'), pd(P, 'slope'), pd(P, 'a1'), pd(P, 'a'), pd(P, 'inv'), pd(P, 'G')
         def f(v):
-            t = (v - P.i0) / den
-            t = clamp01(S, t)
-            x = t * 4096.0
-            k = S.min(S.to_u(S.floor(x)), 4095)
-            lo = S.buf('table').load(k)
-            hi = S.buf('table').load(k + 1)
-            curved = lo + (hi - lo) * (x - S.to_f(k))
-            return P.o0 + (P.o1 - P.o0) * S.select(S.ne(P.curve, 0), curved, t)
+            x = SF.from_f32(S, v)
+            xin = SF.sel(S, i0 > x, i0, SF.sel(S, x < i1, x, i1))
+            t = xin - i0
+            rs = (t * domain) / width
+            tt = t / width
+            big = tt >= k0
+            lt1 = S.ne(P.glt1, 0)
+            # one power per pixel: base and exponent of the branch taken
+            base = SF.sel(S, lt1, tt, (aa + tt) * inv)
+            pw = sf_pow(S, base, G)
+            c_lt = SF.sel(S, big, pw * a1 - aa, tt * slope)          # G < 1
+            c_ge = SF.sel(S, big, pw, tt * slope)                    # G >= 1
+            curved = domain * SF.sel(S, lt1, c_lt, c_ge)
+            res = SF.sel(S, S.ne(P.straight, 0), rs, curved)
+            return (res + o0).to_f32()
         ch = P.channel
-        r2 = S.select(S.eq(ch, 0) | S.eq(ch, 1) | S.eq(ch, 4), f(r), r)
-        g2 = S.select(S.eq(ch, 0) | S.eq(ch, 2) | S.eq(ch, 4), f(g), g)
-        b2 = S.select(S.eq(ch, 0) | S.eq(ch, 3) | S.eq(ch, 4), f(b), b)
-        a2 = S.select(S.eq(ch, 4), clamp01(S, f(a)), a)
+        vals = [r, g, b, a]
+        outs = [S.var('f', vals[k]) for k in range(4)]
+
+        def per_channel(c):
+            v = S.select(S.eq(c, 0), r, S.select(S.eq(c, 1), g, S.select(S.eq(c, 2), b, a)))
+            fv = f(v)
+            rgb = S.eq(ch, 0) | S.eq(ch, 4) | S.eq(ch, c + 1)
+            use = S.select(S.eq(c, 3), S.eq(ch, 4), rgb)
+            nv = S.select(S.eq(c, 3), clamp01(S, fv), fv)
+            for k in range(4):
+                outs[k].set(S.select(use & S.eq(c, k), nv, outs[k].get()))
+        S.loop(4, per_channel)
+        r2, g2, b2, a2 = [o.get() for o in outs]
         S.buf('out').store(i, S.vec4(r2 * a2, g2 * a2, b2 * a2, a2))
+
+@kernel("saturationadjust8", WH, [PIC_IN, PIC_OUT, TABLE])
+def saturationadjust8(S):
+    # saturationAdjust8() in builtins_more_colour.cpp: VEGAS's 8-bit steps in doubles (tools/sf64.py: the same roundings as the CPU's)
+    P = S.p
+    with S.in_range(P.w, P.h):
+        tab = S.buf('table')
+        i = S.gy * P.w + S.gx
+        p = S.buf('in0').load(i)
+        R = SF.from_i32(S, to_level(S, p.x))
+        G = SF.from_i32(S, to_level(S, p.y))
+        B = SF.from_i32(S, to_level(S, p.z))
+        ai = to_level(S, p.w)
+        Y = (G * 0.587 + R * 0.299) + B * 0.114
+        dG, dR, dB = Y - G, Y - R, Y - B
+        d = ((dG * dG + dR * dR) + dB * dB).sqrt()
+        x = d / ld_sf(S, tab, 42)
+        x1, x2, x3 = ld_sf(S, tab, 0), ld_sf(S, tab, 2), ld_sf(S, tab, 4)
+        # the piece x is in: the first inner position above it, else the last piece
+        seg = S.select(x1 > x, S.u(0), S.select(x2 > x, S.u(1), S.select(x3 > x, S.u(2), S.u(3))))
+        base = 6 + seg * 9
+        xlo, den = ld_sf(S, tab, base), ld_sf(S, tab, base + 2)
+        has = S.ne(S.f_to_bits(tab.load(base + 4)), 0)
+        v0, v1 = ld_sf(S, tab, base + 5), ld_sf(S, tab, base + 7)
+        t = SF.sel(S, has, (x - xlo) / den, SF.const(S, 0.0))
+        t2 = t * t
+        t3 = t2 * t
+        h00 = ((t3 + t3) - t2 * 3.0) + 1.0
+        h01 = t2 * 3.0 - (t3 + t3)
+        g = SF.from_f32(S, (v0 * h00 + v1 * h01).to_f32())
+        f = g + 1.0
+        u = 1.0 - f
+        wG, wR, wB = u * 0.587, u * 0.299, u * 0.114
+        outR = ((wR + f) * R + G * wG) + B * wB
+        outG = ((wG + f) * G + R * wR) + B * wB
+        outB = (wB + f) * B + (G * wG + R * wR)
+        al = SF.from_i32(S, ai)
+        def fin(v):
+            v = SF.sel(S, al > v, v, al)
+            v = SF.sel(S, v > 0.0, v, SF.const(S, 0.0))
+            return from_level(S, v.trunc_i32())
+        S.buf('out').store(i, S.vec4(fin(outR), fin(outG), fin(outB), from_level(S, ai)))
+
+
+@kernel("colorcorrector8", WH + [('flags', 'u')], [PIC_IN, PIC_OUT, TABLE])
+def colorcorrector8(S):
+    # ccRow8() in builtins_filters2.cpp: the CPU's tables (4 floats a, b, y, s for 1024 steps of Y, then the wheels-only integers) and the same float steps
+    P = S.p
+    with S.in_range(P.w, P.h):
+        tab = S.buf('table')
+        i = S.gy * P.w + S.gx
+        p = S.buf('in0').load(i)
+        rr, gg, bb, aa = to_level(S, p.x), to_level(S, p.y), to_level(S, p.z), to_level(S, p.w)
+        fl = P.flags & 31      # (bit 0x20: the luminance mask of Color Corrector (Secondary) picks the entry)
+        Y = S.to_f(gg) * 0.587
+        Y = Y + S.to_f(rr) * 0.299
+        Y = Y + S.to_f(bb) * 0.114
+        # flags == 4: the integer tint
+        idx4 = S.to_u(S.max(S.min(round_magic(S, Y * 4.0), S.i(1023)), S.i(0)))
+        def d(k): return S.to_i(tab.load(4096 + idx4 * 4 + k))
+        def hold(v): return S.max(S.i(0), S.min(v, aa))
+        w_r, w_g, w_b = hold(rr + d(2)), hold(gg + d(1)), hold(bb + d(0))
+        # the general case
+        U = (S.to_f(bb) - Y) * 0.492
+        V = (S.to_f(rr) - Y) * 0.877
+        need = S.ne(fl & 5, 0) | S.ne(P.flags & 32, 0)
+        idx = S.select(need, idx4, S.u(0))
+        ea, eb, ey, es = tab.load(idx * 4), tab.load(idx * 4 + 1), tab.load(idx * 4 + 2), tab.load(idx * 4 + 3)
+        Yp = S.select(S.ne(fl & 1, 0), ey, Y)
+        t4 = S.ne(fl & 4, 0)
+        U = S.select(t4, U + eb, U)
+        V = S.select(t4, V + ea, V)
+        t2 = S.ne(fl & 2, 0)
+        U = S.select(t2, U * es, U)
+        V = S.select(t2, V * es, V)
+        fa = S.to_f(aa)
+        nb = U * 2.032520294189453
+        nb = nb + Yp
+        ng = Yp - U * 0.394731342792511
+        ng = ng - V * 0.5808091759681702
+        nr = V * 1.1402509212493896
+        nr = nr + Yp
+        def cut(v): return S.select(S.f(0.0) > v, S.f(0.0), S.select(fa < v, fa, v))
+        g_r, g_g, g_b = round_magic(S, cut(nr)) & 255, round_magic(S, cut(ng)) & 255, round_magic(S, cut(nb)) & 255
+        only4 = S.eq(fl, 4)
+        anyf = S.ne(fl, 0)
+        o_r = S.select(only4, w_r, S.select(anyf, g_r, rr))
+        o_g = S.select(only4, w_g, S.select(anyf, g_g, gg))
+        o_b = S.select(only4, w_b, S.select(anyf, g_b, bb))
+        S.buf('out').store(i, S.vec4(from_level(S, o_r), from_level(S, o_g), from_level(S, o_b), from_level(S, aa)))
+
+
+@kernel("colorcurves8", WH, [PIC_IN, PIC_OUT, TABLE])
+def colorcurves8(S):
+    # colorCurvesRows() with c.levels: three byte tables on the levels, a colour held to the alpha's level
+    P = S.p
+    with S.in_range(P.w, P.h):
+        i = S.gy * P.w + S.gx
+        p = S.buf('in0').load(i)
+        a = to_level(S, p.w)
+        out = []
+        for k in range(3):
+            r = S.to_i(S.buf('table').load(S.u(k * 256) + S.to_u(to_level(S, p[k]))))
+            out.append(from_level(S, S.min(r, a)))
+        S.buf('out').store(i, S.vec4(out[0], out[1], out[2], p.w))
 
 @kernel("colorcurves", WH, [PIC_IN, PIC_OUT, TABLE])
 def colorcurves(S):
@@ -317,18 +508,16 @@ def colorcorrectorsecondary(S):
         t = S.select(smooth > 1e-6, fall(1.0 - d / smooth), S.f(0.0))
         return S.select(inside, S.f(1.0), t)
     def atan2_deg(y, x):
-        # our own atan2 in degrees (a driver's is only approximate): a polynomial for the ratio of the smaller to the larger, then the
-        # octant; a colour with no chroma (U, V about 1e-5 or less) has hue 0 - the CPU does the same, so a grey's rounding noise cannot
-        # throw it into a hue range
-        ax, ay = S.abs(x), S.abs(y)
-        mx, mn = S.max(ax, ay), S.min(ax, ay)
-        t = mn / S.max(mx, 1e-30)
-        t2 = t * t
-        q = t * (0.9998660 + t2 * (-0.3302995 + t2 * (0.1801410 + t2 * (-0.0851330 + t2 * 0.0208351))))     # atan(t) in radians, |error| < 1e-5
-        q = S.select(ay > ax, 1.5707963267948966 - q, q)
-        q = S.select(x < 0.0, 3.14159265358979323846 - q, q)
-        q = S.select(y < 0.0, -q, q)
-        return S.select(mx < 1e-5, S.f(0.0), q * S.f(180.0 / 3.14159265358979323846))
+        # atan2f(y, x) * (float)(180 / pi): the double atan2 rounded to a float (what the C library's atan2f gives but for a rare last bit); a colour with no
+        # chroma (U, V about 1e-5 or less) has hue 0 - as on the CPU, so a grey's rounding noise cannot throw it into a hue range
+        from sf64 import sf_atan2
+        q = sf_atan2(S, SF.from_f32(S, y), SF.from_f32(S, x)).to_f32()
+        return S.select(S.max(S.abs(x), S.abs(y)) < 1e-5, S.f(0.0), q * S.f(180.0 / 3.14159265358979323846))
+    def fmod360(x):
+        # fmodf(x, 360): exact (done in doubles; the quotient of a float is never within rounding of a whole number)
+        xd = SF.from_f32(S, x)
+        n = (xd / 360.0).trunc()
+        return (xd - n * 360.0).to_f32()
     with S.in_range(P.w, P.h):
         i = S.gy * P.w + S.gx
         p = S.buf('in0').load(i)
@@ -350,7 +539,7 @@ def colorcorrectorsecondary(S):
             m.set(m.get() * in_range(S.sqrt(U * U + V * V) * 255.0, P.s0, P.s1, P.ss))
         with S.if_(flag(2) & S.ne(m.get(), 0.0)):
             hue = atan2_deg(V, U)
-            d0 = S.abs(S.fmod(hue - P.hc, 360.0))
+            d0 = S.abs(fmod360(hue - P.hc))
             d = S.select(d0 > 180.0, 360.0 - d0, d0)
             dd = d - P.hw * 0.5
             inn = S.select(dd <= 0.0, S.f(1.0), S.select(P.hs > 1e-6, fall(1.0 - dd / P.hs), S.f(0.0)))
@@ -365,7 +554,7 @@ def colorcorrectorsecondary(S):
         v2 = (ut * P.sr + vt * P.cr) * P.sat
         yp = S.max(Y * P.gain, 0.0)
         base = (yp + P.gc) / (1.0 + P.gc)
-        yg = S.select(base > 0.0, S.pow(base, P.ga), S.f(0.0))
+        yg = S.select(base > 0.0, fpow(S, S.max(base, 1e-30), P.ga), S.f(0.0))
         yp = S.select(flag(5), yg, yp) + P.off
         yp = S.min(S.max(yp, 0.0), 1.0)
         nr = yp + v2 / 0.877
@@ -420,55 +609,6 @@ make_blur("blur_h", False, False)
 make_blur("blur_v", True, False)
 make_blur("blurp_h", False, True)
 make_blur("blurp_v", True, True)
-
-@kernel("deriche", WH + [('vert', 'u'), ('inlv', 'u'), ('outlv', 'u'), ('pad', 'u'),
-                    ('n0', 'f'), ('n1', 'f'), ('n2', 'f'), ('n3', 'f'), ('d1', 'f'), ('d2', 'f'), ('d3', 'f'), ('d4', 'f'),
-                    ('m1', 'f'), ('m2', 'f'), ('m3', 'f'), ('m4', 'f'), ('kn', 'f'), ('km', 'f')], [PIC_IN, PIC_OUT], local=(64, 1))
-def deriche(S):
-    """One line (a row, or a column with vert) of VEGAS's Deriche Gaussian (vegasDericheBlurSigma() in builtins_deriche.cpp), one
-    invocation per line, all four channels at once: the causal half forwards into out, then the anti-causal half backwards added
-    to it. The edge values go on for ever outside (their filter state xL * kn, xR * km). inlv: the input is a picture (0..1) taken
-    to levels (1; 2: whole ones); outlv: the output turned back into 0..1 (1; 2: rounded to whole levels first); 0: levels in / out.
-    (The CPU works in doubles; floats here.)"""
-    P = S.p
-    vert = S.ne(P.vert, 0)
-    n = S.select(vert, P.h, P.w)
-    lines = S.select(vert, P.w, P.h)
-    with S.if_(S.gx < lines):
-        line = S.gx
-        def idx(q): return S.select(vert, q * P.w + line, line * P.w + q)
-        src = S.buf('in0')
-        out = S.buf('out')
-        def get(q):
-            v = src.load(idx(q))
-            sc = v * 255.0
-            r = S.floor(S.min(S.max(sc, 0.0), 255.0) + 0.5)
-            return S.select(S.ne(P.inlv, 0), S.select(S.ne(P.inlv, 1), r, sc), v)
-        # (columns run from the bottom row up, as the CPU's)
-        def pos(t): return S.select(vert, n - 1 - t, t)
-        xL = get(pos(S.u(0)))
-        x1 = S.var('v4', xL); x2 = S.var('v4', xL); x3 = S.var('v4', xL)
-        y0 = xL * P.kn
-        y1 = S.var('v4', y0); y2 = S.var('v4', y0); y3 = S.var('v4', y0); y4 = S.var('v4', y0)
-        with S.for_(0, n) as t:
-            x0 = get(pos(t))
-            y = x0 * P.n0 + x1.get() * P.n1 + x2.get() * P.n2 + x3.get() * P.n3 - (y1.get() * P.d1 + y2.get() * P.d2 + y3.get() * P.d3 + y4.get() * P.d4)
-            out.store(idx(pos(t)), y)
-            x3.set(x2.get()); x2.set(x1.get()); x1.set(x0)
-            y4.set(y3.get()); y3.set(y2.get()); y2.set(y1.get()); y1.set(y)
-        xR = get(pos(n - 1))
-        a1 = S.var('v4', xR); a2 = S.var('v4', xR); a3 = S.var('v4', xR); a4 = S.var('v4', xR)
-        z0 = xR * P.km
-        z1 = S.var('v4', z0); z2 = S.var('v4', z0); z3 = S.var('v4', z0); z4 = S.var('v4', z0)
-        with S.for_(0, n) as t:
-            q = pos(n - 1 - t)
-            x0 = get(q)
-            z = a1.get() * P.m1 + a2.get() * P.m2 + a3.get() * P.m3 + a4.get() * P.m4 - (z1.get() * P.d1 + z2.get() * P.d2 + z3.get() * P.d3 + z4.get() * P.d4)
-            tot = out.load(idx(q)) + z
-            r = S.min(S.max(S.floor(tot + 0.5), 0.0), 255.0)
-            out.store(idx(q), S.select(S.ne(P.outlv, 0), S.select(S.ne(P.outlv, 1), r, tot) * (1.0 / 255.0), tot))
-            a4.set(a3.get()); a3.set(a2.get()); a2.set(a1.get()); a1.set(x0)
-            z4.set(z3.get()); z3.set(z2.get()); z2.set(z1.get()); z1.set(z)
 
 @kernel("sharpen_mix", WH + [('t', 'f'), ('lv', 'u')], [PIC_IN, PIC_OUT])
 def sharpen_mix(S):
@@ -554,80 +694,6 @@ def mirror(S):
             res.set(S.buf('in0').load(i))
         S.buf('out').store(i, res.get())
 
-# ---------------------------------------------------------------------------------------------------------- glow, chroma key
-@kernel("glow_mask", WH, [PIC_IN, PLANE_OUT])
-def glow_mask(S):
-    # glow() in builtins_filters.cpp: the average of R, G, B times alpha (blurred next; Suppression is taken off after the blur)
-    P = S.p
-    with S.in_range(P.w, P.h):
-        i = S.gy * P.w + S.gx
-        r, g, b, a, valid = unpremul(S, S.buf('in0').load(i))
-        l = (r + g + b) * (1.0 / 3.0)
-        S.buf('out').store(i, l * a)
-
-@kernel("glow_mix", WH + [('gain', 'f'), ('thr', 'f'), ('cr', 'f'), ('cg', 'f'), ('cb', 'f')], [PIC_IN, PLANE_IN1, PIC_OUT])
-def glow_mix(S):
-    P = S.p
-    with S.in_range(P.w, P.h):
-        i = S.gy * P.w + S.gx
-        s = S.buf('in0').load(i)
-        k = clamp01(S, (S.buf('in1').load(i) - P.thr) * P.gain)
-        ik = 1.0 - k
-        S.buf('out').store(i, S.vec4(P.cr * k + s.x * ik, P.cg * k + s.y * ik, P.cb * k + s.z * ik, k + s.w * ik))
-
-@kernel("chroma_mask", WH + [('kr', 'f'), ('kg', 'f'), ('kb', 'f'), ('kh', 'f'), ('ks', 'f'), ('kl', 'f'), ('low', 'f'), ('cut', 'u')], [PIC_IN, PLANE_OUT])
-def chroma_mask(S):
-    # chromaKeyDistance() and chromaKeyAlpha8() in builtins_filters.cpp: the 8-bit alpha (0..255) of a pixel; the key's HSL
-    # (kh in degrees) comes from the planner, cut: the thresholds make a hard cut at 'low'
-    P = S.p
-    with S.in_range(P.w, P.h):
-        i = S.gy * P.w + S.gx
-        r0, g0, b0, a, valid = unpremul(S, S.buf('in0').load(i))
-        r = clamp01(S, r0)
-        g = clamp01(S, g0)
-        b = clamp01(S, b0)
-        mx = S.max(r, S.max(g, b))
-        mn = S.min(r, S.min(g, b))
-        d = mx - mn
-        has = d > 0.0
-        dd = S.max(d, S.f(1e-20))
-        hr = (g - b) / dd
-        hr = S.select(hr < 0.0, hr + 6.0, hr)
-        h = S.select(S.eq(mx, r), hr, S.select(S.eq(mx, g), (b - r) / dd + 2.0, (r - g) / dd + 4.0))
-        h = S.select(has, h * 60.0, S.f(0.0))
-        l = (mx + mn) * 0.5
-        sden = S.select(l <= 0.5, mx + mn, 2.0 - mx - mn)
-        sat = S.select(has, d / S.max(sden, S.f(1e-20)), S.f(0.0))
-        dh = S.abs(h - P.kh)
-        dh = S.min(dh, 360.0 - dh)
-        dr = r - P.kr
-        dg = g - P.kg
-        db = b - P.kb
-        dist = 0.8660254037844386 * S.sqrt(dr * dr + dg * dg + db * db) + (dh / 180.0 + S.abs(sat - P.ks) + S.abs(l - P.kl)) / 6.0
-        hard = S.select(dist >= P.low, S.f(1.0), S.f(0.0))
-        ramp = S.min(S.max((dist - P.low) / S.max(1.0 - P.low, S.f(1e-6)), S.f(0.0)), S.f(1.0))
-        al = S.select(S.ne(P.cut, 0), hard, ramp)
-        S.buf('out').store(i, S.min(S.f(255.0), S.floor(al * 255.0 + 1e-6)))
-
-@kernel("chroma_mix", WH + [('maskonly', 'u'), ('despill', 'u'), ('blurred', 'u')], [PIC_IN, PLANE_IN1, PIC_OUT])
-def chroma_mix(S):
-    # the end of chromaKeyer(): the 8-bit alpha (a blurred one truncated a little under), the straight colour (despilled)
-    # times it truncated to 8 bits, or the alpha as grey
-    P = S.p
-    with S.in_range(P.w, P.h):
-        i = S.gy * P.w + S.gx
-        s = S.buf('in0').load(i)
-        m0 = S.buf('in1').load(i)
-        m8 = S.min(S.f(255.0), S.max(S.f(0.0), S.select(S.ne(P.blurred, 0), S.floor(m0 - 0.005), m0)))
-        r, g, b, a, valid = unpremul(S, s)
-        bb = S.select(S.eq(P.despill, 1), S.min(b, g), b)
-        gg = S.select(S.eq(P.despill, 2), S.min(g, r), g)
-        ma = m8 / 255.0 * a
-        def q(v): return S.floor(v * m8 + 1e-3) / 255.0 * a
-        shown = S.vec4(ma, ma, ma, ma)
-        keyed = S.vec4(q(r), q(gg), q(bb), ma)
-        S.buf('out').store(i, S.select(S.ne(P.maskonly, 0), shown, keyed))
-
 # ---------------------------------------------------------------------------------------------------------- convolution kernel
 @kernel("unpremul_px", WH, [PIC_IN, PIC_OUT])
 def unpremul_px(S):
@@ -640,49 +706,6 @@ def unpremul_px(S):
         has = a > 1e-6
         S.buf('out').store(i, S.vec4(S.select(has, p.x / a, S.f(0.0)), S.select(has, p.y / a, S.f(0.0)), S.select(has, p.z / a, S.f(0.0)), a))
 
-@kernel("conv3x3", WH + [('k0', 'f'), ('k1', 'f'), ('k2', 'f'), ('k3', 'f'), ('k4', 'f'), ('k5', 'f'), ('k6', 'f'), ('k7', 'f'), ('k8', 'f'),
-                         ('cr', 'f'), ('sr', 'f'), ('scale', 'f'), ('mode', 'u'), ('mul', 'f'), ('off', 'f'), ('lv', 'u')], [PIC_IN, PIC_OUT])
-def conv3x3(S):
-    # convolutionKernel(): the taps in the plain loop's order (a tap of 0 adds nothing); mode 0: whole-pixel neighbours (edges clamped),
-    # 1: turned (neighbours read between the pixels), 2: a smaller frame (the offsets are a fraction of a pixel)
-    P = S.p
-    with S.in_range(P.w, P.h):
-        i = S.gy * P.w + S.gx
-        inb = S.buf('in0')
-        xc = S.to_f(S.gx) + 0.5
-        yc = S.to_f(S.gy) + 0.5
-        acc = S.var('v4', S.splat4(0.0))
-        ks = [P.k0, P.k1, P.k2, P.k3, P.k4, P.k5, P.k6, P.k7, P.k8]
-        for t in range(9):
-            row, col = t // 3, t % 3
-            fdx, fdy = float(col - 1), float(row - 1)
-            with S.if_(S.ne(ks[t], 0.0)):
-                tap = S.var('v4')
-                with S.if_(S.eq(P.mode, 0)):
-                    nx = S.to_u(S.clamp(S.to_i(S.gx) + (col - 1), 0, S.to_i(P.w) - 1))
-                    ny = S.to_u(S.clamp(S.to_i(S.gy) + (row - 1), 0, S.to_i(P.h) - 1))
-                    tap.set(inb.load(ny * P.w + nx))
-                with S.else_():
-                    ox = fdx * P.cr - fdy * P.sr
-                    oy = fdx * P.sr + fdy * P.cr
-                    sc = S.select(S.eq(P.mode, 2), P.scale, S.f(1.0))
-                    tap.set(sample_clamped(S, inb, P.w, P.h, xc + ox * sc, yc + oy * sc))
-                t4 = tap.get()
-                # (the taps in levels: a value that is a whole level up to float noise is made that level - as the CPU does)
-                def lev(v):
-                    t_ = v * 255.0
-                    r_ = S.floor(t_ + 0.5)
-                    return S.select(S.ne(P.lv, 0) & (S.abs(t_ - r_) < 0.002), r_, t_)
-                acc.set(S.vec4(acc.get().x + ks[t] * lev(t4.x), acc.get().y + ks[t] * lev(t4.y), acc.get().z + ks[t] * lev(t4.z), 0.0))
-        a = inb.load(i).w
-        c = acc.get()
-        def fin(v):
-            r = v * P.mul + P.off
-            q = S.floor(S.min(S.max(r, 0.0), 255.0))
-            return (S.select(S.ne(P.lv, 0), q, r) / 255.0) * a
-        S.buf('out').store(i, S.vec4(fin(c.x), fin(c.y), fin(c.z), a))
-
-# ---------------------------------------------------------------------------------------------------------- more colour effects
 @kernel("colorcorrector", WH + [('sat', 'f'), ('gain', 'f'), ('gc', 'f'), ('ga', 'f'), ('gamma_on', 'u'), ('off', 'f'), ('du0', 'f'), ('du1', 'f'), ('du2', 'f'),
                                 ('dv0', 'f'), ('dv1', 'f'), ('dv2', 'f')], [PIC_IN, PIC_OUT])
 def colorcorrector(S):
@@ -694,7 +717,7 @@ def colorcorrector(S):
         V = 0.877 * (r - Y)
         yp = S.max(Y * P.gain, 0.0)
         base = (yp + P.gc) / (1.0 + P.gc)
-        yg = S.select(base > 0.0, S.pow(base, P.ga), S.f(0.0))
+        yg = S.select(base > 0.0, fpow(S, S.max(base, 1e-30), P.ga), S.f(0.0))
         yp = S.select(S.ne(P.gamma_on, 0), yg, yp) + P.off
         yp = S.min(S.max(yp, 0.0), 1.0)
         e0 = yp / 0.402
@@ -734,40 +757,6 @@ def srgb_to_lin(S, v):
 def lin_to_srgb(S, v):
     return S.select(v <= 0.0031308, v * 12.92, 1.055 * S.pow(S.max(v, 0.0), S.f(1.0) / S.f(2.4)) - 0.055)
 
-@kernel("labadjust", WH + [('light', 'f'), ('da', 'f'), ('db', 'f'), ('des', 'f'), ('invert', 'u')], [PIC_IN, PIC_OUT])
-def labadjust(S):
-    # labAdjust() in builtins_more_colour.cpp (the 8-bit result is truncated like there)
-    P = S.p
-    def body(S, r, g, b):
-        lr, lg, lb = (srgb_to_lin(S, clamp01(S, c)) for c in (r, g, b))
-        X = (0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb) / 0.95047
-        Y = 0.2126729 * lr + 0.7151522 * lg + 0.0721750 * lb
-        Z = (0.0193339 * lr + 0.1191920 * lg + 0.9503041 * lb) / 1.08883
-        def f(t): return S.select(t > 216.0 / 24389.0, S.pow(t, S.f(1.0) / S.f(3.0)), (24389.0 / 27.0 * t + 16.0) / 116.0)
-        X, Y, Z = f(X), f(Y), f(Z)
-        L = 116.0 * Y - 16.0
-        A = 500.0 * (X - Y)
-        B = 200.0 * (Y - Z)
-        L = S.select(S.ne(P.invert, 0), 95.58 - L, L) * P.light
-        A = (A + P.da * 100.0) * (1.0 - P.des)
-        B = (B + P.db * 100.0) * (1.0 - P.des)
-        Y = (L + 16.0) / 116.0
-        X = Y + A / 500.0
-        Z = Y - B / 200.0
-        def fi(t):
-            t3 = t * t * t
-            return S.select(t3 > 216.0 / 24389.0, t3, (116.0 * t - 16.0) / (24389.0 / 27.0))
-        X = fi(X) * 0.95047
-        Y = fi(Y)
-        Z = fi(Z) * 1.08883
-        lr2 = 3.24045484 * X - 1.53713885 * Y - 0.49853155 * Z
-        lg2 = -0.96926639 * X + 1.87601093 * Y + 0.04155608 * Z
-        lb2 = 0.05564342 * X - 0.20402585 * Y + 1.05722516 * Z
-        def q(v):
-            return S.floor(clamp01(S, lin_to_srgb(S, v)) * 255.0 + 0.001) * (1.0 / 255.0)
-        return q(lr2), q(lg2), q(lb2)
-    pixel_row(S, body)
-
 @kernel("blackrestore", WH + [('thr', 'f')], [PIC_IN, PIC_OUT])
 def blackrestore(S):
     P = S.p
@@ -778,65 +767,7 @@ def blackrestore(S):
         return S.select(low, z, r), S.select(low, z, g), S.select(low, z, b)
     pixel_row(S, body)
 
-@kernel("channelblend", WH + [('flags', 'u'), ('pad', 'u')] + [('w%d' % i, 'f') for i in range(20)], [PIC_IN, PIC_OUT])
-def channelblend(S):
-    # channelBlend() in builtins_more_colour.cpp: no zeroing of pixels without alpha here
-    P = S.p
-    with S.in_range(P.w, P.h):
-        i = S.gy * P.w + S.gx
-        p = S.buf('in0').load(i)
-        ins = [p.x, p.y, p.z, p.w]
-        outs = []
-        for o in range(4):
-            ws = [getattr(P, 'w%d' % (o * 5 + k)) for k in range(5)]
-            sm = ws[4]
-            wsum = S.abs(ws[4])
-            for k in range(4):
-                sm = sm + ws[k] * ins[k]
-                wsum = wsum + S.abs(ws[k])
-            sm = S.select(S.ne(P.flags, 0), S.select(wsum > 1e-6, sm / S.max(wsum, S.f(1e-6)), S.f(0.0)), sm)
-            outs.append(clamp01(S, sm))
-        S.buf('out').store(i, S.vec4(outs[0], outs[1], outs[2], outs[3]))
-
-@kernel("vignette", WH + [('px0', 'f'), ('py0', 'f'), ('cs', 'f'), ('sn', 'f'), ('ix', 'f'), ('iy', 'f'), ('inner', 'f'), ('invspan', 'f'),
-                          ('expo', 'f'), ('invert', 'u'), ('cr', 'f'), ('cg', 'f'), ('cb', 'f'), ('ca', 'f')], [PIC_IN, PIC_OUT])
-def vignette(S):
-    # vignette() in builtins_more_creative.cpp
-    P = S.p
-    with S.in_range(P.w, P.h):
-        i = S.gy * P.w + S.gx
-        s = S.buf('in0').load(i)
-        u = S.to_f(S.gx) + 0.5 - P.px0
-        v = S.to_f(S.gy) + 0.5 - P.py0
-        ru = (u * P.cs + v * P.sn) * P.ix
-        rv = (-u * P.sn + v * P.cs) * P.iy
-        d = S.sqrt(ru * ru + rv * rv)
-        t = (d - P.inner) * P.invspan
-        tp = S.max(t, S.f(1e-30))
-        m = S.select(t <= 0.0, S.f(0.0), S.min(S.f(1.0), S.pow(tp, P.expo)))
-        m2 = S.select(S.ne(P.invert, 0), 1.0 - m, m)
-        k = m2 * P.ca
-        S.buf('out').store(i, S.vec4(s.x * (1.0 - k) + P.cr * k * s.w, s.y * (1.0 - k) + P.cg * k * s.w, s.z * (1.0 - k) + P.cb * k * s.w, s.w))
-
 # ---------------------------------------------------------------------------------------------------------- blur mixes, pixelate
-@kernel("unsharp_mix", WH + [('amount', 'f'), ('thr', 'f'), ('lv', 'u')], [PIC_IN, PIC_IN1, PIC_OUT])
-def unsharp_mix(S):
-    # unsharpMask() in builtins_more_blur.cpp: in0 the frame, in1 its blur; every channel, in levels (whole ones for 8-bit pictures)
-    P = S.p
-    with S.in_range(P.w, P.h):
-        i = S.gy * P.w + S.gx
-        s = S.buf('in0').load(i)
-        bl = S.buf('in1').load(i)
-        q = S.ne(P.lv, 0)
-        res = []
-        for ch in (0, 1, 2, 3):
-            def lev(v): return S.select(q, S.floor(S.min(S.max(v, 0.0), 1.0) * 255.0 + 0.5), v * 255.0)
-            sv, bv = lev(s[ch]), lev(bl[ch])
-            v = S.min(S.max(sv + (sv - bv) * P.amount, 0.0), 255.0)
-            v = S.select(q, S.trunc(v), v)
-            res.append(S.select(S.abs(v - bv) > P.thr, v, sv) * (1.0 / 255.0))
-        S.buf('out').store(i, S.vec4(res[0], res[1], res[2], res[3]))
-
 @kernel("blend_mix", WH + [('k', 'f')], [PIC_IN, PIC_IN1, PIC_OUT])
 def blend_mix(S):
     # blendOver() in builtins_more_internal.h: in0 the frame, in1 the effect's picture
@@ -847,29 +778,6 @@ def blend_mix(S):
         e = S.buf('in1').load(i)
         mixed = s + (e - s) * P.k
         S.buf('out').store(i, S.select(P.k >= 0.999, e, mixed))
-
-@kernel("pixelate_blocks", WH + [('nbx', 'u'), ('nby', 'u'), ('kx', 'u'), ('ky', 'u'), ('lv', 'u'), ('pad', 'u')], [PIC_IN, PIC_OUT, TABLE])
-def pixelate_blocks(S):
-    # one invocation per cell: the average of its window (pixelate() in builtins_filters.cpp). The table holds the cells' first pixels
-    # across (nbx + 1 of them, the last one W) and then those down counted from the bottom row (nby + 1)
-    P = S.p
-    with S.in_range(P.nbx, P.nby):
-        W, H = S.to_i(P.w), S.to_i(P.h)
-        x0 = S.to_i(S.to_u(S.buf('table').load(S.gx)))
-        y0 = S.to_i(S.to_u(S.buf('table').load(P.nbx + 1 + S.gy)))
-        x1 = S.min(x0 + S.to_i(P.kx), W)
-        y1 = S.min(y0 + S.to_i(P.ky), H)
-        tot = S.var('v4', S.splat4(0.0))
-        with S.for_(y0, y1, 1, True) as yb:
-            row = S.var('v4', S.splat4(0.0))
-            with S.for_(x0, x1, 1, True) as x:
-                row.set(row.get() + S.buf('in0').load(S.to_u(H - 1 - yb) * P.w + S.to_u(x)))
-            tot.set(tot.get() + row.get())
-        n = S.to_f(x1 - x0) * S.to_f(y1 - y0)
-        m = tot.get() / n
-        def q(v):
-            return S.select(S.ne(P.lv, 0), S.floor(S.min(S.max(v, 0.0), 2.0) * 255.0 + 0.001) / 255.0, v)
-        S.buf('out').store(S.gy * P.nbx + S.gx, S.vec4(q(m.x), q(m.y), q(m.z), q(m.w)))
 
 @kernel("pixelate_apply", WH + [('nbx', 'u'), ('pad', 'u')], [PIC_IN, PIC_OUT, TABLE])
 def pixelate_apply(S):
@@ -915,6 +823,27 @@ def sin_poly(S, x):
 def cos_poly(S, x):
     return sin_poly(S, x + S.f(1.5707963267948966))
 
+
+def sample_clamped_d(S, buf, w, h, x, y):
+    """Buf::sampleClamped(double x, double y): the same weights, the same order of sums, the position in doubles (x, y are SF)"""
+    wf, hf = SF.from_u32(S, w), SF.from_u32(S, h)
+    cx = SF.sel(S, x < 0.5, SF.const(S, 0.5), SF.sel(S, x > wf - 0.5, wf - 0.5, x))
+    cy = SF.sel(S, y < 0.5, SF.const(S, 0.5), SF.sel(S, y > hf - 0.5, hf - 0.5, y))
+    xs, ys = cx - 0.5, cy - 0.5
+    x0, y0 = xs.floor_i32(), ys.floor_i32()
+    fx = (xs - SF.from_i32(S, x0)).to_f32()
+    fy = (ys - SF.from_i32(S, y0)).to_f32()
+    ix, iy = 1.0 - fx, 1.0 - fy
+    wi, hi = S.to_i(w), S.to_i(h)
+    acc = S.vec4(S.f(0.0), S.f(0.0), S.f(0.0), S.f(0.0))
+    for (di, dj, wgt) in ((0, 0, ix * iy), (1, 0, fx * iy), (0, 1, ix * fy), (1, 1, fx * fy)):
+        xx, yy = x0 + di, y0 + dj
+        ok = (xx >= 0) & (yy >= 0) & (xx < wi) & (yy < hi)
+        idx = S.to_u(S.max(S.min(yy, hi - 1), S.i(0))) * w + S.to_u(S.max(S.min(xx, wi - 1), S.i(0)))
+        t = buf.load(idx) * wgt
+        acc = S.select(ok, acc + t, acc)
+    return acc
+
 def area_coords(S):
     P = S.p
     dx = (S.to_f(S.gx) + 0.5 - P.px0) / P.rx
@@ -924,81 +853,54 @@ def area_coords(S):
 
 AREA = WH + [('px0', 'f'), ('py0', 'f'), ('rx', 'f'), ('ry', 'f')]
 
-@kernel("spherize", WH + [('cxp', 'f'), ('cyp', 'f'), ('kx', 'f'), ('ky', 'f'), ('amount', 'f'), ('q8', 'u')], [PIC_IN, PIC_OUT])
-def spherize(S):
-    # spherize() in builtins_filters2.cpp (VEGAS's CPU processor): rows bottom first, a point inside the ellipse is read from the
-    # centre + (dx, dy) * (1 - 0.8 Amount cos(r pi / 2)), bilinearly with 8-bit weights (8-bit pictures) or plainly (float ones)
-    P = S.p
-    with S.in_range(P.w, P.h):
-        i = S.gy * P.w + S.gx
-        wf, hf = S.to_f(P.w), S.to_f(P.h)
-        j = hf - 1.0 - S.to_f(S.gy)
-        dy = j - P.cyp
-        dx = S.to_f(S.gx) - P.cxp
-        yy0 = 2.0 * dy / hf * P.ky
-        xx = dx * P.kx
-        r2 = xx * xx + yy0 * yy0
-        r = S.sqrt(S.min(r2, 1.0))
-        f = 1.0 - S.cos(r * 3.1415926 * 0.5) * P.amount * 0.8
-        sy = f * dy + P.cyp
-        sx = f * dx + P.cxp
-        iy = S.floor(sy + 1.5e-8)
-        ix = S.floor(sx + 1.5e-8)
-        y0 = S.clamp(iy, 0.0, hf - 1.0)
-        y1 = S.clamp(iy + 1.0, 0.0, hf - 1.0)
-        x0 = S.clamp(ix, 0.0, wf - 1.0)
-        x1 = S.clamp(ix + 1.0, 0.0, wf - 1.0)
-        def at(xf, yf):
-            return S.buf('in0').load(S.to_u(hf - 1.0 - yf) * P.w + S.to_u(xf))
-        p00, p10, p01, p11 = at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1)
-        frx, fry = sx - ix, sy - iy
-        q = S.ne(P.q8, 0)
-        fx = S.select(q, S.trunc(frx * 256.0) * (1.0 / 256.0), frx)
-        fy = S.select(q, S.trunc(fry * 256.0) * (1.0 / 256.0), fry)
-        def lv(p): return S.select(q, S.floor(p * 255.0 + 0.5), p * 255.0)
-        a = (lv(p00) * (1.0 - fx) + lv(p10) * fx) * (1.0 - fy) + (lv(p01) * (1.0 - fx) + lv(p11) * fx) * fy
-        v = S.select(q, S.floor(a * (1.0 + 1e-7)), a) * (1.0 / 255.0)
-        S.buf('out').store(i, S.select(r2 >= 1.0, S.buf('in0').load(i), v))
-
-@kernel("swirl", AREA + [('turn', 'f')], [PIC_IN, PIC_OUT])
+@kernel("swirl", WH + dpush('px0', 'py0', 'rx', 'ry', 'turn'), [PIC_IN, PIC_OUT])
 def swirl(S):
+    # swirl() in builtins_distort.cpp, in doubles
+    from sf64 import sf_sincos
     P = S.p
     with S.in_range(P.w, P.h):
         i = S.gy * P.w + S.gx
-        dx, dy, r = area_coords(S)
+        px0, py0, rx, ry, turn = pd(P, 'px0'), pd(P, 'py0'), pd(P, 'rx'), pd(P, 'ry'), pd(P, 'turn')
+        dx = (SF.from_u32(S, S.gx) + 0.5 - px0) / rx
+        dy = (SF.from_u32(S, S.gy) + 0.5 - py0) / ry
+        r = (dx * dx + dy * dy).sqrt()
         f = (1.0 - r) * (1.0 - r)
-        ang = P.turn * f
-        ca, sa = cos_poly(S, ang), sin_poly(S, ang)
-        ux, uy = dx * P.rx, dy * P.ry
-        samp = sample_clamped(S, S.buf('in0'), P.w, P.h, P.px0 + ux * ca - uy * sa, P.py0 + ux * sa + uy * ca)
+        ang = turn * f
+        sa, ca = sf_sincos(S, ang)
+        ux, uy = dx * rx, dy * ry
+        samp = sample_clamped_d(S, S.buf('in0'), P.w, P.h, px0 + ux * ca - uy * sa, py0 + ux * sa + uy * ca)
         S.buf('out').store(i, S.select(r >= 1.0, S.buf('in0').load(i), samp))
 
-@kernel("pinchpunch", AREA + [('amount', 'f')], [PIC_IN, PIC_OUT])
+@kernel("pinchpunch", WH + dpush('px0', 'py0', 'rx', 'ry', 'amount'), [PIC_IN, PIC_OUT])
 def pinchpunch(S):
+    from sf64 import sf_sin
     P = S.p
     with S.in_range(P.w, P.h):
         i = S.gy * P.w + S.gx
-        dx, dy, r = area_coords(S)
-        sn = sin_poly(S, S.f(3.141592653589793) * r)
-        k = 1.0 - P.amount * 0.6 * sn * sn * (1.0 - r)
-        samp = sample_clamped(S, S.buf('in0'), P.w, P.h, P.px0 + dx * k * P.rx, P.py0 + dy * k * P.ry)
+        px0, py0, rx, ry, amount = pd(P, 'px0'), pd(P, 'py0'), pd(P, 'rx'), pd(P, 'ry'), pd(P, 'amount')
+        dx = (SF.from_u32(S, S.gx) + 0.5 - px0) / rx
+        dy = (SF.from_u32(S, S.gy) + 0.5 - py0) / ry
+        r = (dx * dx + dy * dy).sqrt()
+        sn = sf_sin(S, r * 3.141592653589793)
+        k = 1.0 - amount * 0.6 * sn * sn * (1.0 - r)
+        samp = sample_clamped_d(S, S.buf('in0'), P.w, P.h, px0 + dx * k * rx, py0 + dy * k * ry)
         S.buf('out').store(i, S.select((r >= 1.0) | (r < 1e-12), S.buf('in0').load(i), samp))
 
-@kernel("wave", WH + [('vn', 'f'), ('hn', 'f'), ('va', 'f'), ('ha', 'f'), ('vp', 'f'), ('hp', 'f'), ('invw', 'f'), ('invh', 'f')], [PIC_IN, PIC_OUT])
+@kernel("wave", WH + dpush('vn', 'hn', 'va', 'ha', 'vp', 'hp'), [PIC_IN, PIC_OUT])
 def wave(S):
-    # wave() in builtins_distort.cpp; the sine of 2 pi t is taken of the fractional part of t
+    # wave() in builtins_distort.cpp, in doubles
+    from sf64 import sf_sin
     P = S.p
     with S.in_range(P.w, P.h):
         i = S.gy * P.w + S.gx
-        xc, yc = S.to_f(S.gx) + 0.5, S.to_f(S.gy) + 0.5
-        fy = yc * P.invh
-        fx = xc * P.invw
-        ty = P.hn * fy + P.hp
-        tx = P.vn * fx + P.vp
-        twopi = S.f(6.283185307179586)
-        sx = P.ha * sin_poly(S, (ty - S.floor(ty)) * twopi)
-        sy = P.va * sin_poly(S, (tx - S.floor(tx)) * twopi)
-        S.buf('out').store(i, sample_clamped(S, S.buf('in0'), P.w, P.h, xc + sx, yc + sy))
+        vn, hn, va, ha, vp, hp = pd(P, 'vn'), pd(P, 'hn'), pd(P, 'va'), pd(P, 'ha'), pd(P, 'vp'), pd(P, 'hp')
+        xc = SF.from_u32(S, S.gx) + 0.5
+        yc = SF.from_u32(S, S.gy) + 0.5
+        fy = yc / SF.from_u32(S, S.max(P.h, 1))
+        fx = xc / SF.from_u32(S, S.max(P.w, 1))
+        sx = ha * sf_sin(S, (hn * fy + hp) * 6.283185307179586)
+        sy = va * sf_sin(S, (vn * fx + vp) * 6.283185307179586)
+        S.buf('out').store(i, sample_clamped_d(S, S.buf('in0'), P.w, P.h, xc + sx, yc + sy))
 
 # ---------------------------------------------------------------------------------------------------------- noise, border, white balance, min and max
 def hash3(S, x, y, z):
@@ -1062,24 +964,6 @@ def border(S):
                     res.set(S.vec4(r2 * al, g2 * al, b2 * al, al))
         S.buf('out').store(i, res.get())
 
-@kernel("whitebalance", WH + [('rm', 'f'), ('bm', 'f'), ('gm', 'f'), ('r2', 'f'), ('b2', 'f'), ('bright', 'f'), ('post', 'f')], [PIC_IN, PIC_OUT])
-def whitebalance(S):
-    # whiteBalance() in builtins_more_colour.cpp without the histogram equalising (post: the stretch of HasData without a histogram)
-    P = S.p
-    def body(S, r, g, b):
-        y0 = 0.299 * r + 0.587 * g + 0.114 * b
-        dy = clamp01(S, P.bright * y0) - y0
-        r = r + dy
-        g = g + dy
-        b = b + dy
-        r = r * P.rm
-        b = b * P.bm
-        g = g * P.gm
-        r = r * P.r2
-        b = b * P.b2
-        return clamp01(S, clamp01(S, r) * P.post), clamp01(S, clamp01(S, g) * P.post), clamp01(S, clamp01(S, b) * P.post)
-    pixel_row(S, body)
-
 @kernel("minmax", WH + [('ry', 'u'), ('maximum', 'u')], [PIC_IN, PIC_OUT, TABLE])
 def minmax(S):
     # neighbourhood(c, false, maximum) in builtins_more_blur.cpp: the table holds each row's half width (the round shape's, worked out on the host)
@@ -1133,40 +1017,44 @@ def maskgenerator(S):
 @kernel("broadcastcolors", WH + [('ymin', 'f'), ('ymax', 'f'), ('symin', 'f'), ('symax', 'f'), ('clim', 'f'), ('sc', 'f'), ('cmin', 'f'), ('cmax', 'f'),
                                   ('scmin', 'f'), ('scmax', 'f')], [PIC_IN, PIC_OUT])
 def broadcastcolors(S):
-    # broadcastColors() in builtins_more_colour.cpp
+    # broadcastColors() in builtins_more_colour.cpp, operation by operation
     P = S.p
     def soft_low(x, L, T):
-        # broadcastSoftLow(): x <= 0 -> L, x >= T -> x, a power curve between (T <= L: a hard limit)
-        knee = T > L + 1e-7
-        tl = S.max(T - L, S.f(1e-7))
-        curve = L + tl * S.pow(S.min(S.f(1.0), S.max(S.f(0.0), x / S.max(T, S.f(1e-7)))), T / tl)
-        return S.select(knee, S.select(x >= T, x, curve), S.max(x, L))
+        # broadcastSoftLow(): T <= L + 1e-7 a hard limit; x >= T: x; else a power curve (only evaluated where it is used)
+        hard = T <= L + 1e-7
+        res = S.var('f', S.select(hard, fmax(S, x, L), x))
+        with S.if_(~hard & (x < T)):
+            base = fmin(S, S.f(1.0), fmax(S, S.f(0.0), x / T))
+            res.set(L + (T - L) * fpow(S, base, T / (T - L)))
+        return res.get()
     def body(S, r, g, b):
         y0 = 0.299 * r + 0.587 * g + 0.114 * b
-        y1 = S.select(P.ymin > 0.0, soft_low(y0, P.ymin, P.ymin * (1.0 + P.symin)), S.max(y0, P.ymin))
-        y = S.select(P.ymax < 1.0, 1.0 - soft_low(1.0 - y1, 1.0 - P.ymax, (1.0 - P.ymax) * (1.0 + P.symax)), S.min(y1, P.ymax))
+        y1 = S.select(P.ymin > 0.0, soft_low(y0, P.ymin, P.ymin * (1.0 + P.symin)), fmax(S, y0, P.ymin))
+        y = S.select(P.ymax < 1.0, 1.0 - soft_low(1.0 - y1, 1.0 - P.ymax, (1.0 - P.ymax) * (1.0 + P.symax)), fmin(S, y1, P.ymax))
         d = y - y0
         cb = b + d - y
         cr = r + d - y
         p1 = 0.492 * cb
         p2 = 0.877 * cr
-        uv = S.sqrt(p1 * p1 + p2 * p2)
-        top = 0.63214
-        uv1 = S.select(P.clim < top, top - soft_low(top - uv, top - P.clim, (top - P.clim) * (1.0 + P.sc)), S.min(uv, P.clim))
-        f = S.select(uv > 1e-9, uv1 / S.max(uv, S.f(1e-9)), S.f(1.0))
+        uv = fsqrt(S, p1 * p1 + p2 * p2)
+        top = S.f(0.63214)
+        uv1 = S.select(P.clim < top, top - soft_low(top - uv, top - P.clim, (top - P.clim) * (1.0 + P.sc)), fmin(S, uv, P.clim))
+        f = S.select(uv > 1e-9, uv1 / S.select(uv > 1e-9, uv, S.f(1.0)), S.f(1.0))
         uv2 = uv * f
         hi0 = y + uv2
         lo0 = y - uv2
-        wh = 0.2 * P.scmax * S.max(S.f(0.0), P.cmax - y)
-        wl = 0.2 * P.scmin * S.max(S.f(0.0), y - P.cmin)
+        wh = 0.2 * P.scmax * fmax(S, S.f(0.0), P.cmax - y)
+        wl = 0.2 * P.scmin * fmax(S, S.f(0.0), y - P.cmin)
         th = P.cmax + wh - hi0
-        hi_k = S.select(hi0 >= P.cmax + wh, P.cmax, S.select(hi0 > P.cmax - wh, P.cmax - th * th / (4.0 * S.max(wh, S.f(1e-9))), hi0))
-        hi = S.select(wh > 1e-9, hi_k, S.min(hi0, P.cmax))
+        wh_ok = wh > 1e-9
+        hi_k = S.select(hi0 >= P.cmax + wh, P.cmax, S.select(hi0 > P.cmax - wh, P.cmax - th * th / (4.0 * S.select(wh_ok, wh, S.f(1.0))), hi0))
+        hi = S.select(wh_ok, hi_k, fmin(S, hi0, P.cmax))
         tl2 = lo0 - P.cmin + wl
-        lo_k = S.select(lo0 <= P.cmin - wl, P.cmin, S.select(lo0 < P.cmin + wl, P.cmin + tl2 * tl2 / (4.0 * S.max(wl, S.f(1e-9))), lo0))
-        lo = S.select(wl > 1e-9, lo_k, S.max(lo0, P.cmin))
-        uc = S.max(uv2, S.f(1e-9))
-        s = S.min(S.f(1.0), S.max(S.f(0.0), S.min((hi - y) / uc, (y - lo) / uc)))
+        wl_ok = wl > 1e-9
+        lo_k = S.select(lo0 <= P.cmin - wl, P.cmin, S.select(lo0 < P.cmin + wl, P.cmin + tl2 * tl2 / (4.0 * S.select(wl_ok, wl, S.f(1.0))), lo0))
+        lo = S.select(wl_ok, lo_k, fmax(S, lo0, P.cmin))
+        uc = S.select(uv2 > 1e-9, uv2, S.f(1.0))
+        s = fmin(S, S.f(1.0), fmax(S, S.f(0.0), fmin(S, (hi - y) / uc, (y - lo) / uc)))
         f = S.select(uv2 > 1e-9, f * s, f)
         cb = cb * f
         cr = cr * f
@@ -1221,7 +1109,7 @@ def sample_edge(S, load, w, h, x, y):
             yy = y0f + float(j)
             inside = near & (xx >= 0.0) & (yy >= 0.0) & (xx < wf) & (yy < hf)
             wgt = (fx if i else 1.0 - fx) * (fy if j else 1.0 - fy)
-            idx = S.to_u(S.max(yy, 0.0)) * w + S.to_u(S.max(xx, 0.0))
+            idx = S.to_u(S.min(S.max(yy, 0.0), hf - 1.0)) * w + S.to_u(S.min(S.max(xx, 0.0), wf - 1.0))      # (kept inside the picture; the tap counts only when 'inside')
             acc = acc + S.select(inside, load(idx) * wgt, S.splat4(0.0))
     return acc
 
@@ -1377,8 +1265,648 @@ def slide_frames(S):
         o = S.select(S.ne(P.border, 0), border_ring(S, o, P, sd - P.bw, P.R, P.Wd), o)
         S.buf('out').store(i, o)
 
+# ---------------------------------------------------------------------------------------------------------- generators (no input picture)
+@kernel("fill_px", WH + [('r', 'f'), ('g', 'f'), ('b', 'f'), ('a', 'f')], [PIC_OUT])
+def fill_px(S):
+    # Solid Color: the planner works the colour out in double precision, as solidColor() does
+    with S.in_range(S.p.w, S.p.h):
+        S.buf('out').store(S.gy * S.p.w + S.gx, S.vec4(S.p.r, S.p.g, S.p.b, S.p.a))
+
+@kernel("colorgradient", WH + [('type', 'u')], [PIC_OUT, TABLE])
+def colorgradient(S):
+    # colorGradient() in builtins_gen.cpp, in doubles; the table holds the doubles: cx W, cy H, cos, sin, size, aspect, aspect^2, size / 2, then colour 1 and 2 (r g b a)
+    P = S.p
+    with S.in_range(P.w, P.h):
+        tab = S.buf('table')
+        d = [ld_sf(S, tab, 2 * k) for k in range(16)]
+        cxw, cyh, ca, sa, size, aspect, asp2, hsz = d[:8]
+        hf = SF.from_u32(S, P.h)
+        dx = ((SF.from_u32(S, S.gx) + 0.5) - cxw) / hf
+        dy = ((hf - (SF.from_u32(S, S.gy) + 0.5)) - cyh) / hf
+        u = dx * ca + dy * sa
+        v = dx.neg() * sa + dy * ca
+        t_lin = u / size + 0.5
+        t_ell = ((u * u) / asp2 + v * v).sqrt() / hsz
+        au, av = u.abs(), v.abs()
+        q = au / aspect
+        t_rect = SF.sel(S, q > av, q, av) / hsz            # std::max(a, b): a < b ? b : a
+        t_rect = SF.sel(S, q < av, av, q) / hsz
+        t = SF.sel(S, S.eq(P.type, 0), t_lin, SF.sel(S, S.eq(P.type, 1), t_ell, t_rect))
+        t = SF.sel(S, t < 0.0, SF.const(S, 0.0), SF.sel(S, t > 1.0, SF.const(S, 1.0), t))
+        def lerp(a, b): return a + (b - a) * t
+        c1, c2 = d[8:12], d[12:16]
+        m = [lerp(c1[k], c2[k]) for k in range(4)]
+        S.buf('out').store(S.gy * P.w + S.gx, S.vec4((m[0] * m[3]).to_f32(), (m[1] * m[3]).to_f32(), (m[2] * m[3]).to_f32(), m[3].to_f32()))
+
+@kernel("checkerboard", WH + [('pa0', 'f'), ('pa1', 'f'), ('pa2', 'f'), ('pa3', 'f'), ('pb0', 'f'), ('pb1', 'f'), ('pb2', 'f'), ('pb3', 'f')], [PIC_OUT, TABLE])
+def checkerboard(S):
+    # checkerboard() in builtins_gen.cpp: the table holds the horizontal wave of every column, then the vertical one of every row (worked out in double precision)
+    P = S.p
+    with S.in_range(P.w, P.h):
+        tab = S.buf('table')
+        sx = tab.load(S.gx)
+        sy = tab.load(P.w + S.gy)
+        pa = [P.pa0, P.pa1, P.pa2, P.pa3]
+        pb = [P.pb0, P.pb1, P.pb2, P.pb3]
+        res = []
+        for k in range(4):
+            m1 = S.floor((pa[k] + (pb[k] - pa[k]) * sx) * 255.0 + 0.0001)
+            m2 = S.floor((pb[k] + (pa[k] - pb[k]) * sx) * 255.0 + 0.0001)
+            res.append(S.floor(m1 + (m2 - m1) * sy + 0.0001) / 255.0)
+        S.buf('out').store(S.gy * P.w + S.gx, S.vec4(res[0], res[1], res[2], res[3]))
+
+@kernel("testpattern", WH + [('type', 'u'), ('barw', 'u')], [PIC_OUT, TABLE])
+def testpattern(S):
+    # testPattern() in builtins_gen.cpp. Table: bars (7 x 3 levels), castle (7 x 3), then per column 4 numbers (inside the porch columns, ramp level, step), then per row 2 (inside the porch
+    # rows, step row); all worked out by the planner as the CPU does.
+    P = S.p
+    with S.in_range(P.w, P.h):
+        tab = S.buf('table')
+        W, H = P.w, P.h
+        x, y = S.gx, S.gy
+        yb = H - 1 - y
+        def lv(k): return S.to_u(tab.load(k if not isinstance(k, int) else S.u(k)))
+        colbase = S.u(42) + x * 4
+        rowbase = S.u(42) + W * 4 + y * 2
+        col_in = S.ne(S.to_u(tab.load(colbase)), 0)
+        bar = S.to_u(tab.load(colbase + 1))
+        ramp = S.to_u(tab.load(colbase + 2))
+        kstep = S.to_u(tab.load(colbase + 3))
+        row_in = S.ne(S.to_u(tab.load(rowbase)), 0)
+        step_row = S.to_u(tab.load(rowbase + 1))
+        R = S.var('u', 7); G = S.var('u', 7); B = S.var('u', 7)
+        def setv(r, g, b):
+            R.set(r); G.set(g); B.set(b)
+        def bars(white):
+            br, bg, bb = lv(bar * 3), lv(bar * 3 + 1), lv(bar * 3 + 2)
+            use = white & S.eq(bar, 0)
+            setv(S.select(use, S.u(235), br), S.select(use, S.u(235), bg), S.select(use, S.u(235), bb))
+        t = P.type
+        step_lvl = lambda k: S.select(S.eq(k, 0), S.u(70), S.select(S.eq(k, 1), S.u(125), S.select(S.eq(k, 2), S.u(180), S.u(235))))
+        with S.if_(S.eq(t, 0) | S.eq(t, 1)):
+            bars(S.eq(t, 1))
+        with S.if_(S.eq(t, 2)):
+            fx = S.to_f(x) * 255.0 / S.to_f(W)
+            setv((y + 1) * 255 / H, S.to_u(S.floor(fx)), S.to_u(S.floor(255.0 - fx)))
+        with S.if_(S.eq(t, 3)):
+            with S.if_(row_in):
+                with S.if_((x * 5 >= W) & (x * 10 < W * 3)):
+                    setv(S.u(16), S.u(16), S.u(16))
+                with S.if_((x * 10 >= W * 3) & (x * 10 < W * 4)):
+                    setv(S.u(25), S.u(25), S.u(25))
+                with S.if_((x * 10 >= W * 4) & (x * 2 < W)):
+                    setv(S.u(16), S.u(16), S.u(16))
+                with S.if_((x * 2 >= W) & col_in):
+                    l = step_lvl(step_row)
+                    setv(l, l, l)
+        with S.if_(S.eq(t, 4)):
+            with S.if_(row_in & col_in):
+                setv(ramp, ramp, ramp)
+        with S.if_(S.eq(t, 5) | S.eq(t, 6)):
+            with S.if_(y * 3 < 2 * H):
+                bars(S.eq(t, 6))
+            with S.if_((y * 3 >= 2 * H) & (y * 4 < 3 * H)):
+                setv(lv(21 + bar * 3), lv(22 + bar * 3), lv(23 + bar * 3))
+            with S.if_(y * 4 >= 3 * H):
+                xl = P.barw * 5
+                u3 = P.barw / 3
+                with S.if_(x >= xl):
+                    setv(S.u(16), S.u(16), S.u(16))
+                    with S.if_(x < xl + u3): setv(S.u(7), S.u(7), S.u(7))
+                    with S.if_((x >= xl + u3) & (x < xl + 2 * u3)): setv(S.u(16), S.u(16), S.u(16))
+                    with S.if_((x >= xl + 2 * u3) & (x < xl + 3 * u3)): setv(S.u(25), S.u(25), S.u(25))
+                    with S.if_(x >= xl + 3 * u3): setv(S.u(16), S.u(16), S.u(16))
+                with S.else_():
+                    setv(S.u(16), S.u(16), S.u(16))
+                    with S.if_(S.eq(t, 5)):
+                        with S.if_(x < W / 6): setv(S.u(113), S.u(40), S.u(7))
+                        with S.if_((x >= W / 6) & (x < W * 2 / 6)): setv(S.u(235), S.u(235), S.u(235))
+                        with S.if_((x >= W * 2 / 6) & (x < W * 3 / 6)): setv(S.u(165), S.u(7), S.u(70))
+        with S.if_(S.eq(t, 7) | S.eq(t, 8)):
+            with S.if_(row_in & col_in):
+                l = step_lvl(S.u(3) - kstep)
+                setv(S.select(S.eq(t, 7), l, S.u(7)), l, l)
+        out = S.vec4(S.to_f(R.get()) / 255.0, S.to_f(G.get()) / 255.0, S.to_f(B.get()) / 255.0, S.f(1.0))
+        S.buf('out').store(y * W + x, out)
+
+# ---------------------------------------------------------------------------------------------------------- creative effects (builtins_more_creative.cpp)
+@kernel("crop", WH + [('cx', 'f'), ('cy', 'f'), ('cs', 'f'), ('sn', 'f'), ('hx', 'f'), ('hy', 'f'), ('op', 'f')], [PIC_IN, PIC_OUT])
+def crop(S):
+    # cropFx(): the part of the frame inside a turned box is kept (times the opacity), the rest is transparent
+    P = S.p
+    with S.in_range(P.w, P.h):
+        i = S.gy * P.w + S.gx
+        u = S.to_f(S.gx) + 0.5 - P.cx
+        v = S.to_f(S.gy) + 0.5 - P.cy
+        ru = u * P.cs + v * P.sn
+        rv = v * P.cs - u * P.sn
+        inside = (S.abs(ru) <= P.hx) & (S.abs(rv) <= P.hy)
+        p = S.buf('in0').load(i)
+        S.buf('out').store(i, S.select(inside, p * P.op, S.splat4(0.0)))
+
+def hash_rnd(S, a, b, k, seed):
+    """The integer hash of the grain effects: 16 bits of it (u)."""
+    h = a * 374761393 + b * 668265263 + k * 2246822519 + seed
+    h = (h ^ (h >> 13)) * 1274126177
+    return (h ^ (h >> 16)) & 65535
+
+@kernel("filmgrain", WH + [('cell', 'u'), ('seed', 'u'), ('amount', 'f'), ('amc', 'f')], [PIC_IN, PIC_OUT])
+def filmgrain(S):
+    # filmGrain(): a grain value per cell of the picture, the same for every pixel of it
+    P = S.p
+    def body(S, r, g, b, x, y):
+        gx, gy = x / P.cell, y / P.cell
+        def rnd(k): return S.to_f(hash_rnd(S, gx, gy, S.u(k), P.seed)) / 32767.5 - 1.0
+        n0 = rnd(0) * P.amount * 0.35
+        r2 = r + (n0 + rnd(1) * P.amc * 0.2)
+        g2 = g + (n0 + rnd(2) * P.amc * 0.2)
+        b2 = b + (n0 + rnd(3) * P.amc * 0.2)
+        return clamp01(S, r2), clamp01(S, g2), clamp01(S, b2)
+    pixel_row(S, body, True)
+
+@kernel("filmeffects", WH + [('frame', 'u'), ('grey', 'u'), ('particles', 'u'), ('type', 'u'), ('c2', 'u'), ('c3', 'u'), ('c4', 'u'), ('c40', 'u'),
+                              ('tint', 'f'), ('cr', 'f'), ('cg', 'f'), ('cb', 'f'), ('grain', 'f'), ('gk', 'f'), ('scratch', 'f'), ('dust', 'f'), ('hair', 'f'), ('amount', 'f')], [PIC_IN, PIC_OUT])
+def filmeffects(S):
+    # filmEffects(): grey / tint, grain, and one kind of particle
+    P = S.p
+    def body(S, r, g, b, x, y):
+        seed = P.frame * 3266489917
+        def rnd(a, bb, k): return S.to_f(hash_rnd(S, a, bb, S.u(k), seed)) / 65535.0
+        gr = S.ne(P.grey, 0)
+        l = luma(S, r, g, b)
+        r = S.select(gr, l + (P.cr - 0.5) * P.tint, r)
+        g = S.select(gr, l + (P.cg - 0.5) * P.tint, g)
+        b = S.select(gr, l + (P.cb - 0.5) * P.tint, b)
+        n = (rnd(x, y, 7) - 0.5) * P.grain * 0.5 * P.gk
+        r = r + n; g = g + n; b = b + n
+        on = S.ne(P.particles, 0)
+        scr = on & S.eq(P.type, 4) & (rnd(x / P.c3, S.u(0), 11) < P.scratch)
+        dust = on & ~scr & S.eq(P.type, 0) & (rnd(x / P.c2, y / P.c2, 13) > P.dust)
+        fl = on & ~scr & ~dust & S.eq(P.type, 1)
+        hair = on & ~scr & ~dust & ~fl & S.eq(P.type, 2) & (rnd(x / P.c4, y / P.c40, 19) > P.hair)
+        f = 1.0 + (rnd(S.u(0), S.u(0), 17) - 0.5) * P.amount * 0.3
+        mul = S.select(dust, S.f(0.2), S.select(hair, S.f(0.1), S.select(fl, f, S.f(1.0))))
+        add = S.select(scr, S.f(0.35), S.f(0.0))
+        r = r * mul + add; g = g * mul + add; b = b * mul + add
+        return clamp01(S, r), clamp01(S, g), clamp01(S, b)
+    pixel_row(S, body, True)
+
+@kernel("bumpmap", WH + [('type', 'u'), ('chan', 'u'), ('sx', 'f'), ('sy', 'f'), ('sz', 'f'), ('ax', 'f'), ('ay', 'f'), ('az', 'f'), ('hs', 'f'), ('amb2', 'f'), ('i8', 'f'),
+                         ('kd', 'f'), ('ks', 'f'), ('power', 'f'), ('cut', 'f'), ('icut', 'f'), ('unit', 'f'), ('cx', 'f'), ('cy', 'f')], [PIC_IN, PIC_OUT])
+def bumpmap(S):
+    # bumpMapRender() in builtins_more_creative.cpp: a Prewitt gradient of the chosen channel is the normal; a Phong light on the colour
+    P = S.p
+    with S.in_range(P.w, P.h):
+        W = P.w
+        x, y = S.gx, S.gy
+        inb = S.buf('in0')
+        up = S.select(y > 0, y - 1, S.u(0))
+        dn = S.min(y + 1, P.h - 1)
+        def h(xx, yy):
+            q = inb.load(yy * W + xx)
+            return S.select(S.eq(P.chan, 0), q.x, S.select(S.eq(P.chan, 1), q.y, S.select(S.eq(P.chan, 2), q.z, q.w)))
+        gx = S.var('f', 0.0)
+        gy = S.var('f', 0.0)
+        with S.if_(S.eq(W, 1)):
+            gy.set(3.0 * (h(x, up) - h(x, dn)))
+        with S.if_(W > 1):
+            with S.if_(S.eq(x, 0)):
+                gx.set(((h(S.u(0), dn) - h(S.u(1), dn)) + (h(S.u(0), y) - h(S.u(1), y))) + (h(S.u(0), up) - h(S.u(1), up)))
+                gy.set((h(S.u(0), up) - h(S.u(0), dn)) + 2.0 * (h(S.u(1), up) - h(S.u(1), dn)))
+            with S.else_():
+                with S.if_(S.eq(x, W - 1)):
+                    gx.set(((h(x - 1, dn) - h(x, dn)) + (h(x - 1, y) - h(x, y))) + (h(x - 1, up) - h(x, up)))
+                    gy.set((h(x - 1, up) - h(x - 1, dn)) + 2.0 * (h(x, up) - h(x, dn)))
+                with S.else_():
+                    gx.set(((h(x - 1, dn) - h(x + 1, dn)) + (h(x - 1, y) - h(x + 1, y))) + (h(x - 1, up) - h(x + 1, up)))
+                    gy.set(((h(x - 1, up) - h(x - 1, dn)) + (h(x + 1, up) - h(x + 1, dn))) + (h(x, up) - h(x, dn)))
+        nx0, ny0 = gx.get() * P.hs, gy.get() * P.hs
+        nl = S.sqrt(nx0 * nx0 + ny0 * ny0 + 1.0)
+        nx, ny, nz = nx0 / nl, ny0 / nl, S.f(1.0) / nl
+        # the light: directional (type 0) from (ax, ay, az); the others a point at (sx, sy, sz)
+        px = (S.to_f(x) - P.cx) * P.unit
+        py = (S.to_f(y) - P.cy) * P.unit
+        pl = [P.sx - px, P.sy - py, P.sz]
+        d = S.sqrt(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2])
+        pos = d > 0.0
+        inv0 = S.f(1.0) / S.select(pos, d, S.f(1.0))
+        inv = S.select(pos, inv0, S.f(100.0))
+        plx = S.select(pos, pl[0] * inv, S.f(0.0))
+        ply = S.select(pos, pl[1] * inv, S.f(0.0))
+        plz = S.select(pos, pl[2] * inv, S.f(1.0))
+        a = S.min(S.max((plx * P.ax + ply * P.ay + plz * P.az - P.cut) * P.icut, 0.0), 1.0)
+        att_spot = a * a * 2.0
+        att = S.select(S.eq(P.type, 1), att_spot, S.f(1.0)) * inv * 2.0
+        directional = S.eq(P.type, 0)
+        lx = S.select(directional, P.ax, plx)
+        ly = S.select(directional, P.ay, ply)
+        lz = S.select(directional, P.az, plz)
+        att = S.select(directional, S.f(1.0), att)
+        ndl = nx * lx + ny * ly + nz * lz
+        rz = nz * 2.0 * ndl - lz
+        spec = fpow(S, S.max(rz, 0.01), P.power)
+        k = S.max(0.0, P.i8 * (P.kd * ndl + P.ks * spec) * att + P.amb2)
+        s = inb.load(y * W + x)
+        S.buf('out').store(y * W + x, S.vec4(s.x * k, s.y * k, s.z * k, s.w))
+
+# ---------------------------------------------------------------------------------------------------------- colour tables (builtins_color.cpp)
+def lut_apply(S, tab, off, n, dmin, dmax, tetra, rgb):
+    """lutApply(): one straight colour through a 3D table at tab[off ...] (n a side, r fastest); trilinear or (tetra true) tetrahedral. off: uint, n: uint."""
+    nf = S.to_f(n)
+    p = []
+    for k in range(3):
+        span = dmax[k] - dmin[k]
+        v = S.select(span > 1e-12, (rgb[k] - dmin[k]) / S.select(span > 1e-12, span, S.f(1.0)), S.f(0.0))
+        v = S.select(v < 0.0, S.f(0.0), S.select(v > 1.0, S.f(1.0), v))
+        p.append(v * (nf - 1.0))
+    i0 = [S.min(S.to_u(p[k]), n - 2) for k in range(3)]
+    f = [p[k] - S.to_f(i0[k]) for k in range(3)]
+    base = off + ((i0[2] * n + i0[1]) * n + i0[0]) * 3
+    sr, sg, sb = S.u(3), n * 3, n * n * 3
+    def at(r, g, b, k):
+        return tab.load(base + (sr * r) + (sg * g) + (sb * b) + k)
+    out = []
+    for k in range(3):
+        c = {(r, g, b): at(r, g, b, k) for r in (0, 1) for g in (0, 1) for b in (0, 1)}
+        c00 = c[0, 0, 0] * (1.0 - f[0]) + c[1, 0, 0] * f[0]
+        c10 = c[0, 1, 0] * (1.0 - f[0]) + c[1, 1, 0] * f[0]
+        c01 = c[0, 0, 1] * (1.0 - f[0]) + c[1, 0, 1] * f[0]
+        c11 = c[0, 1, 1] * (1.0 - f[0]) + c[1, 1, 1] * f[0]
+        c0 = c00 * (1.0 - f[1]) + c10 * f[1]
+        c1 = c01 * (1.0 - f[1]) + c11 * f[1]
+        tri = c0 * (1.0 - f[2]) + c1 * f[2]
+        fr, fg, fb = f
+        c000, c111 = c[0, 0, 0], c[1, 1, 1]
+        t_a = c000 + fr * (c[1, 0, 0] - c000) + fg * (c[1, 1, 0] - c[1, 0, 0]) + fb * (c111 - c[1, 1, 0])
+        t_b = c000 + fr * (c[1, 0, 0] - c000) + fb * (c[1, 0, 1] - c[1, 0, 0]) + fg * (c111 - c[1, 0, 1])
+        t_c = c000 + fb * (c[0, 0, 1] - c000) + fr * (c[1, 0, 1] - c[0, 0, 1]) + fg * (c111 - c[1, 0, 1])
+        t_d = c000 + fb * (c[0, 0, 1] - c000) + fg * (c[0, 1, 1] - c[0, 0, 1]) + fr * (c111 - c[0, 1, 1])
+        t_e = c000 + fg * (c[0, 1, 0] - c000) + fb * (c[0, 1, 1] - c[0, 1, 0]) + fr * (c111 - c[0, 1, 1])
+        t_f = c000 + fg * (c[0, 1, 0] - c000) + fr * (c[1, 1, 0] - c[0, 1, 0]) + fb * (c111 - c[1, 1, 0])
+        upper = S.select(fg >= fb, t_a, S.select(fr >= fb, t_b, t_c))
+        lower = S.select(fb >= fg, t_d, S.select(fb >= fr, t_e, t_f))
+        tet = S.select(fr >= fg, upper, lower)
+        out.append(S.select(S.ne(tetra, 0), tet, tri))
+    return out
+
+@kernel("lutfilter", WH + [('n', 'u'), ('tetra', 'u'), ('gain', 'f'), ('d0', 'f'), ('d1', 'f'), ('d2', 'f'), ('e0', 'f'), ('e1', 'f'), ('e2', 'f')], [PIC_IN, PIC_OUT, TABLE])
+def lutfilter(S):
+    # lutFilter(): the straight colour through the table, mixed in by Gain
+    P = S.p
+    def body(S, r, g, b):
+        v = lut_apply(S, S.buf('table'), S.u(0), P.n, [P.d0, P.d1, P.d2], [P.e0, P.e1, P.e2], P.tetra, [r, g, b])
+        return r + (v[0] - r) * P.gain, g + (v[1] - g) * P.gain, b + (v[2] - b) * P.gain
+    pixel_row(S, body)
+
+def rgb_to_hsv(S, r, g, b):
+    mx = S.max(r, S.max(g, b))
+    mn = S.min(r, S.min(g, b))
+    d = mx - mn
+    s = S.select(mx > 1e-9, d / S.select(mx > 1e-9, mx, S.f(1.0)), S.f(0.0))
+    dd = S.select(d < 1e-9, S.f(1.0), d)
+    hr = (g - b) / dd + S.select(g < b, S.f(6.0), S.f(0.0))
+    hg = (b - r) / dd + 2.0
+    hb = (r - g) / dd + 4.0
+    h = S.select(S.eq(mx, r), hr, S.select(S.eq(mx, g), hg, hb)) * 60.0
+    return S.select(d < 1e-9, S.f(0.0), h), s, mx
+
+def hsv_to_rgb(S, h, s, v):
+    h = S.fmod(h, 360.0)
+    h = S.select(h < 0.0, h + 360.0, h)
+    hh = h / 60.0
+    i = S.to_u(hh)
+    f = hh - S.to_f(i)
+    p = v * (1.0 - s)
+    q = v * (1.0 - s * f)
+    t = v * (1.0 - s * (1.0 - f))
+    i = i % 6
+    def pick(a0, a1, a2, a3, a4, a5):
+        return S.select(S.eq(i, 0), a0, S.select(S.eq(i, 1), a1, S.select(S.eq(i, 2), a2, S.select(S.eq(i, 3), a3, S.select(S.eq(i, 4), a4, a5)))))
+    return pick(v, q, p, p, t, v), pick(t, v, v, q, p, p), pick(p, p, t, v, v, q)
+
+@kernel("colorgrading", WH + [('flags', 'u'), ('inmin', 'f'), ('inscale', 'f'), ('expo', 'f'), ('gain0', 'f'), ('gain1', 'f'), ('gain2', 'f'), ('lift0', 'f'), ('lift1', 'f'), ('lift2', 'f'),
+                              ('ig0', 'f'), ('ig1', 'f'), ('ig2', 'f'), ('off0', 'f'), ('off1', 'f'), ('off2', 'f'), ('sat', 'f'), ('hue', 'f'), ('hsvsat', 'f'), ('hsvval', 'f'),
+                              ('outmin', 'f'), ('outspan', 'f')], [PIC_IN, PIC_OUT, TABLE])
+def colorgrading(S):
+    # colorGrading() in builtins_color.cpp. Table: two LUT headers of 10 floats (gain, tetra, n, dmin x3, dmax x3, data offset), then 4 curves of 1025, then the LUT data
+    P = S.p
+    tab = S.buf('table')
+    def flag(bit): return S.ne(P.flags & bit, 0)
+    def body(S, r, g, b):
+        v = [r, g, b]
+        v = [S.select(flag(1), (c - P.inmin) * P.inscale, c) for c in v]
+        v = [S.select(flag(2), c * P.expo, c) for c in v]
+        gain = [P.gain0, P.gain1, P.gain2]; lift = [P.lift0, P.lift1, P.lift2]; ig = [P.ig0, P.ig1, P.ig2]; off = [P.off0, P.off1, P.off2]
+        nv = []
+        for k in range(3):
+            t = gain[k] * (v[k] + lift[k] * (1.0 - v[k]))
+            t2 = S.select(t >= 0.0, S.pow(S.max(t, 0.0), ig[k]), S.f(0.0) - S.pow(S.max(S.f(0.0) - t, 0.0), ig[k]))
+            nv.append(S.select(flag(4), t2 + off[k], v[k]))
+        v = nv
+        l = luma(S, v[0], v[1], v[2])
+        v = [S.select(flag(8), l + (c - l) * P.sat, c) for c in v]
+        # hue / saturation / value
+        cl = [S.min(S.f(1.0), S.max(S.f(0.0), c)) for c in v]
+        h, s, vv = rgb_to_hsv(S, cl[0], cl[1], cl[2])
+        h = h + P.hue
+        s = S.min(S.f(1.0), S.max(S.f(0.0), s * P.hsvsat))
+        vv = S.max(S.f(0.0), vv * P.hsvval)
+        hr, hg, hb = hsv_to_rgb(S, h, s, vv)
+        v = [S.select(flag(16), x, c) for x, c in zip((hr, hg, hb), v)]
+        # curves
+        def lookup(cb, x):
+            x = S.select(x < 0.0, S.f(0.0), S.select(x > 1.0, S.f(1.0), x))
+            pp = x * 1024.0
+            i = S.min(S.to_u(pp), 1023)
+            a = tab.load(S.u(20 + cb * 1025) + i)
+            b2 = tab.load(S.u(20 + cb * 1025 + 1) + i)
+            return a + (b2 - a) * (pp - S.to_f(i))
+        cv = []
+        for k in range(3):
+            x = v[k]
+            x = S.select(flag(32) & flag(128 << k), lookup(k, x), x)
+            x = S.select(flag(32) & flag(128 << 3), lookup(3, x), x)
+            cv.append(x)
+        v = cv
+        v = [S.select(flag(64), P.outmin + c * P.outspan, c) for c in v]
+        for slot in range(2):
+            hb0 = slot * 10
+            gn = tab.load(S.u(hb0))
+            tet = S.to_u(tab.load(S.u(hb0 + 1)))
+            n = S.to_u(tab.load(S.u(hb0 + 2)))
+            dmin = [tab.load(S.u(hb0 + 3 + k)) for k in range(3)]
+            dmax = [tab.load(S.u(hb0 + 6 + k)) for k in range(3)]
+            offs = S.to_u(tab.load(S.u(hb0 + 9)))
+            w = lut_apply(S, tab, offs, S.max(n, S.u(2)), dmin, dmax, tet, v)
+            on = flag(4096 << slot)
+            v = [S.select(on, c + (x - c) * gn, c) for x, c in zip(w, v)]
+        return v[0], v[1], v[2]
+    pixel_row(S, body)
+
+# ---------------------------------------------------------------------------------------------------------- Color Match (builtins_color.cpp)
+def cbrt_f(S, t):
+    """cbrt of a positive float: pow, then one Newton step so it is as good as the library's."""
+    y = S.pow(S.max(t, 1e-30), S.f(1.0 / 3.0))
+    return y - (y * y * y - t) / (3.0 * y * y)
+
+def srgb_tab(S, tab, base, v):
+    """tab(): a table of 4097 values read with linear interpolation, v clamped to 0..1."""
+    v = S.select(v < 0.0, S.f(0.0), S.select(v > 1.0, S.f(1.0), v))
+    p = v * 4096.0
+    i = S.min(S.to_u(p), 4095)
+    a = tab.load(S.u(base) + i)
+    b = tab.load(S.u(base + 1) + i)
+    return a + (b - a) * (p - S.to_f(i))
+
+def to_lab(S, tab, r, g, b):
+    lr, lg, lb = srgb_tab(S, tab, 0, r), srgb_tab(S, tab, 0, g), srgb_tab(S, tab, 0, b)
+    X = (0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb) / 0.95047
+    Y = 0.2126729 * lr + 0.7151522 * lg + 0.0721750 * lb
+    Z = (0.0193339 * lr + 0.1191920 * lg + 0.9503041 * lb) / 1.08883
+    def f(t): return S.select(t > 0.008856, cbrt_f(S, t), 7.787 * t + S.f(16.0 / 116.0))
+    fx, fy, fz = f(X), f(Y), f(Z)
+    return 116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)
+
+@kernel("colormatch_rows", WH, [PIC_IN, PIC_OUT, TABLE])
+def colormatch_rows(S):
+    # the statistics of colorMatch(): one thread per sample row adds up its samples (the table: the two sRGB tables (4097 each), then the 160 sample columns and 90 sample rows)
+    P = S.p
+    with S.if_(S.gx < 1):
+        with S.if_(S.gy < 90):
+            tab = S.buf('table')
+            y = S.to_u(tab.load(S.u(8194 + 160) + S.gy))
+            s0 = S.var('v4', S.splat4(0.0))
+            s1 = S.var('v4', S.splat4(0.0))
+            with S.for_(0, 160) as i:
+                x = S.to_u(tab.load(S.u(8194) + i))
+                p = S.buf('in0').load(y * P.w + x)
+                a = p.w
+                has = a > 1e-6
+                r = S.select(has, p.x / a, S.f(0.0))
+                g = S.select(has, p.y / a, S.f(0.0))
+                b = S.select(has, p.z / a, S.f(0.0))
+                L, A, B = to_lab(S, tab, r, g, b)
+                with S.if_(a > 0.0):
+                    s0.set(s0.get() + S.vec4(L, A, B, 1.0))
+                    s1.set(s1.get() + S.vec4(L * L, A * A, B * B, 0.0))
+            S.buf('out').store(S.gy * 2, s0.get())
+            S.buf('out').store(S.gy * 2 + 1, s1.get())
+
+@kernel("colormatch_params", WH, [PIC_IN, PIC_OUT, TABLE])
+def colormatch_params(S):
+    # the numbers the picture pass needs: table = the 12 statistics of the settings, the captured-target flag, the strength, the lightness flag
+    P = S.p
+    with S.if_(S.eq(S.gx, 0) & S.eq(S.gy, 0)):
+        tab = S.buf('table')
+        t0 = S.var('v4', S.splat4(0.0))
+        t1 = S.var('v4', S.splat4(0.0))
+        with S.for_(0, 90) as j:
+            t0.set(t0.get() + S.buf('in0').load(j * 2))
+            t1.set(t1.get() + S.buf('in0').load(j * 2 + 1))
+        cnt = t0.get().w
+        captured = S.ne(S.to_u(tab.load(S.u(12))), 0)
+        means = [t0.get()[k] / S.max(cnt, 1.0) for k in range(3)]
+        stds = [S.sqrt(S.max(t1.get()[k] / S.max(cnt, 1.0) - means[k] * means[k], 0.0)) for k in range(3)]
+        mul, tm, sm = [], [], []
+        for k in range(3):
+            ss = tab.load(S.u(2 * k + 1))
+            tmean = S.select(captured, tab.load(S.u(6 + 2 * k)), means[k])
+            tstd = S.select(captured, tab.load(S.u(7 + 2 * k)), stds[k])
+            m = S.select(tstd > 0.05, S.min(S.max(ss / S.select(tstd > 0.05, tstd, S.f(1.0)), 0.0), 8.0), S.f(1.0))
+            mul.append(m); tm.append(tmean); sm.append(tab.load(S.u(2 * k)))
+        ok = S.select(captured | (cnt >= 4.0), S.f(1.0), S.f(0.0))
+        S.buf('out').store(S.u(0), S.vec4(tm[0], tm[1], tm[2], ok))
+        S.buf('out').store(S.u(1), S.vec4(mul[0], mul[1], mul[2], tab.load(S.u(13))))
+        S.buf('out').store(S.u(2), S.vec4(sm[0], sm[1], sm[2], tab.load(S.u(14))))
+
+@kernel("colormatch", WH, [PIC_IN, PIC_IN1, PIC_OUT, TABLE])
+def colormatch(S):
+    # colorMatch(): to Lab, (x - target mean) * scale + source mean, back; mixed in by the strength. Table: the sRGB decode (4097) and encode (4097) tables
+    P = S.p
+    with S.in_range(P.w, P.h):
+        tab = S.buf('table')
+        i = S.gy * P.w + S.gx
+        p = S.buf('in0').load(i)
+        q0, q1, q2 = S.buf('in1').load(S.u(0)), S.buf('in1').load(S.u(1)), S.buf('in1').load(S.u(2))
+        ok = q0.w > 0.5
+        a = p.w
+        has = a > 1e-6
+        r = S.select(has, p.x / a, S.f(0.0))
+        g = S.select(has, p.y / a, S.f(0.0))
+        b = S.select(has, p.z / a, S.f(0.0))
+        L, A, B = to_lab(S, tab, r, g, b)
+        light = q2.w > 0.5
+        L2 = S.select(light, (L - q0.x) * q1.x + q2.x, L)
+        A2 = (A - q0.y) * q1.y + q2.y
+        B2 = (B - q0.z) * q1.z + q2.z
+        L2 = S.min(S.f(100.0), S.max(S.f(0.0), L2))
+        fy = (L2 + 16.0) / 116.0
+        fx = fy + A2 / 500.0
+        fz = fy - B2 / 200.0
+        def finv(t):
+            t3 = t * t * t
+            return S.select(t3 > 0.008856, t3, (t - S.f(16.0 / 116.0)) / 7.787)
+        X = finv(fx) * 0.95047
+        Y = finv(fy)
+        Z = finv(fz) * 1.08883
+        lr = 3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z
+        lg = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z
+        lb = 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z
+        v0, v1, v2 = srgb_tab(S, tab, 4097, lr), srgb_tab(S, tab, 4097, lg), srgb_tab(S, tab, 4097, lb)
+        s = q1.w
+        o0, o1, o2 = r + (v0 - r) * s, g + (v1 - g) * s, b + (v2 - b) * s
+        valid = a > 0.0
+        z = S.f(0.0)
+        res = S.vec4(S.select(valid, o0 * a, z), S.select(valid, o1 * a, z), S.select(valid, o2 * a, z), S.select(valid, a, z))
+        S.buf('out').store(i, S.select(ok, res, p))
+
+# ---------------------------------------------------------------------------------------------------------- Displacement Map, Height Map, Mesh Warp (builtins_vegasrest.cpp, builtins_magix.cpp)
+def channel_of(S, p, which):
+    """channelOf(): the straight colour channel 'which' (0..2, a kernel value) of a premultiplied pixel, held to 0..1."""
+    big = p.w > 1e-5
+    a = S.select(big, S.f(1.0) / S.select(big, p.w, S.f(1.0)), S.f(0.0))
+    v = S.select(S.eq(which, 0), p.x * a, S.select(S.eq(which, 1), p.y * a, p.z * a))
+    return clamp01(S, v)
+
+@kernel("heightplane", WH + [('ch', 'u'), ('inv', 'u'), ('alpha', 'u'), ('flip', 'u')], [PIC_IN, PLANE_OUT])
+def heightplane(S):
+    # the height of heightMap(): one number per pixel
+    P = S.p
+    with S.in_range(P.w, P.h):
+        ry = S.select(S.ne(P.flip, 0), P.h - 1 - S.gy, S.gy)
+        p = S.buf('in0').load(ry * P.w + S.gx)
+        r, g, b = channel_of(S, p, S.u(0)), channel_of(S, p, S.u(1)), channel_of(S, p, S.u(2))
+        one = channel_of(S, p, S.select(P.ch > 0, P.ch - 1, S.u(0)))
+        v = S.select(S.eq(P.ch, 0), luma(S, r, g, b), one)
+        v = S.select(S.ne(P.inv, 0), 1.0 - v, v)
+        v = S.select(S.ne(P.alpha, 0), v * p.w, v)
+        S.buf('out').store(S.gy * P.w + S.gx, v)
+
+@kernel("tvsimulator", WH + [('zoom', 'f'), ('roll', 'f'), ('phos', 'f'), ('grill', 'f'), ('inter', 'f'), ('scan', 'f'), ('stat', 'f'), ('scale', 'f'), ('full', 'u'), ('t7', 'u')],
+        [PIC_IN, PIC_IN1, PIC_OUT, TABLE])
+def tvsimulator(S):
+    # tvSimulator(): the table holds, per row, the line wobble (sync trouble) and the brightness band, worked out in double precision
+    P = S.p
+    with S.in_range(P.w, P.h):
+        tab = S.buf('table')
+        wf, hf = S.to_f(P.w), S.to_f(P.h)
+        wob = tab.load(S.gy)
+        bandv = tab.load(P.h + S.gy)
+        zx = (S.to_f(S.gx) + 0.5 - wf * 0.5) / P.zoom + wf * 0.5 + wob
+        sy = S.fmod(S.to_f(S.gy) + P.roll, hf)
+        zy = (sy + 0.5 - hf * 0.5) / P.zoom + hf * 0.5
+        p = sample_clamped(S, S.buf('in0'), P.w, P.h, zx, zy)
+        g = sample_clamped(S, S.buf('in1'), P.w, P.h, zx, zy)
+        k = P.phos * 0.5
+        o = [p[c] + (g[c] * 1.1 - p[c]) * k for c in range(3)]
+        o[2] = o[2] + P.phos * 0.04 * g[3]
+        col = S.gx % 3
+        full = S.ne(P.full, 0)
+        grill_on = P.grill > 0.0
+        res = []
+        own = 1.0 + P.grill * 0.6
+        other = 1.0 - P.grill * 0.5
+        mean = S.select(grill_on, (own + 2.0 * other) / 3.0, S.f(1.0))
+        for c in range(3):
+            iscol = S.eq(col, c)
+            v = o[c] * (1.0 - P.grill * 0.5 * S.select(iscol, S.f(0.0), S.f(1.0)))
+            v = S.select(grill_on, v * (1.0 + P.grill * 0.6 * S.select(iscol, S.f(1.0), S.f(0.0))), v)
+            res.append(S.select(full, v, o[c] * mean))
+        odd = S.ne(S.gy % 2, 0)
+        line = S.select(full, 1.0 - P.inter * 0.5 * S.select(odd, S.f(1.0), S.f(0.0)), 1.0 - P.inter * 0.25)
+        res = [c * (line * bandv) for c in res]
+        h = S.gx * 374761393 + (S.gy + P.t7) * 668265263
+        h = (h ^ (h >> 13)) * 1274126177
+        n = (S.to_f((h ^ (h >> 16)) & 65535) / 65535.0 - 0.5) * P.stat * 0.8 * P.scale
+        res = [S.select(P.stat > 0.0, c + n * g[3], c) for c in res]
+        a = p.w
+        res = [S.min(S.max(c, 0.0), a) for c in res]
+        S.buf('out').store(S.gy * P.w + S.gx, S.vec4(res[0], res[1], res[2], a))
+
+# ---------------------------------------------------------------------------------------------------------- Lens Flare (builtins_lensflare.cpp)
+@kernel("lensflare", WH + [('n', 'u'), ('blend', 'f')], [PIC_IN, PIC_OUT, TABLE])
+def lensflare(S):
+    # VEGAS's Lens Flare: the frame in 8 bits, each flare added in turn (the CPU's box / place arithmetic is in the table, 16 floats a flare from 96;
+    # the ray lengths at 0, the hexagon at 64 as x[6] y[6] nx[6] ny[6])
+    P = S.p
+    with S.in_range(P.w, P.h):
+        tab = S.buf('table')
+        i = S.gy * P.w + S.gx
+        p = S.buf('in0').load(i)
+        def q8(v): return S.round_even(clamp01(S, v) * 255.0)
+        q = [S.var('f', q8(p[k])) for k in range(3)]
+        A = q8(p[3])
+        row = S.to_i(P.h - 1 - S.gy)
+        cxi = S.to_i(S.gx)
+        with S.for_(0, P.n) as n:
+            base = 96 + n * 16
+            def ti(k): return S.to_i(tab.load(base + k))
+            def tf(k): return tab.load(base + k)
+            ty, edi, r13, endy, ebx, r14, r12 = ti(0), ti(1), ti(2), ti(3), ti(4), ti(5), ti(6)
+            inbox = (row >= edi) & (row < edi + (endy - r13)) & (cxi >= ebx) & (cxi < ebx + (r12 - r14))
+            with S.if_(inbox):
+                fy, fx, r, I = tf(7), tf(8), tf(9), tf(13)
+                yy = S.to_f(r13 + (row - edi))
+                xx = S.to_f(r14 + (cxi - ebx))
+                v = 1.0 - (yy - fy) / r
+                u = 1.0 - (xx - fx) / r
+                d = S.sqrt(u * u + v * v)
+                # the hexagon
+                m = None
+                for h in range(6):
+                    t0 = (v - tab.load(70 + h)) * tab.load(76 + h)
+                    t1 = (u - tab.load(64 + h)) * tab.load(82 + h)
+                    sh = t0 + t1
+                    m = sh if m is None else S.min(sh, m)
+                lt1 = d < 1.0
+                # type 0, 1, 2
+                s0 = 1.0 - d
+                s1 = S.select(d > 0.8, (1.0 - d) * 5.0, S.select(d > 0.75, (d - 0.75) * 5.0 + 0.75, d))
+                t = 1.0 - d
+                s2 = S.select(S.f(0.1) > t, t * 10.0, (0.15 - t) * 20.0)
+                hit2 = lt1 & (d >= 0.85)
+                # type 3 (the hexagon with soft edges), 4
+                s3 = S.select(S.f(0.2) > m, clamp01(S, m / 0.2), clamp01(S, (0.8 - (m - 0.2)) / 0.8))
+                s4 = m * m
+                hhit = m >= 0.0
+                # type 5: the rays
+                ang = S.atan2(v, u)
+                PIF, PILO = 3.1415927410125732, -8.742278000372485e-8
+                s_ = ang + PIF
+                bb = s_ - ang
+                err = (ang - (s_ - bb)) + (PIF - bb)
+                af = s_ + (err + PILO)
+                a2 = S.max(af * 28.64788975654116, 0.0)
+                fl = S.floor(a2)
+                fr = a2 - fl
+                ii = S.to_u(fl)
+                w = (1.0 - fr) * tab.load(ii % 64) + fr * tab.load((ii + 1) % 64)
+                qq = S.select(S.f(0.0) >= d, S.f(0.0), S.select(d < w, d / w, S.f(1.0)))
+                om = 1.0 - qq
+                s5 = om * om * om
+                s5 = S.select(d < 0.3, (d / 0.3) * (s5 - 1.0) + 1.0, s5)
+                s = S.select(S.eq(ty, 0), s0, S.select(S.eq(ty, 1), s1, S.select(S.eq(ty, 2), s2, S.select(S.eq(ty, 3), s3, S.select(S.eq(ty, 4), s4, s5)))))
+                hit = S.select(S.eq(ty, 2), hit2, S.select(S.eq(ty, 3) | S.eq(ty, 4), hhit, lt1))
+                for k in range(3):
+                    cin = q[k].get()
+                    o = s * tf(10 + k) * I
+                    sm = o * 255.0 + cin
+                    mm = S.min(A, sm)
+                    val = mm * P.blend + cin * (1.0 - P.blend)
+                    nq = S.to_f(S.to_u(S.to_i(val)) % 256)
+                    q[k].set(S.select(hit, nq, cin))
+        S.buf('out').store(i, S.vec4(q[0].get() / 255.0, q[1].get() / 255.0, q[2].get() / 255.0, A / 255.0))
+
+
+def load_extra_kernels():
+    """the kernels of tools/gpukernels_*.py (one file per area), in the order of their names"""
+    import glob, importlib
+    sys.modules.setdefault('gpukernels', sys.modules[__name__])
+    for path in sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gpukernels_*.py'))):
+        importlib.import_module(os.path.basename(path)[:-3])
 
 def main():
+    load_extra_kernels()
     out = sys.argv[1]
     only = None
     if "--only" in sys.argv:

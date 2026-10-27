@@ -75,6 +75,7 @@
     <ClCompile Include="..\src\vst32\vst32server.cpp" />
     <ClCompile Include="..\src\audiofx\vst32ipc.cpp" />
     <ClCompile Include="..\src\audiofx\vst2host.cpp" />
+    <ClCompile Include="..\src\audiofx\projecttempo.cpp" />
     <ClCompile Include="..\src\core\base.cpp" />
     <ClCompile Include="..\src\core\dynlib.cpp" />
   </ItemGroup>

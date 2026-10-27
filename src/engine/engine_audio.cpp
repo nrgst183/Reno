@@ -1279,6 +1279,7 @@ struct AudioBlockMixer {
     void runChainAt(const FxChain& chain, const Envelopes* envs, float* l, float* r, int64_t s0, int count)
     {
         if (eng.bypassFx) return;
+        const ProjectTempoScope tempoScope(p.settings.tempo, p.settings.beatsPerMeasure);    // for the effects with tempo sync
         for (const auto& slot : chain) {
             if (slot.kind != "audio" || slot.bypass) continue;
             AudioPlugin* pl = eng.fx_.audio(slot.id);
@@ -1953,6 +1954,7 @@ struct AudioBlockMixer {
                 }
                 continue;
             }
+            const ProjectTempoScope tempoScope(p.settings.tempo, p.settings.beatsPerMeasure);
             for (int pair = 0; pair < 3; ++pair) {
                 AudioPlugin* pl = pair == 0 ? main : eng.fx_.audioExtra(slot.id, pair);
                 if (!pl) continue;          // not made yet: that pair passes as it is

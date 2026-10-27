@@ -53,6 +53,59 @@ int main()
     const bool lok = l44 > 1024 && l48 > l44;
     std::printf("%s pitch latency: %d %d\n", lok ? "PASS" : "FAIL", l44, l48);
     if (!lok) ++bad;
+    // Apply Non-Real-Time Event FX with "Preserve duration" off: the whole sound through a fresh run and the stream flushed
+    // at its end, as the DLL's engine gives it (lengths and hashes made with the DLL on the 100000-frame test signal)
+    struct Whole { int rate, semis, cents10, acc, mode, aa, frames; uint64_t hash; };
+    static const Whole kWhole[] = {
+        {44100, 7, 0, 2, 0, 0, 66739, 0x845be319d515166bull},
+        {48000, -5, 0, 2, 0, 0, 133478, 0xf84e87d2cde541e0ull},
+        {48000, 3, 250, 3, 6, 1, 82878, 0x5efaed6f53c23c29ull},
+        {44100, -12, 0, 1, 10, 0, 199998, 0xa35f8b5c2b2db7deull},
+        {48000, 12, 0, 2, 2, 1, 49998, 0x32a3eb6b3a4e3d31ull},
+        {22050, -2, -300, 3, 16, 0, 114197, 0xd7ef9f0c693cfec3ull},
+    };
+    for (const Whole& w : kWhole) {
+        const Info* wi = findInfo("reno.pitchshift");
+        std::unique_ptr<reno::AudioPlugin> p = create("reno.pitchshift");
+        int32_t v[12] = {w.semis, w.cents10, w.acc, 0, w.mode, 0, 0, 0, w.aa, 0, 0, 0};
+        const double ini = 2646000.0;
+        std::memcpy(v + 10, &ini, 8);
+        pitchDerive(v, 0);
+        p->loadState(encode(*wi, v));
+        p->activate(w.rate, 512);
+        const std::vector<float> in = vegfx::testInput(100000);
+        std::vector<float> l(100000), r2(100000);
+        for (int k = 0; k < 100000; ++k) {
+            l[(size_t)k] = in[(size_t)2 * k];
+            r2[(size_t)k] = in[(size_t)2 * k + 1];
+        }
+        std::vector<float> ol, orr;
+        const bool ok = p->changesLength() && p->processWhole(l.data(), r2.data(), 100000, ol, orr);
+        std::vector<float> inter(ol.size() * 2);
+        for (size_t k = 0; k < ol.size(); ++k) {
+            inter[2 * k] = ol[k];
+            inter[2 * k + 1] = orr[k];
+        }
+        const bool good = ok && ol.size() == (size_t)w.frames && vegfx::fnv(inter) == w.hash;
+        std::printf("%s whole sound: %d Hz %+d.%d semitones, accuracy %d, mode %d, anti-alias %d (%zu frames)\n", good ? "PASS" : "FAIL", w.rate,
+                    w.semis, w.cents10, w.acc, w.mode, w.aa, ol.size());
+        if (!good) ++bad;
+    }
+    {   // with the box ticked, or no pitch change, the length stays and the sound is not made whole
+        std::unique_ptr<reno::AudioPlugin> p = create("reno.pitchshift");
+        const Info* wi = findInfo("reno.pitchshift");
+        int32_t v[12] = {7, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0};
+        pitchDerive(v, 0);
+        p->loadState(encode(*wi, v));
+        p->activate(48000, 512);
+        const bool kept = !p->changesLength();
+        int32_t u[12] = {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        pitchDerive(u, 0);
+        p->loadState(encode(*wi, u));
+        const bool same = !p->changesLength();
+        std::printf("%s length-changing only without Preserve duration and with a pitch change\n", kept && same ? "PASS" : "FAIL");
+        if (!(kept && same)) ++bad;
+    }
     std::printf("%s\n", bad ? "FAILED" : "ALL PASSED");
     return bad ? 1 : 0;
 }

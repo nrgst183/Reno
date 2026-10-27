@@ -125,6 +125,31 @@ public:
         }
         return false;
     }
+    bool changesLength() override { return true; }
+    bool processWhole(const float* inL, const float* inR, int64_t frames, std::vector<float>& outL, std::vector<float>& outR) override
+    {
+        outL.clear();
+        outR.clear();
+        veggap::Engine eng;
+        eng.setup(settings(), (int)std::lround(sr_), true);
+        const int chunk = 4096, cap = 8192;
+        std::vector<float> oL((size_t)cap), oR((size_t)cap);
+        for (int64_t at = 0; at < frames; at += chunk) {
+            const int n = (int)std::min<int64_t>(chunk, frames - at);
+            int done = 0;
+            while (done < n) {
+                const float* in[2] = {inL + at + done, inR + at + done};
+                float* out[2] = {oL.data(), oR.data()};
+                int took = 0, gave = 0;
+                eng.process(in, n - done, out, cap, &took, &gave);
+                outL.insert(outL.end(), oL.begin(), oL.begin() + gave);
+                outR.insert(outR.end(), oR.begin(), oR.begin() + gave);
+                if (took == 0 && gave == 0) break;
+                done += took;
+            }
+        }
+        return true;
+    }
     int programCount() override { return (int)veggap::presets().size(); }
     std::string programName(int i) override { return i >= 0 && i < programCount() ? veggap::presets()[(size_t)i].name : std::string(); }
     bool setProgram(int i) override
@@ -266,6 +291,38 @@ public:
         }
         return false;
     }
+    bool changesLength() override { return true; }
+    bool processWhole(const float* inL, const float* inR, int64_t frames, std::vector<float>& outL, std::vector<float>& outR) override
+    {
+        outL.clear();
+        outR.clear();
+        vegvib::Engine eng;
+        eng.setSettings(settings());
+        eng.setFormat((int)std::lround(sr_));
+        const int chunk = 4096;
+        std::vector<float> in((size_t)2 * chunk), out((size_t)2 * (4 * chunk + 16));
+        int mode = 0;
+        for (int64_t at = 0; at < frames; at += chunk) {
+            const int n = (int)std::min<int64_t>(chunk, frames - at);
+            for (int k = 0; k < n; ++k) {
+                in[(size_t)2 * k] = inL[at + k];
+                in[(size_t)2 * k + 1] = inR[at + k];
+            }
+            int done = 0;
+            while (done < n) {
+                int took = n - done, gave = 4 * chunk + 16;
+                eng.process(mode, &in[(size_t)2 * done], &took, out.data(), &gave);
+                mode = 1;
+                for (int k = 0; k < gave; ++k) {
+                    outL.push_back(out[(size_t)2 * k]);
+                    outR.push_back(out[(size_t)2 * k + 1]);
+                }
+                if (took <= 0 && gave == 0) break;
+                done += took;
+            }
+        }
+        return true;
+    }
     int programCount() override { return (int)vegvib::presets().size(); }
     std::string programName(int i) override { return i >= 0 && i < programCount() ? vegvib::presets()[(size_t)i].name : std::string(); }
     bool setProgram(int i) override
@@ -383,8 +440,8 @@ private:
 // The plug-in's own parameters in its order (Amplitude, Modulation Frequency, Stereo Pan, Low-pass Filter Enable, Low-pass
 // Filter Frequency, Blend Graph Edges, Dry Out, Wet Out, Modulation Period, Modulation Period Multiplier, Tempo Sync) and,
 // besides them, the graph (what the page edits; it is only in the saved form). The sound is vegasampmod.h's engine, which works
-// in place. Tempo sync follows the project's tempo in VEGAS; Reno's plug-in interface has none, so it is 120 beats per minute
-// in 4/4 (as the other tempo-synced effects here), and the cycle's place comes from the position in the stream.
+// in place. Tempo sync follows the project's tempo (projectTempo(), set by the mixer; 120 beats per minute in 4/4 outside a
+// mix), and the cycle's place comes from the position in the stream.
 class AmpMod : public Pack3Effect {
 public:
     AmpMod()
@@ -456,6 +513,7 @@ protected:
                 buf_[(size_t)k * 2] = l[at + k];
                 buf_[(size_t)k * 2 + 1] = r[at + k];
             }
+            followProjectTempo();
             eng_.process(buf_.data(), &cnt, &tempo_);
             for (int k = 0; k < cnt; ++k) {
                 l[at + k] = buf_[(size_t)k * 2];
@@ -467,7 +525,20 @@ protected:
 private:
     vegamp::Engine eng_;
     vegamp::Settings usedSettings_;
-    vegamp::Tempo tempo_;               // 120 beats per minute, 4/4
+    vegamp::Tempo tempo_;               // the project's tempo (set from it before each call)
+    ProjectTempo lastTempo_;
+    void followProjectTempo()
+    {
+        const ProjectTempo pt = projectTempo();
+        tempo_.haveBpm = tempo_.haveMeter = true;
+        tempo_.bpm = pt.bpm;
+        tempo_.numerator = pt.beatsPerMeasure;
+        tempo_.denominator = pt.beatUnit;
+        if (pt != lastTempo_) {
+            lastTempo_ = pt;
+            eng_.tempoChanged();
+        }
+    }
     bool formatSet_ = false;
     std::vector<float> buf_;
     std::mutex graphMutex_;
@@ -597,6 +668,7 @@ protected:
                 buf_[(size_t)k * 2] = l[at + k];
                 buf_[(size_t)k * 2 + 1] = r[at + k];
             }
+            followProjectTempo();
             eng_.process(buf_.data(), &cnt, &tempo_);
             for (int k = 0; k < cnt; ++k) {
                 l[at + k] = buf_[(size_t)k * 2];
@@ -608,7 +680,20 @@ protected:
 private:
     vegflange::Engine eng_;
     vegflange::Settings usedSettings_;
-    vegflange::Tempo tempo_;            // 120 beats per minute, 4/4
+    vegflange::Tempo tempo_;            // the project's tempo (set from it before each call)
+    ProjectTempo lastTempo_;
+    void followProjectTempo()
+    {
+        const ProjectTempo pt = projectTempo();
+        tempo_.haveBpm = tempo_.haveMeter = true;
+        tempo_.bpm = pt.bpm;
+        tempo_.numerator = pt.beatsPerMeasure;
+        tempo_.denominator = pt.beatUnit;
+        if (pt != lastTempo_) {
+            lastTempo_ = pt;
+            eng_.tempoChanged();
+        }
+    }
     bool formatSet_ = false;
     std::vector<float> buf_;
     std::atomic<int> bypass_{0};

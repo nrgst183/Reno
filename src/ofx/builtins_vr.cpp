@@ -1,9 +1,13 @@
 // Built-in stand-in for VEGAS Pro 18's Dual Fish Eye Stitching (manual: "360° video", "Stitching"): the frame of a 360° camera with two fish-eye lenses side by side (front lens's circle
 // in the left half, back lens's in the right) made into one equirectangular 360° frame, the seam blended and the vignetting towards each circle's edge removed. Uses VEGAS's identifier and
-// settings (from its OfxStitch bundle: gui.xml gives ranges and defaults, VrPresets.xml the camera models). The picture follows VEGAS's own 8-bit code.
+// settings (from its OfxStitch bundle: gui.xml gives ranges and defaults, VrPresets.xml the camera models). The picture follows the plug-in's OpenCL kernel (what VEGAS draws on the GPU).
 #include "builtins_impl.h"
+#include "vkfilters.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <mutex>
+#include <string>
 
 namespace reno {
 namespace ofx {
@@ -17,163 +21,261 @@ std::string pn(const char* n) { return std::string(kPre) + n; }
 
 const float kPif = 3.1415927410125732f, kHalfPif = 1.5707963705062866f;
 
-// One lens's half of the picture: the fisheye in 8 bits (R G B, rows counted from the bottom of the frame) and its settings.
-struct Fish {
-    int W = 0, Hs = 0;
-    std::vector<unsigned char> img;
-    float fov = 0, p0 = 0, p1 = 0, inten = 0, rng = 0;
-    float ca[2] = {1, 1}, sa[2] = {0, 0};
+// VEGAS draws this effect with the 360 plug-in's OpenCL kernel (VrDualStitch.dll carries its source, every byte with the high bit set; the kernel is "rotateEquirect" with the fisheye
+// branch retrievePixelInFishEye); this is that kernel in float, line by line, with what the GPU adds to it (found on VEGAS's pictures, as for Scene Rotation):
+//  - a pixel (x, y) of the W x H picture is at longitude (2 x / (W - 1) - 1) pi and latitude (1 - 2 y / (H - 1)) pi / 2; the GPU's native cos(pi / 2) is +0, sin(pi) +3.8e-7, sin(-pi) -0;
+//  - the lenses sit in the picture's top W / 2 rows (the kernel maps with height = width / 2 and flips the rows with the frame height), the sampler is linear with unnormalized
+//    coordinates (the texel is at the position - 0.5), clamped at the edges, with weights in whole 1/256s; the result is cut to 12 bits and read as (r12 * 255 + 2047) / 4096 levels;
+//  - the vignetting is removed on the float colours (gamma = 1 - factor t t), the overlap of the lenses blended in YUV.
+struct KSettings {
+    float aperture = 0, factor = 0, range = 0, narrowOff = 0, narrowRad = 1, eyeRotate = 0;
+    int orient[2] = {0, 0};                                         // [0] = x (the back lens), [1] = y (the front lens)
 };
 
-// Where in the fisheye the direction (A, B, C) lies: the position (sx, sy, -1..1) and how far out (RR, 0..1).
-void lensCoords(const Fish& f, float A, float B, float C, int lens, bool first, float& sx, float& sy, float& RR)
+struct KVec2 { float x, y; };
+
+KVec2 rotateAbout90(KVec2 n, int orientation, float angle)
 {
-    const float hy = hypotf(C, B), th = atan2f(hy, A);
-    const float u = (th + th) / f.fov;
-    const float sh = u * f.p0;
-    const float q = (u - sh) * f.p1;
-    RR = (float)std::fabs((double)q);
-    const float ph = atan2f(B, C);
-    const float qx = cosf(ph) * q, qy = sinf(ph) * q;
-    const float nx = qx * f.ca[lens] - qy * f.sa[lens], ny = qy * f.ca[lens] + qx * f.sa[lens];
-    sx = first ? ((nx + 1.f) + sh) * 0.5f : ((nx - 1.f) - sh) * 0.5f;
-    sy = ny;
+    switch (orientation) {
+        case 1: angle += 1.5707963f; break;
+        case 2: angle += kPif; break;
+        case 3: angle -= 1.5707963f; break;
+    }
+    const float rs = (float)std::sin((double)angle), rc = (float)std::cos((double)angle);
+    KVec2 r;
+    r.x = n.x * rc - n.y * rs;
+    r.y = n.x * rs + n.y * rc;
+    return r;
 }
 
-// The colour (0..255) the fisheye has at (sx, sy), with the vignetting taken out.
-void sampleFish(const Fish& f, float sx, float sy, float RR, int out[3])
+KVec2 fishEyePoint(float sx, float sy, float sz, const KSettings& k, bool useFront, float& radius)
 {
-    sx = sx > -1.f ? (1.f > sx ? sx : 1.f) : -1.f;
-    sy = sy > -1.f ? (1.f > sy ? sy : 1.f) : -1.f;
-    const float h1 = (float)(f.Hs - 1), w1 = (float)(f.W - 1);
-    float fx = ((sx + 1.f) * 0.5f) * w1;
-    const float ty = ((sy + 1.f) * 0.5f) * h1;
-    float fy = h1 - (h1 - ty);
-    fx = fx * 1.f + -0.5f;
-    fy = fy * 1.f + -0.5f;
-    const float xi = std::floor(fx), yi = std::floor(fy);
-    const float fxr = fx - xi, fyr = fy - yi;
-    const int x0 = (int)(xi + 0.5f), y0 = (int)(yi + 0.5f);
-    const int x1 = std::min(x0 + 1, f.W - 1), y1 = std::min(y0 + 1, f.Hs - 1);
-    const float omx = 1.f - fxr, omy = 1.f - fyr;
-    const unsigned char *p00 = &f.img[((size_t)y0 * f.W + x0) * 3], *p01 = &f.img[((size_t)y0 * f.W + x1) * 3];
-    const unsigned char *p10 = &f.img[((size_t)y1 * f.W + x0) * 3], *p11 = &f.img[((size_t)y1 * f.W + x1) * 3];
-    for (int k = 0; k < 3; ++k) {
-        const float a = ((float)p00[k] * omx) * omy, b = ((float)p01[k] * fxr) * omy;
-        const float c = ((float)p10[k] * omx) * fyr, d = ((float)p11[k] * fxr) * fyr;
-        out[k] = (int)((((a + b) + c) + d) + 0.5f) & 0xff;
+    float faRad = 2.0f * atan2f(hypotf(sz, sy), sx) / k.aperture;
+    const float offsetRad = faRad * k.narrowOff;
+    faRad -= offsetRad;
+    faRad *= k.narrowRad;
+    radius = std::fabs(faRad);
+    const float faAngle = atan2f(sy, sz);
+    KVec2 n;
+    n.x = faRad * (float)std::cos((double)faAngle);
+    n.y = faRad * (float)std::sin((double)faAngle);
+    const float angle = k.eyeRotate * kPif / 180.0f;
+    if (useFront) {
+        n = rotateAbout90(n, k.orient[1], angle);
+        n.x += 1.0f;
+        n.x += offsetRad;
+    } else {
+        n = rotateAbout90(n, k.orient[0], angle);
+        n.x -= 1.0f;
+        n.x -= offsetRad;
     }
-    if (f.inten > 0.f && f.rng != 0.f) {
-        const float om = 1.f - f.rng;
-        if (RR >= om) {
-            const float tt = (RR - om) / f.rng;
-            const float gexp = 1.f - (tt * f.inten) * tt;
-            for (int k = 0; k < 3; ++k) {
-                float q = powf((float)out[k] / 255.f, gexp);
-                q = 0.f > q ? 0.f : (q > 1.f ? 1.f : q);
-                out[k] = std::min((int)(q * 255.f + 0.5f), 255);
-            }
+    n.x /= 2.0f;
+    return n;
+}
+
+struct KPicture {
+    const Buf* src = nullptr;
+    int W = 0, H = 0;
+    bool levels = false;
+};
+
+// The GPU's result: cut to 12 bits, read as (r12 * 255 + 2047) / 4096 levels.
+float quant12(float r)
+{
+    const long long r12 = (long long)std::floor(std::min(std::max(r, 0.0f), 1.0f) * 4096.0f);
+    return (float)((r12 * 255 + 2047) / 4096) / 255.0f;
+}
+
+// Where one lens's colour comes from: the texel (x0, y0) (memory rows, from the bottom) and its neighbours with the weights fx, fy, and the vignetting exponent (kNoGamma: none).
+const float kNoGamma = 1e30f;
+struct KSample {
+    int x0, y0;
+    float fx, fy, gamma;
+};
+
+KSample makeSample(const KPicture& pic, KVec2 norm, float radius, const KSettings& k)
+{
+    const int W = pic.W, H = pic.H;
+    const float ww = (float)(W - 1), hh = (float)(W / 2 - 1);
+    const float mx = norm.x > -1.f ? (1.f > norm.x ? norm.x : 1.f) : -1.f, my = norm.y > -1.f ? (1.f > norm.y ? norm.y : 1.f) : -1.f;
+    const float px = (mx + 1.0f) / 2.0f * ww;
+    float py = hh - (my + 1.0f) / 2.0f * hh;
+    py = (float)(H - 1) - py;                                       // the image has its first row at the bottom
+    const float sx = px - 0.5f, sy = py - 0.5f;
+    const float fxs = std::floor(sx), fys = std::floor(sy);
+    KSample r;
+    r.x0 = (int)fxs;
+    r.y0 = (int)fys;
+    r.fx = sx - fxs;
+    r.fy = sy - fys;
+    if (pic.levels) {
+        r.fx = std::floor(r.fx * 256.0f + 0.5f) / 256.0f;
+        r.fy = std::floor(r.fy * 256.0f + 0.5f) / 256.0f;
+    }
+    r.gamma = kNoGamma;
+    if (k.factor > 0.0f && k.range != 0.0f) {
+        const float fallOffMin = 1.0f - k.range;
+        if (!(radius < fallOffMin)) {
+            float rr = radius - fallOffMin;
+            rr /= k.range;
+            r.gamma = 1.0f - (k.factor * rr * rr);
         }
+    }
+    return r;
+}
+
+void shadeSample(const KPicture& pic, const KSample& s, float out[3])
+{
+    const int W = pic.W, H = pic.H;
+    auto cl = [](int i, int n) { return i < 0 ? 0 : (i >= n ? n - 1 : i); };
+    // memory row m (from the bottom) is row H - 1 - m of the buffer
+    const float* t00 = pic.src->at(cl(s.x0, W), H - 1 - cl(s.y0, H));
+    const float* t10 = pic.src->at(cl(s.x0 + 1, W), H - 1 - cl(s.y0, H));
+    const float* t01 = pic.src->at(cl(s.x0, W), H - 1 - cl(s.y0 + 1, H));
+    const float* t11 = pic.src->at(cl(s.x0 + 1, W), H - 1 - cl(s.y0 + 1, H));
+    for (int c = 0; c < 3; ++c) {
+        const float top = t00[c] * (1.0f - s.fx) + t10[c] * s.fx, bot = t01[c] * (1.0f - s.fx) + t11[c] * s.fx;
+        out[c] = top * (1.0f - s.fy) + bot * s.fy;
+    }
+    if (s.gamma != kNoGamma) {
+        for (int c = 0; c < 3; ++c) {
+            const float q = out[c] > 0.f ? powf(out[c], s.gamma) : 0.f;
+            out[c] = q < 0.f ? 0.f : (q > 1.f ? 1.f : q);
+        }
+    }
+}
+
+void yuvOf(const float c[3], float y[3])
+{
+    y[0] = 0.299f * c[0] + 0.587f * c[1] + 0.114f * c[2];
+    y[1] = 0.436f * ((c[2] - y[0]) / (1.0f - 0.114f));
+    y[2] = 0.615f * ((c[0] - y[0]) / (1.0f - 0.299f));
+}
+
+// What a pixel of the stitched picture takes: one lens (blend false, s[0]) or both blended in YUV (distK is the front lens's weight).
+struct KPix {
+    bool blend;
+    float distK;
+    KSample s[2];
+};
+
+struct KStitch {
+    KSettings k;
+    KPicture pic;
+    float fovDist = 0;
+    std::vector<float> cosL, sinL;
+};
+
+bool stitchSetup(Ctx& c, int W, int H, KStitch& st)
+{
+    if (W < 2 || H < 2) return false;
+    KSettings& k = st.k;
+    const float fov = ((float)c.d(pn("fov").c_str()) * kPif) / 180.f;
+    if (!(fov > 0.f)) return false;
+    k.aperture = fov;
+    k.factor = c.b(pn("falloff.use").c_str()) ? (float)(c.d(pn("falloff.factor").c_str()) / 100.0) : 0.f;
+    k.range = (float)(c.d(pn("falloff.range").c_str()) / 100.0);
+    k.narrowOff = (float)(c.d(pn("center").c_str()) / 100.0);
+    k.narrowRad = (float)(c.d(pn("narrowing").c_str()) / 100.0);
+    k.eyeRotate = (float)(c.d(pn("rotation").c_str()) / 100.0);
+    // the orientations as VEGAS numbers them inside: 0, 90, 180, -90 degrees for the entries 0 to 3 of the list
+    static const int kMap[4] = {0, 3, 2, 1};
+    const int oL = kMap[std::min(3, std::max(0, c.i(pn("orient.left").c_str())))];
+    const int oR = kMap[std::min(3, std::max(0, c.i(pn("orient.right").c_str())))];
+    k.orient[0] = oL;
+    k.orient[1] = oR;
+    st.pic.src = &c.src;
+    st.pic.W = W;
+    st.pic.H = H;
+    st.pic.levels = c.levels != 0;
+    st.fovDist = (float)std::fabs((double)std::sin((double)((fov - kPif) / 2.0f)));
+    // the angles of the columns
+    st.cosL.resize((size_t)W);
+    st.sinL.resize((size_t)W);
+    for (int ix = 0; ix < W; ++ix) {
+        const float lon = ((float)ix / (float)(W - 1) * 2.0f - 1.0f) * kPif;
+        st.cosL[(size_t)ix] = (float)std::cos((double)lon);
+        float sl = (float)std::sin((double)lon);
+        if (lon >= kPif) sl = 3.8e-7f;
+        else if (lon <= -kPif) sl = -0.0f;
+        st.sinL[(size_t)ix] = sl;
+    }
+    return true;
+}
+
+// The rows' latitude: (cos, sin)
+void stitchRow(const KStitch& st, int y, float& cp, float& sp)
+{
+    const int H = st.pic.H;
+    const float hh = (float)(H - 1);
+    const float latR = (((float)(H - 1) - (float)y) / hh * 2.0f - 1.0f) * kHalfPif;
+    cp = (float)std::cos((double)latR);
+    if (std::fabs(latR) >= kHalfPif) cp = 0.0f;
+    sp = (float)std::sin((double)latR);
+}
+
+KPix stitchPixel(const KStitch& st, int x, float cp, float sp)
+{
+    KPix px;
+    float sX = cp * st.cosL[(size_t)x], sY = sp, sZ = cp * st.sinL[(size_t)x];
+    const float fovDist = st.fovDist;
+    if (std::fabs(sX) < fovDist) {
+        const float realX = sX;
+        float distK = std::fabs(sX) / fovDist;
+        float rF, rB;
+        const KVec2 nF = fishEyePoint(sX, sY, sZ, st.k, true, rF);
+        const KVec2 nB = fishEyePoint(-sX, sY, -sZ, st.k, false, rB);
+        if (realX < 0.0f) { distK = 1.0f - distK; distK *= 0.5f; }
+        else if (realX > 0.0f) { distK += 1.0f; distK /= 2.0f; }
+        else distK = 0.5f;
+        px.blend = true;
+        px.distK = distK;
+        px.s[0] = makeSample(st.pic, nF, rF, st.k);
+        px.s[1] = makeSample(st.pic, nB, rB, st.k);
+    } else {
+        bool front = true;
+        if (sX <= -fovDist) { front = false; sX = std::fabs(sX); sZ *= -1.0f; }
+        float rad;
+        const KVec2 n = fishEyePoint(sX, sY, sZ, st.k, front, rad);
+        px.blend = false;
+        px.distK = 0;
+        px.s[0] = makeSample(st.pic, n, rad, st.k);
+        px.s[1] = px.s[0];
+    }
+    return px;
+}
+
+void stitchShade(const KStitch& st, const KPix& px, float col[3])
+{
+    if (px.blend) {
+        float cf[3], cb[3], yf[3], yb[3];
+        shadeSample(st.pic, px.s[0], cf);
+        shadeSample(st.pic, px.s[1], cb);
+        yuvOf(cf, yf);
+        yuvOf(cb, yb);
+        const float distK = px.distK, backDistance = 1.0f - distK;
+        const float Y = yf[0] * distK + yb[0] * backDistance, U = yf[1] * distK + yb[1] * backDistance, V = yf[2] * distK + yb[2] * backDistance;
+        col[0] = std::min(1.f, std::max(0.f, Y + 1.14f * V));
+        col[1] = std::min(1.f, std::max(0.f, Y - 0.395f * U - 0.581f * V));
+        col[2] = std::min(1.f, std::max(0.f, Y + 2.033f * U));
+    } else {
+        shadeSample(st.pic, px.s[0], col);
     }
 }
 
 void dualFishEye(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
-    if (W < 2 || H < 2 || c.src.w != W || c.src.h != H) { c.out.px = c.src.px; return; }
-    Fish f;
-    const float fov = ((float)c.d(pn("fov").c_str()) * kPif) / 180.f;
-    if (!(fov > 0.f)) { c.out.px = c.src.px; return; }
-    f.fov = fov;
-    f.inten = c.b(pn("falloff.use").c_str()) ? (float)(c.d(pn("falloff.factor").c_str()) / 100.0) : 0.f;
-    f.rng = (float)(c.d(pn("falloff.range").c_str()) / 100.0);
-    f.p0 = (float)(c.d(pn("center").c_str()) / 100.0);
-    f.p1 = (float)(c.d(pn("narrowing").c_str()) / 100.0);
-    const float rot = (float)(c.d(pn("rotation").c_str()) / 100.0);
-    const float rotrad = (rot * kPif) / 180.f;
-    // the orientations as VEGAS numbers them inside: 0, 90, 180, -90 degrees for the entries 0 to 3 of the list
-    static const int kMap[4] = {0, 3, 2, 1};
-    const int oL = kMap[std::min(3, std::max(0, c.i(pn("orient.left").c_str())))];
-    const int oR = kMap[std::min(3, std::max(0, c.i(pn("orient.right").c_str())))];
-    const int orient[2] = {oR, oL};
-    for (int l = 0; l < 2; ++l) {
-        float ang = rotrad;
-        if (orient[l] == 1) ang = rotrad + kHalfPif;
-        else if (orient[l] == 2) ang = rotrad + kPif;
-        else if (orient[l] == 3) ang = rotrad - kHalfPif;
-        f.ca[l] = cosf(ang);
-        f.sa[l] = sinf(ang);
-    }
-    // the half of the frame the lenses are in: the top W/2 rows of a wide frame (rows counted from the bottom, so the last ones)
-    const int ecx = W >> 1;
-    int base = 0;
-    f.Hs = H;
-    if (ecx < H) { base = H - ecx; f.Hs = ecx; }
-    f.W = W;
-    f.img.resize((size_t)f.Hs * W * 3);
-    for (int m = 0; m < f.Hs; ++m)
-        for (int x = 0; x < W; ++x) {
-            const float* p = c.src.at(x, H - 1 - (base + m));
-            unsigned char* q = &f.img[((size_t)m * W + x) * 3];
-            for (int k = 0; k < 3; ++k) q[k] = (unsigned char)(int)(clampd(p[k], 0, 1) * 255.0 + 0.5);
-        }
-    const float ov = (float)std::fabs((double)sinf((fov - kPif) * 0.5f));
+    KStitch st;
+    if (c.src.w != W || c.src.h != H || !stitchSetup(c, W, H, st)) { c.out.px = c.src.px; return; }
     forRows(H, W, [&](int y) {
-        const int m = H - 1 - y;                                  // the row counted from the bottom
-        float v = (float)m / (float)(H - 1);
-        v = (v + v) - 1.f;
-        const float lat = v * kHalfPif;
-        float cl = cosf(lat);
-        if (std::fabs(cl) < 1e-6f) cl = 0.f;                      // (at the poles the cosine is exactly nothing for VEGAS)
-        const float B = sinf(lat);
+        float cp, sp;
+        stitchRow(st, y, cp, sp);
         for (int x = 0; x < W; ++x) {
-            float u = (float)x / (float)(W - 1);
-            u = (u + u) - 1.f;
-            const float lon = u * kPif;
-            const float A = cosf(lon) * cl, C = sinf(lon) * cl;
-            const float absA = (float)std::fabs((double)A);
-            int r = 0, g = 0, b = 0;
-            if (absA < ov) {
-                const float ratio = absA / ov;
-                const float w1 = A > 0.f ? (ratio + 1.f) * 0.5f : (A < 0.f ? (1.f - ratio) * 0.5f : 0.5f);
-                const float w2 = 1.f - w1;
-                int c1[3], c2[3];
-                float sx, sy, RR;
-                lensCoords(f, A, B, C, 0, true, sx, sy, RR);
-                sampleFish(f, sx, sy, RR, c1);
-                lensCoords(f, -A, B, -C, 1, false, sx, sy, RR);
-                sampleFish(f, sx, sy, RR, c2);
-                float Y[2], U[2], V[2];
-                for (int s = 0; s < 2; ++s) {
-                    const int* cc = s == 0 ? c1 : c2;
-                    const float fr = (float)cc[0] / 255.f, fg = (float)cc[1] / 255.f, fb = (float)cc[2] / 255.f;
-                    Y[s] = ((fg * 0.587f) + (fr * 0.299f)) + (fb * 0.114f);
-                    V[s] = ((fr - Y[s]) / 0.701f) * 0.615f;
-                    U[s] = ((fb - Y[s]) / 0.886f) * 0.436f;
-                }
-                const float Yb = (Y[1] * w2) + (Y[0] * w1), Vb = (V[1] * w2) + (V[0] * w1), Ub = (U[1] * w2) + (U[0] * w1);
-                float Rb = (Vb * 1.14f) + Yb, Gb = (Yb - (Ub * 0.395f)) - (Vb * 0.581f), Bb = (Ub * 2.033f) + Yb;
-                Rb = 0.f > Rb ? 0.f : (Rb > 1.f ? 1.f : Rb);
-                Gb = 0.f > Gb ? 0.f : (Gb > 1.f ? 1.f : Gb);
-                Bb = 0.f > Bb ? 0.f : (Bb > 1.f ? 1.f : Bb);
-                r = std::min((int)(Rb * 255.f + 0.5f), 255);
-                g = std::min((int)(Gb * 255.f + 0.5f), 255);
-                b = std::min((int)(Bb * 255.f + 0.5f), 255);
-            } else {
-                int cc[3];
-                float sx, sy, RR;
-                if (A > ov) {
-                    lensCoords(f, A, B, C, 0, true, sx, sy, RR);
-                } else {
-                    lensCoords(f, absA, B, -C, 1, false, sx, sy, RR);
-                }
-                sampleFish(f, sx, sy, RR, cc);
-                r = cc[0]; g = cc[1]; b = cc[2];
-            }
+            float col[3];
+            stitchShade(st, stitchPixel(st, x, cp, sp), col);
             float* o = c.out.at(x, y);
-            o[0] = (float)r / 255.f;
-            o[1] = (float)g / 255.f;
-            o[2] = (float)b / 255.f;
+            for (int q = 0; q < 3; ++q) o[q] = st.pic.levels ? quant12(col[q]) : col[q];
             o[3] = 1.f;
         }
     });
@@ -211,6 +313,47 @@ void stitchChanged(Change& ch)
 }
 
 }  // namespace
+
+// For the GPU (vkfilters.cpp): the sources of every pixel of the stitched picture, 12 floats each: mode (0 one lens, 1 both blended), the front lens's weight, then for each
+// of the two lenses x0, y0, fx, fy, gamma (kNoGamma: none). Returns false where the effect copies the picture. The placement does not depend on the picture's colours.
+bool stitchMapGpu(Ctx& c, int W, int H, std::vector<float>& out, bool& levels, float& noGamma)
+{
+    KStitch st;
+    if (!stitchSetup(c, W, H, st)) return false;
+    levels = st.pic.levels;
+    noGamma = kNoGamma;
+    // the map is kept while the settings stay (the planner runs for every frame)
+    static std::mutex m;
+    static std::string cachedKey;
+    static std::vector<float> cached;
+    char buf[256];
+    std::snprintf(buf, sizeof buf, "%dx%d;%d;%a,%a,%a,%a,%a,%a,%d,%d", W, H, levels ? 1 : 0, st.k.aperture, st.k.factor, st.k.range, st.k.narrowOff, st.k.narrowRad, st.k.eyeRotate, st.k.orient[0], st.k.orient[1]);
+    std::lock_guard<std::mutex> lock(m);
+    if (cachedKey != buf || cached.size() != (size_t)W * H * 12) {
+        cachedKey.clear();
+        cached.assign((size_t)W * H * 12, 0.f);
+        for (int y = 0; y < H; ++y) {
+            float cp, sp;
+            stitchRow(st, y, cp, sp);
+            for (int x = 0; x < W; ++x) {
+                const KPix px = stitchPixel(st, x, cp, sp);
+                float* r = &cached[((size_t)y * W + x) * 12];
+                r[0] = px.blend ? 1.f : 0.f;
+                r[1] = px.distK;
+                for (int l = 0; l < 2; ++l) {
+                    r[2 + l * 5] = (float)px.s[l].x0;
+                    r[3 + l * 5] = (float)px.s[l].y0;
+                    r[4 + l * 5] = px.s[l].fx;
+                    r[5 + l * 5] = px.s[l].fy;
+                    r[6 + l * 5] = px.s[l].gamma;
+                }
+            }
+        }
+        cachedKey = buf;
+    }
+    out = cached;
+    return true;
+}
 
 void addFiltersVr(std::vector<Def>& out)
 {

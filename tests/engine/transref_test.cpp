@@ -26,6 +26,7 @@ typedef std::map<std::string, std::vector<double>> Params;
 static const std::string V = "com.vegascreativesoftware:";
 static const int W = 320, H = 180;
 
+static bool g_levels = true; // false: the float path (needed where the test reads sub-level positions off a smooth ramp)
 static Buf run(const std::string& id, const Params& over, const Buf& a, const Buf& b, double progress)
 {
     const Def* def = findDef(V + id);
@@ -47,6 +48,7 @@ static Buf run(const std::string& id, const Params& over, const Buf& a, const Bu
     c.src = a;
     c.src2 = b;
     c.progress = progress;
+    c.levels = g_levels;
     c.out.resize(a.w, a.h);
     c.frameW = a.w;
     c.frameH = a.h;
@@ -98,8 +100,10 @@ int main()
         // Push to the left with a border: only a hard border makes the incoming frame start a pixel early
         const double L = W, w = 0.05 * L, p = 0.5, seam = (L + 2 * w) - p * (L + 3 * w);
         const int x = (int)seam + 20;
+        g_levels = false; // the 8-bit path would round the ramp to 255 steps (over a pixel here)
         const Buf hard = run("push", {{"Direction", {2}}, {"BorderSize", {0.05}}, {"BorderFeather", {0}}}, black, code, p);
         const Buf soft = run("push", {{"Direction", {2}}, {"BorderSize", {0.05}}, {"BorderFeather", {0.02}}}, black, code, p);
+        g_levels = true;
         const double want0 = (x + 0.5 - seam) / W, want1 = (x + 0.5 - seam + 1) / W;
         check(std::fabs(at(hard, x, 90) - want1) < 1e-3, "Push: a hard border has the incoming frame a pixel early", num(at(hard, x, 90) * W));
         check(std::fabs(at(soft, x, 90) - want0) < 1e-3, "  a soft one does not", num(at(soft, x, 90) * W));

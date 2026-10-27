@@ -14,7 +14,7 @@ import struct, sys
 
 OP = dict(
     Capability=17, MemoryModel=14, EntryPoint=15, ExecutionMode=16, Decorate=71, MemberDecorate=72, ExtInstImport=11, ExtInst=12,
-    TypeVoid=19, TypeBool=20, TypeInt=21, TypeFloat=22, TypeVector=23, TypeStruct=30, TypeRuntimeArray=29, TypePointer=32,
+    TypeVoid=19, TypeBool=20, TypeInt=21, TypeFloat=22, TypeVector=23, TypeStruct=30, TypeRuntimeArray=29, TypeArray=28, ConstantComposite=44, ConstantNull=46, TypePointer=32,
     TypeFunction=33, Constant=43, ConstantTrue=41, ConstantFalse=42, Function=54, FunctionEnd=56, Variable=59, Load=61, Store=62,
     AccessChain=65, CompositeConstruct=80, CompositeExtract=81, Label=248, Return=253, Branch=249, BranchConditional=250,
     SelectionMerge=247, LoopMerge=246, Select=169, Bitcast=124, ConvertFToU=109, ConvertFToS=110, ConvertSToF=111, ConvertUToF=112,
@@ -23,11 +23,11 @@ OP = dict(
     LogicalAnd=167, LogicalNot=168, IEqual=170, INotEqual=171, UGreaterThan=172, SGreaterThan=173, UGreaterThanEqual=174,
     SGreaterThanEqual=175, ULessThan=176, SLessThan=177, ULessThanEqual=178, SLessThanEqual=179, FOrdEqual=180, FUnordNotEqual=183,
     FOrdLessThan=184, FOrdGreaterThan=186, FOrdLessThanEqual=188, FOrdGreaterThanEqual=190, ShiftRightLogical=194,
-    ShiftRightArithmetic=195, ShiftLeftLogical=196, BitwiseOr=197, BitwiseXor=198, BitwiseAnd=199, Not=200)
+    AtomicIAdd=234, ShiftRightArithmetic=195, ShiftLeftLogical=196, BitwiseOr=197, BitwiseXor=198, BitwiseAnd=199, Not=200)
 
 GLSL = dict(Round=1, RoundEven=2, Trunc=3, FAbs=4, SAbs=5, FSign=6, Floor=8, Ceil=9, Fract=10, Sin=13, Cos=14, Tan=15, Asin=16, Acos=17,
             Atan=18, Atan2=25, Pow=26, Exp=27, Log=28, Exp2=29, Log2=30, Sqrt=31, InverseSqrt=32, FMin=37, UMin=38, SMin=39, FMax=40,
-            UMax=41, SMax=42, FClamp=43, UClamp=44, SClamp=45, FMix=46, Fma=50)
+            UMax=41, SMax=42, FClamp=43, UClamp=44, SClamp=45, FMix=46, Fma=50, FindUMsb=75)
 
 
 def pad_string(s):
@@ -86,6 +86,30 @@ class Var:
     def add(self, v): self.set(self.get() + v)
 
 
+class ConstArray:
+    def __init__(self, S, var, ptrty):
+        self.S, self.var, self.ptrty = S, var, ptrty
+    def load(self, idx):
+        idx = self.S.conv(idx, 'u')
+        p = self.S._op("AccessChain", self.ptrty, self.var, idx.id)
+        return self.S._load(p, 'u')
+
+
+class LocalArray:
+    """a per-invocation array (Private storage, zero at the start): load(idx), store(idx, val)"""
+    def __init__(self, S, var, ptrty, elem):
+        self.S, self.var, self.ptrty, self.elem = S, var, ptrty, elem
+    def load(self, idx):
+        idx = self.S.conv(idx, 'u')
+        p = self.S._op("AccessChain", self.ptrty, self.var, idx.id)
+        return self.S._load(p, self.elem)
+    def store(self, idx, val):
+        idx = self.S.conv(idx, 'u')
+        val = self.S.conv(val, self.elem)
+        p = self.S._op("AccessChain", self.ptrty, self.var, idx.id)
+        self.S._emit("Store", p, val.id)
+
+
 class Buffer:
     def __init__(self, S, var, ptrty, elem):
         self.S, self.var, self.ptrty, self.elem = S, var, ptrty, elem
@@ -98,6 +122,13 @@ class Buffer:
         val = self.S.conv(val, self.elem)
         p = self.S._op("AccessChain", self.ptrty, self.var, self.S.u(0).id, idx.id)
         self.S._emit("Store", p, val.id)
+    def atomic_add(self, idx, val):
+        """buf[idx] += val atomically (a 'u' buffer opened 'rw'); the old value is not returned"""
+        S = self.S
+        idx = S.conv(idx, 'u')
+        val = S.conv(val, 'u')
+        p = S._op("AccessChain", self.ptrty, self.var, S.u(0).id, idx.id)
+        S._v("AtomicIAdd", 'u', p, S.u(1).id, S.u(0).id, val.id)
 
 
 class _If:
@@ -318,7 +349,10 @@ class Shader:
         v, o = a, b
         ty = v.ty if isinstance(v, V) else None
         if isinstance(o, V) and ty == 'v4' and o.ty == 'f':
-            if name == "mul" and not rev: return self._v("VectorTimesScalar", 'v4', v.id, o.id)
+            if name == "mul" and not rev:
+                r = self._v("VectorTimesScalar", 'v4', v.id, o.id)
+                self._emit_sec("annot", "Decorate", r.id, 42)
+                return r
             ov = self.splat4(o)
             o = ov
         elif isinstance(o, V) and ty == 'f' and o.ty == 'v4':
@@ -337,7 +371,46 @@ class Shader:
             op = dict(add="IAdd", sub="ISub", mul="IMul", div="SDiv", mod="SRem")[name]
         else:
             raise TypeError("arithmetic on %s" % ty)
-        return self._v(op, ty, x.id, y.id)
+        if op == "FDiv" and ty == 'f':
+            return self._fdiv_exact(x, y)
+        if op == "FDiv" and ty == 'v4':
+            return self.vec4(*[self._fdiv_exact(self.extract(x, k), self.extract(y, k)) for k in range(4)])
+        r = self._v(op, ty, x.id, y.id)
+        if op in ("FAdd", "FSub", "FMul"):
+            self._emit_sec("annot", "Decorate", r.id, 42)      # NoContraction: a GPU must not fuse a multiply and an add (the CPU rounds each step)
+        return r
+
+    def _nc(self, v):
+        self._emit_sec("annot", "Decorate", v.id, 42)
+        return v
+
+    def _fdiv_exact(self, x, a):
+        """x / a rounded the way the CPU's division is (IEEE, to nearest). The hardware divide may be a few ulp off (the Vulkan rule), so the quotient is
+        corrected with its exact remainder, worked out with Dekker's error-free product (no fused multiply-add: a software Vulkan driver does not fuse it).
+        Where that does not apply (zero, huge or tiny operands, non-finite) the plain divide is the answer."""
+        def op(name, p, q):
+            return self._nc(self._v(name, 'f', p.id, q.id))
+        q0 = op("FDiv", x, a)
+        y = op("FDiv", self.f(1.0), a)
+        split = self.f(4097.0)
+        def parts(v):
+            t = op("FMul", split, v)
+            hi = op("FSub", t, op("FSub", t, v))
+            return hi, op("FSub", v, hi)
+        ah, al = parts(a)
+        qh, ql = parts(q0)
+        p = op("FMul", q0, a)
+        # q0 * a = p + e exactly
+        e = op("FAdd", op("FAdd", op("FAdd", op("FSub", op("FMul", qh, ah), p), op("FMul", qh, al)), op("FMul", ql, ah)), op("FMul", ql, al))
+        # remainder x - q0 * a = (x - p) - e (x - p is exact when q0 is within an ulp or two)
+        r = op("FSub", op("FSub", x, p), e)
+        q2 = op("FAdd", q0, op("FMul", r, y))
+        ax, aa = self.abs(x), self.abs(a)
+        ok = self.isfinite(q2) & (aa > 1e-18) & (aa < 1e18) & (ax < 1e18) & ((ax > 1e-18) | self.eq(x, 0.0))
+        return self.select(ok, q2, q0)
+
+    def fma(self, a, b, c):
+        return self._ext("Fma", 'f', self.conv(a, 'f'), self.conv(b, 'f'), self.conv(c, 'f'))
 
     def _neg(self, v):
         if v.ty in ('f', 'v4'): return self._v("FNegate", v.ty, v.id)
@@ -376,18 +449,62 @@ class Shader:
     def _f1(self, name, x):
         if not isinstance(x, V): x = self.f(x)
         return self._ext(name, x.ty, x)
-    def sqrt(self, x): return self._f1("Sqrt", x)
+    def sqrt_hw(self, x): return self._f1("Sqrt", x)       # the driver's own Sqrt (Vulkan allows it to be a few ulp off); only for special values
+    def sqrt(self, x):
+        """sqrtf, correctly rounded: worked out in the software double (sf64), which is exact; the hardware Sqrt answers zero, negative, non-finite and denormal operands"""
+        if not isinstance(x, V): x = self.f(x)
+        if x.ty != 'f': return self._f1("Sqrt", x)
+        from sf64 import SF
+        ex = SF.from_f32(self, x).sqrt().to_f32()
+        return self.select((x >= 1.1754944e-38) & (x < 3.0e38), ex, self.sqrt_hw(x))
     def floor(self, x): return self._f1("Floor", x)
     def ceil(self, x): return self._f1("Ceil", x)
     def fract(self, x): return self._f1("Fract", x)
     def trunc(self, x): return self._f1("Trunc", x)
-    def exp(self, x): return self._f1("Exp", x)
-    def log(self, x): return self._f1("Log", x)
-    def sin(self, x): return self._f1("Sin", x)
-    def cos(self, x): return self._f1("Cos", x)
-    def atan2(self, y, x): return self._ext("Atan2", 'f', self.conv(y, 'f'), self.conv(x, 'f'))
-    def fmod(self, x, y): return self._v("FRem", 'f', self.conv(x, 'f').id, self.conv(y, 'f').id)     # C's fmod (the sign of x)
-    def pow(self, x, y): return self._ext("Pow", 'f', self.conv(x, 'f'), self.conv(y, 'f'))
+    def atan2_f(self, y, x): return self._ext("Atan2", 'f', self.conv(y, 'f'), self.conv(x, 'f'))      # the driver's own (only a starting guess for sf64)
+    def find_umsb(self, x): return self._ext("FindUMsb", 'u', x)      # (the index of the highest set bit; every bit of -1 for 0)
+    def round_even(self, x): return self._f1("RoundEven", x)       # (lrintf)
+    # The elementary functions are worked out in the software double (sf64) and rounded to a float, not by the driver's Exp/Log/Sin/Cos/Atan2/Pow (Vulkan
+    # allows those several ulp of error, and they differ from one GPU to the next). The result is the double function rounded to a float, which is what a
+    # C library's float function gives but for a very rare last bit.
+    def _sf1(self, fn, x):
+        import sf64
+        x = self.conv(x, 'f') if not isinstance(x, V) else x
+        return getattr(sf64, fn)(self, sf64.SF.from_f32(self, x)).to_f32()
+    def exp(self, x): return self._sf1("sf_exp", x)
+    def log(self, x): return self._sf1("sf_log", x)
+    def sin(self, x): return self._sf1("sf_sin", x)
+    def cos(self, x): return self._sf1("sf_cos", x)
+    def atan2(self, y, x):
+        import sf64
+        y, x = self.conv(y, 'f'), self.conv(x, 'f')
+        return sf64.sf_atan2(self, sf64.SF.from_f32(self, y), sf64.SF.from_f32(self, x)).to_f32()
+    def pow(self, x, y):
+        import sf64
+        x, y = self.conv(x, 'f'), self.conv(y, 'f')
+        return sf64.sf_pow(self, sf64.SF.from_f32(self, x), sf64.SF.from_f32(self, y)).to_f32()
+    def fmod(self, x, y):
+        """C's fmod (the sign of x), exact: the remainder x - q y of the truncated quotient is worked out with Dekker's error-free product (the hardware
+        FRem may use x - y trunc(x / y), which rounds). Operands whose quotient is 2^23 or more, zero, or non-finite use the hardware FRem."""
+        x, y = self.conv(x, 'f'), self.conv(y, 'f')
+        def op(name, p, q): return self._nc(self._v(name, 'f', p.id, q.id))
+        ax, ay = self.abs(x), self.abs(y)
+        q = self.trunc(self._fdiv_exact(ax, ay))
+        split = self.f(4097.0)
+        def parts(v):
+            t = op("FMul", split, v)
+            hi = op("FSub", t, op("FSub", t, v))
+            return hi, op("FSub", v, hi)
+        qh, ql = parts(q)
+        yh, yl = parts(ay)
+        p = op("FMul", q, ay)
+        e = op("FAdd", op("FAdd", op("FAdd", op("FSub", op("FMul", qh, yh), p), op("FMul", qh, yl)), op("FMul", ql, yh)), op("FMul", ql, yl))
+        r = op("FSub", op("FSub", ax, p), e)                      # ax - q ay, exactly (q is at most one too big or one too small)
+        r = self.select(r < 0.0, op("FAdd", r, ay), r)
+        r = self.select(r >= ay, op("FSub", r, ay), r)
+        res = self.select(x < 0.0, self._v("FNegate", 'f', r.id), r)
+        ok = (ay > 1e-18) & (ay < 1e18) & (ax < 8388608.0 * ay) & (ax < 1e18)
+        return self.select(ok, res, self._v("FRem", 'f', x.id, y.id))
     def abs(self, x):
         if not isinstance(x, V): x = self.f(x)
         return self._ext("SAbs" if x.ty == 'i' else "FAbs", x.ty, x)
@@ -451,6 +568,38 @@ class Shader:
         self._emit_sec("annot", "Decorate", var, 34, 0)
         self._emit_sec("annot", "Decorate", var, 33, binding)
         return Buffer(self, var, self._ptr(2, et), elem)
+
+    def loop(self, n, fn):
+        """runs fn(i) for i = 0 .. n - 1 (n a number or a uint value) as a loop in the kernel"""
+        with self.for_(0, n) as i:
+            fn(i)
+
+    def const_array(self, words):
+        """a constant array of uint words in the kernel (private memory); returns an object with load(index)"""
+        words = [int(w) & 0xffffffff for w in words]
+        key = ("carr",) + tuple(words)
+        if key in self.cache: return self.cache[key]
+        n = self._const('u', len(words))
+        arr = self._type(("arrty", len(words)), "TypeArray", self.tid['u'], n)
+        elems = [self._const('u', w) for w in words]
+        init = self._newid()
+        self._emit_sec("types", "ConstantComposite", arr, init, *elems)
+        var = self._newid()
+        self._emit_sec("types", "Variable", self._ptr(6, arr), var, 6, init)
+        obj = ConstArray(self, var, self._ptr(6, self.tid['u']))
+        self.cache[key] = obj
+        return obj
+    def local_array(self, n, ty='f'):
+        """an array of n values (ty 'f', 'u' or 'i') private to the invocation, all zero at the start"""
+        key = ("larr", n, ty)
+        cnt = self._const('u', n)
+        arr = self._type(("arrty", n, ty), "TypeArray", self.tid[ty], cnt)
+        null = self._newid()
+        self._emit_sec("types", "ConstantNull", arr, null)
+        var = self._newid()
+        self._emit_sec("types", "Variable", self._ptr(6, arr), var, 6, null)
+        # (a private variable is a separate one each time it is asked for)
+        return LocalArray(self, var, self._ptr(6, self.tid[ty]), ty)
     def buf(self, name): return self.buffers[name]
     def if_(self, c): return _If(self, c)
     def else_(self): return _Else(self)

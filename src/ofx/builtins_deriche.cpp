@@ -171,7 +171,7 @@ inline void unpackPixel(const double* a, const double* z, float* o, bool levels,
 
 }  // namespace
 
-void vegasDericheBlurSigma(Buf& b, double sigmaX, double sigmaY, bool levels)
+void vegasDericheBlurSigma(Buf& b, double sigmaX, double sigmaY, bool levels, bool rawOut)
 {
     const int W = b.w, H = b.h;
     if (W <= 0 || H <= 0) return;
@@ -212,7 +212,7 @@ void vegasDericheBlurSigma(Buf& b, double sigmaX, double sigmaY, bool levels)
             for (int c = 0; c < 4 && c0 + c < W; ++c) {
                 const double* a = &s.yc[(size_t)i * kLanes + c * 4];
                 const double* z = &s.ya[(size_t)i * kLanes + c * 4];
-                unpackPixel(a, z, b.at(c0 + c, H - 1 - i), levels, true);
+                unpackPixel(a, z, b.at(c0 + c, H - 1 - i), levels && !rawOut, !rawOut);
             }
     });
 }
@@ -332,11 +332,9 @@ LPlane shearOut(const LPlane& buf, int shear, int H, bool levels, bool wrap)
 
 }  // namespace
 
-void vegasLinearBlur(const Buf& src, Buf& out, double angleDeg, double amount, bool levels)
+bool vegasLinearBlurParams(int W, int H, double angleDeg, double amount, LinearBlurParams& r)
 {
-    const int W = src.w, H = src.h;
-    out.ensure(W, H);
-    if (!(amount > 1e-6) || W < 2 || H < 2) { out.px = src.px; return; }
+    if (!(amount > 1e-6) || W < 2 || H < 2) return false;
     const double pi = 3.141592653589793;
     double a = std::fmod(angleDeg, 360.0);         // (VEGAS's own angles go 0..360)
     if (a < 0) a += 360.0;
@@ -351,6 +349,25 @@ void vegasLinearBlur(const Buf& src, Buf& out, double angleDeg, double amount, b
         if (th < 0.0) th += 2.0 * pi;
     }
     const double L = (double)std::max(W, H) * amount;
+    int branch, shear;
+    double sx, sy;
+    if (th < pi / 4) { branch = 1; shear = (int)(std::tan(th) * W * 16384.0); sx = std::cos(x7) * L; sy = 0; }
+    else if (th < pi / 2) { branch = 2; shear = (int)(std::tan(pi / 2 - th) * H * 16384.0); sx = 0; sy = std::cos(pi / 2 - x7) * L; }
+    else if (th < 3 * pi / 4) { branch = 3; shear = (int)(std::tan(th - pi / 2) * H * 16384.0); sx = 0; sy = std::cos(x7 - pi / 2) * L; }
+    else { branch = 4; shear = (int)(std::tan(pi - th) * W * 16384.0); sx = std::cos(pi - x7) * L; sy = 0; }
+    r.branch = branch;
+    r.shear = std::max(0, shear);
+    r.sx = sx;
+    r.sy = sy;
+    return true;
+}
+
+void vegasLinearBlur(const Buf& src, Buf& out, double angleDeg, double amount, bool levels)
+{
+    const int W = src.w, H = src.h;
+    out.ensure(W, H);
+    LinearBlurParams lp;
+    if (!vegasLinearBlurParams(W, H, angleDeg, amount, lp)) { out.px = src.px; return; }
     // the frame as levels, top row first (VEGAS's frames lie bottom row first: 'flip' below turns to and from that)
     LPlane pic;
     pic.resize(W, H);
@@ -363,13 +380,8 @@ void vegasLinearBlur(const Buf& src, Buf& out, double angleDeg, double amount, b
                 d[k] = levels ? (float)std::nearbyint(std::min(255.0, std::max(0.0, v))) : (float)v;
             }
         }
-    int branch, shear;
-    double sx, sy;
-    if (th < pi / 4) { branch = 1; shear = (int)(std::tan(th) * W * 16384.0); sx = std::cos(x7) * L; sy = 0; }
-    else if (th < pi / 2) { branch = 2; shear = (int)(std::tan(pi / 2 - th) * H * 16384.0); sx = 0; sy = std::cos(pi / 2 - x7) * L; }
-    else if (th < 3 * pi / 4) { branch = 3; shear = (int)(std::tan(th - pi / 2) * H * 16384.0); sx = 0; sy = std::cos(x7 - pi / 2) * L; }
-    else { branch = 4; shear = (int)(std::tan(pi - th) * W * 16384.0); sx = std::cos(pi - x7) * L; sy = 0; }
-    shear = std::max(0, shear);
+    const int branch = lp.branch, shear = lp.shear;
+    const double sx = lp.sx, sy = lp.sy;
     const bool memoryOrder = branch <= 2, across = branch == 2 || branch == 3;
     LPlane f = memoryOrder ? flipped(pic) : pic;
     if (across) f = transposed(f);

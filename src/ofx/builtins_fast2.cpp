@@ -1,6 +1,7 @@
 // Fast algorithms behind the slow built-in effects, part 2: box filters along a line at any angle (Linear Blur, Glint, Starburst) and smears towards or away
 // from a centre in polar coordinates (Radial Blur, Light Rays, Rays); see builtins_fast.h.
 #include "builtins_fast.h"
+#include "vkfilters.h"
 #include "builtins_vec.h"
 #include "../core/base.h"
 #include <cmath>
@@ -321,6 +322,16 @@ void lineBoxBlur(const Buf& in, Buf& out, double ux, double uy, const double* le
     double cols[4];
     for (int i = 0; i < nbox && i < 4; ++i) cols[i] = lens[i] * ux;
     majorX(in, out, uy / ux, cols, std::min(nbox, 4), scale, add);
+}
+
+// The rays' geometry for the GPU plan (polarGeom() above)
+bool polarGeomGpu(int W, int H, double px0, double py0, double density, PolarGpu& o)
+{
+    if (W <= 0 || H <= 0) return false;
+    const PolarGeom g = polarGeom(W, H, px0, py0, density);
+    o.nT = g.nT; o.rN = g.rN; o.px0 = g.px0; o.py0 = g.py0;
+    o.cs = g.cs; o.sn = g.sn; o.rEnd = g.rEnd;
+    return true;
 }
 
 void radialBlurFast(const Buf& src, Buf& out, double px0, double py0, int type, double strength, int minWH)

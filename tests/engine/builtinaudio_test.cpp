@@ -87,7 +87,7 @@ int main()
     const auto isXp = [](const std::string& uid) { return uid.compare(0, 7, "reno.xp") == 0; };
     size_t standIns = 0;
     for (const AudioPluginDesc& d : all) if (!isTrk(d.uid) && !isXp(d.uid)) ++standIns;
-    check(standIns == 19, "list: nineteen built-in audio effects besides the track and ExpressFX ones");
+    check(standIns == 20, "list: twenty built-in audio effects besides the track and ExpressFX ones (Time Stretch added)", std::to_string(standIns));
     for (const AudioPluginDesc& d : all) {
         if (isTrk(d.uid)) continue;
         std::unique_ptr<AudioPlugin> p = make(d.uid);
@@ -219,6 +219,31 @@ int main()
             if (m < 1e-3) ++quiet;
         }
         check(quiet >= 40 && quiet <= 60, "amplitude modulation: a square gate", std::to_string(quiet));
+    }
+    // Tempo sync follows the project's tempo (ProjectTempoScope, which the mixer puts around every effect chain): a square
+    // gate that follows a quarter note changes 8 times in 2 seconds at 120 BPM, 4 times at 60 and 16 at 240.
+    {
+        auto transitions = [&](double bpm) {
+            auto p = make("reno.ampmod");
+            p->setProgram(5);       // Hard square
+            setByName(*p, "Amplitude", -80, -80, 0);
+            setByName(*p, "Modulation Period", 13, 0, 18);          // Quarter Note
+            setByName(*p, "Modulation Period Multiplier", 1, 0.001, 32);
+            setByName(*p, "Tempo Sync", 1, 0, 1);
+            const ProjectTempoScope scope(bpm, 4);
+            std::vector<float> o = run(*p, 1000, 2.0);
+            int last = -1, n = 0;
+            for (size_t k = 0; k + 480 <= o.size(); k += 480) {
+                float m = 0;
+                for (size_t j = k; j < k + 480; ++j) m = std::max(m, std::fabs(o[j]));
+                const int quiet = m < 1e-3 ? 1 : 0;
+                if (last >= 0 && quiet != last) ++n;
+                last = quiet;
+            }
+            return n;
+        };
+        const int a = transitions(120.0), b = transitions(60.0), c = transitions(240.0);
+        check(a >= 7 && a <= 9 && b >= 3 && b <= 5 && c >= 15 && c <= 17, "amplitude modulation: tempo sync follows the project's tempo", std::to_string(a) + " " + std::to_string(b) + " " + std::to_string(c));
     }
     std::printf("%d passed, %d failed\n", gPass, gFail);
     return gFail ? 1 : 0;

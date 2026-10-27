@@ -137,6 +137,9 @@ public:
         needTempo_ = true;
     }
 
+    // The project's tempo changed: the cycle is worked out again at the next call.
+    void tempoChanged() { needTempo_ = true; }
+
     // One call of the plug-in's own process function on 'frames' interleaved stereo frames, in place. 'tempo' is what the
     // project says (used with tempo sync). end: the end of the stream (nothing is processed). Returns 1 at the end, else 0.
     int process(float* data, int* frames, const Tempo* tempo, bool end = false)

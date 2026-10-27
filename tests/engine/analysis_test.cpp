@@ -233,8 +233,21 @@ static void stabilizeTests()
     for (const char* id : {"de.magix:Stabilize", "com.vegascreativesoftware:Stabilize"}) {
         const Def* d = findDef(id);
         if (!d) continue;
-        static int keyA, keyB;
-        const Seq out = renderAll(*d, {}, {}, in, 1.0, &keyA);
+        static int keyA, keyB, keyU;
+        // VEGAS leaves the picture alone until the motion has been analysed (flag set by the Analyze / Apply button)
+        const Params analysed = std::string(id) == "de.magix:Stabilize" ? Params{{"HasMotionData", {1}}} : Params{{"HasM20StabData", {1}}};
+        {
+            const Seq un = renderAll(*d, {}, {}, in, 1.0, &keyU);
+            double mxu = 0;
+            for (size_t q = 0; q < un.size(); ++q) mxu = std::max(mxu, compare(un[q], in[q]).mean);
+            check(mxu == 0.0, std::string(id) + ": not analysed yet: the picture passes through unchanged", strfmt("mean %.3f", mxu));
+        }
+        const Seq out = renderAll(*d, analysed, {}, in, 1.0, &keyA);
+        {
+            double mv = 0;
+            for (size_t q = 0; q < out.size(); ++q) mv = std::max(mv, compare(out[q], in[q]).mean);
+            check(mv > 0.5, std::string(id) + ": analysed: the picture is moved", strfmt("mean %.2f levels", mv));
+        }
         const double j1 = jitter(out);
         check(j1 < 0.5 * j0, std::string(id) + ": the shaking is reduced by half or more", strfmt("input %.2f px/frame, output %.2f", j0, j1));
         bool sane = true;
@@ -246,7 +259,7 @@ static void stabilizeTests()
         // a still camera stays as it is
         Seq still;
         for (int t = 0; t < 12; ++t) still.push_back(in[0]);
-        const Seq so = renderAll(*d, {}, {}, still, 1.0, &keyB);
+        const Seq so = renderAll(*d, analysed, {}, still, 1.0, &keyB);
         double mx = 0;
         for (const Buf& b : so) mx = std::max(mx, compare(b, still[0]).mean);
         check(mx < 6.0, std::string(id) + ": a still camera is left (nearly) alone", strfmt("mean %.2f levels", mx));
@@ -254,7 +267,7 @@ static void stabilizeTests()
     // freeze: the picture holds on the first frame's view
     if (const Def* d = findDef("de.magix:Stabilize")) {
         static int keyC;
-        const Seq out = renderAll(*d, {{"StabilizeMode", {1}}, {"AvoidBlackBorders", {0}}}, {}, in, 1.0, &keyC);
+        const Seq out = renderAll(*d, {{"HasMotionData", {1}}, {"StabilizeMode", {1}}, {"AvoidBlackBorders", {0}}}, {}, in, 1.0, &keyC);
         const double j1 = jitter(out);
         if (std::getenv("DBG")) for (size_t q = 0; q < out.size(); ++q) { int sx, sy; shiftBetween(out[0], out[q], 12, sx, sy); std::printf("DBG freeze t%zu shift to t0 %d %d\n", q, sx, sy); }
         check(j1 < 0.4 * j0, "Video Stabilization freeze: the picture holds still", strfmt("input %.2f px/frame, output %.2f", j0, j1));
@@ -300,7 +313,15 @@ static void denoiseTests()
     }
     Seq one(1, noisy);
     struct C { const char* id; Params p; };
-    const C cs[] = {{"de.magix:DenoisingNLM", {{"Luminance", {6}}, {"Color", {6}}}}, {"com.sonycreativesoftware:smart_noise_reduction", {{"Noise", {5000}}}}};
+    // (VEGAS Denoise is VEGAS's own algorithm, kept exactly - 8-bit, no render scale, a wide weight cut - so it is checked against VEGAS's output elsewhere, not for
+    // PSNR gain here; here only that it leaves the picture alone at 0 and does something at the defaults)
+    if (const Def* nl = findDef("de.magix:DenoisingNLM")) {
+        const Buf z = runSeq(*nl, {{"Luminance", {0}}, {"Color", {0}}, {"Amount", {0}}}, {}, one, 0, 1.0, nullptr);
+        check(compare(z, noisy).mean < 0.01, "de.magix:DenoisingNLM: all at 0 leaves the picture alone");
+        const Buf dflt = runSeq(*nl, {}, {}, one, 0, 1.0, nullptr);
+        check(compare(dflt, noisy).mean > 0.1, "de.magix:DenoisingNLM: the defaults change a noisy picture");
+    }
+    const C cs[] = {{"com.sonycreativesoftware:smart_noise_reduction", {{"Noise", {5000}}}}};
     for (const C& c : cs) {
         const Def* d = findDef(c.id);
         if (!d) continue;
@@ -377,10 +398,9 @@ static void scaleTests()
     const Seq big = shaky(640, 360, 12);
     const Seq half = reduceSeq(big, 2);
     struct C { const char* label; const char* id; Params p; double bound; };
-    const C cs[] = {{"stabilize", "de.magix:Stabilize", {}, 4.0},
-                    {"stabilize video", "com.vegascreativesoftware:Stabilize", {}, 4.0},
+    const C cs[] = {{"stabilize", "de.magix:Stabilize", {{"HasMotionData", {1}}}, 4.0},
+                    {"stabilize video", "com.vegascreativesoftware:Stabilize", {{"HasM20StabData", {1}}}, 4.0},
                     {"flicker", "de.magix:FlickerReducer", {}, 1.0},
-                    {"denoise", "de.magix:DenoisingNLM", {{"Luminance", {5}}, {"Color", {5}}, {"Amount", {40}}}, 2.0},
                     {"smart noise", "com.sonycreativesoftware:smart_noise_reduction", {{"Noise", {6000}}}, 2.0},
                     {"colorization", "de.magix:Colorization", {}, 2.5},
                     {"style", "de.magix:StyleTransfer", {{"Style", {7}}}, 4.0}};
@@ -488,7 +508,8 @@ static void buttonTests()
         check(pb && pb->type == "OfxParamTypePushButton", std::string(b.id) + ": " + b.press + " is a push button of the instance");
         if (pb) inst->userPushButton(pb, 0.0);
         ofx::Param* has = inst->params.find("HasMotionData");
-        if (has && pb) check(has->value[0] == 1.0, std::string(b.id) + ": " + b.press + " analyses (HasMotionData set)");
+        if (!has && pb) has = inst->params.find("HasM20StabData");
+        if (has && pb) check(has->value[0] == 1.0, std::string(b.id) + ": " + b.press + " analyses (analysed flag set)");
         if (b.clear) {
             ofx::Param* cb = inst->params.find(b.clear);
             if (cb) inst->userPushButton(cb, 0.0);

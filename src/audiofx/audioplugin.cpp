@@ -19,6 +19,7 @@
 
 namespace reno {
 
+
 Json AudioPluginDesc::toJson() const
 {
     Json j = Json::object();
@@ -309,6 +310,7 @@ std::string audioPluginFileHint(const AudioPluginDesc& desc)
     static const struct { const char* clsid; const char* dll; } kDx[] = {
         {"39224540-6f92-11d0-aebc-00a0c9053912", "sfppack3_x64.dll"},     // Distortion
         {"d6802ba0-a056-11d0-aebc-00a0c9053912", "sfppack3_x64.dll"},     // Vibrato
+        {"b97c0f22-196d-11d1-b99b-00a0c9053912", "sfppack1_x64.dll"},     // Time Stretch
         {"7298a3e0-78ee-11d0-aebc-00a0c9053912", "sfppack1_x64.dll"},     // Multi-Tap Delay
         {"607682e0-6e21-11d0-aebc-00a0c9053912", "sfppack1_x64.dll"},     // Reverb
         {"ed1b4100-93be-11d0-aebc-00a0c9053912", "sfppack1_x64.dll"},     // Pitch Shift
@@ -335,6 +337,7 @@ std::string audioPluginFileHint(const AudioPluginDesc& desc)
         {"00000004-0f56-11d2-9887-00a0c969725b", "sfxpfx1_x64.dll"},      // ExpressFX Flange/Wah-Wah
         {"00000007-0f56-11d2-9887-00a0c969725b", "sfxpfx1_x64.dll"},      // ExpressFX Stutter
         {"00000009-0f56-11d2-9887-00a0c969725b", "sfxpfx3_x64.dll"},      // ExpressFX Graphic EQ
+        {"0000000b-0f56-11d2-9887-00a0c969725b", "sfxpfx3_x64.dll"},      // ExpressFX Time Stretch
     };
     if (desc.format == "DX") {
         const std::string u = toLower(desc.uid);

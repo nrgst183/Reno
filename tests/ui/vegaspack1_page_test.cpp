@@ -80,7 +80,7 @@ static T* ctl(QWidget* page, const QString& name)
 static bool skip(AudioPlugin* p, int i)
 {
     const std::string n = p->paramName(i);
-    return n == "Bypass" || n == "Initial Time" || n.compare(0, 4, "Tap ") == 0;
+    return n == "Bypass" || n == "Initial Time" || n == "Initial Tempo" || n.compare(0, 4, "Tap ") == 0;
 }
 
 static void generic(const std::string& uid, const std::string& label, QWidget* page, Rig& rig)
@@ -362,6 +362,64 @@ int main(int argc, char** argv)
                 settle();
                 check(std::fabs(rig.real(6) - 88200) < 1.0, "pitch shift: initial time of 2 s is 88200 samples", std::to_string(rig.real(6)));
             }
+            delete page;
+        }
+    }
+    // ---- Time Stretch
+    {
+        Rig rig("reno.timestretch");
+        DxPage* page = makeBuiltinPage(nullptr, "reno.timestretch", rig.host);
+        check(page != nullptr, "time stretch: has a page");
+        if (page) {
+            page->show();
+            settle(100);
+            page->grab().save(out + "/timestretch.png");
+            generic("reno.timestretch", "time stretch", page, rig);
+            if (QWidget* f = QApplication::focusWidget()) f->clearFocus();
+            rig.p->setProgram(2);   // 110 % of original
+            page->refresh();
+            settle();
+            QLineEdit* fin = ctl<QLineEdit>(page, "dxParam0Edit");
+            QLineEdit* ini = ctl<QLineEdit>(page, "dxParam2Edit");
+            QComboBox* fmt = ctl<QComboBox>(page, "dxParam4");
+            check(fin && ini && fmt, "time stretch: boxes found");
+            if (fin && ini && fmt) {
+                check(fin->text() == "110.0" && !ini->isEnabled(), "time stretch: percentage shows 110.0 and no initial value", fin->text().toStdString());
+                fmt->setCurrentIndex(1);   // tempo: 120 bpm stretched to 110 % is 109.09 bpm
+                settle();
+                check(ini->isEnabled() && fin->text() == "109.09", "time stretch: tempo format shows the final tempo", fin->text().toStdString());
+                fin->setText("100");
+                emit fin->editingFinished();
+                settle();
+                check(std::fabs(rig.real(0) - 120.0) < 1e-3, "time stretch: a final tempo of 100 bpm is 120 %", std::to_string(rig.real(0)));
+                fmt->setCurrentIndex(2);   // time: 60 s initial
+                settle();
+                check(fin->text() == "00:01:12.000", "time stretch: time format shows the final time", fin->text().toStdString());
+                ini->setText("00:00:10.000");
+                emit ini->editingFinished();
+                settle();
+                check(std::fabs(rig.real(3) - 441000) < 1.0, "time stretch: initial time of 10 s is 441000 samples", std::to_string(rig.real(3)));
+                fin->setText("00:00:20.000");
+                emit fin->editingFinished();
+                settle();
+                check(std::fabs(rig.real(0) - 200.0) < 1e-3, "time stretch: a final time of 20 s is 200 %", std::to_string(rig.real(0)));
+                page->grab().save(out + "/timestretch_time.png");
+            }
+            delete page;
+        }
+    }
+    // ---- ExpressFX Time Stretch (five modes, a wider dialog)
+    {
+        Rig rig("reno.xptimestretch");
+        DxPage* page = makeBuiltinPage(nullptr, "reno.xptimestretch", rig.host);
+        check(page != nullptr, "express time stretch: has a page");
+        if (page) {
+            page->show();
+            settle(100);
+            page->grab().save(out + "/xptimestretch.png");
+            generic("reno.xptimestretch", "express time stretch", page, rig);
+            QComboBox* m = ctl<QComboBox>(page, "dxParam1");
+            check(m && m->count() == 5, "express time stretch: five modes");
             delete page;
         }
     }

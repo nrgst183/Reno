@@ -15,6 +15,7 @@
 //
 // All four work per pixel, so they are correct at any render scale; they are thread safe and row-parallel, with no allocation per pixel.
 #include "builtins_impl.h"
+#include "vkeffects.h"
 #include "../core/base.h"
 #include <algorithm>
 #include <cmath>
@@ -373,6 +374,7 @@ void autoLooks(Ctx& c)
     const LutPtr L = autolooksTable(look, c.s("autolooksFilename"));
     if (!L) { copyFrame(c); return; }
     const float gain = (float)clampd(c.d("Gain"), 0, 1);          // VEGAS's "Strength"
+    const float g8 = std::floor(gain * 255.f + 0.5f);
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             float r, g, b, a;
@@ -380,8 +382,17 @@ void autoLooks(Ctx& c)
             float* o = c.out.at(x, y);
             if (a <= 0.f) { o[0] = o[1] = o[2] = o[3] = 0.f; continue; }
             float v[3] = {r, g, b};
-            lutApply(*L, v, true);
-            premul(o, r + (v[0] - r) * gain, g + (v[1] - g) * gain, b + (v[2] - b) * gain, a);
+            lutApply(*L, v, false);
+            for (float& t : v) t = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);   // the table's result is cut to 0..1 before it is mixed in at Strength                       // VEGAS interpolates its tables trilinearly (checked on all 21 against its pictures)
+            // VEGAS mixes in bytes: the table's colour and the picture's are rounded to 0..255, Strength becomes round(Strength x 255) and
+            // the result is (picture x (255 - s) + table x s) / 255 rounded
+            const float in[3] = {r, g, b};
+            float res[3];
+            for (int k = 0; k < 3; ++k) {
+                const float s8 = std::floor(clamp01(in[k]) * 255.f + 0.5f), l8 = std::floor(v[k] * 255.f + 0.5f);
+                res[k] = std::floor((s8 * (255.f - g8) + l8 * g8) / 255.f + 0.5f) / 255.f;
+            }
+            premul(o, res[0], res[1], res[2], a);
         }
     });
 }
@@ -777,6 +788,139 @@ void addFiltersColor(std::vector<Def>& out)
             if (p.type == PT::Custom || p.name == "AutoAdjust" || p.name == "CSpaceVersion" || p.name == "CSpaceName" || p.name.compare(0, 3, "LUT") == 0 || p.name == "ExposureLnAdjust") p.secret = true;
         out.push_back(make("com.vegascreativesoftware:colorgrading", "Color Grading", "Lift, gamma, gain and offset wheels, curves, levels and LUTs of the Color Grading panel", ps, colorGrading));
     }
+}
+
+
+// ---- for the GPU (vkeffects.cpp): what lutFilter() and colorGrading() read from the settings, for the kernels in tools/gpukernels.py
+// LUT Filter: false when the CPU copies the frame (no strength or no table); else the table's size and domain, the strength, and the table's numbers.
+// For the GPU (vkfilters.cpp): the look's table and strength (false where the CPU copies the frame)
+bool autoLooksGpu(Ctx& c, int& n, float dmin[3], float dmax[3], float& g8, std::vector<float>& tab)
+{
+    const int look = c.i("autolooksLook");
+    if (look < 1 || look > 21) return false;      // (the planner has no output size: the plan checks the frame)
+    const LutPtr L = autolooksTable(look, c.s("autolooksFilename"));
+    if (!L || L->n < 2) return false;
+    g8 = std::floor((float)clampd(c.d("Gain"), 0, 1) * 255.f + 0.5f);
+    n = L->n;
+    for (int k = 0; k < 3; ++k) { dmin[k] = L->dmin[k]; dmax[k] = L->dmax[k]; }
+    tab = L->rgb;
+    return true;
+}
+
+bool lutFilterGpu(Ctx& c, int& n, float dmin[3], float dmax[3], float& gain, bool& tetra, std::vector<float>& tab)
+{
+    const double g = clampd(c.d("Gain"), 0, 1);
+    tetra = c.i("Interpolation") == 1;
+    const LutPtr L = g > 0 ? cachedLut(c.s("LUTFilename")) : nullptr;
+    if (!L) return false;
+    gain = (float)g;
+    n = L->n;
+    for (int k = 0; k < 3; ++k) { dmin[k] = L->dmin[k]; dmax[k] = L->dmax[k]; }
+    tab = L->rgb;
+    return true;
+}
+
+bool colorGradingGpu(Ctx& c, ColorGradingGpu& o)
+{
+    double lift[3], gamma[3], gain[3], off[3];
+    {
+        const char* ch[3] = {"R", "G", "B"};
+        const struct { const char* n; double* v; } groups[4] = {{"Lift_", lift}, {"Gamma_", gamma}, {"Gain_", gain}, {"Offset_", off}};
+        for (int gi = 0; gi < 4; ++gi) {
+            const std::string base = groups[gi].n;
+            const double y = c.d((base + "Y").c_str()), u = c.d((base + "U").c_str()), v = c.d((base + "V").c_str());
+            double uv[3];
+            uvToRgb(u, v, uv);
+            const bool mult = gi == 1 || gi == 2;
+            for (int k = 0; k < 3; ++k) {
+                const double rgbv = c.d((base + ch[k]).c_str());
+                groups[gi].v[k] = mult ? rgbv * y + uv[k] : rgbv + y + uv[k];
+            }
+        }
+    }
+    const double expo = std::exp2(c.d("ExposureAdjust")) * std::exp(c.d("ExposureLnAdjust"));
+    const double inMin = c.d("InMinAdjust"), inMax = c.d("InMaxAdjust"), outMin = c.d("OutMinAdjust"), outMax = c.d("OutMaxAdjust");
+    const double sat = c.d("SaturationAdjust"), hueShift = c.d("HueAdjust"), hsvSat = c.d("SatAdjust"), hsvVal = c.d("ValAdjust");
+    float curves[4][1025];
+    bool hasCurve[4];
+    const char* curveNames[4] = {"Curve_R", "Curve_G", "Curve_B", "Curve_Y"};
+    for (int k = 0; k < 4; ++k) hasCurve[k] = curveTableOf(c.s(curveNames[k]), curves[k]);
+    LutPtr luts[kLutSlots];
+    float lutGain[kLutSlots] = {0, 0};
+    bool lutTetra[kLutSlots] = {false, false};
+    for (int i = 0; i < kLutSlots; ++i) {
+        const std::string sx = "_" + std::to_string(i);
+        if (!c.b(("LUTEnable" + sx).c_str())) continue;
+        lutGain[i] = (float)clampd(c.d(("LUTGain" + sx).c_str()), 0, 1);
+        lutTetra[i] = c.i(("LUTInterpolation" + sx).c_str()) == 1;
+        if (lutGain[i] > 0) luts[i] = cachedLut(c.s(("LUTFilename" + sx).c_str()));
+    }
+    const double inSpan = inMax - inMin;
+    const float inScale = (float)(std::fabs(inSpan) > 1e-6 ? 1.0 / inSpan : 1.0);
+    const bool levelsIn = std::fabs(inMin) > 1e-9 || std::fabs(inMax - 1) > 1e-9, levelsOut = std::fabs(outMin) > 1e-9 || std::fabs(outMax - 1) > 1e-9;
+    const bool wheels = [&] {
+        for (int k = 0; k < 3; ++k) if (lift[k] != 0 || gamma[k] != 1 || gain[k] != 1 || off[k] != 0) return true;
+        return false;
+    }();
+    const bool hsv = std::fabs(hueShift) > 1e-9 || std::fabs(hsvSat - 1) > 1e-9 || std::fabs(hsvVal - 1) > 1e-9;
+    const bool anyCurve = hasCurve[0] || hasCurve[1] || hasCurve[2] || hasCurve[3];
+    const bool anyLut = (luts[0] && lutGain[0] > 0) || (luts[1] && lutGain[1] > 0);
+    if (!levelsIn && !levelsOut && !wheels && !hsv && !anyCurve && !anyLut && std::fabs(expo - 1) < 1e-9 && std::fabs(sat - 1) < 1e-9) return false;
+    uint32_t fl = 0;
+    if (levelsIn) fl |= 1;
+    if (expo != 1.0) fl |= 2;
+    if (wheels) fl |= 4;
+    if (sat != 1.0) fl |= 8;
+    if (hsv) fl |= 16;
+    if (anyCurve) fl |= 32;
+    if (levelsOut) fl |= 64;
+    for (int k = 0; k < 4; ++k) if (hasCurve[k]) fl |= 128u << k;
+    for (int i = 0; i < kLutSlots; ++i) if (luts[i] && lutGain[i] > 0) fl |= 4096u << i;
+    o.flags = fl;
+    o.f[0] = (float)inMin; o.f[1] = inScale; o.f[2] = (float)expo;
+    for (int k = 0; k < 3; ++k) {
+        o.f[3 + k] = (float)gain[k];
+        o.f[6 + k] = (float)lift[k];
+        o.f[9 + k] = (float)(1.0 / std::max(0.01, gamma[k]));
+        o.f[12 + k] = (float)off[k];
+    }
+    o.f[15] = (float)sat; o.f[16] = (float)hueShift; o.f[17] = (float)hsvSat; o.f[18] = (float)hsvVal;
+    o.f[19] = (float)outMin; o.f[20] = (float)(outMax - outMin);
+    // the table: two LUT headers of 10 floats, the four curves, then the LUT data
+    o.tab.assign(20 + 4 * 1025, 0.f);
+    for (int k = 0; k < 4; ++k)
+        for (int i = 0; i < 1025; ++i) o.tab[(size_t)(20 + k * 1025 + i)] = hasCurve[k] ? curves[k][i] : (float)i / 1024.f;
+    for (int i = 0; i < kLutSlots; ++i) {
+        if (!(luts[i] && lutGain[i] > 0)) continue;
+        float* h = &o.tab[(size_t)i * 10];
+        h[0] = lutGain[i]; h[1] = lutTetra[i] ? 1.f : 0.f; h[2] = (float)luts[i]->n;
+        for (int k = 0; k < 3; ++k) { h[3 + k] = luts[i]->dmin[k]; h[6 + k] = luts[i]->dmax[k]; }
+        h[9] = (float)o.tab.size();
+        o.tab.insert(o.tab.end(), luts[i]->rgb.begin(), luts[i]->rgb.end());
+    }
+    return true;
+}
+
+
+// Color Match: false when the CPU copies the frame; else the 12 statistics, whether the target's are in them, the strength, the lightness flag, and the tables for the kernels
+bool colorMatchGpu(Ctx& c, int W, int H, ColorMatchGpu& o)
+{
+    const double strength = clampd(c.d("Strength"), 0, 1);
+    double st[12] = {0};
+    if (W <= 0 || H <= 0 || strength <= 0 || !c.b("SourceCaptured") || !readMatchStats(c.s("internaldata"), st) || (st[1] <= 1e-6 && st[3] <= 1e-6 && st[5] <= 1e-6)) return false;
+    const SrgbTables& T = srgbTables();
+    const bool captured = c.b("TargetCaptured") && (st[7] > 1e-6 || st[9] > 1e-6 || st[11] > 1e-6);
+    o.rowsTable.assign(T.dec, T.dec + 4097);
+    o.rowsTable.insert(o.rowsTable.end(), T.enc, T.enc + 4097);
+    const int gx = 160, gy = 90;
+    for (int i = 0; i < gx; ++i) o.rowsTable.push_back((float)std::min(W - 1, (int)((i + 0.5) * W / gx)));
+    for (int j = 0; j < gy; ++j) o.rowsTable.push_back((float)std::min(H - 1, (int)((j + 0.5) * H / gy)));
+    o.paramTable.resize(15);
+    for (int i = 0; i < 12; ++i) o.paramTable[(size_t)i] = (float)st[i];
+    o.paramTable[12] = captured ? 1.f : 0.f;
+    o.paramTable[13] = (float)strength;
+    o.paramTable[14] = c.b("Processlightness") ? 1.f : 0.f;
+    return true;
 }
 
 }  // namespace builtin

@@ -6,11 +6,13 @@
 //                      Height Map, Histogram and Gradient Wipe.
 #include "builtins_impl.h"
 #include "builtins_vfxdata.h"
+#include "vkfilters.h"
 #include "../core/base.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 namespace reno {
 namespace ofx {
@@ -121,6 +123,23 @@ Rot rotRoll(double a) { const double c = std::cos(a), s = std::sin(a); return Ro
 
 // An equirectangular picture seen through a rotation: output pixel (x, y) of a W x H picture takes the colour of the direction the rotation turns
 // it to. The picture is the part [px, px + pw) x [py, py + ph) of the frame (stereo halves).
+// Where output pixel (x, y) of a pw x ph picture reads from: the two pixels either way (x0, y0 and the next) and the weights of the second ones. cl, sl: the cos and sin of the row's latitude.
+struct PanoTap { int x0, y0; float tx, ty; };
+inline PanoTap panoTap(const Rot& rot, double wm, int pw, int ph, int x, double cl, double sl)
+{
+    const double lon = ((double)x / wm - 0.5) * 2 * kPi;
+    double dx, dy, dz;
+    rot.apply(cl * std::sin(lon), sl, cl * std::cos(lon), dx, dy, dz);
+    const double u = std::atan2(dx, dz) / (2 * kPi) + 0.5, v = 0.5 - std::asin(clampd(dy, -1, 1)) / kPi;
+    const double fx = u * pw - 0.5, fy = clampd(v * ph - 0.5, -1.0, (double)ph);
+    PanoTap t;
+    t.x0 = (int)std::floor(fx);
+    t.tx = (float)(fx - t.x0);
+    t.y0 = (int)std::floor(fy);
+    t.ty = (float)(fy - t.y0);
+    return t;
+}
+
 void rotatePanorama(const Buf& src, Buf& out, const Rot& rot, int px, int py, int pw, int ph)
 {
     // Measured on VEGAS: output pixel (x, y) is at longitude x / (W - 1) and latitude y / (H - 1) (both edges included, so a pole is the first/last
@@ -137,15 +156,9 @@ void rotatePanorama(const Buf& src, Buf& out, const Rot& rot, int px, int py, in
         const double lat = (0.5 - (double)y / hm) * kPi;
         const double cl = std::cos(lat), sl = std::sin(lat);
         for (int x = 0; x < pw; ++x) {
-            const double lon = ((double)x / wm - 0.5) * 2 * kPi;
-            double dx, dy, dz;
-            rot.apply(cl * std::sin(lon), sl, cl * std::cos(lon), dx, dy, dz);
-            const double u = std::atan2(dx, dz) / (2 * kPi) + 0.5, v = 0.5 - std::asin(clampd(dy, -1, 1)) / kPi;
-            const double fx = u * pw - 0.5, fy = clampd(v * ph - 0.5, -1.0, (double)ph);
-            const int x0 = (int)std::floor(fx), x1 = x0 + 1;
-            const float tx = (float)(fx - x0);
-            const int y0 = (int)std::floor(fy), y1 = y0 + 1;
-            const float ty = (float)(fy - y0);
+            const PanoTap t = panoTap(rot, wm, pw, ph, x, cl, sl);
+            const int x0 = t.x0, x1 = x0 + 1, y0 = t.y0, y1 = y0 + 1;
+            const float tx = t.tx, ty = t.ty;
             auto row = [&](int xx, int yy) -> const float* {
                 if (yy < 0) return poleTop;
                 if (yy > ph - 1) return poleBot;
@@ -158,6 +171,22 @@ void rotatePanorama(const Buf& src, Buf& out, const Rot& rot, int px, int py, in
                 const float top = p00[k] + (p10[k] - p00[k]) * tx, bot = p01[k] + (p11[k] - p01[k]) * tx;
                 o[k] = top + (bot - top) * ty;
             }
+        }
+    });
+}
+
+// The taps of every output pixel of a pw x ph picture (x0, y0, tx, ty as floats), for the GPU plan.
+void panoramaMap(const Rot& rot, int pw, int ph, std::vector<float>& tab)
+{
+    const double wm = std::max(1, pw - 1), hm = std::max(1, ph - 1);
+    tab.assign((size_t)pw * ph * 4, 0.f);
+    forRows(ph, pw, [&](int y) {
+        const double lat = (0.5 - (double)y / hm) * kPi;
+        const double cl = std::cos(lat), sl = std::sin(lat);
+        for (int x = 0; x < pw; ++x) {
+            const PanoTap t = panoTap(rot, wm, pw, ph, x, cl, sl);
+            float* o = &tab[((size_t)y * pw + (size_t)x) * 4];
+            o[0] = (float)t.x0; o[1] = (float)t.y0; o[2] = t.tx; o[3] = t.ty;
         }
     });
 }
@@ -178,15 +207,167 @@ const char* const kRotY = "mx.ofx.plugin.rotate.y.angle";
 const char* const kRotZ = "mx.ofx.plugin.rotate.z.angle";
 const char* const kRotStereo = "mx.ofx.plugin.rotate.stereo";
 
+// VEGAS draws this effect with the 360 plug-in's OpenCL kernel "rotateEquirect" (ofxRotation.ofx.bundle, ofx.ocl.executable carries its source); this is
+// that kernel in float, line by line, with what the GPU adds to it:
+//  - a pixel (x, y) of a W x H picture is at longitude (2 x / (W - 1) - 1) pi and latitude (1 - 2 y / (H - 1)) pi / 2 (both edges included);
+//  - the direction is turned by the matrix Rx(x) Ry(-y) Rz(z) (float, angles as float radians) unless all angles are 0, and read back at
+//    u = lon / pi, v = 2 lat / pi: image position (u + 1) / 2 (W - 1), (H - 1) - (v + 1) / 2 (H - 1), then divided by the image size - 1 and handed to
+//    the sampler as a normalized coordinate, so the texel is at u W - 0.5: even an unturned picture is resampled by 1 / (W - 1);
+//  - the sampler is linear and repeats (mirrors for stereo frames); the GPU's weights are whole 1/256s, its result is cut to 12 bits and read as
+//    (r12 * 255 + 2047) / 4096 levels (measured on VEGAS's pictures: 99.8 to 100 % of the pixels equal, the rest one level off);
+//  - the output is opaque.
+// The GPU's native sin / cos are not exact where the kernel looks at them hardest (the poles, where cos(pi / 2) comes out as +0, and the picture's
+// seam, where sin(pi) comes out as +3.8e-7 and sin(-pi) as -0); those values were found from VEGAS's pole rows and seam columns and are used as they are.
+// Where the kernel reads for one output pixel: the texel (x0, y0) of the sampler (rows from the bottom) and the weights of the next ones
+struct SceneTap { int x0, y0; float fx, fy; };
+struct SceneGeom {
+    int Wi = 0, Hi = 0, w = 0, h = 0, stereo = 0;
+    bool rotate = false, levels = false, ok = false;
+    float m[9];
+    float hh = 0;
+    std::vector<float> cosL, sinL, cosP, sinP;
+    static constexpr float kPiF = 3.14159274101257324f, kHalfPiF = 1.57079637050628662f;
+    void init(int Wi_, int Hi_, const float m_[9], bool rotate_, int stereo_, bool levels_)
+    {
+        Wi = Wi_; Hi = Hi_; stereo = stereo_; rotate = rotate_; levels = levels_;
+        for (int i = 0; i < 9; ++i) m[i] = m_[i];
+        w = Wi; h = Hi;
+        if (stereo == 1) h = Hi / 2;
+        else if (stereo == 2) w = Wi / 2;
+        ok = !(w < 2 || h < 2 || Wi < 2 || Hi < 2);
+        if (!ok) return;
+        // the angles of a picture's columns and rows (the same for every picture of a stereo frame)
+        cosL.resize((size_t)w); sinL.resize((size_t)w); cosP.resize((size_t)h); sinP.resize((size_t)h);
+        for (int ix = 0; ix < w; ++ix) {
+            const float nx = (float)ix / (float)(w - 1) * 2.0f - 1.0f;
+            const float lon = nx * kPiF;
+            cosL[(size_t)ix] = (float)std::cos((double)lon);
+            float sl = (float)std::sin((double)lon);
+            if (lon >= kPiF) sl = 3.8e-7f;
+            else if (lon <= -kPiF) sl = -0.0f;
+            sinL[(size_t)ix] = sl;
+        }
+        hh = (float)(h - 1);
+        for (int iy = 0; iy < h; ++iy) {
+            const float ny = (hh - (float)iy) / hh * 2.0f - 1.0f;
+            const float lat = ny * kHalfPiF;
+            float cp = (float)std::cos((double)lat);
+            if (std::fabs(lat) >= kHalfPiF) cp = 0.0f;
+            cosP[(size_t)iy] = cp;
+            sinP[(size_t)iy] = (float)std::sin((double)lat);
+        }
+    }
+    // false for a pixel the kernel does not write (the odd line or column of a stereo frame)
+    bool tap(int gx, int gy, SceneTap& t) const
+    {
+        const int iy = stereo == 1 && gy >= h ? gy - h : gy;
+        if (iy >= h) return false;
+        const int ix = stereo == 2 && gx >= w ? gx - w : gx;
+        if (ix >= w) return false;
+        const float cp = cosP[(size_t)iy], sp = sinP[(size_t)iy];
+        float X = cp * cosL[(size_t)ix], Y = sp, Z = cp * sinL[(size_t)ix];
+        if (rotate) {
+            const float xn = m[0] * X + m[1] * Y + m[2] * Z;
+            const float yn = m[3] * X + m[4] * Y + m[5] * Z;
+            const float zn = m[6] * X + m[7] * Y + m[8] * Z;
+            X = xn; Y = yn; Z = zn;
+        }
+        const float hyp = std::sqrt(X * X + Z * Z);
+        const float lo = (float)std::atan2((double)Z, (double)X), la = (float)std::atan2((double)Y, (double)hyp);
+        float nx = lo / kPiF, ny = 2.0f * la / kPiF;
+        nx = std::min(1.0f, std::max(-1.0f, nx));
+        ny = std::min(1.0f, std::max(-1.0f, ny));
+        float px = (nx + 1.0f) / 2.0f * (float)(w - 1);
+        float py = hh - (ny + 1.0f) / 2.0f * hh;
+        if (stereo == 1 && gy >= h) py += (float)h;
+        if (stereo == 2 && gx >= w) px += (float)w;
+        const float pym = (float)(Hi - 1) - py;                              // the kernel's rows run from the bottom
+        const float u = px / (float)(Wi - 1), v = pym / (float)(Hi - 1);
+        const float sx = u * (float)Wi - 0.5f, sy = v * (float)Hi - 0.5f;
+        const float fxs = std::floor(sx), fys = std::floor(sy);
+        t.x0 = (int)fxs;
+        t.y0 = (int)fys;
+        t.fx = sx - fxs;
+        t.fy = sy - fys;
+        if (levels) {
+            t.fx = std::floor(t.fx * 256.0f + 0.5f) / 256.0f;
+            t.fy = std::floor(t.fy * 256.0f + 0.5f) / 256.0f;
+        }
+        return true;
+    }
+};
+
+void sceneRotateKernel(const Buf& src, Buf& out, const float m[9], bool rotate, int stereo, bool levels)
+{
+    const int Wi = src.w, Hi = src.h;
+    SceneGeom G;
+    G.init(Wi, Hi, m, rotate, stereo, levels);
+    if (!G.ok) { out.px = src.px; return; }
+    const bool mirror = stereo != 0;
+    auto wrap = [mirror](int i, int n) {
+        if (!mirror) { i %= n; return i < 0 ? i + n : i; }
+        i %= 2 * n;
+        if (i < 0) i += 2 * n;
+        return i < n ? i : 2 * n - 1 - i;
+    };
+    forRows(Hi, Wi, [&](int gy) {
+        for (int gx = 0; gx < Wi; ++gx) {
+            SceneTap t;
+            if (!G.tap(gx, gy, t)) continue;
+            const int x0 = t.x0, y0 = t.y0;
+            const float fx = t.fx, fy = t.fy;
+            // texel rows run from the bottom: row m of the sampler is row Hi - 1 - m of the (top first) buffer
+            const float* t00 = src.at(wrap(x0, Wi), Hi - 1 - wrap(y0, Hi));
+            const float* t10 = src.at(wrap(x0 + 1, Wi), Hi - 1 - wrap(y0, Hi));
+            const float* t01 = src.at(wrap(x0, Wi), Hi - 1 - wrap(y0 + 1, Hi));
+            const float* t11 = src.at(wrap(x0 + 1, Wi), Hi - 1 - wrap(y0 + 1, Hi));
+            float* o = out.at(gx, gy);
+            for (int k = 0; k < 3; ++k) {
+                const float top = t00[k] * (1.0f - fx) + t10[k] * fx, bot = t01[k] * (1.0f - fx) + t11[k] * fx;
+                float r = top * (1.0f - fy) + bot * fy;
+                if (levels) {
+                    const long long r12 = (long long)std::floor(std::min(std::max(r, 0.0f), 1.0f) * 4096.0f);
+                    r = (float)((r12 * 255 + 2047) / 4096) / 255.0f;
+                }
+                o[k] = r;
+            }
+            o[3] = 1.0f;
+        }
+    });
+}
+
+// the matrix as the plug-in builds it: Rx(x) Ry(-y) Rz(z), float angles (degrees * 0.0174532924f), products summed in order
+void sceneRotationMatrix(Ctx& c, float M[9], bool& rotate)
+{
+    const float k = 0.01745329238474369f;
+    const float ax = (float)c.d(kRotX) * k, ay = -(float)c.d(kRotY) * k, az = (float)c.d(kRotZ) * k;
+    rotate = c.d(kRotX) != 0.0 || c.d(kRotY) != 0.0 || c.d(kRotZ) != 0.0;
+    auto cs = [](float a) { return (float)std::cos((double)a); };
+    auto sn = [](float a) { return (float)std::sin((double)a); };
+    const float A[9] = {1, 0, 0, 0, cs(ax), -sn(ax), 0, sn(ax), cs(ax)};
+    const float B[9] = {cs(ay), 0, sn(ay), 0, 1, 0, -sn(ay), 0, cs(ay)};
+    const float C[9] = {cs(az), sn(az), 0, -sn(az), cs(az), 0, 0, 0, 1};
+    auto mul3 = [](const float* a, const float* b, float* r) {
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) {
+                float sum = 0.0f;
+                for (int q = 0; q < 3; ++q) { const float pr = a[i * 3 + q] * b[q * 3 + j]; sum = sum + pr; }
+                r[i * 3 + j] = sum;
+            }
+    };
+    float AB[9];
+    mul3(A, B, AB);
+    mul3(AB, C, M);
+}
+
 void sceneRotation(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     if (W < 2 || H < 2) return;
-    const double roll = c.d(kRotX) * kPi / 180.0, yaw = c.d(kRotY) * kPi / 180.0, pitch = c.d(kRotZ) * kPi / 180.0;
-    const Rot rot = mul(rotYaw(yaw), mul(rotPitch(pitch), rotRoll(roll)));
-    int n, px[2], py[2], pw, ph;
-    stereoParts(c.i(kRotStereo), W, H, n, px, py, pw, ph);
-    for (int k = 0; k < n; ++k) rotatePanorama(c.src, c.out, rot, px[k], py[k], pw, ph);
+    float M[9];
+    bool rotate;
+    sceneRotationMatrix(c, M, rotate);
+    sceneRotateKernel(c.src, c.out, M, rotate, std::max(0, std::min(2, c.i(kRotStereo))), c.levels);
 }
 
 // ------------------------------------------------------------------ 360 Stabilization
@@ -345,11 +526,11 @@ void stabilizationChanged(Change& ch)
     if (m.ok()) ch.setS(kStData, motionText(m));
 }
 
-void stabilization(Ctx& c)
+// What a 360 Stabilization render does: 0 nothing to do (the frame is copied, or left alone under 2 pixels: 2), 1 the picture is turned by rot.
+int stabilizationSetup(Ctx& c, int W, int H, Rot& rot, int& n, int px[2], int py[2], int& pw, int& ph)
 {
-    const int W = c.out.w, H = c.out.h;
     MotionPath m;
-    if (W < 2 || H < 2 || !readMotion(c.s(kStData), m)) { copyFrame(c); return; }
+    if (W < 2 || H < 2 || !readMotion(c.s(kStData), m)) return 0;
     double y0, p0;
     m.at(c.time, y0, p0);
     const double win = std::max(0, c.i(kStSmooth));
@@ -365,10 +546,17 @@ void stabilization(Ctx& c)
         ys /= taps; ps /= taps;
     }
     const double corrYaw = ys - y0, corrPitch = ps - p0;       // the content must move by this
-    if (corrYaw == 0 && corrPitch == 0) { copyFrame(c); return; }
-    const Rot rot = mul(rotYaw(-corrYaw), rotPitch(-corrPitch));
-    int n, px[2], py[2], pw, ph;
+    if (corrYaw == 0 && corrPitch == 0) return 0;
+    rot = mul(rotYaw(-corrYaw), rotPitch(-corrPitch));
     stereoParts(c.i(kStStereo), W, H, n, px, py, pw, ph);
+    return 1;
+}
+
+void stabilization(Ctx& c)
+{
+    Rot rot;
+    int n, px[2], py[2], pw, ph;
+    if (!stabilizationSetup(c, c.out.w, c.out.h, rot, n, px, py, pw, ph)) { copyFrame(c); return; }
     for (int k = 0; k < n; ++k) rotatePanorama(c.src, c.out, rot, px[k], py[k], pw, ph);
 }
 
@@ -557,6 +745,72 @@ void gradientWipe(Ctx& c)
 }
 
 }  // namespace
+
+// The GPU plan's view of 360 Stabilization (rotatePanorama): copy true when the frame goes through, false return when the CPU does it
+bool panoramaSetupGpu(Ctx& c, int W, int H, PanoSetup& o)
+{
+    Rot rot;
+    o.copy = false;
+    const int r = stabilizationSetup(c, W, H, rot, o.n, o.px, o.py, o.pw, o.ph);
+    if (r == 0) {
+        if (W < 2 || H < 2) return false;
+        o.copy = true;
+        return true;
+    }
+    // (a stereo frame whose halves do not fill it leaves pixels the CPU does not write)
+    if (o.n * o.pw != W && o.pw != W) return false;
+    if (o.n * o.ph != H && o.ph != H) return false;
+    // (the map is picture-independent: the last one is kept while the turn and the size stay)
+    static std::mutex mu;
+    static std::vector<double> lastKey;
+    static std::vector<float> lastMap;
+    std::vector<double> key(rot.m, rot.m + 9);
+    key.push_back(o.pw);
+    key.push_back(o.ph);
+    std::lock_guard<std::mutex> lock(mu);
+    if (key != lastKey || lastMap.empty()) {
+        panoramaMap(rot, o.pw, o.ph, lastMap);
+        lastKey = key;
+    }
+    o.map = lastMap;
+    return true;
+}
+
+// The GPU plan's view of Scene Rotation (sceneRotateKernel()): the taps of every pixel (x0, y0, fx, fy) from the CPU's own code, kept while the settings stay
+bool sceneRotationSetupGpu(Ctx& c, int W, int H, SceneSetup& o)
+{
+    if (W < 2 || H < 2) return false;
+    float M[9];
+    bool rotate;
+    sceneRotationMatrix(c, M, rotate);
+    o.stereo = std::max(0, std::min(2, c.i(kRotStereo)));
+    o.levels = c.levels;
+    SceneGeom G;
+    G.init(W, H, M, rotate, o.stereo, o.levels);
+    if (!G.ok) return false;
+    if (o.stereo == 1 && G.h * 2 != H) return false;           // (a line or column the kernel leaves alone)
+    if (o.stereo == 2 && G.w * 2 != W) return false;
+    static std::mutex mu;
+    static std::vector<float> lastKey;
+    static std::vector<float> lastMap;
+    std::vector<float> key(M, M + 9);
+    key.push_back((float)W); key.push_back((float)H); key.push_back((float)o.stereo); key.push_back(rotate ? 1.f : 0.f); key.push_back(o.levels ? 1.f : 0.f);
+    std::lock_guard<std::mutex> lock(mu);
+    if (key != lastKey || lastMap.empty()) {
+        lastMap.assign((size_t)W * H * 4, 0.f);
+        forRows(H, W, [&](int y) {
+            for (int x = 0; x < W; ++x) {
+                SceneTap t;
+                if (!G.tap(x, y, t)) continue;
+                float* e = &lastMap[((size_t)y * W + (size_t)x) * 4];
+                e[0] = (float)t.x0; e[1] = (float)t.y0; e[2] = t.fx; e[3] = t.fy;
+            }
+        });
+        lastKey = key;
+    }
+    o.map = lastMap;
+    return true;
+}
 
 void applyVegasGroups(std::vector<Def>& all)
 {

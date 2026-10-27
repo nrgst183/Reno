@@ -419,7 +419,8 @@ void applySettings(Instance& inst, const Json& set, std::vector<std::string>& mi
             const double lo = p->props.getDouble(kOfxParamPropMin, (int)k, -DBL_MAX), hi = p->props.getDouble(kOfxParamPropMax, (int)k, DBL_MAX);
             if (p->kind == ParamKind::Choice) {
                 const int n = (int)p->choices().size();
-                if (n > 0) x = std::min(x, (double)(n - 1));
+                // A list VEGAS fills at run time (Lens Correction's found lenses) takes any index.
+                if (n > 0 && m.first != "QueryResult") x = std::min(x, (double)(n - 1));
             }
             if (std::isfinite(lo) && lo > -1.0e300) x = std::max(x, lo);
             if (std::isfinite(hi) && hi < 1.0e300) x = std::min(x, hi);

@@ -20,6 +20,7 @@ struct DxHost {
     std::function<void()> end;
     std::function<std::string()> state;                      // the plug-in's saved form (pages with more than settings)
     std::function<void(const std::string&, const std::string&)> setState;   // (saved form, undo name): one undo step unless a drag is open
+    std::function<float(int)> meter;                         // a level meter's biggest value since the last call (AudioPlugin::meterTake)
     std::function<void(const std::string&)> beginEdit;       // like begin(), with the undo step's name
 };
 

@@ -285,10 +285,43 @@ protected:
             comp_.prepare(s, sr_, true);
             used_ = s;
         }
+        float pin[2] = {0.f, 0.f};
+        for (int k = 0; k < n; ++k) {
+            pin[0] = std::max(pin[0], std::fabs(l[k]));
+            pin[1] = std::max(pin[1], std::fabs(r[k]));
+        }
         comp_.process(l, r, n);
+        float pout[2] = {0.f, 0.f};
+        for (int k = 0; k < n; ++k) {
+            pout[0] = std::max(pout[0], std::fabs(l[k]));
+            pout[1] = std::max(pout[1], std::fabs(r[k]));
+        }
+        const float lv[4] = {pin[0], pin[1], pout[0], pout[1]};
+        for (int k = 0; k < 4; ++k) {
+            float old = meter_[k].load();
+            while (lv[k] > old && !meter_[k].compare_exchange_weak(old, lv[k])) {}
+        }
+        // the compression: the gain the sound got against the gain it gets below the threshold
+        if (!comp_.neutral && !comp_.bypass && comp_.g > 0.0 && comp_.c218 > 0.0) {
+            const float red = (float)std::min(1.0, comp_.g / comp_.c218);
+            float old = meter_[4].load();
+            while (red < old && !meter_[4].compare_exchange_weak(old, red)) {}
+        }
+    }
+
+public:
+    // meters: 0, 1 the input's loudest left and right sample, 2, 3 the output's, 4 the smallest compression gain (1 = none)
+    int meterCount() override { return 5; }
+    float meterTake(int i) override
+    {
+        if (i < 0 || i >= 5) return 0.f;
+        if (i < 4) return meter_[i].exchange(0.f);
+        const float g = meter_[4].exchange(2.f);
+        return g > 1.5f ? 1.f : g;
     }
 
 private:
+    std::atomic<float> meter_[5] = {{0.f}, {0.f}, {0.f}, {0.f}, {2.f}};
     vegcomp::Comp comp_;
     vegcomp::Settings used_;
     bool started_ = false;

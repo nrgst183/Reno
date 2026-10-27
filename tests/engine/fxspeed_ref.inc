@@ -82,67 +82,58 @@ void labToRgb(float L, float A, float B, float& r, float& g, float& b)
 double frameScale(const Ctx& c) { return std::max(1, c.out.h) / 1080.0; }
 
 
+// Defocus: the plain loop over the iris's weights (no FFT, no tiles) in double precision, with the same bloom and edge rules (see builtins_defocus.cpp).
 void defocus(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
-    const double radius = std::max(0.0, 3.2714 * c.d("Radius") - 1.2651) * c.out.h / 180.0;
+    const double radius = std::max(0.0, c.d("Radius")) / 100.0 * (double)std::max(W, H);
     if (radius < 0.5) { copyThrough(c); return; }
     const int shape = c.i("IrisShape");
     const double turn = c.d("Orientation") * 2 * kPi;
-    const double curvature = clampd(c.d("DiscCurvature") / 100.0, -1, 1);
-    const double th = clampd(c.d("BloomThreshold") / 100.0, 0, 2), gA = std::max(0.0, 1.1018 * c.d("BloomStrength") - 1.9834);
-    const int sides = shape == 0 ? 0 : shape + 4;
-    const int levels = curvature == 0 ? 1 : 4, Rc = (int)std::ceil(std::min(radius, 96.0)) + 2;
-    std::vector<double> wl((size_t)levels + 1, 0.0);
-    for (int l = 1; l <= levels; ++l) wl[(size_t)l] = levels == 1 ? 1.0 : std::max(0.05, 1.0 + 0.1 * curvature * (1.0 - 2 * std::sqrt((l - 0.5) / levels)));
-    // the weight of each offset, and the gained frame
-    std::vector<double> wt((size_t)(2 * Rc + 1) * (2 * Rc + 1), 0.0);
+    const double curvature = clampd(c.d("DiscCurvature") / 100.0, -2.01, 1.0);
+    const double thr = clampd(c.d("BloomThreshold") / 100.0, 0, 2), str = std::max(0.0, c.d("BloomStrength"));
+    const DefocusIris iris = defocusIris(radius, shape == 0 ? 0 : shape + 4, turn, curvature);
     double total = 0;
-    for (int dy = -Rc; dy <= Rc; ++dy)
-        for (int dx = -Rc; dx <= Rc; ++dx) {
-            const double ux = dx + 0.5, uy = dy - 0.5, d = std::sqrt(ux * ux + uy * uy);
-            for (int l = 1; l <= levels; ++l) {
-                double lim = std::sqrt((double)l / levels) * std::min(radius, 96.0);
-                if (sides && d > 0) {
-                    const double seg = 2 * kPi / sides, ang = std::atan2(uy, ux) + kPi * 0.5 - turn;
-                    lim *= std::cos(kPi / sides) / std::cos(std::fmod(std::fabs(ang), seg) - kPi / sides);
-                }
-                if (d <= lim + 1e-9) { wt[(size_t)(dy + Rc) * (2 * Rc + 1) + (size_t)(dx + Rc)] = wl[(size_t)l]; break; }
-            }
-            total += wt[(size_t)(dy + Rc) * (2 * Rc + 1) + (size_t)(dx + Rc)];
-        }
+    for (int w : iris.w) total += w;
     if (!(total > 0)) { copyThrough(c); return; }
-    auto gained = [&](int xs, int ys, float* q) {
-        if (ys < 0) ys = 0; else if (ys >= H) ys = std::min(H - 1, ys - H);
-        if (xs < 0) xs = std::max(0, W + xs); else if (xs >= W) xs = W - 1;
-        const float* p = c.src.at(xs, ys);
-        for (int k = 0; k < 4; ++k) q[k] = p[k];
-        if (gA > 0 && p[3] > 1e-4f)
-            for (int k = 0; k < 3; ++k) {
-                const double w = (p[k] / p[3] - th) / (th < 0.999 ? 1.0 - th : 1e9);
-                if (w > 0) q[k] *= (float)(1.0 + gA * std::min(1.0, w));
-            }
+    const int n = 2 * iris.half + 1;
+    const float th = (float)(thr * 255.0), gain = (float)((str * 255.0 - (double)th) / (double)(255.0f - th));
+    auto byteAt = [&](int xs, int ys, int k) { return std::floor(std::min(1.f, std::max(0.f, c.src.at(xs, ys)[k])) * 255.f + 0.5f); };
+    const bool flicker = c.b("ReduceFlicker");
+    auto value = [&](int xs, int ys, int k) -> float {
+        if (!flicker) return byteAt(xs, ys, k);
+        int s = 0;
+        for (int j = -1; j <= 1; ++j)
+            for (int i = -1; i <= 1; ++i)
+                s += (int)byteAt(std::min(W - 1, std::max(0, xs + i)), std::min(H - 1, std::max(0, ys + j)), k) * (i == 0 ? 2 : 1) * (j == 0 ? 2 : 1);
+        return (float)(s >> 4);
+    };
+    auto gained = [&](int xs, int ys, double* q) {
+        if (ys < 0 || ys >= H) ys = 0;
+        if (xs < 0 || xs >= W) xs = W - 1;
+        for (int k = 0; k < 4; ++k) {
+            float v = value(xs, ys, k);
+            if (thr < 1.0 && v > th) v = v + (v - th) * gain;
+            q[k] = v;
+        }
     };
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             double acc[4] = {0, 0, 0, 0};
-            for (int dy = -Rc; dy <= Rc; ++dy)
-                for (int dx = -Rc; dx <= Rc; ++dx) {
-                    const double w = wt[(size_t)(dy + Rc) * (2 * Rc + 1) + (size_t)(dx + Rc)];
-                    if (w == 0) continue;
-                    float q[4];
-                    gained(x + dx, y + dy, q);
+            for (int v = -iris.half; v <= iris.half; ++v)
+                for (int u = -iris.half; u <= iris.half; ++u) {
+                    const int w = iris.w[(size_t)(v + iris.half) * n + (size_t)(u + iris.half)];
+                    if (!w) continue;
+                    double q[4];
+                    gained(x - u, y - v, q);
                     for (int k = 0; k < 4; ++k) acc[k] += q[k] * w;
                 }
             float* o = c.out.at(x, y);
-            for (int k = 0; k < 4; ++k) o[k] = std::min(1.f, (float)(acc[k] / total));
-            if (o[0] > o[3]) o[0] = o[3];
-            if (o[1] > o[3]) o[1] = o[3];
-            if (o[2] > o[3]) o[2] = o[3];
+            for (int k = 0; k < 4; ++k) o[k] = (float)std::floor(std::min(255.0, std::max(0.0, acc[k] / total)) + 0.5) * (1.f / 255.f);
+            for (int k = 0; k < 3; ++k) o[k] = std::min(o[k], o[3]);
         }
     });
 }
-
 
 // Min and Max: the plain loop over a square or round neighbourhood of each pixel. Window as in neighbourhood() in
 // builtins_more_blur.cpp: round(16 * range) pixels each way; a round one takes the pixels inside the ellipse of radii

@@ -1163,8 +1163,15 @@ public:
             context.sampleRate = sampleRate;
             context.projectTimeSamples = pos;
             context.continousTimeSamples = blocksDone;
+            {
+                const ProjectTempo pt = projectTempo();     // the project's tempo and time signature
+                context.tempo = pt.bpm;
+                context.timeSigNumerator = pt.beatsPerMeasure;
+                context.timeSigDenominator = pt.beatUnit;
+            }
             context.projectTimeMusic = (double)pos / sampleRate * (context.tempo / 60.0);
-            context.barPositionMusic = std::floor(context.projectTimeMusic / 4.0) * 4.0;
+            const double barLength = (double)context.timeSigNumerator * 4.0 / (double)std::max(1, context.timeSigDenominator);    // in quarter notes
+            context.barPositionMusic = std::floor(context.projectTimeMusic / barLength) * barLength;
 
             ProcessData data;
             data.processMode = kRealtime;

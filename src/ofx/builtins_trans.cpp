@@ -2,6 +2,8 @@
 // Names, labels, defaults and presets come from builtins_vfxdata.cpp; 3D and page transitions are drawn flat.
 // Ctx::src is the outgoing frame, Ctx::src2 the incoming one, progress runs 0..1.
 #include "builtins_vfxdata.h"
+#include "builtins_deriche.h"
+#include "transrec.h"
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -85,8 +87,127 @@ void wipe(Ctx& c, S s, double feather, double border, const Color& bc)
 double borderOf(const Ctx& c) { return clampd(c.d("BorderSize"), 0, 1) * 0.25; }
 
 // ------------------------------------------------------------------ dissolves
+// VEGAS's 8-bit Dissolve (Vfx1.ofx dissolveProcessor<unsigned char>), decoded: whole-number maths on the four bytes of each premultiplied pixel
+// (in the buffer's channel order, the settings' R, G, B, A order). w is progress in 1/1024ths and t in 1/255ths, both rounded; mixes of two
+// bytes use VEGAS's (diff * weight + 128) + itself / 256, / 256 form.
+namespace dis {
+inline int lerp8(int a, int b, int w)
+{
+    const int x = (b - a) * w + 128;
+    const int r = (((x >> 8) + x) >> 8) + a;
+    return r < 0 ? 0 : r > 255 ? 255 : r;
+}
+inline int satAdd(int a, int b) { return a + b > 255 ? 255 : a + b; }
+inline int absMin(int v, int lim) { v = v < 0 ? -v : v; return v < lim ? v : lim; }
+inline int clampThr(double v) { return v < 0 ? 0 : (int)std::min(255.0, v); }
+
+void run(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    const int type = c.i("Type");
+    const float pf = (float)c.progress;
+    const int w1024 = (int)((double)(pf * 1024.0f) + 0.5), t255 = (int)((double)(pf * 255.0f) + 0.5);
+    // the thresholds of colour bleed and colour morph
+    int ta[4] = {0, 0, 0, 0}, tb[4] = {0, 0, 0, 0};
+    if (type == 3 || type == 4) {
+        const char* nm[4] = {"ColorBleedSpeedRed", "ColorBleedSpeedGreen", "ColorBleedSpeedBlue", "ColorBleedSpeedAlpha"};
+        const char* nmM[4] = {"ColorMorphSpeedRed", "ColorMorphSpeedGreen", "ColorMorphSpeedBlue", "ColorMorphSpeedAlpha"};
+        double m[4];
+        int M = 0;
+        for (int k = 0; k < 4; ++k) {
+            m[k] = c.d(type == 3 ? nm[k] : nmM[k]) + 1.0;
+            M = std::max(M, ((int)(255.0 / m[k])) & 255);
+        }
+        int q = (int)((double)((float)M * pf) + 0.5);
+        if (type == 4) q &= 255;
+        const int r = (M - q) & 255;
+        for (int k = 0; k < 4; ++k) { ta[k] = clampThr(q * m[k]); tb[k] = clampThr(r * m[k]); }
+    }
+    // the fade colour of type 8: premultiplied, whole levels
+    int fc[4] = {0, 0, 0, 0};
+    if (type == 8) {
+        const Color col = c.color("FadeThroughColor");
+        const double cv[3] = {col.r, col.g, col.b};
+        for (int k = 0; k < 3; ++k) fc[k] = (int)(cv[k] * 255.0 * col.a);
+        fc[3] = (int)(col.a * 255.0);
+    }
+    auto to8 = [](float v) { const float x = v * 255.0f + 0.5f; return (int)(x < 0.f ? 0 : x > 255.f ? 255 : (int)x); };
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            const float* fa = c.src.at(x, y);
+            const float* fb = c.src2.at(x, y);
+            int A[4], B[4], O[4];
+            for (int k = 0; k < 4; ++k) { A[k] = to8(fa[k]); B[k] = to8(fb[k]); }
+            switch (type) {
+            case 0:
+                if (w1024 < 512) { const int wt = 2 * w1024; for (int k = 0; k < 4; ++k) O[k] = satAdd(A[k], (B[k] * wt) >> 10); }
+                else { const int wt = 2 * (1024 - w1024); for (int k = 0; k < 4; ++k) O[k] = satAdd(B[k], (A[k] * wt) >> 10); }
+                break;
+            case 1: case 2: {
+                O[3] = lerp8(A[3], B[3], t255);
+                for (int k = 0; k < 3; ++k) {
+                    int v;
+                    if (type == 2) v = ((A[k] + B[k]) * w1024) / 1024 - A[k];
+                    else if (w1024 < 512) v = A[k] - (B[k] * (2 * w1024)) / 1024;
+                    else v = B[k] - (A[k] * (2 * (1024 - w1024))) / 1024;
+                    O[k] = absMin(v, O[3]);
+                }
+                break;
+            }
+            case 3:
+                for (int k = 3; k >= 0; --k) {
+                    const int d1 = std::max(0, A[k] - ta[k]), d2 = std::max(0, B[k] - tb[k]);
+                    const int lim = k == 3 ? 255 : O[3];
+                    O[k] = d1 + d2 < lim ? ((d1 + d2) & 255) : lim;
+                }
+                break;
+            case 4:
+                for (int k = 3; k >= 0; --k) {
+                    int v = A[k] < B[k] ? std::min(B[k], A[k] + ta[k]) : std::max(B[k], A[k] - ta[k]);
+                    if (k < 3 && v >= O[3]) v = O[3];
+                    O[k] = v;
+                }
+                break;
+            case 5: case 6: {
+                const int* T = type == 5 ? A : B;
+                const int avg4 = ((T[0] + T[1] + T[2]) * 4) / 3;
+                const bool useA = type == 5 ? avg4 > w1024 : avg4 < 1024 - w1024;
+                for (int k = 0; k < 4; ++k) O[k] = useA ? A[k] : B[k];
+                break;
+            }
+            case 7: case 8: {
+                int g[4];
+                if (type == 7) { const int gv = (A[0] + A[1] + A[2] + B[0] + B[1] + B[2]) / 6; g[0] = g[1] = g[2] = gv; g[3] = -1; }
+                else for (int k = 0; k < 4; ++k) g[k] = fc[k];
+                for (int k = 0; k < 4; ++k) {
+                    if (k == 3 && type == 7) { O[3] = lerp8(A[3], B[3], t255); continue; }
+                    if (t255 < 127) O[k] = lerp8(A[k], g[k], 2 * t255);
+                    else { int w = 2 * t255 - 254; w = w < 0 ? 0 : w > 255 ? 255 : w; O[k] = lerp8(g[k], B[k], w); }
+                }
+                break;
+            }
+            default: {                                      // 9: R, then G, then B
+                O[3] = lerp8(A[3], B[3], t255);
+                int ph = t255 < 85 ? 0 : t255 < 170 ? 1 : 2;
+                int w = 3 * (t255 - 85 * ph);
+                w = w < 0 ? 0 : w > 255 ? 255 : w;
+                for (int k = 0; k < 3; ++k) {
+                    int v = k < ph ? B[k] : k == ph ? lerp8(A[k], B[k], w) : A[k];
+                    O[k] = std::min(v, O[3]);
+                }
+                break;
+            }
+            }
+            float* o = c.out.at(x, y);
+            for (int k = 0; k < 4; ++k) o[k] = (float)(O[k] / 255.0);
+        }
+    });
+}
+} // namespace dis
+
 void dissolve(Ctx& c)
 {
+    if (c.levels) { dis::run(c); return; }
     const int W = c.out.w, H = c.out.h;
     const int type = c.i("Type");
     const double p = c.progress;
@@ -172,6 +293,8 @@ void dissolve(Ctx& c)
 // Pixelate: nx x ny cells of integer-truncated box averages; the cell count follows 1 - (0.75 + Max / 4) * progress^0.25.
 // Zoom and blur are Reno's own (VEGAS uses its image scaler and Gaussian).
 inline int ntTrunc8(float v) { return (int)v; }
+void crossZoom8(Ctx& c, const std::vector<uint8_t>& A, const std::vector<uint8_t>& B, std::vector<uint8_t>& O, int apply, float pf, int t8);
+
 void crossEffect(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
@@ -257,39 +380,34 @@ void crossEffect(Ctx& c)
                     }
             }
         }
-    } else if (type == 1 || type == 3) {
-        // Reno's own zoom and blur pictures, then VEGAS's whole-number mix
-        Buf blurA, blurB;
-        if (type == 3) {
-            const double maxBlur = clampd(c.d("EffectSettingsMaxBlur"), 0, 1);
-            const double sg = maxBlur * 12.45 * c.out.w / 320.0 * tri * (apply == 2 ? 1.964 : 1.0);
-            blurA = c.src; blurB = c.src2;
-            if (fxA && sg > 0.01) gaussianBlur(blurA, sg, sg);
-            if (fxB && sg > 0.01) gaussianBlur(blurB, sg, sg);
-        }
-        double sax = 0.5, say = 0.5, dbx = 0.5, dby = 0.5;
-        c.xy("EffectSettingsSource", sax, say);
-        c.xy("EffectSettingsDestination", dbx, dby);
-        const double maxZoom = std::max(1.0, c.d("EffectSettingsMaxZoom"));
-        const double za = fxA ? std::pow(maxZoom, c.progress) : 1.0, zb = fxB ? std::pow(maxZoom, 1.0 - c.progress) : 1.0;
-        forRows(H, W, [&](int y) {
-            for (int x = 0; x < W; ++x) {
-                Px a, b;
-                if (type == 1) {                                // zoom
-                    const double pya = (1 - say) * H - (za > 3 ? 0.5 : 0.0), pyb = (1 - dby) * H - (zb > 3 ? 0.5 : 0.0);
-                    const double ax = sax * W + (x + 0.5 - sax * W) / za, ay = pya + (y + 0.5 - pya) / za;
-                    const double bx = dbx * W + (x + 0.5 - dbx * W) / zb, by = pyb + (y + 0.5 - pyb) / zb;
-                    a = fromClamped(c, ax, ay); b = toClamped(c, bx, by);
-                } else {
-                    blurA.sampleClamped(x + 0.5, y + 0.5, a.v); blurB.sampleClamped(x + 0.5, y + 0.5, b.v);
+    } else if (type == 3) {
+        // Blur (0x1805a74c0): A only blurs the outgoing picture before the mix, B only the incoming one, both blur the mixed picture;
+        // the size follows the progress as a triangle (both) or a ramp, the blur is VEGAS's Deriche Gaussian.
+        float q = pf;
+        if (apply == 1) q = 1.0f - pf;
+        else if (apply == 2) q = 0.5f < pf ? 1.0f - pf + (1.0f - pf) : pf + pf;
+        float sz = (float)std::max(W, H);
+        sz = sz * ((float)c.d("EffectSettingsMaxBlur") * q);
+        sz = sz * 0.25f;
+        auto blur8 = [&](std::vector<uint8_t>& px) {
+            Buf b;
+            b.resize(W, H);
+            for (int y = 0; y < H; ++y)
+                for (int i = 0; i < W * 4; ++i) b.at(0, y)[i] = px[(size_t)(H - 1 - y) * W * 4 + i] * (1.0f / 255.0f);
+            vegasDericheBlur(b, (double)sz, (double)sz, true);
+            for (int y = 0; y < H; ++y)
+                for (int i = 0; i < W * 4; ++i) {
+                    const int v = (int)std::nearbyint(b.at(0, y)[i] * 255.0f);
+                    px[(size_t)(H - 1 - y) * W * 4 + i] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
                 }
-                uint8_t* o = &O[(size_t)(H - 1 - y) * W * 4 + (size_t)x * 4];
-                for (int ch = 0; ch < 4; ++ch) {
-                    const float va = a.v[ch] * 255.0f + 0.5f, vb = b.v[ch] * 255.0f + 0.5f;
-                    o[ch] = mix8(va < 0.f ? 0 : va > 255.f ? 255 : (int)va, vb < 0.f ? 0 : vb > 255.f ? 255 : (int)vb);
-                }
-            }
-        });
+        };
+        const bool doBlur = sz > 0.0f;
+        if (doBlur && apply == 0) blur8(A);
+        if (doBlur && apply == 1) blur8(B);
+        for (size_t k = 0; k < n; ++k) O[k] = mix8(A[k], B[k]);
+        if (doBlur && apply == 2) blur8(O);
+    } else if (type == 1) {
+        crossZoom8(c, A, B, O, apply, pf, t8);
     } else {
         for (size_t k = 0; k < n; ++k) O[k] = mix8(A[k], B[k]);
     }
@@ -301,8 +419,69 @@ void crossEffect(Ctx& c)
 }
 
 // ------------------------------------------------------------------ wipes
+// VEGAS's 8-bit Clock Wipe (Vfx1.ofx clockwipeProcessor<unsigned char>), decoded: the angle of each pixel round a point (width / 2, height / 2)
+// (x without and y with the half pixel) from atan2f; the hand is at (2 pi + feather) * progress; a soft band is as wide as the pixel's own angle seen
+// from the centre (asin(sqrt 2 / radius), at least 2 pixels out) or the feather, whichever is more, and mixes with a smoothstep weight in whole 1/256ths.
+void clockWipe8(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    const bool ccw = c.i("Direction") > 0;
+    const float p = (float)c.progress;
+    const float twoPi = 6.2831854820251465f;
+    const float f = (float)c.d("FeatherAngle") * 0.01745329238474369f;
+    const float f2 = f + twoPi;
+    const float edge = f2 * p;
+    const float cx = (float)(W / 2), cy = (float)(H / 2);
+    const bool done = p >= 1.0f;
+    const float root2 = 1.4142135381698608f;
+    auto to8 = [](float v) { const float x = v * 255.0f + 0.5f; return (int)(x < 0.f ? 0 : x > 255.f ? 255 : (int)x); };
+    forRows(H, W, [&](int y) {
+        float Y = (cy + 0.5f) - (float)y;
+        float xs = ccw ? cx : -cx;
+        const float step = ccw ? -1.0f : 1.0f;
+        for (int x = 0; x < W; ++x, xs += step) {
+            const float X = xs;
+            float a = (float)std::atan2((double)X, (double)Y);
+            if (a < 0.0f) a += twoPi;
+            const float* fa = c.src.at(x, y);
+            const float* fb = c.src2.at(x, y);
+            float* o = c.out.at(x, y);
+            bool useB = false, useA = false;
+            int wgt = 0;
+            if (!(edge > a)) useA = true;
+            else {
+                const float R = std::sqrt(X * X + Y * Y);
+                const float rr = std::max(R, 2.0f);
+                float ww = (float)std::asin((double)(root2 / rr));
+                if (!(ww > f)) ww = f;
+                const float low = std::min(f2, edge - ww);
+                if (done || low >= a) useB = true;
+                else {
+                    float t = a - low;
+                    t /= ww;
+                    const float u = 1.0f - t;
+                    float g = 3.0f - (u + u);
+                    g *= u * u;
+                    g *= 255.0f;
+                    g += 0.5f;
+                    wgt = (g != g || g >= 2147483648.0f || g < -2147483648.0f) ? 0 : ((int)g & 255);
+                }
+            }
+            for (int k = 0; k < 4; ++k) {
+                const int av = to8(fa[k]), bv = to8(fb[k]);
+                int r;
+                if (useA) r = av;
+                else if (useB) r = bv;
+                else { const int d = (bv - av) * wgt; r = (av + ((d + (d < 0 ? 255 : 0)) >> 8)) & 255; }
+                o[k] = (float)(r / 255.0);
+            }
+        }
+    });
+}
+
 void clockWipe(Ctx& c)
 {
+    if (c.levels) { clockWipe8(c); return; }
     // The hand sweeps from 12 o'clock; FeatherAngle is the soft edge width in degrees (smoothstep) and the hand travels
     // 360 + feather. VEGAS pivots about a point half a pixel right of and a pixel below the middle; counter-clockwise mirrors it.
     // Hard edges are anti-aliased: the wedge start is offset half a pixel and the hand 0.71 pixel (measured).
@@ -341,8 +520,79 @@ void clockWipe(Ctx& c)
     });
 }
 
+// VEGAS's 8-bit Linear Wipe (Vfx1.ofx linearwipeProcessor<unsigned char>), decoded: a position along the wipe direction as a float from
+// a tangent per quadrant, divided by its largest value; the incoming bytes show below the edge, the outgoing above it, and in the soft band
+// every byte is mixed with a smoothstep weight cut to whole 1/256ths.
+void linearWipe8(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    const float ang = (float)c.d("Angle");
+    const float kx = 1.0f, ky = 1.0f;                       // (pixel aspect 1)
+    const float rad = 0.01745329238474369f;
+    const float fw = (float)(W - 1), fh = (float)(H - 1);
+    float x7 = 0, y12 = 0, o6 = 0, n2 = 0;
+    auto tanq = [&](float a) { return (float)std::tan((double)a); };
+    if (0.001f >= ang || ang > 359.999f) { x7 = kx; y12 = 0; n2 = fw * kx; o6 = 0; }
+    else if (ang <= 89.999f) {
+        const float t = tanq((90.0f - ang) * rad);
+        x7 = t * kx; y12 = ky; n2 = fw * x7 + fh * ky; o6 = 0;
+    } else if (ang <= 90.001f) { y12 = -ky; x7 = 0; n2 = (float)(1 - H) * y12; o6 = 0; }
+    else if (ang <= 179.999f) {
+        const float t = tanq((90.0f - ang) * rad);
+        x7 = t * kx; y12 = ky; o6 = -(fw * x7); n2 = fh * ky + o6;
+    } else if (ang <= 180.001f) { x7 = -kx; y12 = 0; o6 = fw * kx; n2 = o6; }
+    else if (ang <= 269.999f) {
+        const float t = tanq((270.0f - ang) * rad);
+        x7 = t * kx; y12 = ky;
+        const float a2 = fh * ky, a0 = fw * x7;
+        o6 = -a2 - a0; n2 = a2 + a0;
+    } else if (ang <= 270.001f) { x7 = 0; y12 = ky; o6 = (float)(1 - H) * ky; n2 = fh * ky; }
+    else {
+        const float t = tanq((270.0f - ang) * rad);
+        x7 = t * kx; o6 = (float)(1 - H) * ky; y12 = ky;
+        n2 = fh * ky - fw * x7;
+    }
+    const float inv = 1.0f / n2;
+    const float fe = (float)c.d("Feather");
+    const float q = fe * 0.25f, k2 = 2.0f / fe;
+    float edge = q + 1.0f;
+    edge += q;
+    edge *= (float)c.progress;
+    edge -= q;
+    const float lo = edge - q, hi = q + edge;
+    auto to8 = [](float v) { const float x = v * 255.0f + 0.5f; return (int)(x < 0.f ? 0 : x > 255.f ? 255 : (int)x); };
+    forRows(H, W, [&](int y) {
+        const float ys = (float)y * y12;
+        for (int x = 0; x < W; ++x) {
+            float v = (float)x * x7;
+            v += ys;
+            v += o6;
+            const float sv = (float)std::fabs((double)v) * inv;
+            const float* fa = c.src.at(x, y);
+            const float* fb = c.src2.at(x, y);
+            float* o = c.out.at(x, y);
+            if (lo > sv) { for (int k = 0; k < 4; ++k) o[k] = (float)(to8(fb[k]) / 255.0); continue; }
+            if (sv > hi) { for (int k = 0; k < 4; ++k) o[k] = (float)(to8(fa[k]) / 255.0); continue; }
+            float u = sv - edge;
+            u += q;
+            u *= k2;
+            float g = 3.0f - (u + u);
+            g *= u * u;
+            g *= 255.0f;
+            g += 0.5f;
+            const int wgt = (g != g || g >= 2147483648.0f || g < -2147483648.0f) ? 0 : ((int)g & 255);
+            for (int k = 0; k < 4; ++k) {
+                const int a = to8(fa[k]), b = to8(fb[k]);
+                const int d = (a - b) * wgt;
+                o[k] = (float)(((b + ((d + (d < 0 ? 255 : 0)) >> 8)) & 255) / 255.0);
+            }
+        }
+    });
+}
+
 void linearWipe(Ctx& c)
 {
+    if (c.levels) { linearWipe8(c); return; }
     // VEGAS measures the wipe in pixels along the angle: position runs 0..1 across the frame's extent in that direction,
     // the soft edge is Feather/2 wide (smoothstep) and travels from just outside one side to just outside the other.
     const int W = c.out.w, H = c.out.h;
@@ -360,10 +610,15 @@ void linearWipe(Ctx& c)
     });
 }
 
+void barndoorFx8(Ctx& c);
+void starWipeFx8(Ctx& c);
+void flashFx8(Ctx& c);
+
 // Barn Door: two half-picture doors slide in over the outgoing frame ("In"), or its halves slide out ("Out"). The border is a strip
 // of Size * half extent with Feather * half extent soft ramps; its centre runs from -1.5 strips to half extent + 1.5 strips.
 void barndoor(Ctx& c)
 {
+    if (c.levels) { barndoorFx8(c); return; }
     const int W = c.out.w, H = c.out.h;
     const bool alongX = c.i("Orientation") == 0, in = c.i("Direction") == 0;
     const double L = alongX ? W : H, T = L * 0.5, p = clampd(c.progress, 0, 1);
@@ -1025,18 +1280,19 @@ double starMetric(double dx, double dy, const StarShape& s)
     return std::sqrt(dx * dx + dy * dy) / rb;
 }
 
-void starWipe(Ctx& c)
+// The wave position (0..1) of every pixel, row by row from the top: it depends on the settings but not on the progress (and uses libm), so the GPU planner
+// takes it from here and caches it between frames.
+void starField(Ctx& c, std::vector<double>& field)
 {
     const int arms = std::max(2, c.i("Arms")), cyc = std::max(1, c.i("Cycles"));
     const double ratio = clampd(c.d("Ratio"), 1e-4, 1), ang0 = c.d("Angle") * kPi / 180.0;
-    const bool rev = c.i("Direction") == 1, tooth = c.i("Waveform") == 1;
+    const bool tooth = c.i("Waveform") == 1;
     // VEGAS names the flips after the axis they turn about: "horizontal" turns the picture upside down
     const bool flipY = c.b("HorizontalFlip"), flipX = c.b("VerticalFlip"), mirY = c.b("HorizontalMirror"), mirX = c.b("VerticalMirror");
     double cxn, cyn;
     c.xy("Center", cxn, cyn);
-    const int W = c.out.w, H = c.out.h;
+    const int W = c.frameW, H = c.frameH;
     const double cx = cxn * W, cy = cyn * H;
-    const double p = clampd(c.progress, 0, 1);
     const StarShape shape(arms, ratio, ang0);
     // Flips turn the star about its own centre; a mirror folds the picture about its middle (right/upper half kept).
     // VEGAS carries the centre along with the vertical turn but not the horizontal one.
@@ -1063,15 +1319,32 @@ void starWipe(Ctx& c)
     });
     for (int y = 0; y < H; ++y) rmax = std::max(rmax, rowMax[(size_t)y]);
     const double q0 = rmax > 0 ? 1.0 / rmax : 0.0;
-    const double fv = clampd(c.d("Feather"), 0, 1), bv = clampd(c.d("Border"), 0, 1);
-    const double wf = fv * 0.25 * (tooth ? 2.0 : 1.0), hw = bv * 0.125 * (tooth ? 2.0 : 1.0);
-    const Px bc = colorPx(c.color("BorderColor"));
+    field.assign((size_t)W * H, 0.0);
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const double q = metric(x + 0.5, y + 0.5, mirX, mirY) * q0 * cyc;
             double f = q - std::floor(q);
             if (q >= cyc) f = 1.0;
             if (tooth) f = f < 0.5 ? 2 * f : 2 - 2 * f;
+            field[(size_t)y * W + x] = f;
+        }
+    });
+}
+
+void starWipe(Ctx& c)
+{
+    if (c.levels) { starWipeFx8(c); return; }
+    const bool rev = c.i("Direction") == 1, tooth = c.i("Waveform") == 1;
+    const int W = c.out.w, H = c.out.h;
+    const double p = clampd(c.progress, 0, 1);
+    std::vector<double> field;
+    starField(c, field);
+    const double fv = clampd(c.d("Feather"), 0, 1), bv = clampd(c.d("Border"), 0, 1);
+    const double wf = fv * 0.25 * (tooth ? 2.0 : 1.0), hw = bv * 0.125 * (tooth ? 2.0 : 1.0);
+    const Px bc = colorPx(c.color("BorderColor"));
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            const double f = field[(size_t)y * W + x];
             const double dd = (rev ? 1.0 - p : p) - f;
             double t = fv > 0 ? clampd(0.5 + dd / wf, 0, 1) : (dd >= 0 ? 1.0 : 0.0);
             double bet = 0;
@@ -1100,8 +1373,10 @@ void venetian(Ctx& c)
 // ------------------------------------------------------------------ motion
 // Push: outgoing frame, border strip (Size * extent) and incoming frame are laid end to end and pulled across; strip ends are
 // soft by Feather * extent. The seam runs from extent + 2 * strip to -strip. Without Push off previous image the outgoing frame is pinned to the strip.
+void pushFx8(Ctx& c);
 void pushFx(Ctx& c)
 {
+    if (c.levels) { pushFx8(c); return; }
     const int dir = c.i("Direction");
     const bool pushOff = c.b("PushOffPreviousImage");
     const int W = c.out.w, H = c.out.h;
@@ -1139,8 +1414,10 @@ void pushFx(Ctx& c)
 
 // Swap: the two pictures slide apart and back, the one on top first the outgoing, then the incoming. The border strip sits on the
 // top picture's facing edge; each picture is shifted by min(p, 1-p)(L+3w) - w.
+void swapFx8(Ctx& c);
 void swapFx(Ctx& c)
 {
+    if (c.levels) { swapFx8(c); return; }
     const int dir = c.i("Direction");
     const int W = c.out.w, H = c.out.h;
     const bool horiz = dir >= 2, flip = dir == 1 || dir == 3;
@@ -1172,8 +1449,11 @@ void swapFx(Ctx& c)
 // Squeeze: the incoming frame is squeezed into a band growing from the start side (or the middle for 4 and 5) over the outgoing
 // frame, which is squeezed too with Squeeze previous image. The incoming band is sB = p(S+3w)-2w wide, then the border w, then
 // the outgoing frame.
+void squeezeFx8(Ctx& c);
+void zoomFx8(Ctx& c);
 void squeezeFx(Ctx& c)
 {
+    if (c.levels) { squeezeFx8(c); return; }
     const int start = c.i("Start");
     const bool prev = c.b("SqueezePreviousImage");
     const int W = c.out.w, H = c.out.h;
@@ -1218,6 +1498,7 @@ void squeezeFx(Ctx& c)
 // moving while the picture is held at full size.
 void zoomFx(Ctx& c)
 {
+    if (c.levels) { zoomFx8(c); return; }
     const bool out = c.i("Direction") == 1;
     double cx, cy;
     c.xy("Center", cx, cy);
@@ -1269,6 +1550,7 @@ void zoomFx(Ctx& c)
 
 void flashFx(Ctx& c)
 {
+    if (c.levels) { flashFx8(c); return; }
     // White light added to the outgoing picture (the incoming one after the midpoint): the amount follows the square of a
     // triangle; the diffusions add the Rec.601 luma of the picture blurred by a Gaussian of 5% of the diagonal times the diffusion.
     // Adding truncates the fraction; the tint does not change VEGAS's picture.
@@ -1426,6 +1708,7 @@ namespace page {
 
 struct Img8 {
     int w = 0, h = 0;
+    int tag = 0, dstId = 0;            // (only when the GPU planner records what a function draws: which picture this stands for, see transrec.h)
     std::vector<uint8_t> px;            // RGBA, rows bottom first (VEGAS's order)
     const uint8_t* at(int x, int y) const { return &px[((size_t)y * w + x) * 4]; }
     uint8_t* at(int x, int y) { return &px[((size_t)y * w + x) * 4]; }
@@ -1843,9 +2126,17 @@ using page::mix8;
 
 struct Rect { int x0, y0, x1, y1; };
 
+thread_local transrec::Rec* gRec = nullptr;        // set while the GPU planner records an 8-bit transition: pixels are not touched, the drawing calls are noted
+
 Img8 toBytesTop(const Buf& b)
 {
     Img8 r;
+    if (gRec) {
+        r.w = gRec->w;
+        r.h = gRec->h;
+        r.tag = &b == gRec->a ? 1 : 2;
+        return r;
+    }
     r.w = b.w;
     r.h = b.h;
     r.px.resize((size_t)b.w * b.h * 4);
@@ -1856,8 +2147,17 @@ Img8 toBytesTop(const Buf& b)
     return r;
 }
 
+void clearDst(Img8& dst, int w, int h)
+{
+    dst.w = w;
+    dst.h = h;
+    if (gRec) { dst.dstId = gRec->nextDst++; return; }
+    dst.px.assign((size_t)w * h * 4, 0);
+}
+
 void storeTop(Ctx& c, const Img8& img)
 {
+    if (gRec) { gRec->finalDst = img.dstId; return; }
     const size_t n = std::min(c.out.px.size(), img.px.size());
     for (size_t k = 0; k < n; ++k) c.out.px[k] = img.px[k] * (1.f / 255.f);
 }
@@ -1903,7 +2203,9 @@ inline void mixInto(uint8_t* d, const uint8_t* p, int alpha)
 }
 
 // Vfx1.ofx 0x1806c8f10 with filtering off (0x1806ceba0): the source rectangle S into the destination rectangle D
-void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr)
+void boxSmall(Img8& dst, const Img8& src, const Rect& D1, const Rect& S, int scx, int scy);
+
+void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr, int filt = 0)
 {
     const int dw = dst.w, dh = dst.h;
     const Rect S1 = isect(Sr, Rect{0, 0, src.w << 14, src.h << 14});
@@ -1932,6 +2234,42 @@ void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr)
     if (nrows < 2) frc = D1.y1 - D1.y0;
     const int last = scol - 1;
     if (S.x0 < 0 || S.y0 < 0 || scol > src.w || srow > src.h || px0 < 0 || px1 > dw || py0 < 0 || py1 > dh) return;   // (never: both are clipped)
+    if (gRec) {
+        // the numbers the kernel needs: all the running sums of the loops below are worked out here (they do not depend on the pixel)
+        transrec::Op op;
+        op.kind = 0;
+        op.src = src.tag;
+        op.dst = dst.dstId;
+        const int xfirst = dtoi(sx * (double)fcc * k14), xlast = px1 - px0 > 2 ? -sx - dtoi(lcc * (double)sx * -k14) : 0;
+        const int fs0 = dtoi(frc * (double)sy * k14), ylast = nrows > 2 ? -sy - dtoi(lrc * (double)sy * -k14) : 0;
+        bool box = false;
+        if (filt && scx > 0x4000 && scy > 0x4000) {
+            const double area = (0x8000 + (double)scy) * k14 * ((0x8000 + (double)scx) * k14) * 16384.0 * 255.0;
+            box = 536870911.0 > area;
+        }
+        const double dsx = (double)scx, dsy = (double)scy;
+        const int wsF = dtoi((double)fcc * dsx * k14), wsL = dtoi((double)lcc * dsx * k14), hsF = dtoi((double)frc * dsy * k14), hsL = dtoi((double)lrc * dsy * k14);
+        const int boxArea = box ? dtoi(dsx * dsy * k14) : 1;
+        const double inv = 1.0 / (double)boxArea;
+        uint64_t ib;
+        std::memcpy(&ib, &inv, 8);
+        const int wsv[3] = {wsF, scx, wsL}, hsv[3] = {hsF, scy, hsL};
+        op.t = {px0, px1, py0, py1, frc, lrc, fcc, lcc, S.x0, S.y0, sx, sy, fs0, scol - 1, srow, xfirst, xlast, ylast, box ? 1 : 0, scx, scy, wsF, wsL, hsF, hsL};
+        for (int cy = 0; cy < 3; ++cy)
+            for (int cx = 0; cx < 3; ++cx) op.t.push_back((int)(((int64_t)wsv[cx] * (int64_t)hsv[cy]) >> 14));
+        op.t.push_back(boxArea);
+        op.t.push_back((int)(uint32_t)(ib >> 32));
+        op.t.push_back((int)(uint32_t)ib);
+        op.t.push_back(src.w);
+        op.t.push_back(src.h);
+        gRec->ops.push_back(std::move(op));
+        return;
+    }
+    if (filt && scx > 0x4000 && scy > 0x4000) {
+        // shrinking with the filter on (0x1806c8f10): small boxes use the integer box average of 0x1806ca430
+        const double area = (0x8000 + (double)scy) * k14 * ((0x8000 + (double)scx) * k14) * 16384.0 * 255.0;
+        if (536870911.0 > area) { boxSmall(dst, src, D1, S, scx, scy); return; }
+    }
     auto srcRows = [&](int y, const uint8_t*& r0, const uint8_t*& r1, int& fy) {
         const int r = y / 16384;
         fy = y % 16384;
@@ -2017,6 +2355,90 @@ void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr)
     }
 }
 
+// Vfx1.ofx 0x1806ca430: every destination pixel is the average of the source box it covers (14-bit weights, 32-bit sums);
+// the partly covered pixels at the edges are mixed over what is already there by their coverage.
+void boxSmall(Img8& dst, const Img8& src, const Rect& D1, const Rect& S, int scx, int scy)
+{
+    const double k14 = 6.103515625e-05;
+    const int px0 = fl14(D1.x0), px1 = ce14(D1.x1), py0 = fl14(D1.y0), py1 = ce14(D1.y1);
+    const int lcc = D1.x1 - (px1 << 14) + 0x4000, lrc = D1.y1 - (py1 << 14) + 0x4000;
+    const int fcc = px1 - px0 >= 2 ? ((px0 + 1) << 14) - D1.x0 : D1.x1 - D1.x0;
+    const int frc = py1 - py0 >= 2 ? ((py0 + 1) << 14) - D1.y0 : D1.y1 - D1.y0;
+    const double dsx = (double)scx, dsy = (double)scy;
+    const int boxArea = dtoi(dsx * dsy * k14);
+    const double inv = 1.0 / (double)boxArea;
+    if (px1 - px0 <= 0 || py1 - py0 <= 0) return;
+    auto px = [&](int x, int y) {
+        x = std::min(std::max(x, 0), src.w - 1);
+        y = std::min(std::max(y, 0), src.h - 1);
+        return src.at(x, y);
+    };
+    int covy = frc, ysrc = S.y0;
+    for (int dy = py0; dy < py1; ++dy) {
+        const int hs = dtoi((double)covy * dsy * k14);
+        const int row0 = ysrc >> 14;
+        const int rowEnd = (((ysrc + hs - 1) | 0x3fff) + 1) >> 14;
+        const int nRows = rowEnd - row0;
+        const int wyL = hs + ysrc - ((rowEnd - 1) << 14);
+        const int wy0 = nRows >= 2 ? ((row0 + 1) << 14) - ysrc : hs;
+        int covx = fcc, xsrc = S.x0;
+        for (int dx = px0; dx < px1; ++dx) {
+            const int ws = dtoi((double)covx * dsx * k14);
+            const int col0 = xsrc >> 14;
+            const int colEnd = (((xsrc + ws - 1) | 0x3fff) + 1) >> 14;
+            const int nCols = colEnd - col0;
+            const int wxL = ws + xsrc - ((colEnd - 1) << 14);
+            const int wx0 = nCols >= 2 ? ((col0 + 1) << 14) - xsrc : ws;
+            int s[4] = {0, 0, 0, 0};
+            auto add = [&](int x, int y, int w) {
+                const uint8_t* q = px(x, y);
+                for (int k = 0; k < 4; ++k) s[k] += q[k] * w;
+            };
+            for (int r = row0 + 1; r < rowEnd - 1; ++r)
+                for (int cc = col0 + 1; cc < colEnd - 1; ++cc) {
+                    const uint8_t* q = px(cc, r);
+                    for (int k = 0; k < 4; ++k) s[k] += q[k] << 14;
+                }
+            add(col0, row0, dtoi((double)wx0 * (double)wy0 * k14));
+            if (nCols > 1) add(colEnd - 1, row0, dtoi((double)wxL * (double)wy0 * k14));
+            if (nRows > 1) {
+                add(col0, rowEnd - 1, dtoi((double)wyL * (double)wx0 * k14));
+                if (nCols > 1) add(colEnd - 1, rowEnd - 1, dtoi((double)wxL * (double)wyL * k14));
+            }
+            for (int cc = col0 + 1; cc < colEnd - 1; ++cc) {
+                add(cc, row0, wy0);
+                if (nRows > 1) add(cc, rowEnd - 1, wyL);
+            }
+            for (int r = row0 + 1; r < rowEnd - 1; ++r) {
+                add(col0, r, wx0);
+                if (nCols > 1) add(colEnd - 1, r, wxL);
+            }
+            uint8_t* d = dst.at(dx, dy);
+            if (covx == 0x4000 && covy == 0x4000) {
+                for (int k = 0; k < 4; ++k) {
+                    double v = (double)s[k] * inv;
+                    v += 1.5e-8;
+                    v += 6755399441055744.0;
+                    uint64_t bits;
+                    std::memcpy(&bits, &v, 8);
+                    d[k] = (uint8_t)(bits & 0xff);
+                }
+            } else {
+                const int64_t a2 = ((int64_t)ws * hs) >> 14;
+                if (a2 > 0) {
+                    const int alpha14 = dtoi((double)covx * (double)covy * k14);
+                    const int alpha8 = ((alpha14 * 255) >> 14) & 255;
+                    for (int k = 0; k < 4; ++k) d[k] = mix8(d[k], (uint8_t)((int64_t)s[k] / a2), alpha8);
+                }
+            }
+            xsrc += ws;
+            covx = dx == px1 - 2 ? lcc : 0x4000;
+        }
+        ysrc += hs;
+        covy = dy == py1 - 2 ? lrc : 0x4000;
+    }
+}
+
 struct Edge { int a0, a1, pos, flags; };
 
 struct SmoothTable {
@@ -2039,7 +2461,7 @@ const uint8_t* smoothTable()
 }
 
 // Vfx1.ofx 0x18059b6e0: the border round the edges (border and feather in 18.14 fixed point), colour in the picture's order
-void border(Img8& dst, const std::vector<Edge>& edges, int bsize, int feather, const uint8_t col[4])
+void border(Img8& dst, const std::vector<Edge>& edges, int bsize, int feather, const uint8_t col[4], int ext = 0)
 {
     const uint8_t* tab = smoothTable();
     if ((bsize || feather) && 0x8000 - feather > 0) {
@@ -2065,6 +2487,18 @@ void border(Img8& dst, const std::vector<Edge>& edges, int bsize, int feather, c
     const int iys = ceilm(miny + feather - 1), ixs = ceilm(minx - 1 + feather);
     const int x0 = std::max(xs, 0), y0 = std::max(ys, 0), x1 = std::min(xe, dst.w), y1 = std::min(ye, dst.h);
     if (x1 <= x0 || y1 <= y0) return;
+    if (gRec) {
+        transrec::Op op;
+        op.kind = 1;
+        op.dst = dst.dstId;
+        op.t = {x0, y0, x1, y1, iys, iye, ixs, ixe, total, bsize, feather, ext, col[0], col[1], col[2], col[3], (int)edges.size()};
+        for (int q = 0; q < 4; ++q) {
+            const Edge e = q < (int)edges.size() ? edges[(size_t)q] : Edge{0, 0, 0, 0};
+            op.t.push_back(e.a0); op.t.push_back(e.a1); op.t.push_back(e.pos); op.t.push_back(e.flags);
+        }
+        gRec->ops.push_back(std::move(op));
+        return;
+    }
     forRows(y1 - y0, x1 - x0, [&](int k) {
         const int row = y0 + k;
         const int Y = (row << 14) + 0x2000;
@@ -2105,6 +2539,10 @@ void border(Img8& dst, const std::vector<Edge>& edges, int bsize, int feather, c
                     if (dd < dout) { dout = dd; found = true; }
                 }
             if (!found) continue;
+            if (ext) {                                      // (Squeeze: both distances reach 'ext' further, up to the band's own widths)
+                dout = std::min(dout + ext, total);
+                din = std::min(din + ext, feather);
+            }
             uint8_t* px = dst.at(c, row);
             if (dout < bsize) { std::memcpy(px, col, 4); continue; }
             int al = 0;
@@ -2146,9 +2584,7 @@ void moveIn(Ctx& c, double angleDeg, double zoom, bool slide)
     }
     t = 0.0 > t ? 0.0 : std::min(1.0, t);
     Img8 dst;
-    dst.w = w;
-    dst.h = h;
-    dst.px.assign((size_t)w * h * 4, 0);
+    clearDst(dst, w, h);
     const Rect full = {0, 0, w << 14, h << 14};
     blit(dst, *src0, full, full);
     const int W = w << 14, H = h << 14, mn = std::min(W, H), mx = std::max(W, H);
@@ -2243,9 +2679,7 @@ void splitFx(Ctx& c)
         bsz = std::min(bsz, c1 < c2 ? c1 : c2);
     }
     Img8 dst;
-    dst.w = w;
-    dst.h = h;
-    dst.px.assign((size_t)w * h * 4, 0);
+    clearDst(dst, w, h);
     const Rect full = {0, 0, W, H};
     if (-x3 >= x2) {
         blit(dst, *first, full, full);
@@ -2278,7 +2712,725 @@ void splitFx(Ctx& c)
     storeTop(c, dst);
 }
 
+// VEGAS's Push (Vfx1.ofx 0x1805f8bd0), decoded: both frames and the border strip run along one axis in 18.14 fixed point; the outgoing frame
+// moves (only with Push off previous image) by a, the incoming one by b, the border edge sits at the incoming frame's start.
+void pushFx8(Ctx& c)
+{
+    using namespace sf;
+    Img8 A = toBytesTop(c.src), B = toBytesTop(c.src2);
+    const int w = A.w, h = A.h;
+    const int dir = c.i("Direction");
+    const bool pushOff = c.b("PushOffPreviousImage");
+    const int W = w << 14, H = h << 14;
+    const int L = dir >= 2 ? W : H;
+    const float fL = (float)L;
+    const float sizeF = (float)c.d("BorderSize");
+    int bsz = dtoi((double)(sizeF * fL) + 0.5), feather = dtoi((double)((float)c.d("BorderFeather") * fL) + 0.5);
+    if ((bsz != 0 || feather != 0) && 0x8000 - feather > 0) {
+        bsz -= 0x8000 - feather;
+        feather = 0x8000;
+        if (bsz < 0) bsz = 0;
+    }
+    const int F2 = feather >= 0x4000 ? feather : 0;
+    double p = (double)(float)c.progress;
+    p = 0.0 > p ? 0.0 : std::min(1.0, p);
+    const int T = dtoi((double)(bsz + 2 * F2 + L) * p + 0.5) - F2;
+    const int tm = T - bsz;
+    const int a = T < 0 ? 0 : std::min(T, L);
+    const int b = (tm < 0 ? 0 : std::min(tm, L)) - L;
+    const Rect full = {0, 0, W, H};
+    Rect ra = full, rb = full;
+    Edge e;
+    switch (dir) {
+    case 0: ra.y0 -= a; ra.y1 -= a; rb.y0 -= b; rb.y1 -= b; e = Edge{0, W, L - tm, 0}; break;
+    case 1: ra.y0 += a; ra.y1 += a; rb.y0 += b; rb.y1 += b; e = Edge{0, W, tm, 2}; break;
+    case 2: ra.x0 -= a; ra.x1 -= a; rb.x0 -= b; rb.x1 -= b; e = Edge{0, H, L - tm, 1}; break;
+    default: ra.x0 += a; ra.x1 += a; rb.x0 += b; rb.x1 += b; e = Edge{0, H, tm, 3}; break;
+    }
+    Img8 dst;
+    clearDst(dst, w, h);
+    if (sizeF == 0.0f && pushOff) blit(dst, A, full, full);       // (the frame's own cells, snapped to whole pixels: the same here)
+    blit(dst, A, pushOff ? ra : full, full);
+    blit(dst, B, rb, full);
+    uint8_t col[4];
+    colourBytes(c.color("BorderColor"), col);
+    border(dst, {e}, bsz, F2, col);
+    storeTop(c, dst);
+}
+
+// VEGAS's Swap (Vfx1.ofx 0x180651010), decoded: the pictures slide apart by o and back (outgoing on top in the first half, incoming in the second);
+// o runs 0..L in 18.14 fixed point (border and feather lengthen the way); the border strip sits on the top picture's facing edge.
+void swapFx8(Ctx& c)
+{
+    using namespace sf;
+    Img8 A = toBytesTop(c.src), B = toBytesTop(c.src2);
+    const int w = A.w, h = A.h;
+    const int dir = c.i("Direction");
+    const int W = w << 14, H = h << 14;
+    const int L = dir >= 2 ? W : H;
+    const float fL = (float)L;
+    int bsz = dtoi((double)((float)c.d("BorderSize") * fL) + 0.5), feather = dtoi((double)((float)c.d("BorderFeather") * fL) + 0.5);
+    if ((bsz != 0 || feather != 0) && 0x8000 - feather > 0) {
+        bsz -= 0x8000 - feather;
+        feather = 0x8000;
+        if (bsz < 0) bsz = 0;
+    }
+    const int F2 = feather >= 0x4000 ? feather : 0;
+    double p = (double)(float)c.progress;
+    p = 0.0 > p ? 0.0 : std::min(1.0, p);
+    const int total = bsz + 2 * F2 + L;
+    const bool firstHalf = 0.5 > p;
+    if (p == 0.0) bsz = 0;
+    const double tt = firstHalf ? (double)total * p : (1.0 - p) * (double)total;
+    const int Tp = dtoi(tt + 0.5) - F2;
+    const int o = Tp < 0 ? 0 : std::min(Tp, L);
+    const Rect full = {0, 0, W, H};
+    Rect ra = full, rb = full;
+    int axis, flip;
+    bool eq, less;
+    int pos;
+    auto fl = [](int v) { return v & ~0x3fff; };
+    auto ce = [](int v) { return ((v - 1) | 0x3fff) + 1; };
+    switch (dir) {
+    case 0:
+        ra.y0 -= o; ra.y1 -= o; rb.y0 += o; rb.y1 += o;
+        axis = 0; flip = firstHalf ? 1 : 0;
+        eq = fl(ra.y1) == fl(rb.y0); less = fl(ra.y1) + bsz < ce(rb.y0);
+        pos = firstHalf ? L - Tp : Tp;
+        break;
+    case 1:
+        ra.y0 += o; ra.y1 += o; rb.y0 -= o; rb.y1 -= o;
+        axis = 0; flip = firstHalf ? 0 : 1;
+        eq = fl(ra.y0) == fl(rb.y1); less = fl(rb.y1) + bsz < ce(ra.y0);
+        pos = firstHalf ? Tp : L - Tp;
+        break;
+    case 2:
+        ra.x0 -= o; ra.x1 -= o; rb.x0 += o; rb.x1 += o;
+        axis = 1; flip = firstHalf ? 1 : 0;
+        eq = fl(ra.x1) == fl(rb.x0); less = fl(ra.x1) + bsz < ce(rb.x0);
+        pos = firstHalf ? L - Tp : Tp;
+        break;
+    default:
+        ra.x0 += o; ra.x1 += o; rb.x0 -= o; rb.x1 -= o;
+        axis = 1; flip = firstHalf ? 0 : 1;
+        eq = fl(ra.x0) == fl(rb.x1); less = fl(rb.x1) + bsz < ce(ra.x0);
+        pos = firstHalf ? Tp : L - Tp;
+        break;
+    }
+    const int a0 = 0, a1 = axis ? H : W;
+    Img8 dst;
+    clearDst(dst, w, h);
+    uint8_t col[4];
+    colourBytes(c.color("BorderColor"), col);
+    if (bsz == 0) {
+        if (eq) blit(dst, A, Rect{fl(ra.x0), fl(ra.y0), ce(ra.x1), ce(ra.y1)}, full);
+    } else if (less) {
+        border(dst, {Edge{a0, a1, (flip << 15) + pos - 0x4000, 2 * flip | axis}}, bsz + 0x8000, 0, col);
+    }
+    if (!firstHalf) blit(dst, A, ra, full);
+    blit(dst, B, rb, full);
+    if (firstHalf) blit(dst, A, ra, full);
+    border(dst, {Edge{a0, a1, pos, 2 * flip | axis}}, bsz, F2, col);
+    storeTop(c, dst);
+}
+
+// VEGAS's Squeeze (Vfx1.ofx 0x180610360), decoded: the incoming frame squeezed into a band b long from the start side (both sides of the middle
+// for Start 4 and 5), the outgoing frame squeezed into what is left (Squeeze previous image) or left whole; the border runs on the band's far edge.
+void squeezeFx8(Ctx& c)
+{
+    using namespace sf;
+    Img8 A = toBytesTop(c.src), B = toBytesTop(c.src2);
+    const int w = A.w, h = A.h;
+    const int start = c.i("Start");
+    const bool prev = c.b("SqueezePreviousImage");
+    const int W = w << 14, H = h << 14;
+    int S;
+    switch (start) {
+    case 0: case 1: S = H; break;
+    case 2: case 3: S = W; break;
+    case 4: S = H >> 1; break;
+    case 5: S = W >> 1; break;
+    default: S = 0; break;
+    }
+    const float fS = (float)S;
+    int bsz = dtoi((double)((float)c.d("BorderSize") * fS) + 0.5), feather = dtoi((double)((float)c.d("BorderFeather") * fS) + 0.5);
+    if ((bsz != 0 || feather != 0) && 0x8000 - feather > 0) {
+        bsz -= 0x8000 - feather;
+        feather = 0x8000;
+        if (bsz < 0) bsz = 0;
+    }
+    const int F2 = feather >= 0x4000 ? feather : 0;
+    double p = (double)(float)c.progress;
+    p = 0.0 > p ? 0.0 : std::min(1.0, p);
+    const int T = dtoi((double)(bsz + 2 * F2 + S) * p + 0.5);
+    const int Ts = T - F2, Tb = Ts - bsz;
+    const int a = Ts < 0 ? 0 : std::min(Ts, S);
+    const int b = Tb < 0 ? 0 : std::min(Tb, S);
+    const int tb0 = Tb >= 0 ? Tb : 0;
+    const Rect full = {0, 0, W, H};
+    Rect R1 = full, R2 = full, R3 = full, R4 = full, R7 = full;
+    std::vector<Edge> edges;
+    bool two = false;
+    switch (start) {
+    case 0: R1.y0 = a; R7.y1 = b; edges.push_back(Edge{R7.x0, R7.x1, Tb, 2}); break;
+    case 1: R1.y1 = S - a; R7.y0 = S - b; edges.push_back(Edge{R7.x0, R7.x1, S - Tb, 0}); break;
+    case 2: R1.x0 = a; R7.x1 = b; edges.push_back(Edge{R7.y0, R7.y1, Tb, 3}); break;
+    case 3: R1.x1 = S - a; R7.x0 = S - b; edges.push_back(Edge{R7.y0, R7.y1, S - Tb, 1}); break;
+    case 4:
+        R7.y0 = S - b; R7.y1 = b + S; R3.y1 = S; R1.y1 = S - a;
+        edges.push_back(Edge{R7.x0, R7.x1, S - tb0, 0});
+        R4.y0 = S; R2.y0 = a + S;
+        edges.push_back(Edge{R7.x0, R7.x1, S + tb0, 2});
+        two = true;
+        break;
+    case 5:
+        R7.x0 = S - b; R7.x1 = b + S; R3.x1 = S; R1.x1 = S - a;
+        edges.push_back(Edge{R7.y0, R7.y1, S - tb0, 1});
+        R4.x0 = S; R2.x0 = a + S;
+        edges.push_back(Edge{R7.y0, R7.y1, S + tb0, 3});
+        two = true;
+        break;
+    default: break;
+    }
+    Img8 dst;
+    clearDst(dst, w, h);
+    auto snap = [](const Rect& r) { return Rect{r.x0 & ~0x3fff, r.y0 & ~0x3fff, ((r.x1 - 1) | 0x3fff) + 1, ((r.y1 - 1) | 0x3fff) + 1}; };
+    if (!prev) blit(dst, A, full, full);
+    else {
+        blit(dst, A, snap(R1), R3);
+        if (two) blit(dst, A, snap(R2), R4);
+        blit(dst, A, R1, R3);
+        if (two) blit(dst, A, R2, R4);
+    }
+    blit(dst, B, R7, full);
+    if (two) {
+        const int e = F2 - T + bsz;
+        if (e > 0) bsz -= e;
+    }
+    const int r8 = F2 - T;
+    uint8_t col[4];
+    colourBytes(c.color("BorderColor"), col);
+    border(dst, edges, r8 < 0 ? bsz : 0, F2, col, r8 >= 0 ? r8 : 0);
+    storeTop(c, dst);
+}
+
+// Zoom as Vfx1.ofx runs it on 8-bit pictures (0x180656d90 / 0x180656260): the base picture at full size, the other one blitted
+// (filtered) into a rectangle that grows from (or shrinks to) the centre point, then the border round that rectangle.
+// Cross Effect, zoom type (Vfx1.ofx 0x1805a74c0): the outgoing frame is scaled up about the Source point by MaxZoom^progress, the incoming one about
+// the Destination point by MaxZoom^(1 - progress) (A only / B only / both); the scaled rectangle is clipped to the frame, the source rectangle is
+// whole pixels, and the picture goes through the image scaler (0x1806c8c50 -> the smooth blit) into a cleared frame. The cross-fade is the same
+// integer mix as the other types.
+// The two zoomed pictures (ta from a, tb from b; a picture left alone is the source itself); with the GPU planner recording, only the drawing calls are noted.
+void crossZoomDraw(Ctx& c, int apply, float pf, const sf::Img8& a, const sf::Img8& b, sf::Img8& ta, sf::Img8& tb)
+{
+    using namespace sf;
+    const int W = c.frameW, H = c.frameH;
+    double sx = 0.5, sy = 0.5, dx = 0.5, dy = 0.5;
+    c.xy("EffectSettingsSource", sx, sy);
+    c.xy("EffectSettingsDestination", dx, dy);
+    const float maxz = (float)c.d("EffectSettingsMaxZoom");
+    const float Wf = (float)W, Hf = (float)H;
+    auto zoom = [&](const Img8& src, float cx, float cy, float expo) {
+        Img8 t;
+        clearDst(t, W, H);
+        const float z = std::pow(maxz, expo);
+        const float x0 = cx - z * cx, y0 = cy - z * cy;
+        const float x1 = (Wf - cx) * z + cx, y1 = (Hf - cy) * z + cy;
+        const Rect big = {page::cvtt(x0), page::cvtt(y0), page::cvtt(x1), page::cvtt(y1)};
+        const Rect clip = isect(Rect{0, 0, W, H}, big);
+        const float inv = 1.0f / z;
+        auto back = [&](int v, float c0) { return page::cvtt(((float)v - c0) * inv + c0); };
+        const Rect S = {back(clip.x0, cx), back(clip.y0, cy), back(clip.x1, cx), back(clip.y1, cy)};
+        const Rect D14 = {clip.x0 << 14, clip.y0 << 14, clip.x1 << 14, clip.y1 << 14};
+        const Rect S14 = {S.x0 << 14, S.y0 << 14, S.x1 << 14, S.y1 << 14};
+        if (clip.x1 > clip.x0 && clip.y1 > clip.y0) blit(t, src, D14, S14, 0);
+        return t;
+    };
+    const float cxA = (float)sx * Wf, cyA = (float)(1.0 - sy) * Hf;
+    const float cxB = (float)dx * Wf, cyB = (float)(1.0 - dy) * Hf;
+    ta = a;
+    tb = b;
+    if (apply != 1) ta = zoom(a, cxA, cyA, pf);
+    if (apply != 0) tb = zoom(b, cxB, cyB, 1.0f - pf);
+}
+
+void crossZoom8(Ctx& c, const std::vector<uint8_t>& A, const std::vector<uint8_t>& B, std::vector<uint8_t>& O, int apply, float pf, int t8)
+{
+    using namespace sf;
+    const int W = c.out.w, H = c.out.h;
+    auto top = [&](const std::vector<uint8_t>& s) {
+        Img8 r;
+        r.w = W;
+        r.h = H;
+        r.px.resize((size_t)W * H * 4);
+        for (int y = 0; y < H; ++y) std::memcpy(r.at(0, y), &s[(size_t)(H - 1 - y) * W * 4], (size_t)W * 4);
+        return r;
+    };
+    const Img8 a = top(A), b = top(B);
+    Img8 ta, tb;
+    crossZoomDraw(c, apply, pf, a, b, ta, tb);
+    for (int y = 0; y < H; ++y) {
+        uint8_t* o = &O[(size_t)(H - 1 - y) * W * 4];
+        const uint8_t* pa = ta.at(0, y);
+        const uint8_t* pb = tb.at(0, y);
+        for (int i = 0; i < W * 4; ++i) o[i] = (uint8_t)(pa[i] + ((pb[i] - pa[i]) * t8) / 256);
+    }
+}
+
+void zoomFx8(Ctx& c)
+{
+    using namespace sf;
+    Img8 A = toBytesTop(c.src), B = toBytesTop(c.src2);
+    const int w = A.w, h = A.h;
+    const bool out = c.i("Direction") == 1;
+    double cxd, cyd;
+    c.xy("Center", cxd, cyd);
+    const float f0 = (float)cxd, f1 = 1.0f - (float)cyd;
+    const float f2 = (float)c.d("BorderSize"), f3 = (float)c.d("BorderFeather");
+    double p = (double)(float)c.progress;
+    const Img8* base = &A;
+    const Img8* zoomed = &B;
+    if (out) {
+        p = 1.0 - p;
+        std::swap(base, zoomed);
+    }
+    p = 0.0 > p ? 0.0 : std::min(1.0, p);
+    const int W = w << 14, H = h << 14;
+    const int mx = std::max(W, H);
+    const float fmx = (float)mx;
+    int feather = dtoi((double)(fmx * f3) + 0.5);
+    const int bsz0 = dtoi((double)(fmx * f2) + 0.5);
+    if ((bsz0 != 0 || feather != 0) && 0x8000 - feather > 0) feather = 0x8000;
+    const int T = dtoi((double)(mx + 2 * feather) * p + 0.5);
+    double z = 1.0;
+    if (mx != 0 && T < mx) z = (double)T / (double)mx;
+    const int cx = dtoi((double)W * (double)f0 + 0.5);
+    const int cy = dtoi((double)f1 * (double)H + 0.5);
+    Rect Z;
+    Z.y0 = dtoi((double)(0 - cy) * z + 0.5) + cy;
+    Z.y1 = dtoi((double)(H - cy) * z + 0.5) + cy;
+    Z.x0 = dtoi((double)(0 - cx) * z + 0.5) + cx;
+    Z.x1 = dtoi((double)(W - cx) * z + 0.5) + cx;
+    Img8 dst;
+    clearDst(dst, w, h);
+    const Rect full = {0, 0, W, H};
+    blit(dst, *base, full, full, 0);
+    blit(dst, *zoomed, Z, full, 1);
+    Rect R = Z;
+    if (T >= mx) {
+        const int e = (T - mx) >> 1;
+        R = Rect{Z.x0 - e, Z.y0 - e, Z.x1 + e, Z.y1 + e};
+    }
+    const int bsz = dtoi((double)(fmx * f2) * z + 0.5), fth = dtoi((double)(fmx * f3) * z + 0.5);
+    uint8_t col[4];
+    colourBytes(c.color("BorderColor"), col);
+    border(dst, {{R.x0, R.x1, R.y0, 0}, {R.x0, R.x1, R.y1, 2}, {R.y0, R.y1, R.x0, 1}, {R.y0, R.y1, R.x1, 3}}, bsz, fth, col, 0);
+    storeTop(c, dst);
+}
+
+// Star Wipe as Vfx1.ofx runs it on 8-bit pictures (0x180617890, the mask maker 0x180616800 and its point metric 0x180616570).
+// Everything is single precision, with sin/cos/atan taken from the double versions; the mask is built in memory order (the
+// picture's bottom row first).
+namespace swx {
+
+inline float fb(uint32_t u)
+{
+    float f;
+    std::memcpy(&f, &u, 4);
+    return f;
+}
+inline float sinF(float x) { return (float)std::sin((double)x); }
+inline float cosF(float x) { return (float)std::cos((double)x); }
+inline float clamp01(float v) { return 0.0f > v ? 0.0f : (1.0f < v ? 1.0f : v); }
+
+struct Metric {
+    float cx, cy, cosA, sinA, k, seg;
+    // 0x180616570: the star's distance (1 or more) of the pixel (x, y)
+    float at(int x, int y) const
+    {
+        const float eps = fb(0x358637bd);
+        const float dxr = (float)x - cx;
+        const float dyr = (float)y - cy;
+        if (eps > std::fabs(dxr) && eps > std::fabs(dyr)) return 1.0f;
+        const float dx = dxr, dy = dyr;           // (the pixel aspect pair is 1, 1)
+        const float xr = dx * cosA + dy * sinA;
+        const float yr = dy * cosA - dx * sinA;
+        const float PI = fb(0x40490fda), PI2 = fb(0x3fc90fda), PI32 = fb(0x4096cbe4), TWO = fb(0x40c90fdb);
+        float ang = 0.0f;
+        if (eps > std::fabs(xr)) {
+            if (yr > 0.0f) ang = PI2;
+            if (0.0f > yr) ang = PI32;
+        } else if (eps > std::fabs(yr)) {
+            if (0.0f > xr) ang = PI;
+        } else {
+            ang = (float)std::atan((double)(yr / xr));
+            if (0.0f > xr) {
+                if (yr > 0.0f) ang += PI;
+                else if (0.0f > yr) ang += PI;
+            } else if (xr > 0.0f && 0.0f > yr) ang += TWO;
+        }
+        const float half = seg * 0.5f;
+        float rot = 0.0f;
+        if (ang > half && (TWO - half) > ang) rot = (float)(int)((half + ang) / seg) * seg;
+        const float sk = sinF(rot), ck = cosF(rot);
+        float x2 = ck * xr + sk * yr;
+        float y2 = ck * yr - sk * xr;
+        if (0.0f > x2) x2 = -x2;
+        if (0.0f > y2) y2 = -y2;
+        const float res = y2 - x2 * k;
+        return 1.0f > res ? 1.0f : res;
+    }
+};
+
+// 0x180616800: the mask (one float per pixel, 0..1) and the amplitude of its wave
+std::vector<float> makeMask(int w, int h, int arms, int cycles, float ratio, float angle, float cxp, float cyp, bool dir, bool hflip,
+                            bool vflip, bool hmir, bool vmir, bool tri, float& amp)
+{
+    amp = 1.0f;
+    std::vector<float> m((size_t)w * h, 0.0f);
+    cxp = clamp01(cxp);
+    cyp = clamp01(cyp);
+    angle = 0.0f > angle ? 0.0f : (360.0f < angle ? 360.0f : angle);
+    ratio = clamp01(ratio);
+    arms = arms < 2 ? 2 : (arms > 32 ? 32 : arms);
+    cycles = cycles < 1 ? 1 : (cycles > 5 ? 5 : cycles);
+    const float seg = fb(0x40c90fdb) / (float)arms;
+    const float half = seg * 0.5f;
+    float k = sinF(half) * ratio;
+    k = k / (cosF(half) * ratio - 1.0f);
+    if (hflip) {
+        cyp = 1.0f - cyp;
+        angle = 360.0f - angle;
+    }
+    if (vflip) {
+        angle = 180.0f - angle;
+        cxp = 1.0f - cxp;
+        if (0.0f > angle) angle += 360.0f;
+    }
+    angle = angle * fb(0x3c8efa35);
+    Metric M;
+    M.cx = (float)(w - 1) * cxp;
+    M.cy = (1.0f - cyp) * (float)(h - 1);
+    M.cosA = cosF(angle);
+    M.sinA = sinF(angle);
+    M.k = k;
+    M.seg = seg;
+    float mx = 0.0f;
+    for (int y = 0; y < h; ++y) {
+        mx = std::max(M.at(0, y), mx);
+        mx = std::max(M.at(w - 1, y), mx);
+    }
+    for (int x = 0; x < w; ++x) {
+        mx = std::max(M.at(x, 0), mx);
+        mx = std::max(M.at(x, h - 1), mx);
+    }
+    if (1.0f > mx) {
+        std::fill(m.begin(), m.end(), 1.0f);
+        return m;
+    }
+    if (tri) amp = 2.0f;
+    const float f = (float)cycles / mx;
+    auto wave = [&](float v) {
+        if (tri) v = 0.5f > v ? v + v : (1.0f - v) + (1.0f - v);
+        if (dir) v = 1.0f - v;
+        return clamp01(v);
+    };
+    if (!hmir && !vmir) {
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                float v = f * M.at(x, y);
+                while (v > 1.0f) v += -1.0f;
+                m[(size_t)y * w + x] = wave(v);
+            }
+        return m;
+    }
+    int y0 = 0, cw = w;
+    if (hmir) y0 = h / 2;
+    if (vmir) cw = w / 2;
+    float mn = 1.0f, mxv = 0.0f;
+    for (int y = y0; y < h; ++y)
+        for (int x = 0; x < cw; ++x) {
+            float v = f * M.at(x, y);
+            if (v > 1.0f) v -= (float)(int)v;
+            const float r = wave(v);
+            if (mn > r) mn = r;
+            else mxv = r > mxv ? r : mxv;
+            m[(size_t)y * w + x] = r;
+        }
+    float d = mxv - mn;
+    float scale = 1.0f;
+    if ((float)std::fabs((double)d) > fb(0x358637bd)) scale = 1.0f / d;
+    amp = scale * amp;
+    for (int y = y0; y < h; ++y)
+        for (int x = 0; x < cw; ++x) {
+            float& v = m[(size_t)y * w + x];
+            v = (v - mn) * scale;
+            if (vmir) m[(size_t)y * w + (w - 1 - x)] = v;
+        }
+    if (hmir) {
+        const int n = h - h / 2;
+        for (int kk = 0; kk < n; ++kk) {
+            const int dstRow = h / 2 - 1 - kk;
+            if (dstRow < 0) break;
+            std::memcpy(&m[(size_t)dstRow * w], &m[(size_t)(h / 2 + kk) * w], (size_t)w * 4);
+        }
+    }
+    return m;
+}
+
+}  // namespace swx
+
+// The mask of Star Wipe's 8-bit picture (one float per pixel, bottom row first) and its amplitude; the GPU planner takes it from here and caches it.
+void starMask8(Ctx& c, std::vector<float>& mask, float& amp)
+{
+    const int w = c.frameW, h = c.frameH;
+    double cxd, cyd;
+    c.xy("Center", cxd, cyd);
+    mask = swx::makeMask(w, h, c.i("Arms"), c.i("Cycles"), (float)c.d("Ratio"), (float)c.d("Angle"), (float)cxd,
+                                                  1.0f - (float)cyd, c.i("Direction") != 0, c.b("HorizontalFlip"), c.b("VerticalFlip"),
+                                                  c.b("HorizontalMirror"), c.b("VerticalMirror"), c.i("Waveform") == 0 ? false : true, amp);
+}
+
+void starWipeFx8(Ctx& c)
+{
+    using namespace sf;
+    Img8 A = toBytesTop(c.src), B = toBytesTop(c.src2);
+    const int w = A.w, h = A.h;
+    float amp = 1.0f;
+    std::vector<float> mask;
+    starMask8(c, mask, amp);
+    const float p = (float)c.progress;
+    const float feather = (float)c.d("Feather"), border = (float)c.d("Border");
+    const float eps = swx::fb(0x358637bd);
+    const bool noBorder = eps > border, hard = eps > feather;
+    const Color bcol = c.color("BorderColor");
+    const int cb0 = (int)((float)bcol.r * 255.0f + 0.5f), cb1 = (int)((float)bcol.g * 255.0f + 0.5f), cb2 = (int)((float)bcol.b * 255.0f + 0.5f);
+    Img8 dst;
+    clearDst(dst, w, h);
+    // thresholds
+    float lo = 0, hi = 0, inv = 0, x8 = 0, x9 = 0, x10 = 0, x11 = 0, inv12 = 0, inv13 = 0;
+    if (noBorder && !hard) {
+        float fw = amp * 0.125f;
+        fw = fw * feather;
+        lo = p - fw;
+        hi = fw + p;
+        inv = 1.0f / (hi - lo);
+    } else if (!noBorder && hard) {
+        float bw = amp * 0.125f;
+        bw = bw * border;
+        lo = p - bw;
+        hi = bw + p;
+    } else if (!noBorder) {
+        float q = amp * 0.125f;
+        const float fw = q * feather, bw = q * border;
+        const float a = p - bw, b2 = bw + p;
+        x9 = a;
+        x10 = b2;
+        x8 = (float)((double)a - (double)fw);
+        x11 = (float)((double)fw + (double)b2);
+        inv13 = 1.0f / (x11 - x10);
+        inv12 = 1.0f / (x9 - x8);
+    }
+    for (int y = 0; y < h; ++y) {
+        const int row = h - 1 - y;
+        for (int x = 0; x < w; ++x) {
+            const float m = mask[(size_t)y * w + x];
+            const uint8_t* pa = A.at(x, row);
+            const uint8_t* pb = B.at(x, row);
+            uint8_t* o = dst.at(x, row);
+            auto copy = [&](const uint8_t* s) { for (int k = 0; k < 4; ++k) o[k] = s[k]; };
+            if (noBorder && hard) {
+                copy(p > m ? pb : pa);
+            } else if (noBorder) {
+                if (lo > m) copy(pb);
+                else if (m > hi) copy(pa);
+                else {
+                    const float t = swx::clamp01(1.0f - (m - lo) * inv);
+                    const float u = 1.0f - t;
+                    for (int k = 0; k < 3; ++k) o[k] = (uint8_t)(int)((float)pa[k] * u + (float)pb[k] * t);
+                    o[3] = 0.5f <= t ? pb[3] : pa[3];
+                }
+            } else if (hard) {
+                if (lo > m) copy(pb);
+                else if (m > hi) copy(pa);
+                else { o[0] = (uint8_t)cb0; o[1] = (uint8_t)cb1; o[2] = (uint8_t)cb2; o[3] = 255; }
+            } else {
+                const int cbv[3] = {cb0, cb1, cb2};
+                if (x8 > m) copy(pb);
+                else if (m > x11) copy(pa);
+                else if (m >= x8 && x9 >= m) {
+                    const float t = swx::clamp01((m - x8) * inv12);
+                    const float u = 1.0f - t;
+                    for (int k = 0; k < 3; ++k) o[k] = (uint8_t)(int)((float)pb[k] * u + (float)cbv[k] * t);
+                    o[3] = pb[3];
+                } else if (m > x9 && x10 > m) {
+                    o[0] = (uint8_t)cb0; o[1] = (uint8_t)cb1; o[2] = (uint8_t)cb2; o[3] = 255;
+                } else {
+                    const float t = swx::clamp01((m - x10) * inv13);
+                    const float u = 1.0f - t;
+                    for (int k = 0; k < 3; ++k) o[k] = (uint8_t)(int)((float)pa[k] * t + (float)cbv[k] * u);
+                    o[3] = pa[3];
+                }
+            }
+        }
+    }
+    storeTop(c, dst);
+}
+
+// Flash as Vfx1.ofx runs it on 8-bit pictures (0x1805cd210): the outgoing picture up to the middle, then the incoming one, with
+// light added: a base amount following the square of a triangle plus the picture's blurred luma times the tint.
+void flashFx8(Ctx& c)
+{
+    using namespace sf;
+    Img8 A = toBytesTop(c.src), B = toBytesTop(c.src2);
+    const int w = A.w, h = A.h;
+    float p = (float)c.progress;
+    const Img8* src = &A;
+    if (!(0.5f > p)) {
+        src = &B;
+        p = 1.0f - p;
+    }
+    const float a = p + p;
+    const float a2 = a * a;
+    const float om = 1.0f - a;
+    const float S = 1.0f - om * om;
+    const int dim = (int)std::max((float)w * 1.0f, (float)h * 1.0f);
+    const double Sd = (double)S;
+    const double sx = (c.d("HorizontalDiffusion") * 0.25 * (double)dim * Sd) / 1.0;
+    const double sy = c.d("VerticalDiffusion") * 0.25 * (double)dim * Sd;
+    const Img8* lum = src;
+    Img8 blurred;
+    if (sx > 0.0 || sy > 0.0) {
+        Buf b;
+        b.resize(w, h);
+        for (size_t k = 0; k < b.px.size(); ++k) b.px[k] = src->px[k] * (1.0f / 255.0f);
+        vegasDericheBlur(b, sx, sy, true);
+        blurred.w = w;
+        blurred.h = h;
+        blurred.px.resize(src->px.size());
+        for (size_t k = 0; k < b.px.size(); ++k) blurred.px[k] = (uint8_t)std::min(255, std::max(0, (int)std::nearbyint(b.px[k] * 255.0f)));
+        lum = &blurred;
+    }
+    const int base = (int)(a2 * 255.0f);
+    const int dscale = (int)(S * 16384.0f);
+    const Color tc = c.color("Tint");
+    const int t0 = (int)std::min((float)tc.r * 255.0f, 255.0f), t1 = (int)std::min((float)tc.g * 255.0f, 255.0f), t2 = (int)std::min((float)tc.b * 255.0f, 255.0f);
+    Img8 dst;
+    clearDst(dst, w, h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const uint8_t* q = src->at(x, y);
+            const uint8_t* l = lum->at(x, y);
+            uint8_t* o = dst.at(x, y);
+            const unsigned d = (unsigned)((l[0] * 0x13 + l[2] * 7 + l[1] * 0x25) * dscale) >> 14;
+            const unsigned al = std::min<unsigned>(q[3] + (((d * 255u) >> 14) + (unsigned)base), 255u);
+            const unsigned tint[3] = {(unsigned)t0, (unsigned)t1, (unsigned)t2};
+            for (int k = 0; k < 3; ++k) {
+                const unsigned v = q[k] + (((d * tint[k]) >> 14) + (unsigned)base);
+                o[k] = (uint8_t)(al < v ? al : v);
+            }
+            o[3] = (uint8_t)al;
+        }
+    storeTop(c, dst);
+}
+
+// Barn Door as Vfx1.ofx runs it on 8-bit pictures (0x18059a2c0 / 0x1805996c0): the doors are slices of the incoming picture
+// blitted in from both sides (or top and bottom); "Out" swaps the pictures and runs backwards.
+void barndoorFx8(Ctx& c)
+{
+    using namespace sf;
+    Img8 A = toBytesTop(c.src), B = toBytesTop(c.src2);
+    const int w = A.w, h = A.h;
+    const bool vert = c.i("Orientation") != 0;
+    const float fsz = (float)c.d("BorderSize"), ffe = (float)c.d("BorderFeather");
+    double p = (double)(float)c.progress;
+    const Img8* base = &A;
+    const Img8* door = &B;
+    if (c.i("Direction") > 0) {
+        p = 1.0 - p;
+        std::swap(base, door);
+    }
+    p = 0.0 > p ? 0.0 : std::min(1.0, p);
+    const int W = w << 14, H = h << 14;
+    const int L = (vert ? H : W) >> 1;
+    const float fL = (float)L;
+    int bsz = dtoi((double)(fL * fsz) + 0.5);
+    int F = dtoi((double)(fL * ffe) + 0.5);
+    if ((bsz != 0 || F != 0) && 0x8000 - F > 0) {
+        bsz -= 0x8000 - F;
+        F = 0x8000;
+        if (bsz < 0) bsz = 0;
+    }
+    const int e1 = dtoi((double)(bsz + 2 * F + L) * p + 0.5) - F;
+    const int b = e1 - bsz > 0 ? e1 - bsz : 0;
+    const int extra = b > L ? b - L : 0;
+    const int g = b <= L ? b : L;
+    int e2 = e1 - 0x4000;
+    if (e2 > L) {
+        bsz += L - e2;
+        e2 = L;
+    }
+    Img8 dst;
+    clearDst(dst, w, h);
+    const Rect full = {0, 0, W, H};
+    blit(dst, *base, full, full, 0);
+    std::vector<Edge> edges;
+    if (!vert) {
+        blit(dst, *door, Rect{0, 0, g, H}, Rect{L - g, 0, L, H}, 0);
+        blit(dst, *door, Rect{W - g, 0, W, H}, Rect{L, 0, L + g, H}, 0);
+        edges.push_back(Edge{0, H, e2, 1});
+        edges.push_back(Edge{0, H, W - e2, 3});
+    } else {
+        blit(dst, *door, Rect{0, 0, W, g}, Rect{0, L - g, W, L}, 0);
+        blit(dst, *door, Rect{0, H - g, W, H}, Rect{0, L, W, L + g}, 0);
+        edges.push_back(Edge{0, W, e2, 0});
+        edges.push_back(Edge{0, W, H - e2, 2});
+    }
+    uint8_t col[4];
+    colourBytes(c.color("BorderColor"), col);
+    border(dst, edges, extra == 0 ? bsz : 0, F, col, extra);
+    storeTop(c, dst);
+}
+
 }  // namespace
+
+uint16_t transrec::irisWindow(int shape) { return irisWindowMask(shape); }
+void transrec::starField(Ctx& c, std::vector<double>& field) { ::reno::ofx::builtin::starField(c, field); }
+void transrec::starMask(Ctx& c, std::vector<float>& mask, float& amp) { starMask8(c, mask, amp); }
+
+bool transrec::record(const std::string& id, Ctx& c, Rec& r)
+{
+    r.ops.clear();
+    r.nextDst = 1;
+    r.finalDst = 0;
+    r.a = &c.src;
+    r.b = &c.src2;
+    r.w = c.frameW;
+    r.h = c.frameH;
+    struct Guard { Guard(transrec::Rec* p) { sf::gRec = p; } ~Guard() { sf::gRec = nullptr; } } guard(&r);
+    if (id == "push") pushFx8(c);
+    else if (id == "swap" || id == "3dshuffle") swapFx8(c);
+    else if (id == "squeeze") squeezeFx8(c);
+    else if (id == "zoom") zoomFx8(c);
+    else if (id == "barndoor") barndoorFx8(c);
+    else if (id == "slide") sf::moveIn(c, (double)(float)c.d("Angle"), 1.0, true);
+    else if (id == "spiral") spiral(c);
+    else if (id == "split") splitFx(c);
+    else if (id == "crosszoom") {
+        const float pf = std::min(1.0f, std::max(0.0f, (float)c.progress));
+        sf::Img8 a, b, ta, tb;
+        a.w = b.w = r.w;
+        a.h = b.h = r.h;
+        a.tag = 1;
+        b.tag = 2;
+        crossZoomDraw(c, c.i("ApplyTo"), pf, a, b, ta, tb);
+        r.resDst[0] = ta.dstId; r.resTag[0] = ta.tag;
+        r.resDst[1] = tb.dstId; r.resTag[1] = tb.tag;
+        return true;
+    }
+    else return false;
+    return r.finalDst != 0;
+}
 
 void addTransitions(std::vector<Def>& out)
 {

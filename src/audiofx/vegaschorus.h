@@ -25,12 +25,14 @@ public:
         const Tempo t = tempo();
         if (!keep || !haveLast_) {
             full(p, t, true);
-        } else if (p[3] != last_[3] || p[6] != last_[6]) {
+        } else if (p[3] != last_[3] || p[6] != last_[6] || t.bpm != lastBpm_ || t.num != lastNum_) {
             full(p, t, false);
         } else {
             light(p, t);
         }
         std::memcpy(last_, p, sizeof last_);
+        lastBpm_ = t.bpm;
+        lastNum_ = t.num;
         haveLast_ = true;
     }
 
@@ -219,6 +221,8 @@ private:
 
     int32_t last_[16] = {0};
     bool haveLast_ = false, allocated_ = false;
+    double lastBpm_ = 0;                // the project tempo the delays were last worked out for
+    int lastNum_ = 0;
     uint32_t rate_ = 0;
     int bufLen_ = 0, size_ = 1;
     std::vector<double> buf_[3];

@@ -7,6 +7,7 @@
 //   --fast: only the fast versions, timed (no comparison).   --only <text>: just the cases with this text in their name.
 #include "../../src/media/media.h"
 #include "../../src/ofx/builtins_impl.h"
+#include "../../src/ofx/builtins_fast.h"
 #include "../../src/core/base.h"
 #include <algorithm>
 #include <chrono>
@@ -153,8 +154,8 @@ int main(int argc, char** argv)
         {"minmax horizontal only", V + "minandmax", {{"VerticalRange", {0}}}, ref::minAndMax, 0, 0},
         // (Median, Linear Blur and Radial Blur are VEGAS's own algorithms with no slower original: checked against VEGAS's pictures)
         // light
-        {"defocus default", V + "defocusvelvetmatter", {}, ref::defocus, 1.0, 32},
-        {"defocus hexagon curved", V + "defocusvelvetmatter", {{"IrisShape", {2}}, {"DiscCurvature", {60}}, {"Orientation", {0.2}}}, ref::defocus, 1.5, 40},
+        {"defocus default", V + "defocusvelvetmatter", {}, ref::defocus, 0.02, 1},
+        {"defocus hexagon curved", V + "defocusvelvetmatter", {{"IrisShape", {2}}, {"DiscCurvature", {-60}}, {"Orientation", {0.2}}}, ref::defocus, 0.02, 1},
         {"light rays default", V + "lightrays", {}, ref::lightRays, 0.8, 24},
         {"light rays off centre", V + "lightrays", {{"LightSource", {0.2, 0.8}}, {"group0Sensitivity", {0.8}}, {"group0Strength", {0.6}}, {"TintColor", {1, 0.6, 0.2}}}, ref::lightRays, 0.8, 24},
         // (Rays, Glint, Starburst and Fill Light follow VEGAS's managed filters step for step and are checked against VEGAS's own pictures by tools/effectref_compare.py)

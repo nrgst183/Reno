@@ -1,6 +1,6 @@
 // Reno's eFX De-Esser, Gate, Stereo Delay, Tremolo/Pan and Vocal Strip (see efx.h), written from MAGIX's manual and
-// the behaviour of the presets, with the real ones' 31 settings. Tempo-synced settings assume 120 BPM: an effect
-// here is not told the host's tempo.
+// the behaviour of the presets, with the real ones' 31 settings. Tempo-synced settings follow the project's tempo
+// (projectTempo(), set by the mixer; 120 BPM outside a mix).
 #include "efx.h"
 #include <cstring>
 
@@ -8,7 +8,8 @@ namespace reno {
 namespace efx {
 namespace {
 
-const double kTempoBpm = 120.0;
+// the project's tempo; not below 40 BPM, which is what the delay lines are made long enough for
+double tempoBpm() { return std::max(40.0, projectTempo().bpm); }
 
 // A level follower with its own attack and release (one-pole, on a rectified value).
 struct Follower {
@@ -231,7 +232,7 @@ public:
 protected:
     void prepare() override
     {
-        const size_t len = (size_t)(8.0 * 60.0 / kTempoBpm * 2.0 * sr_) + 64;     // two bars at 120 BPM, plus room to wobble
+        const size_t len = (size_t)(8.0 * 60.0 / 40.0 * 2.0 * sr_) + 64;     // two bars at 40 BPM (the slowest tempo used), plus room to wobble
         line_[0].resize(len);
         line_[1].resize(len);
         gIn_.setTime(sr_, 5);
@@ -258,7 +259,7 @@ protected:
     double delaySamples(int step) const
     {
         static const double beats[] = {0.125, 1.0 / 6.0, 0.25, 0.375, 1.0 / 3.0, 0.5, 0.75, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0, 8.0};
-        return beats[std::max(0, std::min(12, step))] * 60.0 / kTempoBpm * sr_;
+        return beats[std::max(0, std::min(12, step))] * 60.0 / tempoBpm() * sr_;
     }
 
     void run(float* l, float* r, int n) override

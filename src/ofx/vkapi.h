@@ -26,6 +26,10 @@ namespace gpu {
     X(vkCreateDevice) \
     X(vkGetDeviceProcAddr)
 
+// Instance functions that may be missing (Vulkan 1.1 and later, or an extension): used when they are there.
+#define RENO_VK_INSTANCE_OPT_FUNCS(X) \
+    X(vkGetPhysicalDeviceProperties2)
+
 // Functions fetched with the device (one table for the device Reno works with).
 #define RENO_VK_DEVICE_FUNCS(X) \
     X(vkDestroyDevice) \
@@ -87,8 +91,10 @@ struct VkApi {
 #define X(name) PFN_##name name = nullptr;
     RENO_VK_GLOBAL_FUNCS(X)
     RENO_VK_INSTANCE_FUNCS(X)
+    RENO_VK_INSTANCE_OPT_FUNCS(X)
     RENO_VK_DEVICE_FUNCS(X)
 #undef X
+    uint32_t instanceApiVersion = VK_MAKE_API_VERSION(0, 1, 0, 0);       // what the instance was made with
 };
 
 // Opens the Vulkan loader library and takes the global functions from it. False (with 'why' set) when there is no loader.

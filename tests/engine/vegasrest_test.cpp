@@ -192,7 +192,7 @@ static void settingsTests()
         auto inst = instanceOf(V + "layerdimensionality");
         auto gen = instanceOf(V + "layerdimensionality", kOfxImageEffectContextGeneral);
         check(inst && P(*inst, "LightLocation") && P(*inst, "LightLocation")->kind == ofx::ParamKind::Double3D, "Layer Dimensionality has LightLocation (3D)");
-        check(inst && val(*inst, "LightLocation", 0) == -3 && val(*inst, "LightLocation", 1) == 3 && val(*inst, "LightLocation", 2) == 3, "  default (-3, 3, 3): upper left, the way the emboss was lit");
+        check(inst && val(*inst, "LightLocation", 0) == -1 && val(*inst, "LightLocation", 1) == 1 && val(*inst, "LightLocation", 2) == 3, "  default (-1, 1, 3), the plug-in's own (from its describe code)");
         check(gen != nullptr, "  and it can be made in the General context too");
         ofx::Plugin* pl = plugin(V + "layerdimensionality");
         check(pl && pl->supportsContext(kOfxImageEffectContextFilter) && pl->supportsContext(kOfxImageEffectContextGeneral), "  Filter and General are both listed");
@@ -478,11 +478,11 @@ static void newEffectTests()
         const Def* d = findDef("com.magixsoftware:panorotation");
         check(d != nullptr, "Scene Rotation exists");
         if (d) {
-            {   // VEGAS's pixel-index mapping at zero is the picture but for the rows next to the poles (and a fraction of a pixel in the columns)
+            {   // VEGAS's mapping at zero is the picture resampled by 1 / (W - 1) of a pixel (pole rows are the picture's centre point, measured on VEGAS)
                 const Buf z = runDef(*d, {}, src);
                 double sum = 0;
                 for (size_t i = 0; i < z.px.size(); ++i) sum += std::fabs(z.px[i] - src.px[i]);
-                check(sum / z.px.size() < 0.02, "Scene Rotation at zero is the picture as it is (but for the pole rows)", strfmt("%.4f", sum / z.px.size()));
+                check(sum / z.px.size() < 0.03, "Scene Rotation at zero is the picture, resampled a little (the pole rows differ)", strfmt("%.4f", sum / z.px.size()));
             }
             const std::string Y = "mx.ofx.plugin.rotate.y.angle";
             const Buf o = runDef(*d, {{Y, {90}}}, src);

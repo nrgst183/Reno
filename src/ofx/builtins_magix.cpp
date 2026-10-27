@@ -10,9 +10,12 @@
 // Guessed (VEGAS's maths are not published): which of the four curves is the master and that it works after the channels' curves, the direction and unit of Tiny Planet's Z (larger =
 // nearer to the planet), which way up Mesh Warp's y runs, and everything Smart Upscale does. All are correct at any render scale (Ctx::scale), thread safe and work row by row on all cores.
 #include "builtins_impl.h"
+#include "vkeffects.h"
 #include "builtins_magixdata.h"
 #include "../core/base.h"
+#include "vegas8.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <cstring>
@@ -47,6 +50,7 @@ inline void copyFrame(Ctx& c)
 // point + out-handle and next point + in-handle.
 struct CurvePoint {
     double x = 0, y = 0, inx = 0, iny = 0, outx = 0, outy = 0;
+    unsigned char inFlag = 0, outFlag = 0;    // the second byte of each handle's trailing int (VEGAS's special cases for flat / step handles)
 };
 
 bool readCurves(const std::string& text, std::vector<CurvePoint> curves[4])
@@ -71,6 +75,7 @@ bool readCurves(const std::string& text, std::vector<CurvePoint> curves[4])
             p.x = f64(o); p.y = f64(o + 8);
             p.inx = f64(o + 40); p.iny = f64(o + 48);
             p.outx = f64(o + 80); p.outy = f64(o + 88);
+            p.inFlag = (unsigned char)b[o + 57]; p.outFlag = (unsigned char)b[o + 97];
             if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.inx) || !std::isfinite(p.iny) ||
                 !std::isfinite(p.outx) || !std::isfinite(p.outy))
                 return false;
@@ -136,6 +141,93 @@ inline float look(const float* lut, float v)
     return lut[i] + (lut[i + 1] - lut[i]) * (f - (float)i);
 }
 
+// The 8-bit table VEGAS builds for a curve (one value per input level 0..255), transcribed from its curve sampler: each Bezier segment is cut into
+// max(3, (|dx| + |dy|) / 2) pieces (parameters in float, Bernstein weights with pow), each level is interpolated linearly inside the piece that holds it;
+// levels outside the first / last point stay as they are; values go through round() and are held to 0..255.
+bool curveBytes8(const std::vector<CurvePoint>& P, unsigned char out[256])
+{
+    const int n = (int)P.size();
+    if (n < 2) return false;
+    double val[256];
+    int flag[256];
+    size_t ai = 0, bi = 1, next = 2;
+    double s = 0.0;
+    int i = 0;
+    const double binom[4] = {1.0, 3.0, 3.0, 1.0};
+    while (i < 256) {
+        flag[i] = 1;
+        const CurvePoint& a = P[ai];
+        const CurvePoint& b = P[bi];
+        if (a.x > s) { s += 1.0; ++i; continue; }
+        if (s == a.x) { val[i] = a.y; flag[i] = 0; s += 1.0; ++i; continue; }
+        if (!(b.x > s)) {
+            if (b.x + 1e-8 > s) { val[i] = b.y; flag[i] = 0; s += 1.0; ++i; continue; }
+            if ((int)next >= n) {
+                for (int j = i; j < 256; ++j) flag[j] = 1;
+                break;
+            }
+            ai = bi;
+            bi = next++;
+            continue;
+        }
+        int fl = 1;
+        if (a.outFlag) {
+            if (b.inFlag) {
+                const double ay = a.outy;
+                if (ay * b.iny < 1.0) {
+                    const double mid = (b.x + a.x) * 0.5;
+                    if (mid > s) fl = 2 + (0.0 > ay ? 1 : 0);
+                    else if (s > mid) fl = 2 + (0.0 > a.iny ? 1 : 0);
+                    else { val[i] = (b.y + a.y) * 0.5; fl = 0; }
+                } else fl = 2 + (0.0 > ay ? 1 : 0);
+            } else fl = 2 + (0.0 > a.outy ? 1 : 0);
+        } else if (b.inFlag) fl = 2 + (0.0 > b.iny ? 1 : 0);
+        if (fl == 3) { val[i] = 0.0; fl = 0; }
+        else if (fl == 2) { val[i] = 255.0; fl = 0; }
+        flag[i] = fl;
+        if (fl != 1) { s += 1.0; ++i; continue; }
+        const double X[4] = {a.x, a.x + a.outx, b.x + b.inx, b.x};
+        const double Y[4] = {a.y, a.y + a.outy, b.y + b.iny, b.y};
+        const double dist = std::fabs(a.y - b.y) + std::fabs(a.x - b.x);
+        unsigned pieces = (unsigned)(int64_t)dist >> 1;
+        if (pieces < 3u) pieces = 3u;
+        const int saved = i;
+        for (unsigned k = 0; k < pieces && i < 256; ++k) {
+            const float t0 = (float)k / (float)pieces, t1 = (float)(k + 1) / (float)pieces;
+            const float o0 = 1.0f - t0, o1 = 1.0f - t1;
+            double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+            for (int j = 0; j < 4; ++j) {
+                const double w0 = std::pow((double)t0, (double)j) * std::pow((double)o0, (double)(3 - j)) * binom[j];
+                x0 += X[j] * w0;
+                y0 += Y[j] * w0;
+                const double w1 = std::pow((double)t1, (double)j) * std::pow((double)o1, (double)(3 - j)) * binom[j];
+                y1 += Y[j] * w1;
+                x1 += X[j] * w1;
+            }
+            if (s < x0) continue;
+            while (!(x1 < s)) {
+                double v = ((y1 - y0) / (x1 - x0)) * (s - x0) + y0;
+                if (0.0 > v) v = 0.0;
+                else if (v > 255.0) v = 255.0;
+                val[i] = v;
+                flag[i] = 0;
+                s += 1.0;
+                ++i;
+                if (i >= 256) break;
+                flag[i] = 1;
+                if (!(s >= x0)) break;
+            }
+        }
+        if (i == saved && i < 256) { val[i] = b.y; flag[i] = 0; s += 1.0; ++i; }
+    }
+    for (int j = 0; j < 256; ++j) {
+        if (flag[j]) { out[j] = (unsigned char)j; continue; }
+        const double r = std::round(val[j] * 256.0 * 0.00390625);
+        out[j] = r < 0.0 ? 0 : (unsigned char)(int)std::min(255.0, std::round(val[j] * 256.0 * 0.00390625));
+    }
+    return true;
+}
+
 // The row function (see Def::rows): the three tables with the master curve folded in, then each pixel's straight colour looked up.
 struct CurveTables { std::vector<float> ch[3]; };
 
@@ -144,6 +236,31 @@ bool colorCurvesRows(Ctx& c, RowFn& fn)
     std::vector<CurvePoint> curves[4];
     if (!readCurves(c.s("Property"), curves)) {
         fn = [](const float* s, float* o, int n, int) { std::memcpy(o, s, (size_t)n * 4 * sizeof(float)); };
+        return true;
+    }
+    if (c.levels) {
+        // 8-bit: three byte tables (the master curve folded in), applied to the premultiplied bytes and held to the alpha.
+        auto lut = std::make_shared<std::array<unsigned char, 768>>();
+        unsigned char m[256], t[256];
+        const bool haveM = curveBytes8(curves[3], m);
+        for (int k = 0; k < 3; ++k) {
+            const bool ok = curveBytes8(curves[k], t);
+            for (int v = 0; v < 256; ++v) {
+                unsigned char r = ok ? t[v] : (unsigned char)v;
+                if (haveM) r = m[r];
+                (*lut)[(size_t)k * 256 + (size_t)v] = r;
+            }
+        }
+        fn = [lut](const float* sp, float* o, int n, int) {
+            for (int x = 0; x < n; ++x, sp += 4, o += 4) {
+                const int a = v8::toLevel(sp[3]);
+                for (int k = 0; k < 3; ++k) {
+                    const int r = (*lut)[(size_t)k * 256 + (size_t)v8::toLevel(sp[k])];
+                    o[k] = v8::fromLevel(r < a ? r : a);
+                }
+                o[3] = sp[3];
+            }
+        };
         return true;
     }
     std::vector<float> master((size_t)kLut);
@@ -177,10 +294,10 @@ void colorCurves(Ctx& c) { runRows(c, colorCurvesRows); }
 // VEGAS's own (its OpenCL kernel). Source: a whole 360 x 180 degree equirectangular frame, rows bottom first. Output pixel (dx, dy) = (x - W/2, y - H/2) (whole numbers, y up) is at angle t = 2 atan(r / (2 W / Z))
 // from the view's axis, tilted by p = Latitude - 90 degrees and turned by Longitude: latitude pi/2 + asin(cos t sin p + dy sin t cos p / r) gives the source row (H - 1) * it / pi, longitude
 // Longitude + atan2(dx sin t, r cos p cos t - dy sin p sin t) + pi (wrapped into 0..2 pi) the column (W - 1) * it / (2 pi), both cut to whole pixels (nearest read). With no value (centre, Z of 0) the row is 0.
-void tinyPlanet(Ctx& c)
+// The source pixel (as an index into the frame, rows as Buf stores them) every output pixel reads; it does not depend on the picture (also read by the GPU plan)
+void tinyPlanetMap(Ctx& c, int W, int H, int SW, int SH, std::vector<uint32_t>& idx)
 {
-    const int W = c.out.w, H = c.out.h, SW = c.src.w, SH = c.src.h;
-    if (W <= 0 || H <= 0 || SW <= 0 || SH <= 0) return;
+    idx.assign((size_t)W * H, 0);
     const double pi = 3.1415926535897932384626433832795;
     const double z = c.d("Z");
     const double v28 = (double)SW / z;
@@ -201,9 +318,19 @@ void tinyPlanet(Ctx& c)
             const double fy = (SH - 1) * v35 / pi, fx = std::trunc((SW - 1) * v36 / (pi * 2));
             const int sy = std::isfinite(fy) ? std::max(0, std::min(SH - 1, (int)std::floor(fy))) : 0;
             const int sx = std::isfinite(fx) ? std::max(0, std::min(SW - 1, (int)fx)) : 0;
-            std::memcpy(c.out.at(x, yt), c.src.at(sx, SH - 1 - sy), sizeof(float) * 4);
+            idx[(size_t)yt * W + x] = (uint32_t)((SH - 1 - sy) * SW + sx);
         }
     });
+}
+
+void tinyPlanet(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h, SW = c.src.w, SH = c.src.h;
+    if (W <= 0 || H <= 0 || SW <= 0 || SH <= 0) return;
+    std::vector<uint32_t> idx;
+    tinyPlanetMap(c, W, H, SW, SH, idx);
+    for (int yt = 0; yt < H; ++yt)
+        for (int x = 0; x < W; ++x) std::memcpy(c.out.at(x, yt), &c.src.px[(size_t)idx[(size_t)yt * W + x] * 4], sizeof(float) * 4);
 }
 
 // ------------------------------------------------------------------ Mesh Warp
@@ -438,6 +565,8 @@ void smartUpscale(Ctx& c)
 
 }  // namespace
 
+void tinyPlanetMapGpu(Ctx& c, int W, int H, std::vector<uint32_t>& idx) { tinyPlanetMap(c, W, H, W, H, idx); }
+
 // For the GPU (vkeffects.cpp): the red, green and blue tables of the effect's curves (the master curve folded in) one after the other, 1024
 // values each, the very tables colorCurvesRows looks up. False when the effect has no curves (it then leaves the frame as it is).
 bool colorCurvesGpuTables(Ctx& c, std::vector<float>& out)
@@ -451,6 +580,25 @@ bool colorCurvesGpuTables(Ctx& c, std::vector<float>& out)
         float* t = &out[(size_t)k * kLut];
         curveTable(curves[k], t);
         for (int i = 0; i < kLut; ++i) t[i] = look(master.data(), t[i]);
+    }
+    return true;
+}
+
+// Color Curves, 8-bit: the 768 byte-table entries colorCurvesRows() looks up (false: no curves, the frame is copied)
+bool colorCurves8GpuTables(Ctx& c, std::vector<float>& out)
+{
+    std::vector<CurvePoint> curves[4];
+    if (!readCurves(c.s("Property"), curves)) return false;
+    out.assign(768, 0.f);
+    unsigned char m[256], t[256];
+    const bool haveM = curveBytes8(curves[3], m);
+    for (int k = 0; k < 3; ++k) {
+        const bool ok = curveBytes8(curves[k], t);
+        for (int v = 0; v < 256; ++v) {
+            unsigned char r = ok ? t[v] : (unsigned char)v;
+            if (haveM) r = m[r];
+            out[(size_t)k * 256 + (size_t)v] = (float)r;
+        }
     }
     return true;
 }
@@ -513,6 +661,19 @@ void addFiltersMagix(std::vector<Def>& out)
         ps[6].hint = "Enable or disable the smart enhancement.";
         out.push_back(make("com.sonycreativesoftware:smart_upscale", "Smart Upscale", "The picture sharpened as an upscaler would leave it", ps, smartUpscale));
     }
+}
+
+
+// Mesh Warp for the GPU: 0 = the CPU does it (the triangle mode), 1 = it copies the frame, 2 = pictures drawn through the points ('pts', x y per point)
+int meshWarpGpu(Ctx& c, int& cols, int& rows, std::vector<float>& pts)
+{
+    Mesh m;
+    if (!c.b("EnableWarp") || !readMesh(c.s("WarpData"), m) || m.identity) return 1;
+    if (c.i("WarpDirection") != 0) return 0;
+    cols = m.cols;
+    rows = m.rows;
+    pts = m.pt;
+    return 2;
 }
 
 }  // namespace builtin

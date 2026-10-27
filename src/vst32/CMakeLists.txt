@@ -24,7 +24,7 @@ if(RENO_VST32_OUT)
 endif()
 
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/..)
-add_executable(reno_vst32 ${SRC}/vst32/vst32server.cpp ${SRC}/audiofx/vst32ipc.cpp ${SRC}/audiofx/vst2host.cpp
+add_executable(reno_vst32 ${SRC}/vst32/vst32server.cpp ${SRC}/audiofx/vst32ipc.cpp ${SRC}/audiofx/vst2host.cpp ${SRC}/audiofx/projecttempo.cpp
                           ${SRC}/core/base.cpp ${SRC}/core/dynlib.cpp)
 target_include_directories(reno_vst32 PRIVATE ${SRC}/../third_party/vst2)
 if(MSVC)

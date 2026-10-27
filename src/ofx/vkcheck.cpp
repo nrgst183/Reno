@@ -145,6 +145,13 @@ int runVkCheck(const std::vector<std::string>& args)
             rep.line("  [%d] %s  (%s, Vulkan %s, %.1f GB, %s%s%s)", d.index, d.name.c_str(), d.typeName().c_str(), d.apiVersionText().c_str(),
                      (double)d.localMemoryBytes / (1024.0 * 1024.0 * 1024.0), d.usable ? "usable" : "NOT usable", d.software ? ", software" : "",
                      d.usable || d.note.empty() ? "" : (", " + d.note).c_str());
+        for (const gpu::DeviceInfo& d : devices) {
+            if (!d.fcKnown) { rep.line("      float controls of [%d]: not asked (the device is below Vulkan 1.2)", d.index); continue; }
+            static const char* const indep[] = {"32-bit only", "all", "none"};
+            rep.line("      float controls of [%d]: roundingModeRTE32 %d, roundingModeRTZ32 %d, denormPreserve32 %d, denormFlushToZero32 %d, signedZeroInfNanPreserve32 %d, denormBehaviorIndependence %s, roundingModeIndependence %s",
+                     d.index, d.fcRteF32 ? 1 : 0, d.fcRtzF32 ? 1 : 0, d.fcDenormPreserveF32 ? 1 : 0, d.fcDenormFlushF32 ? 1 : 0, d.fcSignedZeroInfNanF32 ? 1 : 0,
+                     d.fcDenormIndependence >= 0 && d.fcDenormIndependence < 3 ? indep[d.fcDenormIndependence] : "?", d.fcRoundingIndependence >= 0 && d.fcRoundingIndependence < 3 ? indep[d.fcRoundingIndependence] : "?");
+        }
     }
     if (device >= 0) gpu::selectDevice(device);
     gpu::setEnabled(true);
@@ -158,6 +165,10 @@ int runVkCheck(const std::vector<std::string>& args)
     }
     rep.line("");
     rep.line("using %s", gpu::status().c_str());
+    {
+        const gpu::DeviceInfo cur = gpu::currentDevice();
+        rep.line("float controls in every kernel (RoundingModeRTE and DenormPreserve, 32-bit): %s", cur.floatControlsUsed ? "ON" : (cur.fcKnown ? "off (the driver lacks RTE or denorm preserve for 32-bit floats, or RENO_VK_NO_FLOAT_CONTROLS is set)" : "off (below Vulkan 1.2: the driver's default rounding and denormal handling apply)"));
+    }
     rep.line("");
     rep.line("%-34s %-10s %-11s %8s %9s %7s %9s %9s %9s  %s", "effect / settings", "format", "", "max diff", "mean diff", "over", "CPU ms", "GPU ms", "kernel ms", "");
 

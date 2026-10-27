@@ -2,7 +2,9 @@
 #include "builtins_more_internal.h"
 #include "builtins_fast.h"
 #include "builtins_vec.h"
+#include "vegas8.h"
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <sstream>
 
@@ -16,8 +18,92 @@ namespace more {
 // bump = 1 - smoothstep of the distance from the centre in half spreads; saturation is the Euclidean distance from the grey over 0.9272 (fitted).
 const float kSatScale = 0.9272f;
 
+// 8-bit pictures: VEGAS's own steps (Vfx1.ofx saturationadjustProcessor<unsigned char>), in doubles on the levels as bytes: Y = G 0.587 + R 0.299 + B 0.114, the distance
+// d = sqrt((Y - G)^2 + (Y - R)^2 + (Y - B)^2) / 236.437 goes through a curve of five points (0: Low, Center - Spread/2: Low, Center: Amount, Center + Spread/2: High, 1: High; cubic Hermite
+// with no slopes between neighbours, the value kept as a float) giving g; with f = 1 + g and u = 1 - f each channel is f C + u Y, summed in VEGAS's order, cut to 0..alpha and
+// truncated.
+static double satCurve(double x, double low, double high, double amount, double centre, double spread)
+{
+    const double h = spread * 0.5;
+    double xs[5] = {0.0, std::max(0.0, centre - h), centre, centre + h, 1.0};
+    if (!(1.0 > xs[3])) xs[3] = 1.0;
+    const double vs[5] = {low, low, amount, high, high};
+    int j = 1;
+    for (; j < 4; ++j)
+        if (xs[j] > x) break;
+    const int lo = j - 1, hi = j;
+    double t = 0.0;
+    if (xs[hi] != xs[lo]) t = (x - xs[lo]) / (xs[hi] - xs[lo]);
+    const double v0 = (double)(float)vs[lo], v1 = (double)(float)vs[hi];
+    const double t2 = t * t, t3 = t2 * t;
+    const double h00 = ((t3 + t3) - t2 * 3.0) + 1.0, h01 = t2 * 3.0 - (t3 + t3);
+    return (double)(float)(v0 * h00 + v1 * h01);
+}
+static void saturationAdjust8(Ctx& c)
+{
+    const double amount = c.d("Amount"), low = c.d("Low"), high = c.d("High"), centre = c.d("Center"), spread = c.d("Spread");
+    const double div = std::sqrt(55902.447675);
+    const int W = c.out.w, H = c.out.h;
+    forRows(H, W, [&](int y) {
+        const float* s = c.src.at(0, y);
+        float* o = c.out.at(0, y);
+        for (int x = 0; x < W; ++x, s += 4, o += 4) {
+            const int bi = v8::toLevel(s[2]), gi = v8::toLevel(s[1]), ri = v8::toLevel(s[0]), ai = v8::toLevel(s[3]);
+            const double R = ri, G = gi, B = bi;
+            const double Y = (G * 0.587 + R * 0.299) + B * 0.114;
+            const double dG = Y - G, dR = Y - R, dB = Y - B;
+            const double d = std::sqrt((dG * dG + dR * dR) + dB * dB);
+            const double g = satCurve(d / div, low, high, amount, centre, spread);
+            const double f = g + 1.0, u = 1.0 - f;
+            const double wG = u * 0.587, wR = u * 0.299, wB = u * 0.114;
+            double outR = ((wR + f) * R + G * wG) + B * wB;
+            double outG = ((wG + f) * G + R * wR) + B * wB;
+            double outB = (wB + f) * B + (G * wG + R * wR);
+            const double al = ai;
+            auto fin = [al](double v) { v = al > v ? v : al; v = v > 0.0 ? v : 0.0; return (int)v; };
+            o[0] = v8::fromLevel(fin(outR));
+            o[1] = v8::fromLevel(fin(outG));
+            o[2] = v8::fromLevel(fin(outB));
+            o[3] = v8::fromLevel(ai);
+        }
+    });
+}
+
+
+// Saturation Adjust, 8-bit, for the GPU: what saturationAdjust8() above works out once per frame, as the kernel's table of doubles (each a pair of 32-bit words, high
+// first, held in floats): the three inner curve positions, then for each of the four curve pieces: start, width, a flag (the piece has a width), the value at its start and end;
+// and the divisor of the distance.
+static float bitsAsFloat(uint32_t v) { float f; std::memcpy(&f, &v, 4); return f; }
+static void putDouble(std::vector<float>& t, double d)
+{
+    uint64_t b;
+    std::memcpy(&b, &d, 8);
+    t.push_back(bitsAsFloat((uint32_t)(b >> 32)));
+    t.push_back(bitsAsFloat((uint32_t)b));
+}
+void saturationAdjust8Gpu(Ctx& c, std::vector<float>& t)
+{
+    const double amount = c.d("Amount"), low = c.d("Low"), high = c.d("High"), centre = c.d("Center"), spread = c.d("Spread");
+    const double h = spread * 0.5;
+    double xs[5] = {0.0, std::max(0.0, centre - h), centre, centre + h, 1.0};
+    if (!(1.0 > xs[3])) xs[3] = 1.0;
+    const double vs[5] = {low, low, amount, high, high};
+    t.clear();
+    for (int i = 1; i <= 3; ++i) putDouble(t, xs[i]);
+    for (int j = 1; j <= 4; ++j) {
+        const int lo = j - 1, hi = j;
+        putDouble(t, xs[lo]);
+        putDouble(t, xs[hi] - xs[lo]);
+        t.push_back(bitsAsFloat(xs[hi] != xs[lo] ? 1u : 0u));
+        putDouble(t, (double)(float)vs[lo]);
+        putDouble(t, (double)(float)vs[hi]);
+    }
+    putDouble(t, std::sqrt(55902.447675));
+}
+
 void saturationAdjust(Ctx& c)
 {
+    if (c.levels) { saturationAdjust8(c); return; }
     const float amount = (float)c.d("Amount"), low = (float)c.d("Low"), high = (float)c.d("High");
     const float centre = (float)c.d("Center") * kSatScale, half = (float)std::max(0.005, c.d("Spread")) * 0.5f * kSatScale;
     perPixel(c, [&](float& r, float& g, float& b, int, int) {
@@ -37,115 +123,6 @@ void saturationAdjust(Ctx& c)
 // Soft Contrast, from VEGAS's pictures (tools/effectref_compare.py): stretch x * (1 + 0.00212 * Stretch range) (clipped), then blend with a blurred copy of the 601 luma by OVERLAY (below half 2xB,
 // above 1 - 2(1-x)(1-B)) with Contrast as the amount. Diffusion blurs the luma layer (Gaussian 0.205 px per percent at 320 wide). The tint multiplies the layer per channel by 1 + 1.137 x tint x
 // (T - luma(T)) (T = the correction hue at full saturation). Low / High trim bend the layer by Softlight's spline; the vignette is a RectangleMask / EllipseMask as in shapeMaskVelvet.
-namespace {
-inline float scOverlay(float x, float b) { return x < 0.5f ? 2.f * x * b : 1.f - 2.f * (1.f - x) * (1.f - b); }
-inline float scLuma(float r, float g, float b) { return 0.299f * r + 0.587f * g + 0.114f * b; }
-// ParamLibrary.Spline of TCB points (key, value, tension, continuity, bias) at x (Kochanek-Bartels, as Softlight's trims use it)
-struct ScTcb { double key, value, t, c, b; };
-double scTcb(const ScTcb* p, int n, double x)
-{
-    int i = n - 1, j = -1;
-    double f = 0;
-    for (int k = 0; k < n; ++k)
-        if (p[k].key > x) {
-            if (k == 0) i = 0;
-            else { i = k - 1; j = k; f = (x - p[i].key) / (p[j].key - p[i].key); }
-            break;
-        }
-    if (j < 0) return p[i].value;
-    const double dt = p[j].key - p[i].key;
-    const double prev = i > 0 ? p[i - 1].value : p[i].value, dtp = i > 0 ? p[i].key - p[i - 1].key : dt;
-    const double next = j + 1 < n ? p[j + 1].value : p[j].value, dtn = j + 1 < n ? p[j + 1].key - p[j].key : dt;
-    const ScTcb& a = p[i];
-    const ScTcb& b = p[j];
-    const double d1 = ((1 - a.t) * (1 + a.c) * (1 + a.b) / 2 * (a.value - prev) + (1 - a.t) * (1 - a.c) * (1 - a.b) / 2 * (b.value - a.value)) * (2 * dt / (dtp + dt));
-    const double d2 = ((1 - b.t) * (1 - b.c) * (1 + b.b) / 2 * (b.value - a.value) + (1 - b.t) * (1 + b.c) * (1 - b.b) / 2 * (next - b.value)) * (2 * dt / (dtn + dt));
-    const double s2 = f * f, s3 = s2 * f;
-    return (2 * s3 - 3 * s2 + 1) * a.value + (-2 * s3 + 3 * s2) * b.value + (s3 - 2 * s2 + f) * d1 + (s3 - s2) * d2;
-}
-}  // namespace
-
-void softContrast(Ctx& c)
-{
-    const double stretch = c.d("EffectStretchRange"), contrast = c.d("EffectContrast") / 100.0, diffusion = c.d("EffectDiffusion");
-    const double tint = c.d("EffectTint") / 100.0, hue = c.d("EffectCorrectionHue");
-    const int ext = c.i("VignetteExteriorEffect");
-    const int W = c.out.w, H = c.out.h;
-    const float gain = (float)(1.0 + 0.00212 * std::max(0.0, stretch));
-    const float amount = (float)clampd(contrast, 0.0, 2.0);
-    std::vector<float> lum((size_t)W * H);
-    forRows(H, W, [&](int y) {
-        for (int x = 0; x < W; ++x) {
-            float r, g, b, a;
-            unpremul(c.src.at(x, y), r, g, b, a);
-            lum[(size_t)y * W + x] = scLuma(clamp01(r * gain), clamp01(g * gain), clamp01(b * gain));
-        }
-    });
-    const double sigma = diffusion * 0.2033 * W / 320.0;
-    if (sigma > 0.3) gaussianBlurPlane(lum, W, H, sigma, sigma);
-    const double lowTrim = std::max(0.0, c.d("EffectLowTrim") / 100.0), highTrim = std::max(0.0, c.d("EffectHighTrim") / 100.0);
-    if (lowTrim > 0 || highTrim > 0) {
-        const ScTcb pts[3] = {{0.0, lowTrim * 0.25, 0, -1, 0}, {0.5, 0.5, 0, 0, 0}, {1.0, 1.0 - highTrim * 0.25, 0, -1, 0}};
-        float tl[256];
-        for (int i = 0; i < 256; ++i) tl[i] = (float)(clampd(std::floor(scTcb(pts, 3, i / 255.0) * 255.0 + 0.5), 0.0, 255.0) / 255.0);
-        for (float& v : lum) {
-            const float q = clamp01(v) * 255.f;
-            const int i0 = std::min(254, (int)q);
-            v = tl[i0] + (tl[i0 + 1] - tl[i0]) * (q - (float)i0);
-        }
-    }
-    float tm[3] = {1.f, 1.f, 1.f}, toff = 0.f;
-    if (tint > 0.0) {
-        float tr, tg, tb;
-        hslToRgb((float)(hue / 360.0 - std::floor(hue / 360.0)), 1.f, 0.5f, tr, tg, tb);
-        const float ty = scLuma(tr, tg, tb), k = (float)(1.137 * tint);
-        tm[0] = 1.f + k * (tr - ty); tm[1] = 1.f + k * (tg - ty); tm[2] = 1.f + k * (tb - ty);
-        toff = (float)(-0.0133 * tint / 0.3263);
-    }
-    std::vector<float> vmask;
-    const double vs = clampd(c.d("VignetteStrength") / 100.0, 0.0, 1.0);
-    const bool ellipse = c.i("VignetteShape") == 1;
-    double cx = 0.5, cy = 0.5;
-    c.xy("VignettePosition", cx, cy);
-    if (ext != 0)
-        shapeMaskVelvet(W, H, cx, 1.0 - cy, std::max(0.0, c.d("VignetteWidth") / 100.0), std::max(0.0, c.d("VignetteHeight") / 100.0),
-                        ellipse ? 0.0 : std::max(0.0, c.d("VignetteCornerRadius") / 100.0), std::max(0.0, c.d("VignetteSoftness") / 100.0), ellipse, vmask);
-    Buf soft;
-    if (ext == 1) {
-        soft = c.src;
-        const double bx = c.d("VignetteHorizontalBlur") * 0.05 * W, by = c.d("VignetteVerticalBlur") * 0.05 * H;
-        gaussianBlur(soft, bx, by);
-    }
-    forRows(H, W, [&](int y) {
-        for (int x = 0; x < W; ++x) {
-            float r, g, b, a;
-            unpremul(c.src.at(x, y), r, g, b, a);
-            float* o = c.out.at(x, y);
-            if (a <= 0.f) { o[0] = o[1] = o[2] = o[3] = 0.f; continue; }
-            const float B = lum[(size_t)y * W + x];
-            float v[3] = {clamp01(r * gain), clamp01(g * gain), clamp01(b * gain)};
-            for (int k = 0; k < 3; ++k) {
-                const float bc = B * tm[k] + toff;
-                v[k] = clamp01(v[k] + amount * (scOverlay(v[k], bc) - v[k]));
-            }
-            if (ext != 0) {
-                const float m = (float)(std::floor((double)vmask[(size_t)y * W + x] * 255.0 + 0.5) / 255.0);
-                const float k = (float)(vs * (1.0 - (double)m));
-                if (ext == 2) { for (int q = 0; q < 3; ++q) v[q] *= (1.f - k); }
-                else if (ext == 3) { for (int q = 0; q < 3; ++q) v[q] += (1.f - v[q]) * k; }
-                else if (ext == 4) a *= (1.f - k);
-                else if (ext == 1) {
-                    const float* sp = soft.at(x, y);
-                    float sr, sg2, sb, sa;
-                    unpremul(sp, sr, sg2, sb, sa);
-                    v[0] += (sr - v[0]) * k; v[1] += (sg2 - v[1]) * k; v[2] += (sb - v[2]) * k;
-                }
-            }
-            premul(o, clamp01(v[0] - 0.0017f), clamp01(v[1] - 0.0017f), clamp01(v[2] - 0.0017f), a);
-        }
-    });
-}
-
 // White Balance, rebuilt from VEGAS's code. Works on 8-bit bytes in two steps:
 // White Balance, rebuilt from VEGAS's code, on 8-bit bytes. 1. A 1024-entry table indexed by luma x 4 (rounded) gives the luma (x Brightness, from 0.25 steps, held to 0..255) and the shift of U, V
 // (BT.601, 0..255 scale) = cos / sin of Angle x Amount^2 x 127.5; each pixel goes to Y, U, V, is shifted and goes back (R from 1.1402509 V, G from 0.3947313 U + 0.5808092 V, B from 2.0325203 U), rounded.
@@ -154,26 +131,76 @@ void softContrast(Ctx& c)
 // VEGAS draws from a hidden Angle, Amount, Brightness and HasData (Temperature, Tint and the neutral colour are dialog settings it converts). Reno has no Angle, so wbAngle derives it from temperature
 // and tint with a model fitted to two VEGAS pictures (mired scale: warmer or bluer than 6500 K moves U, the tint moves V); the default temperature gives 0. Older Reno values (-1..1) mean the default.
 static const double kWbDefaultKelvin = 6500.0;
+// Robertson's isotherm table (reciprocal temperature in mired, u, v, slope), as VEGAS keeps it.
+static const double kWbRob[31][4] = {
+    {0.0, 0.18006, 0.26352, -0.24341},    {10.0, 0.18066, 0.26589, -0.25479},   {20.0, 0.18133, 0.26846, -0.26876},
+    {30.0, 0.18208, 0.27119, -0.28539},   {40.0, 0.18293, 0.27407, -0.3047},    {50.0, 0.18388, 0.27709, -0.32675},
+    {60.0, 0.18494, 0.28021, -0.35156},   {70.0, 0.18611, 0.28342, -0.37915},   {80.0, 0.1874, 0.28668, -0.40955},
+    {90.0, 0.1888, 0.28997, -0.44278},    {100.0, 0.19032, 0.29326, -0.47888},  {125.0, 0.19462, 0.30141, -0.58204},
+    {150.0, 0.19962, 0.30921, -0.70471},  {175.0, 0.20525, 0.31647, -0.84901},  {200.0, 0.21142, 0.32312, -1.0182},
+    {225.0, 0.21807, 0.32909, -1.2168},   {250.0, 0.22511, 0.33439, -1.4512},   {275.0, 0.23247, 0.33904, -1.7298},
+    {300.0, 0.2401, 0.34308, -2.0637},    {325.0, 0.24702, 0.34655, -2.4681},   {350.0, 0.25591, 0.34951, -2.9641},
+    {375.0, 0.264, 0.352, -3.5814},       {400.0, 0.27218, 0.35407, -4.3633},   {425.0, 0.28039, 0.35577, -5.3762},
+    {450.0, 0.28863, 0.35714, -6.7262},   {475.0, 0.29685, 0.35823, -8.5955},   {500.0, 0.30505, 0.35907, -11.324},
+    {525.0, 0.3132, 0.35968, -15.628},    {550.0, 0.32129, 0.36011, -23.325},   {575.0, 0.32931, 0.36038, -40.77},
+    {600.0, 0.33724, 0.36051, -116.45}};
+// Temperature and tint to the angle of the correction, the way VEGAS does it: Robertson's table gives u, v (moved along the isotherm by the tint / -3000),
+// then x, y, XYZ (Y = 1), a fixed matrix to RGB, BT.601 U and V of that colour, and the angle is atan2(-V, -U) in degrees (0..360).
 static double wbAngle(double kelvin, double tint)
 {
     if (!(kelvin >= 100.0)) kelvin = kWbDefaultKelvin;
-    const double dm = 1e6 / clampd(kelvin, 1700.0, 15000.0) - 1e6 / kWbDefaultKelvin;
-    const double su = dm, sv = -0.26067 * dm + 0.68791 * clampd(tint, -100.0, 100.0);
-    if (su == 0.0 && sv == 0.0) return 0.0;
-    return std::atan2(sv, su) * 180.0 / 3.141592653589793;
+    kelvin = clampd(kelvin, 1700.0, 15000.0);
+    tint = clampd(tint, -100.0, 100.0);
+    if (kelvin == kWbDefaultKelvin && tint == 0.0) return 0.0;
+    const double t13 = tint * -0.0003333333333333333;
+    const double m = 1000000.0 / kelvin;
+    int i = 0;
+    for (;; ++i) {
+        if (kWbRob[i + 1][0] > m || i == 29) break;
+    }
+    const int k = i + 1;
+    const double f = (kWbRob[k][0] - m) / (kWbRob[k][0] - kWbRob[i][0]);
+    const double si = kWbRob[i][3], sk = kWbRob[k][3];
+    const double qi = std::sqrt(si * si + 1.0), qk = std::sqrt(sk * sk + 1.0);
+    const double g = 1.0 - f;
+    const double dx = (1.0 / qk) * g + (1.0 / qi) * f;
+    const double dy = (sk / qk) * g + (si / qi) * f;
+    const double nrm = std::sqrt(dy * dy + dx * dx);
+    double u = g * kWbRob[k][1] + f * kWbRob[i][1];
+    double v = g * kWbRob[k][2] + f * kWbRob[i][2];
+    v += (dy / nrm) * t13;
+    u += (dx / nrm) * t13;
+    const double den = (u - v * 4.0) + 2.0;
+    const double y = v / den, x = (u * 1.5) / den;
+    const double Y = 1.0;
+    const double q = Y / y;
+    const double X = q * x, Z = ((1.0 - x) - y) * q;
+    const double r = X * 1.0498110175 - Z * 9.74845e-05;
+    const double gg = (Y * 1.3733130458 - X * 0.4959030231) + Z * 0.0982400361;
+    const double bb = Z * 0.9912520182;
+    const double yl = (gg * 0.587 + r * 0.299) + bb * 0.114;
+    const double U = ((bb - yl) * 0.492000013589859) / 127.5, V = ((r - yl) * 0.8769999742507935) / 127.5;
+    double ang;
+    if (-U == 0.0) ang = (-V >= 0.0) ? 90.0 : 270.0;
+    else {
+        ang = std::atan2(-V, -U) * 57.29577951308232;
+        if (ang < 0.0) ang += 360.0;
+    }
+    return ang;
 }
 // same rounding as VEGAS (a float plus 1.5e-8 to the nearest whole number)
 static inline int wbRound(float v) { return (int)std::floor((double)v + 1.5e-8 + 0.5); }
 static inline float wbClampTo255(float v) { return v < 0.f ? 0.f : (v > 255.f ? 255.f : v); }
 
-void whiteBalance(Ctx& c)
+// The settings of White Balance as both the CPU and the Vulkan plan use them: the 1024 x (V shift, U shift, Y) table, whether the colours shift, whether the histogram stretches.
+void whiteBalanceSettings(Ctx& c, std::vector<float>& tab, bool& shift, bool& hasData)
 {
     const double amount = clampd(c.d("AmountOfCorrection"), 0, 1), bright = c.d("Brightness");
-    const bool hasData = c.b("HasData");
-    const int W = c.out.w, H = c.out.h;
-    const bool shift = amount != 0.0 || bright != 1.0;
-    if (!shift && !hasData) { copyThrough(c); return; }
-    std::vector<float> tab((size_t)1024 * 3);
+    hasData = c.b("HasData");
+    shift = amount != 0.0 || bright != 1.0;
+    tab.clear();
+    if (!shift) return;
+    tab.resize((size_t)1024 * 3);
     {
         const double ang = wbAngle(c.d("ColorTemperature"), c.d("ColorTint")) * 3.141592653589793 / 180.0;
         const double s2 = amount * amount;
@@ -186,6 +213,15 @@ void whiteBalance(Ctx& c)
             tab[(size_t)i * 3 + 2] = (float)y;
         }
     }
+}
+
+void whiteBalance(Ctx& c)
+{
+    std::vector<float> tab;
+    bool shift, hasData;
+    whiteBalanceSettings(c, tab, shift, hasData);
+    const int W = c.out.w, H = c.out.h;
+    if (!shift && !hasData) { copyThrough(c); return; }
     std::vector<unsigned char> by((size_t)W * H * 3);       // R, G, B bytes (straight)
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
@@ -321,12 +357,105 @@ const LabTables& labTables()
     static const LabTables t;
     return t;
 }
+// (the helper below is for the Vulkan plan)
+// The 256 linear values of the levels, then the 255 steps of the encoding, as doubles (each the bits of its high and low halves held in two floats).
+void labAdjustGpuTables(std::vector<float>& t)
+{
+    const LabTables& lt = labTables();
+    auto put2 = [&](double v) {
+        uint32_t w[2];
+        uint64_t b;
+        std::memcpy(&b, &v, 8);
+        w[0] = (uint32_t)(b >> 32);
+        w[1] = (uint32_t)b;
+        float f[2];
+        std::memcpy(f, w, 8);
+        t.push_back(f[0]);
+        t.push_back(f[1]);
+    };
+    t.clear();
+    for (int k = 0; k < 256; ++k) put2(lt.val[k]);
+    for (int k = 0; k < 255; ++k) put2(lt.step[k]);
+}
+
+// The linear value of each of the 256 levels, as the 8-bit routine takes them (doubles as two floats each)
+void labAdjust8GpuTable(std::vector<float>& t)
+{
+    t.clear();
+    for (int k = 0; k < 256; ++k) {
+        const double v = (double)k * 0.00392156862745098;
+        const double l = v > 0.04045 ? std::pow((v + 0.055) / 1.055, 2.4) : v / 12.92;
+        uint64_t b;
+        std::memcpy(&b, &l, 8);
+        const uint32_t w[2] = {(uint32_t)(b >> 32), (uint32_t)b};
+        float f[2];
+        std::memcpy(f, w, 8);
+        t.push_back(f[0]);
+        t.push_back(f[1]);
+    }
+}
 
 // LAB Adjust, measured against VEGAS: CIE L*a*b* (sRGB, D65). Invert Luminance turns L into 95.58 - L first (may go below zero, darker than black),
 // then Lightness multiplies L (above 100 not clipped: the colour clips per channel). Channel a / b move the colour by 100 per unit, Desaturate scales
 // them down afterwards. The 8-bit result is truncated.
+// 8-bit pictures: VEGAS's byte routine (Vfx1, labadjustProcessor<uchar,4>) step for step in double: sRGB bytes (x 1/255) to CIE L*a*b* by the old
+// constants (0.008856, 7.787, 16/116, D65 white 0.95047 / 1.08883, matrix 0.4124 ...), the settings applied, back with the matrix 3.2406 ... and
+// the sRGB curve (clamped), cut to whole levels (truncated); colour is then capped by the alpha.
+static void labAdjust8(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    const double light = c.d("Lightness");
+    const double chA = c.d("Channela") * 100.0, chB = c.d("Channelb") * 100.0;
+    const double keepSat = 1.0 - c.d("Desaturate");
+    const bool invert = c.b("InvertLuminance");
+    const double k255 = 0.00392156862745098;
+    auto lin = [&](double v) { return v > 0.04045 ? std::pow((v + 0.055) / 1.055, 2.4) : v / 12.92; };
+    auto fwd = [&](double t) {
+        if (t > 0.008856) {
+            if (2.220446049250313e-16 > std::fabs(t)) return 0.0;
+            return t > 0.0 ? std::pow(t, 0.3333333333333333) : -std::pow(-t, 0.3333333333333333);
+        }
+        return t * 7.7870001792907715 + 0.13793103448275862;
+    };
+    auto inv = [&](double f) {
+        const double cube = f * f * f;
+        return cube > 0.008856 ? cube : (f - 0.13793103448275862) / 7.787;
+    };
+    auto enc = [&](double v) { return v > 0.0031308 ? std::pow(v, 0.4166666666666667) * 1.055 - 0.055 : v * 12.92; };
+    auto back = [&](double v) {
+        const double e = enc(v);
+        if (0.0 > e) return 0.0;
+        if (e > 1.0) return 1.0;
+        return e;
+    };
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            const float* q = c.src.at(x, y);
+            const int r8 = v8::toLevel(q[0]), g8 = v8::toLevel(q[1]), b8 = v8::toLevel(q[2]), a8 = v8::toLevel(q[3]);
+            const double rl = lin((double)r8 * k255), gl = lin((double)g8 * k255), bl = lin((double)b8 * k255);
+            const double X = ((rl * 0.4124 + gl * 0.3576) + bl * 0.1805) / 0.95047;
+            const double Y = (gl * 0.7152 + rl * 0.2126) + bl * 0.0722;
+            const double Z = ((rl * 0.0193 + gl * 0.1192) + bl * 0.9505) / 1.08883;
+            const double fx = fwd(X), fy = fwd(Y), fz = fwd(Z);
+            double L = fy * 116.0 - 16.0, A = (fx - fy) * 500.0, B = (fy - fz) * 200.0;
+            L = (invert ? 95.5806655883789 - L : L) * light;
+            A = (A + chA) * keepSat;
+            B = (B + chB) * keepSat;
+            const double gy = (L + 16.0) / 116.0, gx = A / 500.0 + gy, gz = gy - B / 200.0;
+            const double xr = inv(gx) * 0.950469970703125, yr = inv(gy), zr = inv(gz) * 1.0888299942016602;
+            const double cr = (xr * 3.2406 - yr * 1.5372) - zr * 0.4986;
+            const double cg = (yr * 1.8758 - xr * 0.9689) + zr * 0.0415;
+            const double cb = (xr * 0.0557 - yr * 0.204) + zr * 1.057;
+            const int R = std::min((int)(back(cr) * 255.0), a8), G = std::min((int)(back(cg) * 255.0), a8), Bl = std::min((int)(back(cb) * 255.0), a8);
+            float* o = c.out.at(x, y);
+            o[0] = v8::fromLevel(R); o[1] = v8::fromLevel(G); o[2] = v8::fromLevel(Bl); o[3] = v8::fromLevel(a8);
+        }
+    });
+}
+
 void labAdjust(Ctx& c)
 {
+    if (c.levels) { labAdjust8(c); return; }
     const double light = c.d("Lightness"), da = c.d("Channela"), db = c.d("Channelb"), des = clampd(c.d("Desaturate"), 0, 1);
     const bool invert = c.b("InvertLuminance");
     const double wx = 0.95047, wz = 1.08883, e = 216.0 / 24389.0, kk = 24389.0 / 27.0;
@@ -404,8 +533,367 @@ inline float broadcastSoftLow(float x, float L, float T)
     if (x >= T) return x;
     return L + (T - L) * std::pow(std::min(1.f, std::max(0.f, x / T)), T / (T - L));
 }
+
+// VEGAS's 8-bit Broadcast Colors, transcribed from its own code (tables of doubles built from the settings, then a per-pixel pass over the bytes). Luma Y = 0.299 R + 0.587 G + 0.114 B and
+// U, V from the BT.601 matrix are worked in a scale where full range is 0..200 (so "IRE x 2"); the luma limits become two tables over the rounded Y (the value, or a marker that Y is
+// left alone, and the byte level the luma goes back to), the chroma limit a table of ratios over the rounded chroma length, the composite limits two more over the closeness to the limit.
+// Every rounding is the magic-number one (x + 1.5e-8, then + 2^52 + 2^51, low word), every table value a double.
+struct BcTables {
+    double r[256], g[256], b[256];
+    double q0[16 + 220], q1[16 + 220];          // from index -16
+    double tc[296], td[241], te[241];          // (the composite tables are read one past their end by VEGAS: zero there)
+    double v1, v2, v3;                          // the first chroma-knee index, and the first composite-knee indexes / 200
+};
+inline int bcNint(double x)                     // round to nearest even through the 2^52 + 2^51 trick, no nudge
+{
+    double t = x + 6755399441055744.0;
+    int64_t bits;
+    std::memcpy(&bits, &t, 8);
+    return (int)(int32_t)(bits & 0xffffffff);
+}
+// the cubic that leaves the level `from` flat at u = 0 and joins the line of slope 1 at u = n having risen `rise`
+inline void bcCubic(double rise, double n, double& A, double& B)
+{
+    double x6 = rise - n * 0.0;
+    double x3 = n, x2 = n * n, x1 = n;
+    x1 = x1 * x2;
+    double x0 = x3 * 0.5;
+    double x8 = x6 - x0;
+    x3 = x3 / 3.0;
+    x1 = x1 * -0.5;
+    x2 = x2 / 3.0;
+    x6 = x6 - x3;
+    x8 = x8 / x1;
+    x6 = x6 / x2;
+    A = x6; B = x8;
+}
+// the same read from the top end: n counted negative as VEGAS does
+inline void bcCubicTop(double start, double top, double nneg, double& A, double& B)
+{
+    double x3 = nneg;
+    double x6 = start - top;
+    double x2 = x3 * x3;
+    double x0 = x3 * 0.0;
+    double x1 = x3 * x2;
+    x6 = x6 - x0;
+    x0 = x3 * 0.5;
+    double x8 = x6;
+    x3 = x3 / 3.0;
+    x1 = x1 * -0.5;
+    x8 = x8 - x0;
+    x2 = x2 / 3.0;
+    x6 = x6 - x3;
+    A = x6 / x2; B = x8 / x1;
+}
+void bcBuild(const double S[10], bool setup, bool studio, BcTables& T)
+{
+    const double c5o = setup ? 7.5 : 0.0, c4 = studio ? 16.0 : 0.0;
+    double c0 = (studio ? 235.0 : 255.0) - c4;
+    double c2 = 100.0 - c5o;
+    const double hi = S[2] + S[2], lo = S[0] + S[0], c5 = c5o + c5o;
+    c2 = c2 + c2;
+    const double scale1 = c0 / c2, scale2 = c2 / c0;
+    for (int i = 0; i < 256; ++i) {
+        const double x = ((double)i - c4) * scale2;
+        T.r[i] = x * 0.299; T.g[i] = x * 0.587; T.b[i] = x * 0.114 + c5;
+    }
+    const double ymin = (T.r[0] + T.g[0]) + T.b[0], ymax = (T.r[255] + T.g[255]) + T.b[255];
+    int iLo = bcNint(lo + 1.5e-8), iHi = bcNint(hi + 1.5e-8);
+    int edi = iLo, esi = iLo, r11 = iHi, ebx = iHi;
+    int sum = iLo + iHi;
+    const int mid = (sum - (sum >> 31)) >> 1;
+    if (lo > ymin + 2.0 && S[1] > 0.0) {
+        const double d = lo - ymin;
+        const int n1 = bcNint(d + 1.5e-8);
+        const double t = (double)mid - lo;
+        double ratio = 1.0;
+        if (d > t) ratio = t / d;
+        const int m = bcNint((double)n1 * ratio * S[1] + 1.5e-8);
+        esi = m + edi;
+        if (esi != edi) {
+            int e = edi - n1;
+            edi = e > -16 ? e : -16;
+            int e2 = mid;
+            if (esi < mid) e2 = esi;
+            esi = e2;
+            const double x0 = (double)edi;
+            double x1 = (double)esi;
+            const double x2 = x1 - lo;
+            x1 = (x1 - x0) / 3.0;
+            if (!(x1 < x2)) edi = esi - bcNint(x2 * 3.0 - 0.499999985);
+        }
+    }
+    if (ymax > hi + 2.0 && S[3] > 0.0) {
+        const double d2 = ymax - hi;
+        const int n2 = bcNint(d2 + 1.5e-8);
+        const double t2 = hi - (double)mid;
+        double ratio = 1.0;
+        if (d2 > t2) ratio = t2 / d2;
+        const int m2 = bcNint((double)n2 * ratio * S[3] + 1.5e-8);
+        ebx = ebx - m2;
+        if (ebx != r11) {
+            const int eax = n2 + r11;
+            int ecx = mid;
+            if (ebx > ecx) ecx = ebx;
+            int nr = 220;
+            if (eax < 220) nr = eax;
+            ebx = ecx; r11 = nr;
+            const double x1 = (double)ebx;
+            double x0 = (double)r11;
+            const double x2 = hi - x1;
+            x0 = (x0 - x1) / 3.0;
+            if (!(x0 < x2)) r11 = bcNint(x2 * 3.0 - 0.499999985) + ebx;
+        }
+    }
+    auto clampi = [](int v, int a, int b) { return v < a ? a : (v > b ? b : v); };
+    edi = clampi(edi, -16, 220); esi = clampi(esi, -16, 220); ebx = clampi(ebx, -16, 220); r11 = clampi(r11, -16, 220);
+    double* q0 = T.q0 + 16; double* q1 = T.q1 + 16;
+    const double c4h = c4 + 0.5;                // the byte level the luma goes back to, kept half a level up
+    auto back = [&](double v) { return (v - c5) * scale1 + c4h; };
+    int e = -16;
+    for (; e < edi; ++e) { q0[e] = lo; q1[e] = back(lo); }
+    double A = 0, B = 0;
+    if (edi < esi) {
+        const double n = (double)(esi - edi);
+        bcCubic((double)esi - lo, n, A, B);
+        for (; e < esi; ++e) {
+            const double u = (double)(e - edi);
+            const double u2 = u * u;
+            double v = (u2 * u) * B;
+            v = v + u2 * A;
+            v = v + lo;
+            q0[e] = v; q1[e] = back(v);
+        }
+    }
+    for (; e < ebx; ++e) { q0[e] = -3454.0; q1[e] = ((double)e - c5) * scale1 + c4h; }
+    if (ebx < r11) {
+        const double nneg = (double)(ebx - r11);
+        bcCubicTop((double)ebx, hi, nneg, A, B);
+        for (; e < r11; ++e) {
+            const double w = (double)(e - r11);
+            const double w2 = w * w;
+            double v = (w2 * w) * B;
+            v = v + w2 * A;
+            v = v + hi;
+            q0[e] = v; q1[e] = back(v);
+        }
+    }
+    for (; e < 220; ++e) { q0[e] = hi; q1[e] = back(hi); }
+
+    // the chroma limit
+    const double c = S[4] + S[4];
+    const int iC = bcNint(c + 1.5e-8);
+    int cs = iC, ce = iC;
+    const double cmax = (std::sqrt(25999.205849999995) + std::sqrt(25999.205849999995)) * scale2;
+    if (c >= 1.0 && cmax > c + 2.0 && S[5] > 0.0) {
+        const double d = cmax - c, cm1 = c - 1.0;
+        const int n = bcNint(d + 1.5e-8);
+        double ratio = 1.0;
+        if (d > cm1) ratio = cm1 / d;
+        const int m = bcNint((double)n * ratio * S[5] + 1.5e-8);
+        const int es = iC - m;
+        if (es != iC) {
+            const int ecx = n + iC;
+            int eax = 1;
+            if (es > eax) eax = es;
+            int eb = 296;
+            if (ecx < eb) eb = ecx;
+            cs = eax; ce = eb;
+            const double x1 = (double)cs;
+            double x0 = (double)ce;
+            const double x2 = c - x1;
+            x0 = (x0 - x1) / 3.0;
+            if (!(x0 < x2)) ce = bcNint(x2 * 3.0 - 0.499999985) + cs;
+        } else cs = es;
+    }
+    T.v1 = (double)cs;
+    cs = clampi(cs, 0, 296); ce = clampi(ce, 0, 296);
+    T.tc[0] = 0.0;
+    int k = 1;
+    if (cs > k) { for (int i = 1; i < cs; ++i) T.tc[i] = 1.0; k = cs; }
+    A = 0; B = 0;
+    if (cs < ce) bcCubicTop((double)cs, c, (double)(cs - ce), A, B);
+    for (; k < ce; ++k) {
+        const double w = (double)(k - ce);
+        const double w2 = w * w;
+        double v = (w2 * w) * B;
+        v = v + w2 * A;
+        v = v + c;
+        T.tc[k] = v / (double)k;
+    }
+    for (; k < 296; ++k) T.tc[k] = c / (double)k;
+
+    // the composite limits (two tables of the same shape)
+    auto composite = [&](double smooth, double* t, double& slot) {
+        int start = 200, end = 200;
+        if (smooth > 0.0) {
+            const int m = bcNint(smooth * 40.0 + 1.5e-8);
+            start = 200 - m;
+            if (start != 200) {
+                int ecx = 1;
+                end = 240;
+                if (start > ecx) ecx = start;
+                start = ecx;
+                const int rest = 240 - start;
+                const int third = rest / 3;
+                if (!(third < 200 - start)) { end = 300 - start; end += end; }
+            }
+        }
+        slot = (double)start / 200.0;
+        t[0] = 0.0;
+        start = clampi(start, 0, 240); end = clampi(end, 0, 240);
+        int j = 1;
+        if (start > j) { for (int i = 1; i < start; ++i) t[i] = 1.0; j = start; }
+        double a = 0, b = 0;
+        if (start < end) bcCubicTop((double)start, 200.0, (double)(start - end), a, b);
+        for (; j < end; ++j) {
+            const double w = (double)(j - end);
+            const double w2 = w * w;
+            double v = (w2 * w) * b;
+            v = v + w2 * a;
+            v = v + 200.0;
+            t[j] = v / (double)j;
+        }
+        for (; j < 240; ++j) t[j] = 200.0 / (double)j;
+        t[240] = 0.0;
+    };
+    composite(S[7], T.td, T.v2);
+    composite(S[9], T.te, T.v3);
+}
+static void bcSetup8(Ctx& c, BcTables& T, double* sc)
+{
+    double S[10] = {c.d("LumaMin"), clampd(c.d("LumaMinSmoothness"), 0, 1), c.d("LumaMax"), clampd(c.d("LumaMaxSmoothness"), 0, 1), c.d("ChromaMax"), clampd(c.d("ChromaSmoothness"), 0, 1),
+                    c.d("CompositeMin"), clampd(c.d("CompositeMinSmoothness"), 0, 1), c.d("CompositeMax"), clampd(c.d("CompositeMaxSmoothness"), 0, 1)};
+    // (guessed from VEGAS's pictures: the 7.5 IRE setup stays applied while Studio RGB is on; only with Studio RGB off does the setting count)
+    for (double& v : S) { if (!(v == v)) v = 0; v = std::max(-1e4, std::min(1e4, v)); }
+    // Vfx1 reads the two flags straight into the table builder (checked in the PE: no OR on the way), and so does this.
+    const bool studio = c.b("StudioRGB16To135"), setup = c.b("75IREsetup");
+    bcBuild(S, setup, studio, T);
+    const double q = (100.0 - (setup ? 7.5 : 0.0)) / (studio ? 219.0 : 255.0);
+    const double Q = q + q, Q2 = Q * Q;
+    const double cmin = S[6] + S[6], cmax = S[8] + S[8];
+    const double PA = T.v1 * 0.5, PB = (T.v1 * T.v1) * 0.25, P2 = T.v2 * T.v2, P3 = T.v3 * T.v3;
+    sc[0] = Q; sc[1] = Q2; sc[2] = cmin; sc[3] = cmax; sc[4] = PA; sc[5] = PB; sc[6] = P2; sc[7] = P3;
+}
+void broadcastColors8(Ctx& c)
+{
+    BcTables T;
+    double sc[8];
+    bcSetup8(c, T, sc);
+    const double Q = sc[0], Q2 = sc[1], cmin = sc[2], cmax = sc[3], PA = sc[4], PB = sc[5], P2 = sc[6], P3 = sc[7];
+    const double* q0 = T.q0 + 16; const double* q1 = T.q1 + 16;
+    const int W = c.out.w, H = c.out.h;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            const float* sp = c.src.at(x, y);
+            float* op = c.out.at(x, y);
+            // the picture is stored r, g, b, a; VEGAS's bytes run b, g, r, a
+            const int R = v8::toLevel(sp[0]), G = v8::toLevel(sp[1]), Bv = v8::toLevel(sp[2]), A = v8::toLevel(sp[3]);
+            op[0] = sp[0]; op[1] = sp[1]; op[2] = sp[2]; op[3] = sp[3];
+            double Y = T.g[G];
+            Y = Y + T.r[R];
+            Y = Y + T.b[Bv];
+            double x9 = (double)R, x3 = (double)Bv, x2 = (double)G;
+            double x1 = x2 * 0.289;
+            x2 = x2 * 0.515;
+            double x0 = x9 * 0.147;
+            x9 = x9 * 0.615;
+            double x7 = (double)Bv;
+            x3 = x3 * 0.1;
+            x7 = x7 * 0.436;
+            x9 = x9 - x2;
+            x9 = x9 - x3;
+            x1 = x1 + x0;
+            x7 = x7 - x1;
+            x1 = std::fabs(x9) + std::fabs(x7);
+            x1 = x1 * Q;
+            int idx = bcNint(Y);
+            idx = idx < -16 ? -16 : (idx > 219 ? 219 : idx);
+            double x6 = cmax - Y;
+            double x4 = Y - cmin;
+            const double v0 = q0[idx];
+            bool changed = false;
+            if (v0 == -3454.0) {
+                if (x6 > x1 && x4 > x1 && PA > x1) continue;
+            } else {
+                x4 = v0; x6 = cmax - v0; changed = true; x4 = x4 - cmin;
+            }
+            double K = P3; const double* tab = T.te;
+            if (x6 > x4) { K = P2; x6 = x4; tab = T.td; }
+            double x8 = x9 * x9;
+            x0 = x7 * x7;
+            x8 = x8 + x0;
+            x8 = x8 * Q2;
+            const double Ql = q1[idx];
+            double x10 = x6 * x6;
+            x10 = x10 * K;
+            if (x8 > PB) {
+                const double s = std::sqrt(x8);
+                int i2 = bcNint((s + s) + 1.5e-8);
+                i2 = i2 < 0 ? 0 : (i2 > 295 ? 295 : i2);
+                double f = T.tc[i2];
+                changed = true;
+                x7 = x7 * f; x9 = x9 * f;
+                f = f * f;
+                x8 = x8 * f;
+            }
+            if (x8 > x10) {
+                const double s = std::sqrt(x8);
+                x6 = x6 / s;
+                if (x6 > 0.8333333333333334) {
+                    const double t = 200.0 / x6;
+                    int i3 = bcNint(t - 0.499999985);
+                    i3 = i3 < 0 ? 0 : (i3 > 240 ? 240 : i3);
+                    x6 = tab[i3];
+                }
+                x7 = x7 * x6; x9 = x9 * x6;
+            } else if (!changed) continue;
+            double rr = x9 * 1.14;
+            rr = rr + Ql; rr = rr + 1.5e-8;
+            double gg = Ql;
+            const double u394 = x7 * 0.394;
+            x9 = x9 * 0.581;
+            double bb = x7 * 2.032;
+            bb = bb + Ql; bb = bb + 1.5e-8;
+            gg = gg - u394; gg = gg - x9; gg = gg + 1.5e-8;
+            int ri = bcNint(rr), gi = bcNint(gg), bi = bcNint(bb);
+            ri = ri < 0 ? 0 : (ri > A ? A : ri);
+            gi = gi < 0 ? 0 : (gi > A ? A : gi);
+            bi = bi < 0 ? 0 : (bi > A ? A : bi);
+            op[0] = v8::fromLevel(ri); op[1] = v8::fromLevel(gi); op[2] = v8::fromLevel(bi);
+        }
+    });
+}
+// The tables and constants of the 8-bit pass as doubles (two floats each): 8 constants (Q, Q2, cmin, cmax, PA, PB, P2, P3), then r, g, b (256 each), q0, q1 (236 each, from level -16),
+// tc (296), td, te (241 each)
+void broadcastColors8GpuTable(Ctx& c, std::vector<float>& t)
+{
+    BcTables T;
+    double sc[8];
+    bcSetup8(c, T, sc);
+    t.clear();
+    auto put = [&](double v) {
+        uint64_t b;
+        std::memcpy(&b, &v, 8);
+        const uint32_t w[2] = {(uint32_t)(b >> 32), (uint32_t)b};
+        float f[2];
+        std::memcpy(f, w, 8);
+        t.push_back(f[0]);
+        t.push_back(f[1]);
+    };
+    for (int i = 0; i < 8; ++i) put(sc[i]);
+    for (int i = 0; i < 256; ++i) put(T.r[i]);
+    for (int i = 0; i < 256; ++i) put(T.g[i]);
+    for (int i = 0; i < 256; ++i) put(T.b[i]);
+    for (int i = 0; i < 236; ++i) put(T.q0[i]);
+    for (int i = 0; i < 236; ++i) put(T.q1[i]);
+    for (int i = 0; i < 296; ++i) put(T.tc[i]);
+    for (int i = 0; i < 241; ++i) put(T.td[i]);
+    for (int i = 0; i < 241; ++i) put(T.te[i]);
+}
 void broadcastColors(Ctx& c)
 {
+    if (c.levels) { broadcastColors8(c); return; }
     const BroadcastLimits L = broadcastLimits(c);
     perPixel(c, [&](float& r, float& g, float& b, int, int) {
         const float y0 = 0.299f * r + 0.587f * g + 0.114f * b;
@@ -456,6 +944,15 @@ void channelBlend(Ctx& c)
                 float sum = 0, ws = std::fabs(w[o][4]);
                 for (int i = 0; i < 4; ++i) { sum += w[o][i] * in[i]; ws += std::fabs(w[o][i]); }
                 sum += w[o][4];
+                if (c.levels) {
+                    // VEGAS works on the bytes: the weighted sum (the offset counting 255 per unit) over the weights' sizes, cut to whole levels
+                    float bs = w[o][4] * 255.f;
+                    for (int i = 0; i < 4; ++i) bs += w[o][i] * std::floor(in[i] * 255.f + 0.5f);
+                    if (normalise) bs = ws > 1e-6f ? bs / ws : 0.f;
+                    const float t = std::floor(bs);
+                    out[o] = std::min(255.f, std::max(0.f, t)) / 255.f;
+                    continue;
+                }
                 if (normalise) sum = ws > 1e-6f ? sum / ws : 0.f;
                 out[o] = clamp01(sum);
             }

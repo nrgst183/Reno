@@ -65,6 +65,9 @@ bool loadInstanceFunctions(VkApi& api, VkInstance instance, std::string* why)
 #define X(name) api.name = (PFN_##name)api.vkGetInstanceProcAddr(instance, #name); if (!api.name) { ok = false; missing += std::string(" ") + #name; }
     RENO_VK_INSTANCE_FUNCS(X)
 #undef X
+#define X(name) api.name = (PFN_##name)api.vkGetInstanceProcAddr(instance, #name);
+    RENO_VK_INSTANCE_OPT_FUNCS(X)
+#undef X
     if (!ok && why) *why = "missing Vulkan functions:" + missing;
     return ok;
 }

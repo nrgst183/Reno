@@ -667,8 +667,8 @@ private:
     // VEGAS's Multi-Band Dynamics page (dialogs 5000 and 5001, the tabs "Bands 1 & 2" and "Bands 3 & 4"), placed as the
     // dialog places things (dialog units): for each band the threshold, amount and gain faders, attack and release (a
     // slider and a box each), the type, the frequency, the width (only for the band-notch), Bypass and Solo; beside the
-    // tabs the output gain fader, below them Sync channels. (The level meters, their channel choice, "Enable meters" and
-    // "Capture threshold" are not here: Reno's effect has no meters.)
+    // tabs the output gain fader, below them Sync channels. The level meters (each band's left and right level and its reduction)
+    // and "Enable meters" are here; the meter choice list beside each band and "Capture threshold" are not (not worked out).
     void mbBand(QWidget* box, int b, int y0)
     {
         const double kx = 1.75, ky = 1.875;
@@ -745,13 +745,33 @@ private:
         // bypass and solo
         put(checkBox(o + 8, QString("Band <u>%1</u> bypass").arg(n)), 8, y0 + 91, 66, 10);
         put(checkBox(o + 9, "Solo"), 75, y0 + 91, 30, 10);
+        // meters: the band's left and right level (-60 to 0 dB) and, narrow, the reduction (up to 30 dB)
+        LevelMeter* lv = new LevelMeter(box, true, 2, -60.0, false);
+        lv->setObjectName(QString("dxMeterBand%1").arg(b + 1));
+        put(lv, 255, y0, 36, 86);
+        LevelMeter* rd = new LevelMeter(box, true, 1, -30.0, true);
+        rd->setObjectName(QString("dxMeterReduction%1").arg(b + 1));
+        put(rd, 293, y0, 12, 86);
+        addMeterPoll([=] {
+            const float a0 = h_.meter(b * 3), a1 = h_.meter(b * 3 + 1), g = h_.meter(b * 3 + 2);
+            if (!mbMeters_) {
+                lv->clear();
+                rd->clear();
+                return;
+            }
+            lv->feed(0, meterDb(a0, -60.0));
+            lv->feed(1, meterDb(a1, -60.0));
+            rd->feed(0, g > 0.f && g < 1.f ? -20.0 * std::log10((double)g) : 0.0, 0.8);
+        });
     }
+    bool mbMeters_ = true;
+
 
     QWidget* mbTab(int first)
     {
         const double kx = 1.75, ky = 1.875;
         QWidget* box = new QWidget(this);
-        box->setFixedSize((int)std::lround(252 * kx), (int)std::lround((234 - 16) * ky));
+        box->setFixedSize((int)std::lround(308 * kx), (int)std::lround((234 - 16) * ky));
         mbBand(box, first, 17);
         mbBand(box, first + 1, 128);
         QFrame* sep = new QFrame(box);
@@ -773,7 +793,30 @@ private:
         top->addWidget(gainColumn(41, "<u>O</u>utput gain", false, 96), 0, Qt::AlignTop);
         top->addStretch(1);
         root_->addLayout(top);
-        root_->addWidget(checkBox(40, "S<u>y</u>nc channels"));
+        QHBoxLayout* opts = new QHBoxLayout();
+        opts->setSpacing(14);
+        opts->addWidget(checkBox(40, "S<u>y</u>nc channels"));
+        // "Enable meters" is kept in the plug-in's saved form (the settings it keeps for its window, field 46)
+        QCheckBox* em = new QCheckBox("Enable &meters", this);
+        em->setObjectName("dxMbEnableMeters");
+        QObject::connect(em, &QCheckBox::toggled, em, [this](bool on) {
+            if (updating_ || !h_.state || !h_.setState) return;
+            vegmb::Settings s;
+            if (!vegmb::decode(h_.state(), &s)) return;
+            s.extra[8] = on ? 1 : 0;
+            mbMeters_ = on;
+            h_.setState(vegmb::encode(s), "Change \"Enable meters\"");
+            syncAll();
+        });
+        sync_.push_back([this, em] {
+            vegmb::Settings s;
+            if (h_.state && vegmb::decode(h_.state(), &s)) mbMeters_ = s.extra[8] != 0;
+            QSignalBlocker b(em);
+            em->setChecked(mbMeters_);
+        });
+        opts->addWidget(em);
+        opts->addStretch(1);
+        root_->addLayout(opts);
     }
 
     // ============================================================================================ Resonant Filter

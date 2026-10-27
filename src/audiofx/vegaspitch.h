@@ -564,8 +564,9 @@ inline int pitchLatencyFor(const int32_t* s, uint32_t rate)
 // does and what it puts out is queued; the block gets the next frames of the queue (after as many silent frames as the
 // latency, so the sound comes out in step with the input; short of sound, silence).
 // Without "Preserve duration" the engine only resamples: the sound comes out shorter (pitched up) or longer (down) than
-// it went in, which a track's effect chain cannot do (it would need the sound ahead of the playing position). Reno runs
+// it went in, which a track's effect chain cannot do (it would need the sound ahead of the playing position). In a track's chain Reno runs
 // the engine as if the box were ticked, so the pitch changes and the length stays; the setting itself is kept and saved.
+// Apply Non-Real-Time Event FX gives the whole sound to whole(), which really changes the length.
 class PitchEngine : public Engine {
 public:
     void setup(const int32_t* s, uint32_t rate, bool keep) override
@@ -573,6 +574,7 @@ public:
         core_.setRate(rate);
         int32_t t[12];
         std::memcpy(t, s, sizeof t);
+        std::memcpy(orig_, s, sizeof orig_);
         t[3] = 1;
         core_.setSettings(t);
         if (!keep) {
@@ -583,6 +585,59 @@ public:
         }
     }
     int latency(const int32_t* s, uint32_t rate) const override { return pitchLatencyFor(s, rate); }
+    // Without "Preserve duration" (and a real pitch change) the sound comes out shorter or longer than it went in: only a
+    // whole sound can be treated so (Apply Non-Real-Time Event FX), see whole().
+    bool changesLength(const int32_t* s) const override
+    {
+        double ratio;
+        std::memcpy(&ratio, s + 6, 8);
+        return s[3] == 0 && std::isfinite(ratio) && std::fabs(ratio - 1.0) > 1e-9;
+    }
+    // The whole sound the way the filter gets it, with the settings as they are (Preserve duration off: the resampler's
+    // output as it is): blocks of input, then the end of the stream (asked for what the engine still holds until it says
+    // it is done). Nothing is cut or padded.
+    bool whole(const float* inL, const float* inR, int64_t frames, std::vector<float>& outL, std::vector<float>& outR) override
+    {
+        outL.clear();
+        outR.clear();
+        core_.setSettings(orig_);
+        const int block = 4096;
+        std::vector<float> in((size_t)2 * block), ob((size_t)2 * kChunk);
+        int mode = 0;
+        auto take = [&](int outC) {
+            for (int k = 0; k < outC; ++k) {
+                outL.push_back(ob[(size_t)2 * k]);
+                outR.push_back(ob[(size_t)2 * k + 1]);
+            }
+        };
+        for (int64_t at = 0; at < frames; at += block) {
+            const int n = (int)std::min<int64_t>(block, frames - at);
+            for (int k = 0; k < n; ++k) {
+                in[(size_t)2 * k] = inL[at + k];
+                in[(size_t)2 * k + 1] = inR[at + k];
+            }
+            core_.prepare(mode, in.data(), n);
+            int rem = n;
+            const float* p = in.data();
+            for (;;) {
+                int inC = rem, outC = kChunk;
+                core_.run(mode, p, &inC, ob.data(), &outC);
+                mode = 1;
+                take(outC);
+                if (inC >= rem) break;
+                rem -= inC;
+                p += 2 * (size_t)inC;
+            }
+        }
+        for (int k = 0; k < 100000; ++k) {
+            int inC = 0, outC = kChunk;
+            core_.prepare(2, nullptr, 0);
+            const int r = core_.run(2, nullptr, &inC, ob.data(), &outC);
+            take(outC);
+            if (r == 1 && outC == 0) break;
+        }
+        return true;
+    }
     void process(float* left, float* right, int frames) override
     {
         if (frames <= 0) return;
@@ -626,6 +681,7 @@ public:
 private:
     static constexpr int kChunk = 8192;
     PitchCore core_;
+    int32_t orig_[12] = {};
     bool disc_ = true;
     std::vector<float> in_, ob_, q_;
     size_t head_ = 0;

@@ -30,10 +30,16 @@ void radialBlurFast(const Buf& src, Buf& out, double px0, double py0, int type, 
 // sample put through 'fxPixel' (in: 4 floats, out: 4 floats; rgb is summed, alpha ignored; empty: colours as they are). out has the sums in rgb.
 void marchTowardsCentre(const Buf& src, Buf& out, double px0, double py0, double span, int taps, const std::function<void(const float* in, float* out)>& fxPixel);
 
-// Defocus: the colour channels above 'thresh' (0..1) made brighter by a gain of up to 1 + gainA, then averaged over the iris (a
-// flat disc, or a regular polygon of 'sides' sides turned by 'turn'; radius in pixels; 'curvature' < 0 weights the rim a little
-// more) and clipped, as VEGAS's Defocus does (see builtins_fast.cpp); fills out.
-void defocusFast(const Buf& src, Buf& out, double radius, int sides, double turn, double curvature, double thresh, double gainA);
+// Defocus (builtins_defocus.cpp), as the DLL does it. defocusIris: the iris as the DLL draws it: weights (bytes: 200 for a flat iris) of the offsets (u, v), u and v from -half to half, row by row.
+// 'radiusPx' is the iris radius in pixels (Radius / 100 x the frame's larger side), 'sides' 0 for a circle else the polygon's number of sides, 'turn' its turn in radians (clockwise),
+// 'curvature' the Disc curvature (-1 .. 0, below 0 the rim is dimmer). defocusRender: the frame's 8-bit values with the bloom (above 'thresh' (0..1) the part above it gains 'strength' times
+// as much), convolved with the iris, normalised and rounded to bytes; fills out. 'reduceFlicker': the 8-bit frame is first blurred by [1 2 1; 2 4 2; 1 2 1] / 16 (truncated).
+struct DefocusIris {
+    int half = 0;
+    std::vector<int> w;
+};
+DefocusIris defocusIris(double radiusPx, int sides, double turn, double curvature);
+void defocusRender(const Buf& src, Buf& out, double radiusPx, int sides, double turn, double curvature, double thresh, double strength, bool reduceFlicker);
 
 // A Gaussian blur of every channel that, for a large sigma, is done on a smaller copy of the frame.
 void softBlur(Buf& b, double sigma);

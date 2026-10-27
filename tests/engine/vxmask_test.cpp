@@ -620,8 +620,8 @@ static void bezierTests()
     {
         // x from 50.5 to 150 (0.2525 .. 0.75 of 200), y from 25 to 75 (rows 25..74)
         const Buf o = one(rectPath(50.5 / W, 0.25, 0.75, 0.75));
-        check(std::fabs(sum(o, 3) - (99.5 * 50)) < 0.01, "a curve rectangle's mask covers exactly its area", strfmt("%.3f vs %.3f", sum(o, 3), 99.5 * 50));
-        check(std::fabs(o.at(50, 50)[3] - 0.5) < 1e-4 && o.at(51, 50)[3] > 0.9999f && o.at(49, 50)[3] < 1e-4 && o.at(100, 24)[3] < 1e-4 && o.at(100, 25)[3] > 0.9999f, "... with a half-covered pixel at a half-pixel edge");
+        check(std::fabs(sum(o, 3) - (99.5 * 50)) < 0.3, "a curve rectangle's mask covers its area (to whole levels of the 8-bit mask)", strfmt("%.3f vs %.3f", sum(o, 3), 99.5 * 50));
+        check(std::fabs(o.at(50, 50)[3] - 0.5) < 3e-3 && o.at(51, 50)[3] > 0.9999f && o.at(49, 50)[3] < 1e-4 && o.at(100, 24)[3] < 1e-4 && o.at(100, 25)[3] > 0.9999f, "... with a half-covered pixel at a half-pixel edge");
         check(o.at(100, 50)[0] == 1.f && o.at(10, 10)[0] == 0.f, "inside the picture is kept, outside is transparent");
     }
     // the shapes: size, place, angle
@@ -680,7 +680,7 @@ static void bezierTests()
     {
         const std::string a = rectPath(0.25, 0.25, 0.75, 0.75);
         const Buf half = one(a, {{"Opacity_0", {0.5}}});
-        check(std::fabs(half.at(100, 50)[3] - 0.5) < 1e-5 && std::fabs(half.at(100, 50)[0] - 0.5) < 1e-5, "Opacity 0.5 makes the inside half transparent");
+        check(std::fabs(half.at(100, 50)[3] - 0.5) < 3e-3 && std::fabs(half.at(100, 50)[0] - 0.5) < 3e-3, "Opacity 0.5 makes the inside half transparent");
         const Buf inv = one(a, {{"Invert", {1}}});
         check(inv.at(100, 50)[3] < 1e-5 && inv.at(5, 5)[3] > 0.9999f, "Invert keeps the outside");
         const Buf blend = one(a, {{"Blend", {0.4}}});

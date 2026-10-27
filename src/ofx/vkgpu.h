@@ -23,6 +23,10 @@ struct DeviceInfo {
     bool usable = false;
     uint32_t maxStorageRange = 0, maxPushConstants = 0, maxGroupInvocations = 0;
     bool timestamps = false;
+    // Float controls (Vulkan 1.2 / VK_KHR_shader_float_controls), as the driver reports them: fcKnown is false when they could not be asked (a Vulkan 1.0/1.1 device).
+    bool fcKnown = false, fcRteF32 = false, fcDenormPreserveF32 = false, fcDenormFlushF32 = false, fcRtzF32 = false, fcSignedZeroInfNanF32 = false;
+    int fcDenormIndependence = -1, fcRoundingIndependence = -1;      // 0 = 32-bit only, 1 = all, 2 = none
+    bool floatControlsUsed = false;     // every kernel is made with RoundingModeRTE and DenormPreserve for 32-bit floats
     std::string note;                   // why it is not usable
     std::string typeName() const;
     std::string apiVersionText() const;
@@ -61,6 +65,7 @@ struct FrameIO {
     // Chains: a frame made by run() carries the number given as outSerial (0: none). If the next run's input is the frame with that number (unchanged since
     // - the caller vouches for that), it is not sent again.
     uint64_t inSerial = 0, outSerial = 0;
+    bool noInput = false;               // a generator: there is no input frame (buffer 0 of the plan is not filled)
 };
 struct RunStats {
     double gpuMs = 0;

@@ -342,6 +342,12 @@ public:
         while (done < frames) {
             const int n = std::min(blockSize, frames - done);
             time.samplePos = (double)(samplePos + done);
+            {
+                const ProjectTempo pt = projectTempo();     // the project's tempo and time signature
+                time.tempo = pt.bpm;
+                time.timeSigNumerator = pt.beatsPerMeasure;
+                time.timeSigDenominator = pt.beatUnit;
+            }
             time.ppqPos = time.samplePos / sampleRate * (time.tempo / 60.0);
             time.flags = kTempoValid | kTimeSigValid | kPpqPosValid | (playing ? kTransportPlaying : 0);
             ins.resize((size_t)nIn);
@@ -374,6 +380,12 @@ public:
         while (done < frames) {
             const int n = std::min(blockSize, frames - done);
             time.samplePos = (double)(samplePos + done);
+            {
+                const ProjectTempo pt = projectTempo();     // the project's tempo and time signature
+                time.tempo = pt.bpm;
+                time.timeSigNumerator = pt.beatsPerMeasure;
+                time.timeSigDenominator = pt.beatUnit;
+            }
             time.ppqPos = time.samplePos / sampleRate * (time.tempo / 60.0);
             time.flags = kTempoValid | kTimeSigValid | kPpqPosValid | (playing ? kTransportPlaying : 0);
             if (nIn == 1) {

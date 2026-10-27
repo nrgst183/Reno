@@ -2823,6 +2823,10 @@ private:
             editName_ = what;
             AppState::get().beginFxEdit(slotId);
         };
+        host.meter = [this](int i) {
+            AudioPlugin* p = live();
+            return p && i >= 0 && i < p->meterCount() ? p->meterTake(i) : 0.f;
+        };
         page_ = makeBuiltinPage(body_, builtinPageUid(plugin_->desc), host);
         if (!page_) {
             frame_->deleteLater();

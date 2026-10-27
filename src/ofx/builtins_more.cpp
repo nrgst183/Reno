@@ -179,7 +179,7 @@ void addFiltersMore(std::vector<Def>& out)
             vfxTune(d, "Ambience", 0.1, NAN, NAN); vfxTune(d, "Shininess", 0.5, NAN, NAN); vfxTune(d, "BumpHeight", 0.5, NAN, NAN);
         }
         if (std::string(r.id) == "layerdimensionality") {
-            d.params.push_back(point3("LightLocation", "Light Location", -3, 3, 3, -6, 6));
+            d.params.push_back(point3("LightLocation", "Light Location", -1, 1, 3, -6, 6));
             d.params.back().dmin = -3; d.params.back().dmax = 6;
             d.general = true;
         }
@@ -210,6 +210,7 @@ void addFiltersMore(std::vector<Def>& out)
         // (VEGAS's Unsharp Mask starts with Amount and Radius at 0 - its pictures with only one setting changed are the source)
         // (VEGAS's Median starts with ranges of 0.1: its default picture is that)
         if (std::string(r.id) == "median") { vfxTune(d, "HorizontalRange", 0.1, NAN, NAN); vfxTune(d, "VerticalRange", 0.1, NAN, NAN); }
+        if (std::string(r.id) == "minandmax" || std::string(r.id) == "median") d.colourAboveAlpha = true;   // VEGAS writes the colour bytes as they come
         if (std::string(r.id) == "unsharpmask") { vfxTune(d, "Amount", 0, -7, 8); vfxTune(d, "Radius", 0, NAN, NAN); }
         if (std::string(r.id) == "vignette") {
             vfxTune(d, "Rotation", 0, 0, 180); vfxTune(d, "Outer", 1, 0, 3); vfxTune(d, "Aspect", 1, 0.25, 4); vfxTune(d, "Feather", 5, 0, 10);

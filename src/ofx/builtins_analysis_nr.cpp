@@ -12,6 +12,7 @@
 #include "../core/base.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 namespace reno {
@@ -228,11 +229,180 @@ void denoise(Ctx& c, double sigmaY, double sigmaC, int S, int R, double sharpen)
     });
 }
 
+// ---- VEGAS Denoise, as MagixCVFx.ofx does it (settled by running the plug-in's own routines: the 8-bit picture is read as bytes b0 b1 b2 a (the plug-in treats the first
+// byte as red but is given BGRA, so blue sits where it expects red - kept), turned into float planes Y U V (BT.601, rounded in the order the plug-in's code does it), each plane denoised
+// with a non-local-means over a 21 x 21 search window of 7 x 7 patches (L1 patch distance, weight table exp(-max(0, i - 2 h^2) / h^2) for the distance rounded to a whole number,
+// cut to 0 where it falls under 0.001), turned back and cut to whole levels; Amount then runs a 3 x 3 sharpening kernel over the bytes. Luminance and Color are the h of the planes
+// as they are. The plug-in's picture has its first row at the bottom and its border is mirrored one way at the top and left and the other way at the bottom and right; done the same.
+struct VegasNlm {
+    static const int T = 7, S = 21, TH = 3, SH = 10, B = TH + SH;
+    std::vector<double> tab;
+    explicit VegasNlm(double hh)
+    {
+        tab.assign(65536, 0.0);
+        const double twoSigma2 = (hh + hh) * hh;
+        const double k = -1.0 / (hh * hh);
+        for (int i = 0; i < 65536; ++i) {
+            const double v = (double)i - twoSigma2;
+            const double m = 0.0 > v ? 0.0 : v;
+            const double e = std::exp(m * k);
+            if (0.001 > e) break;                                           // from here on the table is 0
+            tab[(size_t)i] = e;
+        }
+    }
+    static int mapLow(int i, int n) { if (i < 0) i = -i; return i < 0 ? 0 : (i > n - 1 ? n - 1 : i); }                 // top / left: the edge pixel not repeated
+    static int mapHigh(int i, int n) { if (i >= n) i = 2 * n - 1 - i; return i < 0 ? 0 : (i > n - 1 ? n - 1 : i); }     // bottom / right: the edge pixel repeated
+    // src, dst: w x h float planes (first row at the bottom of the picture).
+    void run(const float* src, float* dst, int w, int h) const
+    {
+        const int EW = w + 2 * B, EH = h + 2 * B;
+        std::vector<float> E((size_t)EW * EH);
+        for (int j = 0; j < EH; ++j) {
+            int i = j - B;
+            const int sy = i < 0 ? mapLow(i, h) : mapHigh(i, h);
+            const float* sr = src + (size_t)sy * w;
+            float* er = &E[(size_t)j * EW];
+            for (int x = 0; x < EW; ++x) {
+                const int ix = x - B;
+                er[x] = sr[ix < 0 ? mapLow(ix, w) : mapHigh(ix, w)];
+            }
+        }
+        const double invT = 1.0 / (double)(T * T);
+        const double* tb = tab.data();
+        parallelRows(h, (size_t)w * S * S * 40, [&](int y0, int y1) {
+            const int bh = y1 - y0, qn = bh + T - 1;
+            std::vector<double> num((size_t)bh * w, 0.0), den((size_t)bh * w, 0.0), d((size_t)qn * (w + T - 1)), hs((size_t)qn * w), sum(w);
+            for (int sy = S - 1; sy >= 0; --sy)
+                for (int sx = S - 1; sx >= 0; --sx) {
+                    for (int q = 0; q < qn; ++q) {
+                        const float* a = &E[(size_t)(SH + y0 + q) * EW + SH];
+                        const float* b = &E[(size_t)(y0 + q + sy) * EW + sx];
+                        double* dr = &d[(size_t)q * (w + T - 1)];
+                        for (int x = 0; x < w + T - 1; ++x) {
+                            const float df = b[x] - a[x];
+                            dr[x] = (double)std::fabs(df);
+                        }
+                        double* hr = &hs[(size_t)q * w];
+                        for (int x = 0; x < w; ++x) {
+                            double acc = dr[x];
+                            for (int t = 1; t < T; ++t) acc += dr[x + t];
+                            hr[x] = acc;
+                        }
+                    }
+                    for (int y = 0; y < bh; ++y) {
+                        for (int x = 0; x < w; ++x) sum[(size_t)x] = hs[(size_t)y * w + x];
+                        for (int t = 1; t < T; ++t) {
+                            const double* hr = &hs[(size_t)(y + t) * w];
+                            for (int x = 0; x < w; ++x) sum[(size_t)x] += hr[x];
+                        }
+                        const float* qrow = &E[(size_t)(y0 + y + sy + TH) * EW + sx + TH];
+                        double* nr = &num[(size_t)y * w];
+                        double* dn = &den[(size_t)y * w];
+                        for (int x = 0; x < w; ++x) {
+                            int idx = (int)std::round(sum[(size_t)x] * invT);
+                            if (idx < 0) idx = 0;
+                            if (idx > 65535) idx = 65535;
+                            const float wt = (float)tb[idx];
+                            const float prod = wt * qrow[x];
+                            dn[x] += (double)wt;
+                            nr[x] += (double)prod;
+                        }
+                    }
+                }
+            for (int y = 0; y < bh; ++y)
+                for (int x = 0; x < w; ++x) dst[(size_t)(y0 + y) * w + x] = (float)(num[(size_t)y * w + x] / den[(size_t)y * w + x]);
+        });
+    }
+};
+
+inline float cutLevel(float v) { if (0.0f > v) return 0.0f; return v < 255.0f ? v : 255.0f; }
+
 void denoisingNLM(Ctx& c)
 {
-    const double ly = clampd(c.d("Luminance"), 0, 100), co = clampd(c.d("Color"), 0, 100);
-    const double k = 0.9 / 255.0 * c.scale;
-    denoise(c, ly * k, co * k, 3, 2, clampd(c.d("Amount"), 0, 1));
+    const int W = c.out.w, H = c.out.h;
+    if (c.src.px.size() != c.out.px.size() || W < 1 || H < 1) { c.out.px = c.src.px; return; }
+    const double lum = clampd(c.d("Luminance"), 0, 100), col = clampd(c.d("Color"), 0, 100), amt = clampd(c.d("Amount"), 0, 1);
+    const double eps = 1.1920928955078125e-07;
+    const size_t n = (size_t)W * H;
+    // the picture as the plug-in is given it: 8-bit premultiplied, first row at the bottom
+    std::vector<uint8_t> px(n * 4);
+    for (int y = 0; y < H; ++y) {
+        const float* s = c.src.at(0, y);
+        uint8_t* o = &px[(size_t)(H - 1 - y) * W * 4];
+        for (int i = 0; i < W * 4; ++i) {
+            const float v = s[(i & ~3) + (i & 3 ? (i & 3) == 2 ? 0 : (i & 3) : 2)] * 255.f + 0.5f;       // bytes in B G R A order
+            o[i] = (uint8_t)(v <= 0.f ? 0 : (v >= 255.f ? 255 : (int)v));
+        }
+    }
+    std::vector<uint8_t> res = px;
+    if (lum > eps || col > eps) {
+        std::vector<float> Y(n), U(n), V(n), Y2, U2, V2;
+        for (size_t i = 0; i < n; ++i) {
+            const float r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
+            float y = r * 0.299f;
+            y = y + g * 0.587f;
+            y = y + b * 0.114f;
+            float t = g * 0.28886f;
+            t = t + r * 0.14713f;
+            const float u = b * 0.436f - t;
+            float v = r * 0.615f;
+            v = v - g * 0.51499f;
+            v = v - b * 0.10001f;
+            Y[i] = y; U[i] = u; V[i] = v;
+        }
+        Y2.resize(n); U2.resize(n); V2.resize(n);
+        if (lum > eps) VegasNlm(lum).run(Y.data(), Y2.data(), W, H); else Y2 = Y;
+        if (col > eps) {
+            VegasNlm nc(col);
+            nc.run(U.data(), U2.data(), W, H);
+            nc.run(V.data(), V2.data(), W, H);
+        } else { U2 = U; V2 = V; }
+        for (size_t i = 0; i < n; ++i) {
+            const float y = Y2[i], u = U2[i], v = V2[i];
+            float R = u * 0.0f;
+            R = R + y;
+            R = R + v * 1.13983f;
+            float G = y - u * 0.39465f;
+            G = G - v * 0.5806f;
+            float Bv = u * 2.03211f;
+            Bv = Bv + y;
+            Bv = Bv + v * 0.0f;
+            res[i * 4] = (uint8_t)(int)cutLevel(R);
+            res[i * 4 + 1] = (uint8_t)(int)cutLevel(G);
+            res[i * 4 + 2] = (uint8_t)(int)cutLevel(Bv);
+            res[i * 4 + 3] = px[i * 4 + 3];
+        }
+    }
+    if (amt > eps) {
+        int center;
+        if (amt >= 0.25) center = 29 - (int)(amt * 16.0);
+        else if (amt >= 0.125) center = (int)(63.0 - amt * 152.0);
+        else if (amt >= 0.06300000101327896) center = (int)(88.961538 - amt * 269.230769);
+        else center = (int)(100.451613 - amt * 451.612903);
+        const int div = center - 12;
+        const std::vector<uint8_t> in = res;
+        for (int y = 0; y < H; ++y) {
+            const int ya = y > 0 ? y - 1 : 0, yb = y < H - 1 ? y + 1 : H - 1;
+            for (int x = 0; x < W; ++x) {
+                const int xa = x > 0 ? x - 1 : 0, xb = x < W - 1 ? x + 1 : W - 1;
+                int outv[4];
+                for (int k = 0; k < 4; ++k) {
+                    auto P = [&](int yy, int xx) { return (int)in[((size_t)yy * W + xx) * 4 + k]; };
+                    const int sum = center * P(y, x) - 2 * (P(ya, x) + P(yb, x) + P(y, xa) + P(y, xb)) - (P(ya, xa) + P(ya, xb) + P(yb, xa) + P(yb, xb));
+                    int v = sum / div;
+                    outv[k] = v < 0 ? 0 : (v > 255 ? 255 : v);
+                }
+                uint8_t* o = &res[((size_t)y * W + x) * 4];
+                for (int k = 0; k < 3; ++k) o[k] = (uint8_t)std::min(outv[k], outv[3]);
+                o[3] = (uint8_t)outv[3];
+            }
+        }
+    }
+    for (int y = 0; y < H; ++y) {
+        const uint8_t* s = &res[(size_t)(H - 1 - y) * W * 4];
+        float* o = c.out.at(0, y);
+        for (int i = 0; i < W * 4; ++i) o[(i & ~3) + (i & 3 ? (i & 3) == 2 ? 0 : (i & 3) : 2)] = (float)s[i] / 255.f;
+    }
 }
 
 void smartNoiseReduction(Ctx& c)

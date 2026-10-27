@@ -18,9 +18,13 @@ double vegasBlurSigma(double s);
 // levels: b holds 8-bit values (levels / 255) and the result is rounded to whole levels; otherwise the same arithmetic without rounding.
 void vegasDericheBlur(Buf& b, double sizeX, double sizeY, bool levels);
 // The same with the sigmas themselves.
-void vegasDericheBlurSigma(Buf& b, double sigmaX, double sigmaY, bool levels);
+// rawOut (with levels): the 8-bit picture goes in, the result stays in floats of 0..255 (not rounded, not divided by 255): VEGAS's SfDibGaussianBlur_Float.
+void vegasDericheBlurSigma(Buf& b, double sigmaX, double sigmaY, bool levels, bool rawOut = false);
 // VEGAS's Linear Blur of src into out (same size): the frame is sheared so the blur's direction lies along its rows (or columns), blurred by the Gaussian above along them (and its
 // smallest one across), sheared back. Angle in degrees, Amount a part of the frame's larger side. levels: 8-bit pictures (VEGAS's 8-bit arithmetic to the level).
+// The geometry of Linear Blur: the branch 1..4 (1, 4: along the rows; 1, 2: VEGAS's frames lie bottom row first), the shear in 1/16384 rows and the two blur sizes.
+struct LinearBlurParams { int branch = 1, shear = 0; double sx = 0, sy = 0; };
+bool vegasLinearBlurParams(int W, int H, double angleDeg, double amount, LinearBlurParams& r);   // false: the picture is left as it is
 void vegasLinearBlur(const Buf& src, Buf& out, double angleDeg, double amount, bool levels);
 // VEGAS's Median (builtins_vegasmedian.cpp): every channel (alpha too) of the 8-bit frame; the window reaches rx / ry pixels each way (rx = HorizontalRange * the larger side * 0.05),
 // edge pixels weighted by the fraction inside (round: the share inside the ellipse (rx + 0.5, ry + 0.5)), in 14-bit weights; pixels outside the frame are left out. The result is

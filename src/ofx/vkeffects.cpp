@@ -2,7 +2,11 @@
 // settings exactly as the effect's CPU code does (same clamps, same float arithmetic) and hands the kernel (tools/gpukernels.py) the numbers in a
 // push-constant block (shaders/push_layouts.h). See vkeffects.h.
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include "vkeffects.h"
+#include "vegas8.h"
+#include "vkfilters.h"
 #include "vkshaders/push_layouts.h"
 #include "builtins_deriche.h"
 #include "../core/pixrows.h"
@@ -13,7 +17,7 @@
 namespace reno {
 namespace ofx {
 namespace builtin {
-namespace more { double unsharpSigma(double radius, int W, int H, bool& none); }
+namespace more { double unsharpSigma(double radius, int W, int H, bool& none); void chromaBlur8Widths(Ctx& c, int& rh, int bv[3]); }
 
 namespace {
 
@@ -22,12 +26,23 @@ typedef gpu::Pass Pass;
 namespace P = gpu::push;
 
 const char* const kPrefix = "com.vegascreativesoftware:";
+// An effect's full identifier from the table's: VEGAS's own get the prefix, the others (de.magix:...) already have a colon
+std::string fullId(const char* id) { return (std::strchr(id, ':') || std::strncmp(id, "com.magix.ofx.", 14) == 0) ? std::string(id) : std::string(kPrefix) + id; }
 
 inline uint32_t u32(int v) { return (uint32_t)std::max(0, v); }
 
 // ---------------------------------------------------------------------------------------------------- the planners
 bool planInvert(Ctx& c, Plan& p)
 {
+    if (c.levels) {
+        // 8-bit: invertRows() (builtins_filters.cpp) works on the levels with VEGAS's integer steps; its weight is worked out here exactly as there
+        const float amount = (float)clampd(c.d("BlendAmount"), 0, 1);
+        const float wf = (float)(1.0 - (double)amount) * 256.f;
+        const int w = std::min(255, v8::roundMagic((double)wf));
+        P::Invert8 pc8 = {p.w, p.h, w};
+        p.add("invert8", 0, 1, p.w, p.h).setPush(pc8);
+        return true;
+    }
     P::Invert pc = {p.w, p.h, (float)clampd(c.d("BlendAmount"), 0, 1)};
     p.add("invert", 0, 1, p.w, p.h).setPush(pc);
     return true;
@@ -61,8 +76,23 @@ bool planThreshold(Ctx& c, Plan& p)
     return true;
 }
 
+// a double as the two 32-bit halves of its bits (the push constants of the kernels that work in doubles: tools/sf64.py)
+struct D2 { uint32_t h, l; };
+D2 d2(double d)
+{
+    uint64_t b;
+    std::memcpy(&b, &d, 8);
+    return D2{(uint32_t)(b >> 32), (uint32_t)b};
+}
+
 bool planColorBalance(Ctx& c, Plan& p)
 {
+    if (c.levels) {         // 8-bit: VEGAS's own byte routine (colorBalance8() in builtins_filters.cpp)
+        const D2 R = d2((double)(float)c.d("Red")), G = d2((double)(float)c.d("Green")), B = d2((double)(float)c.d("Blue"));
+        P::Colorbalance8 q = {p.w, p.h, R.h, R.l, G.h, G.l, B.h, B.l, u32(c.i("Type")), c.b("PreserveLuminosity") ? 1u : 0u};
+        p.add("colorbalance8", 0, 1, p.w, p.h).setPush(q);
+        return true;
+    }
     P::Colorbalance pc = {p.w, p.h, (float)c.d("Red"), (float)c.d("Green"), (float)c.d("Blue"), u32(c.i("Type")), c.b("PreserveLuminosity") ? 1u : 0u};
     p.add("colorbalance", 0, 1, p.w, p.h).setPush(pc);
     return true;
@@ -70,6 +100,12 @@ bool planColorBalance(Ctx& c, Plan& p)
 
 bool planHslAdjust(Ctx& c, Plan& p)
 {
+    if (c.levels) {         // 8-bit: VEGAS's byte HSL routines (hslAdjust() in builtins_filters.cpp)
+        const D2 HU = d2(c.d("AddToHue")), SA = d2(c.d("Saturation")), LU = d2(c.d("Luminance"));
+        P::Hsladjust8 pc8 = {p.w, p.h, HU.h, HU.l, SA.h, SA.l, LU.h, LU.l};
+        p.add("hsladjust8", 0, 1, p.w, p.h).setPush(pc8);
+        return true;
+    }
     P::Hsladjust pc = {p.w, p.h, (float)c.d("AddToHue"), (float)std::max(0.0, c.d("Saturation")), (float)std::max(0.0, c.d("Luminance"))};
     p.add("hsladjust", 0, 1, p.w, p.h).setPush(pc);
     return true;
@@ -77,21 +113,47 @@ bool planHslAdjust(Ctx& c, Plan& p)
 
 bool planLevels(Ctx& c, Plan& p)
 {
-    const double gamma = c.d("Gamma");
-    std::vector<float> lut(4097);
-    levelsGammaTable(gamma, lut.data());
-    const int t = p.addTable(std::move(lut));
-    P::Levels pc = {p.w, p.h, u32(c.i("Channel")), (float)c.d("InputStart"), (float)c.d("InputEnd"), (float)c.d("OutputStart"), (float)c.d("OutputEnd"),
-                    std::fabs(gamma - 1.0) <= 1e-9 ? 0u : 1u};
-    Pass& pass = p.add("levels", 0, 1, p.w, p.h);
-    pass.table = t;
-    pass.setPush(pc);
+    // levels() in builtins_filters.cpp: the same constants, worked out with the same calls
+    const double i0 = c.d("InputStart"), o0 = c.d("OutputStart"), o1 = c.d("OutputEnd"), gamma = c.d("Gamma");
+    double i1 = c.d("InputEnd"), width = i1 - i0;
+    if (std::fabs(width) < 0.003921568859368563) { i1 = i0 + 0.003921568859368563; width = 0.003921568859368563; }
+    const bool straight = std::fabs(gamma - 1.0) < 1e-6;
+    const double G = 1.0 / gamma;
+    double k0 = 0, slope = 0, a = 0, inv = 0;
+    if (!straight) {
+        k0 = std::pow(1.0 / G, -0.9418051973077521) * 0.03818376618407356;
+        slope = std::pow(1.0 / G, 1.8836103946155043);
+        if (G < 1.0) {
+            const double t1 = std::pow(k0, G);
+            a = (slope * k0 - t1) / (t1 - 1.0);
+        } else {
+            const double u = slope * k0, w = std::pow(u, 1.0 / G);
+            a = (k0 - w) / (w - 1.0);
+            inv = 1.0 / (a + 1.0);
+        }
+    }
+    const D2 I0 = d2(i0), I1 = d2(i1), O0 = d2(o0), DO = d2(o1 - o0), WI = d2(width), K0 = d2(k0), SL = d2(slope), A1 = d2(a + 1.0), A = d2(a), IN = d2(inv), GG = d2(G);
+    P::Levels pc = {p.w, p.h, u32(c.i("Channel")), straight ? 1u : 0u, G < 1.0 ? 1u : 0u, I0.h, I0.l, I1.h, I1.l, O0.h, O0.l, DO.h, DO.l, WI.h, WI.l, K0.h, K0.l, SL.h, SL.l,
+                    A1.h, A1.l, A.h, A.l, IN.h, IN.l, GG.h, GG.l};
+    p.add("levels", 0, 1, p.w, p.h).setPush(pc);
     return true;
 }
 
 bool planColorCurves(Ctx& c, Plan& p)
 {
     std::vector<float> tables;
+    if (c.levels) {
+        if (!colorCurves8GpuTables(c, tables)) {
+            P::CopyPx cp = {p.w, p.h};
+            p.add("copy_px", 0, 1, p.w, p.h).setPush(cp);
+            return true;
+        }
+        P::Colorcurves8 pc8 = {p.w, p.h};
+        Pass& pass8 = p.add("colorcurves8", 0, 1, p.w, p.h);
+        pass8.table = p.addTable(std::move(tables));
+        pass8.setPush(pc8);
+        return true;
+    }
     if (!colorCurvesGpuTables(c, tables)) {
         P::CopyPx cp = {p.w, p.h};
         p.add("copy_px", 0, 1, p.w, p.h).setPush(cp);
@@ -108,6 +170,22 @@ bool planColorCurves(Ctx& c, Plan& p)
 // Color Corrector (Secondary) (colorCorrectorSecondaryRows in builtins_filters2.cpp: the settings are read the same way)
 bool planColorCorrectorSecondary(Ctx& c, Plan& p)
 {
+    if (c.levels) {         // 8-bit: VEGAS's own byte processor (colorCorrectorSecondary8() in builtins_filters2.cpp), its tables from the CPU's code
+        Ccs8Gpu g;
+        ccs8Gpu(c, g);
+        if (g.mode == 0) {
+            P::Colorcorrector8 pc8 = {p.w, p.h, (uint32_t)g.flags};
+            Pass& ps8 = p.add("colorcorrector8", 0, 1, p.w, p.h);
+            ps8.table = p.addTable(std::move(g.tab));
+            ps8.setPush(pc8);
+        } else {
+            P::Ccs8 pc = {p.w, p.h, (uint32_t)g.flags, g.show ? 1u : 0u, g.inv ? 1u : 0u, g.tintU, g.tintV, g.satF, g.alphaF, g.rot[0], g.rot[1], g.rot[2], g.rot[3]};
+            Pass& ps = p.add("ccs8", 0, 1, p.w, p.h);
+            ps.table = p.addTable(std::move(g.tab));
+            ps.setPush(pc);
+        }
+        return true;
+    }
     double ca, cm;
     c.xy("Chrominance", ca, cm);
     const double a = ca * kPi / 180.0, cam = clampd(cm, -2, 2), k = (cam < 0 ? -cam * cam : cam * cam) * 0.5;
@@ -158,24 +236,6 @@ std::vector<float> gaussWeights(double sigma)
 // Blur passes over a picture (comps 4) or a plane (comps 1), across (sigmaX) and down (sigmaY) as the CPU does (an axis with sigma 0.3 or less is left out).
 // 'from' holds the picture, 'to' is where the result is wanted; returns the buffer holding the blurred picture (the frame itself when no pass was needed);
 // 'scratch' is used between passes.
-// VEGAS's Deriche Gaussian (vegasDericheBlurSigma() in builtins_deriche.cpp): rows into a scratch buffer (in levels), then columns
-// into 'to' (back in 0..1, rounded to whole levels for 8-bit pictures).
-void addDeriche(Plan& p, int from, int to, double sigmaX, double sigmaY, bool levels)
-{
-    const uint32_t W = p.bufs[(size_t)from].w, H = p.bufs[(size_t)from].h;
-    const int mid = p.addBuf(W, H, 4);
-    for (int pass = 0; pass < 2; ++pass) {
-        const DericheCoefs k = vegasDericheCoefs(pass ? sigmaY : sigmaX);
-        const double SN = k.n[0] + k.n[1] + k.n[2] + k.n[3], SM = k.m[1] + k.m[2] + k.m[3] + k.m[4];
-        const double SD = 1.0 + k.d[1] + k.d[2] + k.d[3] + k.d[4];
-        const double kn = std::fabs(SD) > 1e-17 ? SN / SD : 1.0, km = std::fabs(SD) > 1e-17 ? SM / SD : 1.0;
-        P::Deriche pc = {W, H, pass ? 1u : 0u, pass ? 0u : (levels ? 2u : 1u), pass ? (levels ? 2u : 1u) : 0u, 0u,
-                         (float)k.n[0], (float)k.n[1], (float)k.n[2], (float)k.n[3], (float)k.d[1], (float)k.d[2], (float)k.d[3], (float)k.d[4],
-                         (float)k.m[1], (float)k.m[2], (float)k.m[3], (float)k.m[4], (float)kn, (float)km};
-        p.add("deriche", pass ? mid : from, pass ? to : mid, pass ? W : H, 1).setPush(pc);
-    }
-}
-
 int addBlur(Plan& p, int from, int to, double sigmaX, double sigmaY, uint32_t mask, bool plane)
 {
     const uint32_t W = p.bufs[(size_t)from].w, H = p.bufs[(size_t)from].h;
@@ -210,9 +270,15 @@ void addCopy(Plan& p, int from, int to)
 
 bool planGaussianBlur(Ctx& c, Plan& p)
 {
-    const double sx = gaussianBlurSigma(c.d("HorizontalRange"), (int)p.w), sy = gaussianBlurSigma(c.d("VerticalRange"), (int)p.w);
+    // gaussianBlurFx() in builtins_filters.cpp: VEGAS's Deriche Gaussian of size Range x the larger side; channels switched off keep the source
+    const double big = (double)std::max(p.w, p.h);
     const uint32_t mask = (c.b("R") ? 1u : 0u) | (c.b("G") ? 2u : 0u) | (c.b("B") ? 4u : 0u) | (c.b("A") ? 8u : 0u);
-    if (addBlur(p, 0, 1, sx, sy, mask, false) != 1) addCopy(p, 0, 1);
+    const int blurred = p.addBuf(p.w, p.h, 4);
+    gpuAddDeriche(p, 0, blurred, vegasBlurSigma(c.d("HorizontalRange") * big), vegasBlurSigma(c.d("VerticalRange") * big), c.levels);
+    P::MaskMix pc = {p.w, p.h, mask, 0u};
+    Pass& ps = p.add("mask_mix", 0, 1, p.w, p.h);
+    ps.in1 = blurred;
+    ps.setPush(pc);
     return true;
 }
 
@@ -234,116 +300,55 @@ bool planMirror(Ctx& c, Plan& p)
     put(bgPix, bg);
     const double kx = -std::sin(a), ky = -std::cos(a);
     const bool straight = std::fabs(kx) < 1e-9 || std::fabs(ky) < 1e-9;
+    if (c.levels) {
+        // 8-bit: mirror() in builtins_filters.cpp sends angles away from the axes to mirror8General() (VEGAS's float steps on the bytes)
+        const float th = (float)std::fmod(c.d("Angle") * 0.01745329252, 6.28318530718);
+        static const float bands[8][2] = {{-0.008726646f, 0.008726646f}, {3.1328659f, 3.1503193f}, {-3.1503193f, -3.1328659f}, {1.5620697f, 1.5795230f},
+                                          {-4.7211156f, -4.7036624f}, {4.7036624f, 4.7211156f}, {-1.5795230f, -1.5620697f}, {0.f, -1.f}};
+        bool axis = false;
+        for (int i = 0; i < 7; ++i) axis = axis || (th >= bands[i][0] && th <= bands[i][1]);
+        if (!axis && std::isfinite(th)) {
+            const int W = (int)p.w, H = (int)p.h;
+            const float sx = (float)c.scale, sy = (float)c.scale;
+            const float cxp = (float)(cx * (double)(W - 1)), cyp = (float)((1.0 - cy) * (double)(H - 1));
+            const float u = (th > 0.f ? 3.14159274101257f : -3.14159274101257f) - th;
+            const float t = (float)std::tan((double)u);
+            const float isx = 1.0f / sx, isy = 1.0f / sy;
+            const float cxs = cxp * isx, cys = cyp * isy;
+            const float m1t = -1.0f / t;
+            const float tcx = t * cxs, den = t - m1t;
+            uint32_t bgp = 0;
+            const double v[3] = {bg.r, bg.g, bg.b};
+            for (int k = 0; k < 3; ++k) {
+                const int b = (int)((float)v[k] * 255.0f + 0.5f);
+                bgp |= (uint32_t)(uint8_t)b << (8 * k);
+            }
+            if (sx != sy) return false;
+            P::Mirror8 pc8 = {p.w, p.h, sx, isx, isy, cxs, cys, t, m1t, tcx, den, u > 0.f ? 1u : 0u, bgp, 0u};
+            p.add("mirror8", 0, 1, p.w, p.h).setPush(pc8);
+            return true;
+        }
+        if (!straight) return false;            // (a line within half a degree of an axis, but not on it: the CPU's double code)
+    }
     P::Mirror pc = {p.w, p.h, (float)kx, (float)ky, (float)(cx * p.w), (float)((1 - cy) * p.h), bgPix[0], bgPix[1], bgPix[2], bgPix[3],
                     (float)(0.4 * c.scale * kx * std::fabs(ky)), (float)(0.4 * c.scale * ky * std::fabs(kx)), (float)(0.5 * (kx + ky)), straight ? 1u : 0u};
     p.add("mirror", 0, 1, p.w, p.h).setPush(pc);
     return true;
 }
 
-bool planGlow(Ctx& c, Plan& p)
-{
-    const double pct = clampd(c.d("GlowPercent"), 0, 1), intensity = std::max(0.0, c.d("Intensity")), supp = clampd(c.d("Suppression"), 0, 1);
-    if (c.levels && intensity >= 19.999) return false;
-    const Color col = c.color("Color");
-    const int m = p.addBuf(p.w, p.h, 1);
-    {
-        P::GlowMask pc = {p.w, p.h};
-        p.add("glow_mask", 0, m, p.w, p.h).setPush(pc);
-    }
-    const double sigma = (pct * 50.0 + 0.3) * p.w / 320.0;
-    int blurred = m;
-    if (sigma > 0.3) {
-        blurred = p.addBuf(p.w, p.h, 1);
-        addBlur(p, m, blurred, sigma, sigma, 0, true);
-    }
-    P::GlowMix pc = {p.w, p.h, (float)intensity, (float)supp, (float)col.r, (float)col.g, (float)col.b};
-    Pass& pass = p.add("glow_mix", 0, 1, p.w, p.h);
-    pass.in1 = blurred;
-    pass.setPush(pc);
-    return true;
-}
-
-bool planChromaKeyer(Ctx& c, Plan& p)
-{
-    const Color key = c.color("color");
-    const double low = clampd(c.d("LowThreshold"), 0, 1), high = clampd(c.d("HighThreshold"), 0, 1);
-    const double kr = clampd(key.r, 0, 1), kg = clampd(key.g, 0, 1), kb = clampd(key.b, 0, 1);
-    const double mx = std::max(kr, std::max(kg, kb)), mn = std::min(kr, std::min(kg, kb)), dd = mx - mn;
-    double kh = 0, ks = 0;
-    const double kl = (mx + mn) * 0.5;
-    if (dd > 0) {
-        if (mx == kr) { kh = (kg - kb) / dd; if (kh < 0) kh += 6; }
-        else if (mx == kg) kh = (kb - kr) / dd + 2;
-        else kh = (kr - kg) / dd + 4;
-        kh *= 60;
-        ks = kl <= 0.5 ? dd / (mx + mn) : dd / (2 - mx - mn);
-    }
-    const int m = p.addBuf(p.w, p.h, 1);
-    {
-        P::ChromaMask pc = {p.w, p.h, (float)key.r, (float)key.g, (float)key.b, (float)kh, (float)ks, (float)kl, (float)low, high <= low ? 1u : 0u};
-        p.add("chroma_mask", 0, m, p.w, p.h).setPush(pc);
-    }
-    const double amount = std::max(0.0, c.d("BlurAmount"));
-    const double sigma = amount > 0 ? (0.437 + 24.07 * amount) * p.h / 180.0 : 0.0;     // (chromaKeyBlurSigma)
-    int mf = m;
-    if (sigma > 0) {
-        const int r = (int)std::min(4000.0, std::ceil(sigma * 4));
-        std::vector<float> k((size_t)r + 1);
-        double sum = 0;
-        for (int i = 0; i <= r; ++i) { k[(size_t)i] = (float)std::exp(-0.5 * i * i / (sigma * sigma)); sum += (i ? 2 : 1) * k[(size_t)i]; }
-        for (auto& v : k) v = (float)(v / sum);
-        const int mid = p.addBuf(p.w, p.h, 1);
-        mf = p.addBuf(p.w, p.h, 1);
-        Pass& ph = p.add("blurp_h", m, mid, p.w, p.h);
-        ph.table = p.addTable(k);
-        { P::BlurpH pc = {p.w, p.h, (uint32_t)r}; ph.setPush(pc); }
-        Pass& pv = p.add("blurp_v", mid, mf, p.w, p.h);
-        pv.table = p.addTable(k);
-        { P::BlurpV pc = {p.w, p.h, (uint32_t)r}; pv.setPush(pc); }
-    }
-    const unsigned despill = (key.b > key.g && key.b > key.r) ? 1u : ((key.g > key.r && key.g >= key.b) ? 2u : 0u);
-    P::ChromaMix pc = {p.w, p.h, c.b("ShowMaskOnly") ? 1u : 0u, despill, sigma > 0 ? 1u : 0u};
-    Pass& pass = p.add("chroma_mix", 0, 1, p.w, p.h);
-    pass.in1 = mf;
-    pass.setPush(pc);
-    return true;
-}
-
-bool planConvolutionKernel(Ctx& c, Plan& p)
-{
-    double k[3][3];
-    for (int r = 0; r < 3; ++r)
-        for (int col = 0; col < 3; ++col) {
-            char nm[32];
-            std::snprintf(nm, sizeof nm, "Row%dColumn%d", r + 1, col + 1);
-            k[r][col] = clampd(c.d(nm), -1e4, 1e4);
-        }
-    double sum = 0;
-    for (auto& row : k) for (double v : row) sum += v;
-    const double scaleIn = c.d("Scale");
-    const bool scaleBad = !(scaleIn >= 0.0 && scaleIn <= 4.0);
-    const bool norm = (c.b("AutoNormalize") || scaleBad) && std::fabs(sum) > 1e-9;
-    const float mul = (float)(norm ? 1.0 : clampd(c.d("Scale"), -1e4, 1e4));
-    const float off = (float)(clampd(c.d("Offset"), -100, 100) * 255.0);
-    if (norm)
-        for (auto& row : k) for (double& v : row) v = (double)((float)v / (float)sum);
-    const double rot = c.d("Rotation") * kPi / 180.0;
-    const bool turned = std::fabs(rot) > 1e-9;
-    const bool between = c.scale < 0.999;
-    const int tmp = p.addBuf(p.w, p.h, 4);
-    {
-        P::UnpremulPx pc = {p.w, p.h};
-        p.add("unpremul_px", 0, tmp, p.w, p.h).setPush(pc);
-    }
-    P::Conv3x3 pc = {p.w, p.h, (float)k[0][0], (float)k[0][1], (float)k[0][2], (float)k[1][0], (float)k[1][1], (float)k[1][2], (float)k[2][0], (float)k[2][1], (float)k[2][2],
-                     (float)std::cos(rot), (float)std::sin(rot), (float)c.scale, between ? 2u : (turned ? 1u : 0u), mul, off, c.levels ? 1u : 0u};
-    p.add("conv3x3", tmp, 1, p.w, p.h).setPush(pc);
-    return true;
-}
 
 // ---- more colour effects and distortions
 bool planColorCorrector(Ctx& c, Plan& p)
 {
+    if (c.levels) {
+        std::vector<float> tab;
+        const int flags = colorCorrector8Gpu(c, tab);
+        P::Colorcorrector8 pc8 = {p.w, p.h, (uint32_t)flags};
+        Pass& ps8 = p.add("colorcorrector8", 0, 1, p.w, p.h);
+        ps8.table = p.addTable(std::move(tab));
+        ps8.setPush(pc8);
+        return true;
+    }
     float du[3], dv[3];
     const char* names[3] = {"Low", "Mid", "High"};
     for (int k = 0; k < 3; ++k) {
@@ -366,16 +371,18 @@ bool planColorCorrector(Ctx& c, Plan& p)
 
 bool planSaturationAdjust(Ctx& c, Plan& p)
 {
+    if (c.levels) {
+        std::vector<float> tab;
+        more::saturationAdjust8Gpu(c, tab);
+        P::Saturationadjust8 pc8 = {p.w, p.h};
+        Pass& ps8 = p.add("saturationadjust8", 0, 1, p.w, p.h);
+        ps8.table = p.addTable(std::move(tab));
+        ps8.setPush(pc8);
+        return true;
+    }
     const float scale = 0.9272f;
     P::Saturationadjust pc = {p.w, p.h, (float)c.d("Amount"), (float)c.d("Center") * scale, (float)std::max(0.005, c.d("Spread")) * 0.5f * scale, (float)c.d("Low"), (float)c.d("High")};
     p.add("saturationadjust", 0, 1, p.w, p.h).setPush(pc);
-    return true;
-}
-
-bool planLabAdjust(Ctx& c, Plan& p)
-{
-    P::Labadjust pc = {p.w, p.h, (float)c.d("Lightness"), (float)c.d("Channela"), (float)c.d("Channelb"), (float)clampd(c.d("Desaturate"), 0, 1), c.b("InvertLuminance") ? 1u : 0u};
-    p.add("labadjust", 0, 1, p.w, p.h).setPush(pc);
     return true;
 }
 
@@ -395,7 +402,7 @@ bool planChannelBlend(Ctx& c, Plan& p)
         for (int i = 0; i < 5; ++i) w[o][i] = (float)c.d((std::string(names[o]) + parts[i]).c_str());
     P::Channelblend pc;
     pc.w = p.w; pc.h = p.h;
-    pc.flags = c.b("Normalize") ? 1u : 0u;
+    pc.flags = (c.b("Normalize") ? 1u : 0u) | (c.levels ? 2u : 0u);
     pc.pad = 0;
     float* dst = &pc.w0;
     for (int o = 0; o < 4; ++o)
@@ -404,21 +411,6 @@ bool planChannelBlend(Ctx& c, Plan& p)
     return true;
 }
 
-bool planVignette(Ctx& c, Plan& p)
-{
-    double cx, cy;
-    c.xy("Center", cx, cy);
-    const double outer = std::max(1e-6, c.d("Outer")), inner = clampd(c.d("Inner"), 0, 0.999999);
-    const double aspect = std::max(0.0, c.d("Aspect")), rot = c.d("Rotation") * kPi / 180.0, feather = std::max(0.01, c.d("Feather"));
-    const Color col = c.color("Color");
-    const double W = p.w, H = p.h;
-    const double half = 0.5 * std::sqrt(W * W + H * H) * outer, g = std::max(1e-3, (1.0 + aspect) * 0.5);
-    P::Vignette pc = {p.w, p.h, (float)(cx * W), (float)((1 - cy) * H), (float)std::cos(rot), (float)std::sin(rot), (float)(1.0 / (half * g)), (float)(g / half),
-                      (float)inner, (float)(1.0 / (1.0 - inner)), (float)((10.0 / feather) * (10.0 / feather)), c.b("Invert") ? 1u : 0u,
-                      (float)col.r, (float)col.g, (float)col.b, (float)col.a};
-    p.add("vignette", 0, 1, p.w, p.h).setPush(pc);
-    return true;
-}
 
 bool planUnsharpMask(Ctx& c, Plan& p)
 {
@@ -432,8 +424,9 @@ bool planUnsharpMask(Ctx& c, Plan& p)
         return true;
     }
     const int blurred = p.addBuf(p.w, p.h, 4);
-    addDeriche(p, 0, blurred, sigma, sigma, c.levels);
-    P::UnsharpMix pc = {p.w, p.h, (float)c.d("Amount"), (float)thr8, c.levels ? 1u : 0u};
+    gpuAddDeriche(p, 0, blurred, sigma, sigma, c.levels);
+    const D2 AM = d2(c.d("Amount"));
+    P::UnsharpMix pc = {p.w, p.h, AM.h, AM.l, (float)thr8, c.levels ? 1u : 0u};
     Pass& pass = p.add("unsharp_mix", 0, 1, p.w, p.h);
     pass.in1 = blurred;
     pass.setPush(pc);
@@ -442,17 +435,17 @@ bool planUnsharpMask(Ctx& c, Plan& p)
 
 bool planQuickBlur(Ctx& c, Plan& p)
 {
-    const float k = (float)clampd(c.d("BlendAmount"), 0, 1);
-    const double sigma = 1.2 * (std::max(1u, p.h) / 1080.0) + c.px(0.4);
-    int blurred = 0;
-    if (sigma > 0.3) {
-        blurred = p.addBuf(p.w, p.h, 4);
-        addBlur(p, 0, blurred, sigma, sigma, 15u, false);
+    // quickBlur() in builtins_more_blur.cpp
+    const float blend = (float)c.d("BlendAmount");
+    if (std::fabs(blend) <= 9.999999974752427e-07f) {
+        P::CopyPx cp = {p.w, p.h};
+        p.add("copy_px", 0, 1, p.w, p.h).setPush(cp);
+        return true;
     }
-    P::BlendMix pc = {p.w, p.h, k};
-    Pass& pass = p.add("blend_mix", 0, 1, p.w, p.h);
-    pass.in1 = blurred;
-    pass.setPush(pc);
+    const float wf = (float)(1.0 - (double)blend);
+    const int wb = v8::roundMagic((double)(wf * 255.f)) & 255;
+    P::Quickblur pc = {p.w, p.h, wb, wf, c.levels ? 1u : 0u, 0u};
+    p.add("quickblur", 0, 1, p.w, p.h).setPush(pc);
     return true;
 }
 
@@ -476,7 +469,8 @@ bool planPixelate(Ctx& c, Plan& p)
     }
     const int blocks = p.addBuf((uint32_t)nbx, (uint32_t)nby, 4);
     {
-        P::PixelateBlocks pc = {p.w, p.h, (uint32_t)nbx, (uint32_t)nby, (uint32_t)kx, (uint32_t)ky, c.levels ? 1u : 0u, 0};
+        const bool copyOnly = std::fabs((float)c.d("HorizontalPixelization")) <= 1e-6f && std::fabs((float)c.d("VerticalPixelization")) <= 1e-6f;
+        P::PixelateBlocks pc = {p.w, p.h, (uint32_t)nbx, (uint32_t)nby, (uint32_t)kx, (uint32_t)ky, c.levels ? 1u : 0u, copyOnly ? 1u : 0u};
         Pass& pass = p.add("pixelate_blocks", 0, blocks, (uint32_t)nbx, (uint32_t)nby);
         pass.table = p.addTable(starts);
         pass.setPush(pc);
@@ -489,7 +483,7 @@ bool planPixelate(Ctx& c, Plan& p)
 }
 
 // The ellipse round Center that Swirl, Pinch/Punch and Spherize work inside (Area in builtins_distort.cpp)
-struct AreaPush { float px0, py0, rx, ry; };
+struct AreaPush { double px0, py0, rx, ry; };
 AreaPush areaOf(Ctx& c, int W, int H)
 {
     double cx, cy;
@@ -497,20 +491,20 @@ AreaPush areaOf(Ctx& c, int W, int H)
     const double sh = clampd(c.d("ScalingHorizontal"), 0, 10);
     const double sv = c.b("ScalingProportional") ? sh * W / std::max(1, H) : clampd(c.d("ScalingVertical"), 0, 10);
     AreaPush a;
-    a.rx = (float)std::max(1e-3, sh * W * 0.5);
-    a.ry = (float)std::max(1e-3, sv * H * 0.5);
-    a.px0 = (float)(cx * W);
-    a.py0 = (float)((1 - cy) * H);
+    a.rx = std::max(1e-3, sh * W * 0.5);
+    a.ry = std::max(1e-3, sv * H * 0.5);
+    a.px0 = cx * W;
+    a.py0 = (1 - cy) * H;
     return a;
 }
 
-// (Spherize has no plan: VEGAS's sampling works out the read position in double precision and cuts it to whole pixels and 1/256 weights, which a float
-// kernel misses at a few pixels; the "spherize" kernel follows the formula but is not used.)
+// (Spherize is planned in vkfilters.cpp)
 
 bool planSwirl(Ctx& c, Plan& p)
 {
     const AreaPush a = areaOf(c, (int)p.w, (int)p.h);
-    P::Swirl pc = {p.w, p.h, a.px0, a.py0, a.rx, a.ry, (float)(clampd(c.d("Amount"), -1, 1) * 2 * 2 * kPi)};
+    const D2 X = d2(a.px0), Y = d2(a.py0), RX = d2(a.rx), RY = d2(a.ry), T = d2(clampd(c.d("Amount"), -1, 1) * 2 * 2 * kPi);
+    P::Swirl pc = {p.w, p.h, X.h, X.l, Y.h, Y.l, RX.h, RX.l, RY.h, RY.l, T.h, T.l};
     p.add("swirl", 0, 1, p.w, p.h).setPush(pc);
     return true;
 }
@@ -518,7 +512,8 @@ bool planSwirl(Ctx& c, Plan& p)
 bool planPinchPunch(Ctx& c, Plan& p)
 {
     const AreaPush a = areaOf(c, (int)p.w, (int)p.h);
-    P::Pinchpunch pc = {p.w, p.h, a.px0, a.py0, a.rx, a.ry, (float)clampd(c.d("Amount"), -1, 1)};
+    const D2 X = d2(a.px0), Y = d2(a.py0), RX = d2(a.rx), RY = d2(a.ry), A = d2(clampd(c.d("Amount"), -1, 1));
+    P::Pinchpunch pc = {p.w, p.h, X.h, X.l, Y.h, Y.l, RX.h, RX.l, RY.h, RY.l, A.h, A.l};
     p.add("pinchpunch", 0, 1, p.w, p.h).setPush(pc);
     return true;
 }
@@ -526,9 +521,9 @@ bool planPinchPunch(Ctx& c, Plan& p)
 bool planWave(Ctx& c, Plan& p)
 {
     const double W = p.w, H = p.h;
-    P::Wave pc = {p.w, p.h, (float)clampd(c.d("VerticalWaves"), 0, 1000), (float)clampd(c.d("HorizontalWaves"), 0, 1000),
-                  (float)(clampd(c.d("VerticalAmplitude"), -1, 1) * H), (float)(clampd(c.d("HorizontalAmplitude"), -1, 1) * W),
-                  (float)c.d("VerticalPhase"), (float)c.d("HorizontalPhase"), (float)(1.0 / std::max(1.0, W)), (float)(1.0 / std::max(1.0, H))};
+    const D2 vn = d2(clampd(c.d("VerticalWaves"), 0, 1000)), hn = d2(clampd(c.d("HorizontalWaves"), 0, 1000)), va = d2(clampd(c.d("VerticalAmplitude"), -1, 1) * H),
+             ha = d2(clampd(c.d("HorizontalAmplitude"), -1, 1) * W), vp = d2(c.d("VerticalPhase")), hp = d2(c.d("HorizontalPhase"));
+    P::Wave pc = {p.w, p.h, vn.h, vn.l, hn.h, hn.l, va.h, va.l, ha.h, ha.l, vp.h, vp.l, hp.h, hp.l};
     p.add("wave", 0, 1, p.w, p.h).setPush(pc);
     return true;
 }
@@ -536,6 +531,7 @@ bool planWave(Ctx& c, Plan& p)
 // Min and Max (neighbourhood() in builtins_more_blur.cpp, halfWidths() in builtins_fast.cpp)
 bool planMinMax(Ctx& c, Plan& p)
 {
+    if (c.levels) return gpuPlanMinMax8(c, p);          // the 8-bit path is VEGAS's weighted histogram rank (builtins_more_blur.cpp)
     const double hr = clampd(c.d("HorizontalRange"), 0, 1), vr = clampd(c.d("VerticalRange"), 0, 1);
     const double rxf = c.px(hr * 16), ryf = c.px(vr * 16);
     const int RX = (int)std::lround(rxf), RY = (int)std::lround(ryf);
@@ -581,6 +577,15 @@ bool planMaskGenerator(Ctx& c, Plan& p)
 
 bool planBroadcastColors(Ctx& c, Plan& p)
 {
+    if (c.levels) {          // 8-bit: VEGAS's own table pass (broadcastColors8() in builtins_more_colour.cpp), tables and constants as doubles
+        std::vector<float> tab;
+        more::broadcastColors8GpuTable(c, tab);
+        P::Broadcastcolors8 pc8 = {p.w, p.h};
+        Pass& ps = p.add("broadcastcolors8", 0, 1, p.w, p.h);
+        ps.setPush(pc8);
+        ps.table = p.addTable(std::move(tab));
+        return true;
+    }
     const bool studio = c.b("StudioRGB16To135");
     const float k1 = studio ? 2.37f / 255.f : 2.55f / 255.f, k0 = studio ? -1.75f / 255.f : 1.f / 255.f;
     auto ire = [&](const char* n) { return (float)c.d(n) * k1 + k0; };
@@ -594,26 +599,46 @@ bool planBroadcastColors(Ctx& c, Plan& p)
 
 bool planChromaBlur(Ctx& c, Plan& p)
 {
+    if (c.levels) {
+        // 8-bit: chromaBlur8() in builtins_more_blur.cpp - three box passes across (widths 1, 1, 2 rh + 1) and three down on U and V, in the CPU's float steps
+        int rh, bv[3];
+        more::chromaBlur8Widths(c, rh, bv);
+        const int rad[6] = {0, 0, rh, (bv[0] - 1) / 2, (bv[1] - 1) / 2, (bv[2] - 1) / 2};
+        for (int k = 0; k < 6; ++k)
+            if (rad[k] < 0 || 2 * rad[k] + 1 > (int)(k < 3 ? p.w : p.h)) return false;      // (a window wider than the frame: the CPU's reads run off the row)
+        const int a = p.addBuf(p.w, p.h, 4), b = p.addBuf(p.w, p.h, 4);
+        P::Chroma8Split sp = {p.w, p.h};
+        p.add("chroma8_split", 0, a, p.w, p.h).setPush(sp);
+        int from = a, to = b;
+        for (int k = 0; k < 6; ++k) {
+            P::Chroma8BoxH pc = {p.w, p.h, (uint32_t)rad[k], 0u};
+            if (k < 3) p.add("chroma8_box_h", from, to, p.h, 1).setPush(pc);
+            else p.add("chroma8_box_v", from, to, p.w, 1).setPush(pc);
+            std::swap(from, to);
+        }
+        P::Chroma8Join jn = {p.w, p.h};
+        p.add("chroma8_join", from, 1, p.w, p.h).setPush(jn);
+        return true;
+    }
     const std::vector<float> kx = chromaBlurKernel(false, c.px(clampd(c.d("HorizontalPixels"), 0, 10) + 1.0)), ky = chromaBlurKernel(true, c.px(2.4 * clampd(c.d("VerticalPixels"), 0, 10) + 1.0));
-    const std::vector<float> hx(kx.begin() + kx.size() / 2, kx.end()), hy(ky.begin() + ky.size() / 2, ky.end());
     const int t = p.addBuf(p.w, p.h, 4), t2 = p.addBuf(p.w, p.h, 4), t3 = p.addBuf(p.w, p.h, 4);
     {
         P::ChromaSplit pc = {p.w, p.h};
         p.add("chroma_split", 0, t, p.w, p.h).setPush(pc);
     }
     {
-        Pass& pass = p.add("blur_h", t, t2, p.w, p.h);
-        pass.table = p.addTable(hx);
-        P::BlurH pc = {p.w, p.h, (uint32_t)hx.size() - 1, 6u};
+        Pass& pass = p.add("chroma_conv", t, t2, p.w, p.h);
+        pass.table = p.addTable(kx);
+        P::ChromaConv pc = {p.w, p.h, 0u, (uint32_t)kx.size() / 2};
         pass.setPush(pc);
     }
     {
-        Pass& pass = p.add("blur_v", t2, t3, p.w, p.h);
-        pass.table = p.addTable(hy);
-        P::BlurV pc = {p.w, p.h, (uint32_t)hy.size() - 1, 6u};
+        Pass& pass = p.add("chroma_conv", t2, t3, p.w, p.h);
+        pass.table = p.addTable(ky);
+        P::ChromaConv pc = {p.w, p.h, 1u, (uint32_t)ky.size() / 2};
         pass.setPush(pc);
     }
-    P::ChromaJoin pc = {p.w, p.h, c.levels ? 1u : 0u};
+    P::ChromaJoin pc = {p.w, p.h, 0u};
     p.add("chroma_join", t3, 1, p.w, p.h).setPush(pc);
     return true;
 }
@@ -628,6 +653,7 @@ int toTable(Ctx& c, Plan& p)
 
 bool planWipeLinear(Ctx& c, Plan& p)
 {
+    if (c.levels) return false;                 // the 8-bit picture is VEGAS's own whole-number maths on the CPU (builtins_trans.cpp)
     const int t = toTable(c, p);
     if (t < 0) return false;
     const double ang = c.d("Angle") * kPi / 180.0, dx = std::cos(ang), dy = std::sin(ang);
@@ -643,6 +669,7 @@ bool planWipeLinear(Ctx& c, Plan& p)
 
 bool planWipeClock(Ctx& c, Plan& p)
 {
+    if (c.levels) return false;                 // the 8-bit picture is VEGAS's own whole-number maths on the CPU (builtins_trans.cpp)
     const int t = toTable(c, p);
     if (t < 0) return false;
     const double F = clampd(c.d("FeatherAngle"), 0, 720);
@@ -658,6 +685,7 @@ bool planWipeClock(Ctx& c, Plan& p)
 
 bool planPushFrames(Ctx& c, Plan& p)
 {
+    if (c.levels) return false;                 // the 8-bit picture is VEGAS's fixed-point maths on the CPU (builtins_trans.cpp)
     const int t = toTable(c, p);
     if (t < 0) return false;
     const int dir = c.i("Direction");
@@ -683,6 +711,7 @@ bool planPushFrames(Ctx& c, Plan& p)
 
 bool planBarndoorFrames(Ctx& c, Plan& p)
 {
+    if (c.levels) return false;     // 8-bit pictures use the exact CPU path
     const int t = toTable(c, p);
     if (t < 0) return false;
     const bool alongX = c.i("Orientation") == 0, in = c.i("Direction") == 0;
@@ -702,10 +731,337 @@ bool planBarndoorFrames(Ctx& c, Plan& p)
 }
 
 
+// ---- generators: no input picture (buffer 0 is not filled); the numbers the CPU code works out in double precision come from builtins_gen.cpp
+bool planSolidColor(Ctx& c, Plan& p)
+{
+    float v[4];
+    solidColorGpu(c, v);
+    P::FillPx pc = {p.w, p.h, v[0], v[1], v[2], v[3]};
+    p.add("fill_px", 0, 1, p.w, p.h).setPush(pc);
+    return true;
+}
+
+// a double as two table words (the bits of its halves, held in floats): the kernels read them with ld_sf
+void tabD(std::vector<float>& t, double d)
+{
+    const D2 b = d2(d);
+    float f[2];
+    std::memcpy(&f[0], &b.h, 4);
+    std::memcpy(&f[1], &b.l, 4);
+    t.push_back(f[0]);
+    t.push_back(f[1]);
+}
+
+bool planColorGradient(Ctx& c, Plan& p)
+{
+    const Color a = c.color("Color1"), b = c.color("Color2");
+    double cx, cy;
+    c.xy("Center", cx, cy);
+    const double ang = c.d("AspectRatioAngle") * kPi / 180.0;
+    const double size = std::max(1e-4, c.d("Size")), aspect = std::max(0.01, c.d("Aspect"));
+    std::vector<float> tab;
+    const double ds[16] = {cx * p.w, cy * p.h, std::cos(ang), std::sin(ang), size, aspect, aspect * aspect, size * 0.5, a.r, a.g, a.b, a.a, b.r, b.g, b.b, b.a};
+    for (double d : ds) tabD(tab, d);
+    P::Colorgradient pc = {p.w, p.h, u32(c.i("GradientType"))};
+    Pass& ps = p.add("colorgradient", 0, 1, p.w, p.h);
+    ps.table = p.addTable(std::move(tab));
+    ps.setPush(pc);
+    return true;
+}
+
+bool planCheckerboard(Ctx& c, Plan& p)
+{
+    std::vector<float> tab;
+    float pa[4], pb[4];
+    checkerboardGpu(c, (int)p.w, (int)p.h, tab, pa, pb);
+    P::Checkerboard pc = {p.w, p.h, pa[0], pa[1], pa[2], pa[3], pb[0], pb[1], pb[2], pb[3]};
+    Pass& ps = p.add("checkerboard", 0, 1, p.w, p.h);
+    ps.table = p.addTable(std::move(tab));
+    ps.setPush(pc);
+    return true;
+}
+
+bool planTestPattern(Ctx& c, Plan& p)
+{
+    std::vector<float> tab;
+    int type, barW;
+    testPatternGpu(c, (int)p.w, (int)p.h, type, barW, tab);
+    P::Testpattern pc = {p.w, p.h, u32(type), u32(barW)};
+    Pass& ps = p.add("testpattern", 0, 1, p.w, p.h);
+    ps.table = p.addTable(std::move(tab));
+    ps.setPush(pc);
+    return true;
+}
+
+
+// ---- creative effects (builtins_more_creative.cpp)
+bool planCrop(Ctx& c, Plan& p)
+{
+    double lx, ly;
+    c.xy("Location", lx, ly);
+    const double xs = clampd(c.d("XScale"), 0, 1), ys = clampd(c.d("YScale"), 0, 1), ang = c.d("Angle") * kPi / 180.0;
+    const double W = p.w, H = p.h;
+    P::Crop pc = {p.w, p.h, (float)(lx * W), (float)((1 - ly) * H), (float)std::cos(ang), (float)std::sin(ang), (float)(xs * W * 0.5), (float)(ys * H * 0.5),
+                  (float)clampd(c.d("Opacity"), 0, 1)};
+    p.add("crop", 0, 1, p.w, p.h).setPush(pc);
+    return true;
+}
+
+bool planFilmGrain(Ctx& c, Plan& p)
+{
+    const double amount0 = clampd(c.d("Amount"), 0, 1), gran = clampd(c.d("Granularity"), 0, 1), chroma = clampd(c.d("Chormaticity"), 0, 1);
+    const double fs = std::max(1.0, (double)p.h) / 1080.0, fsFull = std::max(1.0, (double)p.h) / c.scale / 1080.0;
+    const double cellFull = (double)std::max(1, (int)std::lround(1 + gran * 3 * std::max(1.0, fsFull * 2)));
+    const double cellHere = cellFull * c.scale;
+    const int cell = c.scale >= 0.999 ? std::max(1, (int)std::lround(1 + gran * 3 * std::max(1.0, fs * 2))) : std::max(1, (int)std::lround(cellHere));
+    const double weaken = c.scale >= 0.999 ? 1.0 : std::min(1.0, cellHere);
+    const double amount = amount0 * weaken;
+    const uint32_t seed = (uint32_t)std::lround(c.time) * 2654435761u;
+    P::Filmgrain pc = {p.w, p.h, (uint32_t)cell, seed, (float)amount, (float)(amount * chroma)};
+    p.add("filmgrain", 0, 1, p.w, p.h).setPush(pc);
+    return true;
+}
+
+bool planFilmEffects(Ctx& c, Plan& p)
+{
+    const double grain = clampd(c.d("Grain"), 0, 1), tint = clampd(c.d("Tint"), 0, 1);
+    const Color col = c.color("Color");
+    const double amount = clampd(c.d("EnableParticlesAmount"), 0, 1);
+    const uint32_t frame = (uint32_t)std::lround(c.time);
+    auto cellOf = [&](int full) { return (uint32_t)std::max(1, (int)std::lround(full * c.scale)); };
+    P::Filmeffects pc = {p.w, p.h, frame, c.b("ConvertToGreyscale") ? 1u : 0u, c.b("EnableEnableParticles") ? 1u : 0u, u32(c.i("EnableParticlesType")), cellOf(2), cellOf(3), cellOf(4), cellOf(40),
+                         (float)tint, (float)col.r, (float)col.g, (float)col.b, (float)grain, (float)c.scale, (float)(amount * 0.01), (float)(1.0 - amount * 0.0015), (float)(1.0 - amount * 0.0006), (float)amount};
+    p.add("filmeffects", 0, 1, p.w, p.h).setPush(pc);
+    return true;
+}
+
+
+// Bump Map (bumpMapRender in builtins_more_creative.cpp: the same float expressions)
+bool planBumpMapNamed(Ctx& c, Plan& p, const char* srcName, const char* dstName)
+{
+    const int W = (int)p.w, H = (int)p.h;
+    double psx, psy, psz, pdx, pdy;
+    c.xyz(srcName, psx, psy, psz);
+    c.xy(dstName, pdx, pdy);
+    const int type = std::max(0, std::min(2, c.i("Type")));
+    const int chan = std::max(0, std::min(3, c.i("BumpChannel")));
+    const float sx = (float)psx, sy = (float)-psy, sz = (float)psz;
+    float dx = (float)pdx, dy = (float)-pdy;
+    if (type != 1) dx = dy = 0.f;
+    float ax = sx - dx, ay = sy - dy, az = sz;
+    {
+        const float l = std::sqrt(ax * ax + ay * ay + az * az);
+        if (l > 1e-7f) { ax /= l; ay /= l; az /= l; }
+        else { ax = 0.f; ay = 0.f; az = 1.f; }
+    }
+    const float mx = (float)std::max(W, H);
+    const double bh = c.d("BumpHeight");
+    const float hs = (float)((double)((float)(bh * bh) * 0.0625f) * ((double)mx * 0.0015625)) * (c.b("WhiteIsHigh") ? 1.f : -1.f) * 255.f;
+    const float amb2 = (float)c.d("Ambience") * 2.f, i8 = (float)c.d("Intensity") * 8.f;
+    const float shin = (float)c.d("Shininess");
+    const float kd = 0.6f - shin * 0.2f, ks = shin * 0.5f, power = shin * 8.f + 4.f;
+    const float cosCut = std::cos((float)c.d("Focus") * 0.7853981852531433f);
+    const float invCut = 1.f / std::max(1.f - cosCut, 1e-5f);
+    P::Bumpmap pc = {p.w, p.h, (uint32_t)type, (uint32_t)chan, sx, sy, sz, ax, ay, az, hs, amb2, i8, kd, ks, power, cosCut, invCut, 2.f / mx, W * 0.5f, H * 0.5f};
+    p.add("bumpmap", 0, 1, p.w, p.h).setPush(pc);
+    return true;
+}
+bool planBumpMap(Ctx& c, Plan& p) { return planBumpMapNamed(c, p, "LocationSrc", "LocationDst"); }
+// the compositing plug-in's Bump Map (builtins_mask.cpp): the same render, other setting names
+bool planBumpMapGeneral(Ctx& c, Plan& p) { return planBumpMapNamed(c, p, "DualLocation3DAnd2DSrc", "DualLocation3DAnd2DDst"); }
+
+
+bool planLutFilter(Ctx& c, Plan& p)
+{
+    int n = 0;
+    float dmin[3], dmax[3], gain = 0;
+    bool tetra = false;
+    std::vector<float> tab;
+    if (!lutFilterGpu(c, n, dmin, dmax, gain, tetra, tab) || n < 2 || tab.size() < (size_t)n * n * n * 3) {
+        addCopy(p, 0, 1);
+        return true;
+    }
+    P::Lutfilter pc = {p.w, p.h, (uint32_t)n, tetra ? 1u : 0u, gain, dmin[0], dmin[1], dmin[2], dmax[0], dmax[1], dmax[2]};
+    Pass& ps = p.add("lutfilter", 0, 1, p.w, p.h);
+    ps.table = p.addTable(std::move(tab));
+    ps.setPush(pc);
+    return true;
+}
+
+bool planColorGrading(Ctx& c, Plan& p)
+{
+    ColorGradingGpu g;
+    if (!colorGradingGpu(c, g)) {
+        addCopy(p, 0, 1);
+        return true;
+    }
+    P::Colorgrading pc = {p.w, p.h, g.flags, g.f[0], g.f[1], g.f[2], g.f[3], g.f[4], g.f[5], g.f[6], g.f[7], g.f[8], g.f[9], g.f[10], g.f[11], g.f[12], g.f[13], g.f[14], g.f[15], g.f[16], g.f[17], g.f[18], g.f[19], g.f[20]};
+    Pass& ps = p.add("colorgrading", 0, 1, p.w, p.h);
+    ps.table = p.addTable(std::move(g.tab));
+    ps.setPush(pc);
+    return true;
+}
+
+
+bool planColorMatch(Ctx& c, Plan& p)
+{
+    ColorMatchGpu g;
+    if (!colorMatchGpu(c, (int)p.w, (int)p.h, g)) {
+        addCopy(p, 0, 1);
+        return true;
+    }
+    const int part = p.addBuf(2, 90, 4), params = p.addBuf(4, 1, 4);
+    const int tRows = p.addTable(std::move(g.rowsTable)), tParams = p.addTable(std::move(g.paramTable));
+    {
+        P::ColormatchRows pc = {p.w, p.h};
+        Pass& ps = p.add("colormatch_rows", 0, part, 1, 90);
+        ps.table = tRows;
+        ps.setPush(pc);
+    }
+    {
+        P::ColormatchParams pc = {p.w, p.h};
+        Pass& ps = p.add("colormatch_params", part, params, 1, 1);
+        ps.table = tParams;
+        ps.setPush(pc);
+    }
+    P::Colormatch pc = {p.w, p.h};
+    Pass& ps = p.add("colormatch", 0, 1, p.w, p.h);
+    ps.in1 = params;
+    ps.table = tRows;
+    ps.setPush(pc);
+    return true;
+}
+
+
+// Displacement Map, Height Map (builtins_vegasrest.cpp) and Mesh Warp (builtins_magix.cpp)
+bool planDisplacementMap(Ctx& c, Plan& p)
+{
+    const D2 SH = d2(c.d("ScaleHorizontal") * (double)p.w), SV = d2(c.d("ScaleVertical") * (double)p.h);
+    P::Displacementmap pc = {p.w, p.h, SH.h, SH.l, SV.h, SV.l, c.i("EdgePixelHandling") == 1 ? 1u : 0u,
+                             (uint32_t)std::min(2, std::max(0, c.i("ChannelsXaxisChannel"))), (uint32_t)std::min(2, std::max(0, c.i("ChannelsYaxisChannel"))),
+                             c.b("ChannelsXaxisInvert") ? 1u : 0u, c.b("ChannelsYaxisInvert") ? 1u : 0u, c.b("AlphaChannelScalesRGBChannels") ? 1u : 0u, c.b("FlipInputSurfaces") ? 1u : 0u};
+    p.add("displacementmap", 0, 1, p.w, p.h).setPush(pc);
+    return true;
+}
+
+bool planHeightMap(Ctx& c, Plan& p)
+{
+    const double W = p.w, H = p.h;
+    const double amp = c.d("HeightModifiersAmplitude"), elev = c.d("HeightModifiersElevation"), scl = c.d("HeightModifiersHeightScale");
+    const int plane = p.addBuf(p.w, p.h, 1);
+    {
+        P::Heightplane pc = {p.w, p.h, u32(c.i("SourceChannel")), c.b("InvertDataSource") ? 1u : 0u, c.b("AlphaChannelScalesRGBChannels") ? 1u : 0u, c.b("FlipInputSurfaces") ? 1u : 0u};
+        p.add("heightplane", 0, plane, p.w, p.h).setPush(pc);
+    }
+    const double sigma = std::max(0, c.i("Smoothness")) * 0.001 * W;
+    int blurred = plane;
+    if (sigma > 0.3) {
+        blurred = p.addBuf(p.w, p.h, 1);
+        addBlur(p, plane, blurred, sigma, sigma, 0, true);
+    }
+    const D2 LIFT = d2(amp * scl * 0.2 * H), BASE = d2(elev * scl * 0.2 * H);
+    P::Heightmap pc = {p.w, p.h, LIFT.h, LIFT.l, BASE.h, BASE.l, c.i("EdgePixelHandling") == 1 ? 1u : 0u, 0u};
+    Pass& ps = p.add("heightmap", 0, 1, p.w, p.h);
+    ps.in1 = blurred;
+    ps.setPush(pc);
+    return true;
+}
+
+bool planMeshWarp(Ctx& c, Plan& p)
+{
+    int cols = 0, rows = 0;
+    std::vector<float> pts;
+    const int mode = meshWarpGpu(c, cols, rows, pts);
+    if (mode == 0) return false;
+    if (mode == 1) {
+        addCopy(p, 0, 1);
+        return true;
+    }
+    P::Meshwarp pc = {p.w, p.h, (uint32_t)cols, (uint32_t)rows};
+    Pass& ps = p.add("meshwarp", 0, 1, p.w, p.h);
+    ps.table = p.addTable(std::move(pts));
+    ps.setPush(pc);
+    return true;
+}
+
+
+// TV Simulator (tvSimulator in builtins_more_creative.cpp)
+bool planTvSimulator(Ctx& c, Plan& p)
+{
+    const int W = (int)p.w, H = (int)p.h;
+    const double zoom = 1.0 + clampd(c.d("DetailZoom"), 0, 1) * 1.5, grill = clampd(c.d("ApertureGrill"), 0, 1), inter = clampd(c.d("Interlacing"), 0, 1);
+    const double lineSync = clampd(c.d("LineSync"), 0, 1), vSync = clampd(c.d("VerticalSync"), 0, 1), scan = clampd(c.d("ScanPhasing"), 0, 1);
+    const double phos = clampd(c.d("Phosphorescence"), 0, 1), stat = clampd(c.d("Static"), 0, 1);
+    const double t = c.time;
+    if (!(t >= 0 && t < 1e8)) return false;
+    auto rnd = [&](uint32_t a, uint32_t b) {
+        uint32_t h = a * 374761393u + b * 668265263u;
+        h = (h ^ (h >> 13)) * 1274126177u;
+        return ((h ^ (h >> 16)) & 0xFFFF) / 65535.f;
+    };
+    std::vector<float> tab((size_t)H * 2);
+    for (int y = 0; y < H; ++y) {
+        const double yFull = y / c.scale;
+        const double wob = (1.0 - lineSync) * 0.03 * W * std::sin(yFull * 0.07 + t * 0.9) * (rnd((uint32_t)yFull, (uint32_t)t) > 0.8 ? 3 : 1);
+        tab[(size_t)y] = (float)wob;
+        tab[(size_t)H + (size_t)y] = 1.f - (float)scan * 0.25f * (0.5f + 0.5f * (float)std::sin(yFull * 0.02 - t * 0.4));
+    }
+    const double roll = (1.0 - vSync) * H * std::fmod(t * 0.07, 1.0);
+    int glow = 0;
+    if (phos > 0.01) {
+        const double sig = 2.0 * (std::max(1.0, (double)H) / 1080.0) + c.px(1);
+        glow = addBlur(p, 0, p.addBuf(p.w, p.h, 4), sig, sig, 15u, false);
+    }
+    P::Tvsimulator pc = {p.w, p.h, (float)zoom, (float)roll, (float)phos, (float)grill, (float)inter, (float)scan, (float)stat, (float)c.scale, c.scale >= 0.999 ? 1u : 0u, (uint32_t)(t * 7)};
+    Pass& ps = p.add("tvsimulator", 0, 1, p.w, p.h);
+    ps.in1 = glow;
+    ps.table = p.addTable(std::move(tab));
+    ps.setPush(pc);
+    return true;
+}
+
+
+// Lens Flare (lensFlare in builtins_lensflare.cpp)
+bool planLensFlare(Ctx& c, Plan& p)
+{
+    std::vector<float> tab;
+    int n = 0;
+    float blend = 0.f;
+    const int mode = more::lensFlareGpu(c, (int)p.w, (int)p.h, tab, n, blend);
+    if (mode == 0) return false;
+    if (mode == 1) {
+        addCopy(p, 0, 1);
+        return true;
+    }
+    P::Lensflare pc = {p.w, p.h, (uint32_t)n, blend};
+    Pass& ps = p.add("lensflare", 0, 1, p.w, p.h);
+    ps.table = p.addTable(std::move(tab));
+    ps.setPush(pc);
+    return true;
+}
+
+
 struct Entry { const char* id; bool (*plan)(Ctx&, Plan&); };
 // (no entries, so the CPU renders them: sepia, add noise and white balance - their 8-bit steps, the shift-register generator and the frame histogram follow
 // VEGAS exactly in builtins_filters.cpp / builtins_more_colour.cpp)
 const Entry kEntries[] = {
+    {"solidcolor", planSolidColor},
+    {"colorgradient", planColorGradient},
+    {"checkerboard", planCheckerboard},
+    {"testpattern", planTestPattern},
+    {"crop", planCrop},
+    {"filmgrain", planFilmGrain},
+    {"filmeffects", planFilmEffects},
+    {"bumpmapfilter", planBumpMap},
+    {"bumpmap", planBumpMapGeneral},
+    {"lutfilter", planLutFilter},
+    {"colorgrading", planColorGrading},
+    {"colormatch", planColorMatch},
+    {"displacementmap", planDisplacementMap},
+    {"heightmap", planHeightMap},
+    {"de.magix:MeshWarp", planMeshWarp},
+    {"tvsimulator", planTvSimulator},
+    {"lensflare", planLensFlare},
     {"invert", planInvert},
     {"brightnessandcontrast", planBrightnessContrast},
     {"blackandwhite", planBlackAndWhite},
@@ -718,20 +1074,14 @@ const Entry kEntries[] = {
     {"gaussianblur", planGaussianBlur},
     {"sharpen", planSharpen},
     {"mirror", planMirror},
-    {"glow", planGlow},
-    {"chromakeyer", planChromaKeyer},
-    {"convolutionkernel", planConvolutionKernel},
     {"colorcorrector", planColorCorrector},
     {"saturationadjust", planSaturationAdjust},
-    {"labadjust", planLabAdjust},
     {"blackrestore", planBlackRestore},
     {"channelblend", planChannelBlend},
-    {"vignette", planVignette},
     {"unsharpmask", planUnsharpMask},
     {"quickblur", planQuickBlur},
     {"pixelate", planPixelate},
-    // (Linear Blur: on the CPU - VEGAS's shear / Deriche blur / shear back, vegasLinearBlur() in builtins_deriche.cpp; the old Gaussian-taps kernel no longer matches)
-    // (Spherize: on the CPU, see the note above planSwirl)
+        // (Spherize: on the CPU, see the note above planSwirl)
     {"swirl", planSwirl},
     {"pinchpunch", planPinchPunch},
     {"wave", planWave},
@@ -783,9 +1133,110 @@ std::string curvesBlob(const std::vector<std::vector<std::pair<double, double>>>
     return o;
 }
 
+
+// A small colour table in a file for the LUT checks (a 3D .cube with some bends, and a 1D one), written once to the temporary folder
+std::string testCubeFile(bool oneD)
+{
+    static std::string paths[2];
+    std::string& path = paths[oneD ? 1 : 0];
+    if (path.empty()) {
+        std::string dir = ".";
+        try { dir = std::filesystem::temp_directory_path().string(); } catch (...) {}
+        path = dir + (dir.empty() || dir.back() == '/' || dir.back() == '\\' ? "" : "/") + (oneD ? "reno_vkcheck_1d.cube" : "reno_vkcheck_3d.cube");
+        if (FILE* f = std::fopen(path.c_str(), "wb")) {
+            if (oneD) {
+                std::fprintf(f, "TITLE \"vkcheck\"\nLUT_1D_SIZE 16\n");
+                for (int i = 0; i < 16; ++i) { const double t = i / 15.0; std::fprintf(f, "%.6f %.6f %.6f\n", std::pow(t, 0.8), t * t, 1.0 - 0.5 * t); }
+            } else {
+                const int n = 9;
+                std::fprintf(f, "TITLE \"vkcheck\"\nLUT_3D_SIZE %d\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n", n);
+                for (int b = 0; b < n; ++b)
+                    for (int g = 0; g < n; ++g)
+                        for (int r = 0; r < n; ++r) {
+                            const double R = r / (n - 1.0), G = g / (n - 1.0), B = b / (n - 1.0);
+                            std::fprintf(f, "%.6f %.6f %.6f\n", std::pow(R, 0.8) * 0.9 + 0.1 * G, G * (1.0 - 0.3 * B) + 0.05, 1.0 - 0.6 * R * B - 0.2 * G);
+                        }
+            }
+            std::fclose(f);
+        }
+    }
+    return path;
+}
+
+
+// "internaldata" of Color Match: the statistics as 12 little-endian doubles in base64
+std::string statsBlobBytes(const std::string& b)
+{
+    static const char* const T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string o;
+    for (size_t i = 0; i < b.size(); i += 3) {
+        const uint32_t x = ((uint8_t)b[i] << 16) | (i + 1 < b.size() ? (uint8_t)b[i + 1] << 8 : 0) | (i + 2 < b.size() ? (uint8_t)b[i + 2] : 0);
+        o += T[(x >> 18) & 63];
+        o += T[(x >> 12) & 63];
+        o += i + 1 < b.size() ? T[(x >> 6) & 63] : '=';
+        o += i + 2 < b.size() ? T[x & 63] : '=';
+    }
+    return o;
+}
+std::string statsBlob(const std::vector<double>& v) { return statsBlobBytes(std::string((const char*)v.data(), v.size() * 8)); }
+
+// Mesh Warp's "WarpData": columns, rows, two more numbers, then x y (floats) per point
+std::string meshBlob(int cols, int rows, float bend)
+{
+    std::string b(16, '\0');
+    const int32_t hdr[4] = {cols, rows, 0, 0};
+    std::memcpy(&b[0], hdr, 16);
+    for (int j = 0; j < rows; ++j)
+        for (int i = 0; i < cols; ++i) {
+            float xy[2] = {(float)i / (cols - 1) + bend * std::sin(0.7f * j + 0.3f), (float)j / (rows - 1) + bend * std::cos(0.9f * i)};
+            b.append((const char*)xy, 8);
+        }
+    return statsBlobBytes(b);
+}
+
 const std::vector<CaseSet>& caseSets()
 {
     static const std::vector<CaseSet> sets = {
+        {"colorgradient", {{"elliptical", PM{{"GradientType", {1}}, {"Aspect", {1.7}}, {"AspectRatioAngle", {25}}, {"Center", {0.4, 0.6}}, {"Color1", {1.0, 0.3, 0.1, 0.8}}}},
+                           {"rectangular", PM{{"GradientType", {2}}, {"Size", {0.7}}, {"Color2", {0.1, 0.4, 1.0, 1.0}}}}}},
+        {"checkerboard", {{"soft", PM{{"EdgeBlendingHorizontal", {0.3}}, {"EdgeBlendingVertical", {0.5}}, {"GridOffsetX", {0.13}}, {"TileDimensionsWidth", {0.07}}, {"TileDimensionsHeight", {0.11}}, {"TileDimensionsSquare", {0}}}},
+                          {"hard", PM{{"GridOffsetX", {0.31}}, {"GridOffsetY", {0.2}}, {"Color1", {1.0, 0.2, 0.2, 1.0}}, {"Color2", {0.0, 0.3, 0.9, 0.6}}}}}},
+        {"testpattern", {{"t1", PM{{"TestPatternType", {1}}}}, {"t2", PM{{"TestPatternType", {2}}}}, {"t3", PM{{"TestPatternType", {3}}}}, {"t4", PM{{"TestPatternType", {4}}}},
+                         {"t5", PM{{"TestPatternType", {5}}}}, {"t6", PM{{"TestPatternType", {6}}}}, {"t7", PM{{"TestPatternType", {7}}}}, {"t8", PM{{"TestPatternType", {8}}}}}},
+        {"crop", {{"turned", PM{{"XScale", {0.6}}, {"YScale", {0.7}}, {"Angle", {23}}, {"Location", {0.4, 0.55}}, {"Opacity", {0.8}}}}, {"whole", PM{{"XScale", {1.0}}, {"YScale", {1.0}}}}}},
+        {"filmgrain", {{"coarse", PM{{"Amount", {0.8}}, {"Granularity", {0.9}}, {"Chormaticity", {0.7}}}}, {"fine", PM{{"Amount", {0.3}}, {"Granularity", {0.0}}}}}},
+        {"filmeffects", {{"grey", PM{{"ConvertToGreyscale", {1}}, {"Tint", {0.6}}, {"Color", {0.9, 0.7, 0.4, 1.0}}, {"Grain", {0.7}}}},
+                         {"dust", PM{{"EnableEnableParticles", {1}}, {"EnableParticlesType", {0}}, {"EnableParticlesAmount", {1.0}}}},
+                         {"flicker", PM{{"EnableEnableParticles", {1}}, {"EnableParticlesType", {1}}, {"EnableParticlesAmount", {0.8}}}},
+                         {"hair", PM{{"EnableEnableParticles", {1}}, {"EnableParticlesType", {2}}, {"EnableParticlesAmount", {1.0}}}},
+                         {"scratch", PM{{"EnableEnableParticles", {1}}, {"EnableParticlesType", {4}}, {"EnableParticlesAmount", {1.0}}}}}},
+        {"bumpmap", {{"spot", PM{{"Type", {1}}, {"Intensity", {0.5}}, {"Shininess", {0.7}}, {"BumpHeight", {0.6}}, {"BumpChannel", {2}}}},
+                     {"omni", PM{{"Type", {2}}, {"Intensity", {0.4}}, {"Ambience", {0.2}}, {"BumpHeight", {0.9}}, {"WhiteIsHigh", {0}}, {"DualLocation3DAnd2DSrc", {0.3, -0.4, 1.5}}}},
+                     {"directional", PM{{"Type", {0}}, {"BumpChannel", {0}}}}}},
+        {"bumpmapfilter", {{"spot", PM{{"Type", {1}}, {"Intensity", {0.5}}, {"Shininess", {0.7}}, {"BumpHeight", {0.6}}, {"BumpChannel", {2}}}},
+                           {"omni", PM{{"Type", {2}}, {"Intensity", {0.4}}, {"Ambience", {0.2}}, {"BumpHeight", {0.9}}, {"WhiteIsHigh", {0}}, {"LocationSrc", {0.3, -0.4, 1.5}}}},
+                           {"dir", PM{{"Type", {0}}, {"Intensity", {0.7}}, {"Shininess", {0.3}}, {"BumpHeight", {0.3}}, {"BumpChannel", {3}}}}}},
+        {"deform", {{"squeeze", PM{{"Amount", {0.8}}, {"SqueezeLeft", {0.3}}, {"SqueezeTop", {0.2}}, {"SqueezeRight", {-0.2}}, {"SqueezeBottom", {0.5}}}},
+                    {"shear", PM{{"Amount", {1.0}}, {"ShearHorizontal", {1.4}}, {"ShearVertical", {0.3}}, {"Background", {0.2, 0.5, 0.3, 0.7}}}},
+                    {"curve", PM{{"Amount", {1.0}}, {"CurveLeft", {0.4}}, {"CurveRight", {-0.3}}, {"CurveTop", {0.5}}, {"CurveBottom", {0.2}}}}}},
+        {"lutfilter", {{"linear", PM{{"Gain", {0.8}}}, SM{{"LUTFilename", testCubeFile(false)}}}, {"tetra", PM{{"Interpolation", {1}}}, SM{{"LUTFilename", testCubeFile(false)}}},
+                       {"1d", PM{{"Interpolation", {1}}, {"Gain", {0.6}}}, SM{{"LUTFilename", testCubeFile(true)}}}, {"no file", PM{}, SM{{"LUTFilename", "/nonexistent.cube"}}}}},
+        {"colorgrading", {{"wheels", PM{{"Gain_R", {1.3}}, {"Lift_Y", {0.05}}, {"Gamma_G", {1.4}}, {"Offset_B", {0.02}}, {"ExposureAdjust", {0.4}}}},
+                          {"sat hue", PM{{"SaturationAdjust", {1.5}}, {"HueAdjust", {40}}, {"SatAdjust", {1.2}}, {"ValAdjust", {0.9}}}},
+                          {"levels", PM{{"InMinAdjust", {0.1}}, {"InMaxAdjust", {0.9}}, {"OutMinAdjust", {0.05}}, {"OutMaxAdjust", {0.95}}}},
+                          {"curves", PM(), SM{{"Curve_R", "2:0.0:0.1:-0.2:0.0:0.2:0.2:1.0:0.9:-0.2:-0.2:0.2:0.0"}, {"Curve_Y", "3:0.0:0.0:-0.2:0.0:0.2:0.0:0.5:0.65:-0.1:-0.1:0.1:0.1:1.0:1.0:-0.2:-0.2:0.2:0.0"}}},
+                          {"luts", PM{{"LUTEnable_0", {1}}, {"LUTGain_0", {0.7}}, {"LUTEnable_1", {1}}, {"LUTInterpolation_1", {1}}, {"Gain_G", {1.2}}},
+                           SM{{"LUTFilename_0", testCubeFile(false)}, {"LUTFilename_1", testCubeFile(true)}}}}},
+        {"colormatch", {{"frame stats", PM{{"SourceCaptured", {1}}, {"Strength", {0.8}}}, SM{{"internaldata", statsBlob({55, 20, 5, 15, -3, 12, 0, 0, 0, 0, 0, 0})}}},
+                        {"both", PM{{"SourceCaptured", {1}}, {"TargetCaptured", {1}}, {"Processlightness", {1}}}, SM{{"internaldata", statsBlob({35, 12, -4, 9, 8, 14, 60, 25, 2, 10, 4, 8})}}}}},
+        {"displacementmap", {{"scaled", PM{{"ScaleHorizontal", {0.05}}, {"ScaleVertical", {0.03}}, {"ChannelsXaxisInvert", {1}}}}, {"wrap", PM{{"ScaleHorizontal", {0.2}}, {"ScaleVertical", {0.2}}, {"EdgePixelHandling", {1}}, {"AlphaChannelScalesRGBChannels", {1}}, {"FlipInputSurfaces", {1}}, {"ChannelsXaxisChannel", {1}}, {"ChannelsYaxisChannel", {2}}}}}},
+        {"heightmap", {{"lift", PM{{"HeightModifiersAmplitude", {1.0}}, {"HeightModifiersHeightScale", {1.0}}, {"HeightModifiersElevation", {0.2}}}}, {"wrap", PM{{"HeightModifiersAmplitude", {1.5}}, {"HeightModifiersHeightScale", {1.0}}, {"EdgePixelHandling", {1}}, {"Smoothness", {5}}, {"SourceChannel", {2}}, {"InvertDataSource", {1}}}}}},
+        {"de.magix:MeshWarp", {{"bent", PM{{"EnableWarp", {1}}, {"WarpDirection", {0}}}, SM{{"WarpData", meshBlob(5, 4, 0.04f)}}}}},
+        {"lensflare", {{"t0", PM{{"Intensity", {0.8}}}}, {"t1", PM{{"Intensity", {1.0}}, {"LensType", {1}}, {"Tint", {0.5}}, {"LightColor", {1.0, 0.7, 0.3}}, {"Perspective", {0.4}}}},
+                       {"t2", PM{{"Intensity", {1.0}}, {"LensType", {2}}, {"LightPosition", {-0.3, 0.4}}, {"Blend", {0.6}}}},
+                       {"t3", PM{{"Intensity", {1.2}}, {"LensType", {3}}, {"Size", {0.7}}}}, {"t4", PM{{"Intensity", {1.0}}, {"LensType", {4}}, {"LightPosition", {0.2, -0.1}}}}}},
+        {"tvsimulator", {{"all", PM{{"DetailZoom", {0.4}}, {"ApertureGrill", {0.7}}, {"Interlacing", {0.6}}, {"LineSync", {0.5}}, {"VerticalSync", {0.6}}, {"ScanPhasing", {0.8}}, {"Phosphorescence", {0.5}}, {"Static", {0.4}}}},
+                         {"plain", PM{{"ApertureGrill", {0.0}}, {"Phosphorescence", {0.0}}, {"Static", {0.0}}}}}},
         {"invert", {{"half", PM{{"BlendAmount", {0.5}}}}, {"off", PM{{"BlendAmount", {0.0}}}}, {"full", PM{{"BlendAmount", {1.0}}}}}},
         {"brightnessandcontrast", {{"brighter", PM{{"Brightness", {0.2}}, {"Contrast", {0.3}}}}, {"darker", PM{{"Brightness", {-0.3}}, {"Contrast", {-0.4}}}},
                                    {"harsh", PM{{"Contrast", {0.95}}, {"ContrastCenter", {0.4}}}}}},
@@ -793,7 +1244,8 @@ const std::vector<CaseSet>& caseSets()
         {"threshold", {{"low", PM{{"Threshold", {0.2}}}}, {"high", PM{{"Threshold", {0.8}}}}}},
         {"colorbalance", {{"cast", PM{{"Red", {0.3}}, {"Green", {-0.2}}, {"Blue", {0.1}}}}, {"cast1", PM{{"Red", {-0.5}}, {"Blue", {0.4}}, {"Type", {1}}}},
                           {"cast2", PM{{"Red", {0.4}}, {"Type", {2}}, {"PreserveLuminosity", {1}}}}}},
-        {"hsladjust", {{"hue", PM{{"AddToHue", {120}}}}, {"sat", PM{{"Saturation", {1.6}}, {"Luminance", {0.7}}}}, {"grey", PM{{"Saturation", {0.0}}, {"AddToHue", {-45}}}}}},
+        {"hsladjust", {{"hue", PM{{"AddToHue", {0.37}}}}, {"sat", PM{{"Saturation", {1.6}}, {"Luminance", {0.7}}}}, {"grey", PM{{"Saturation", {0.0}}, {"AddToHue", {0.9}}}},
+                        {"full", PM{{"AddToHue", {1.0}}, {"Saturation", {2.0}}}}, {"half", PM{{"AddToHue", {0.5}}, {"Luminance", {1.8}}}}, {"edge", PM{{"AddToHue", {0.0}}, {"Saturation", {5.0}}, {"Luminance", {0.2}}}}}},
         {"levels", {{"stretch", PM{{"InputStart", {0.1}}, {"InputEnd", {0.8}}}}, {"gamma", PM{{"Gamma", {2.0}}, {"OutputStart", {0.1}}, {"OutputEnd", {0.9}}}},
                     {"red", PM{{"Channel", {1}}, {"Gamma", {0.6}}, {"InputStart", {0.05}}}}}},
         {"colorcurves", {{"master", PM(), SM{{"Property", curvesBlob({{}, {}, {}, {{0, 0}, {0.5, 0.65}, {1, 1}}})}}},
@@ -804,12 +1256,26 @@ const std::vector<CaseSet>& caseSets()
           {"limits", PM{{"LimitLuminanceLow", {60}}, {"LimitLuminanceHigh", {200}}, {"LimitLuminanceSmooth", {20}}, {"LimitSaturationLow", {20}},
                         {"LimitSaturationHigh", {120}}, {"LimitSaturationSmooth", {15}}, {"Saturation", {0.2}}}},
           {"mask", PM{{"ShowMask", {1}}, {"LimitHueCenter", {100}}, {"LimitHueWidth", {120}}, {"LimitHueSmooth", {40}}}},
-          {"inverted", PM{{"InvertMask", {1}}, {"LimitHueCenter", {100}}, {"LimitHueWidth", {120}}, {"Alpha", {0.5}}, {"Chrominance", {200, 0.5}}}}}},
+          {"inverted", PM{{"InvertMask", {1}}, {"LimitHueCenter", {100}}, {"LimitHueWidth", {120}}, {"Alpha", {0.5}}, {"Chrominance", {200, 0.5}}}},
+          {"lum only", PM{{"LimitLuminanceLow", {40}}, {"LimitLuminanceHigh", {180}}, {"LimitLuminanceSmooth", {25}}, {"Saturation", {1.4}}, {"Gamma", {1.2}}}},
+          {"lum chroma", PM{{"LimitLuminanceLow", {80}}, {"LimitLuminanceHigh", {200}}, {"LimitLuminanceSmooth", {10}}, {"Chrominance", {200, 0.7}}}},
+          {"lum invert", PM{{"InvertMask", {1}}, {"LimitLuminanceLow", {60}}, {"LimitLuminanceHigh", {160}}, {"LimitLuminanceSmooth", {10}}, {"Gain", {1.3}}, {"Offset", {-8}}}},
+          {"sat only", PM{{"EnableLimitLuminance", {0}}, {"EnableLimitSaturation", {1}}, {"LimitSaturationLow", {10}}, {"LimitSaturationHigh", {90}}, {"LimitSaturationSmooth", {10}}, {"RotateHue", {40}}}},
+          {"show lum", PM{{"ShowMask", {1}}, {"LimitLuminanceLow", {50}}, {"LimitLuminanceHigh", {150}}, {"LimitLuminanceSmooth", {30}}}},
+          {"show inverted", PM{{"ShowMask", {1}}, {"InvertMask", {1}}, {"EnableLimitHue", {1}}, {"LimitHueCenter", {40}}, {"LimitHueWidth", {90}}, {"LimitHueSmooth", {20}}}},
+          {"alpha", PM{{"Alpha", {0.4}}, {"LimitLuminanceLow", {100}}, {"LimitLuminanceHigh", {255}}, {"LimitLuminanceSmooth", {30}}}},
+          {"nothing to apply", PM{{"LimitLuminanceLow", {70}}, {"LimitLuminanceHigh", {140}}, {"LimitLuminanceSmooth", {5}}}},
+          {"hard window", PM{{"LimitLuminanceLow", {100}}, {"LimitLuminanceHigh", {100}}, {"LimitLuminanceSmooth", {0}}, {"Saturation", {2}}}},
+          {"all limits", PM{{"LimitLuminanceLow", {30}}, {"LimitLuminanceHigh", {220}}, {"LimitLuminanceSmooth", {12}}, {"EnableLimitSaturation", {1}}, {"LimitSaturationLow", {5}}, {"LimitSaturationHigh", {100}},
+                            {"LimitSaturationSmooth", {8}}, {"EnableLimitHue", {1}}, {"LimitHueCenter", {200}}, {"LimitHueWidth", {200}}, {"LimitHueSmooth", {25}}, {"RotateHue", {-60}}, {"Saturation", {1.3}},
+                            {"Alpha", {0.8}}, {"Gamma", {0.8}}}}}},
         {"gaussianblur", {{"wide", PM{{"HorizontalRange", {1.5}}, {"VerticalRange", {0.4}}}}, {"onlyx", PM{{"HorizontalRange", {0.8}}, {"VerticalRange", {0.0}}}},
                           {"channels", PM{{"HorizontalRange", {0.6}}, {"VerticalRange", {0.6}}, {"R", {0}}, {"A", {0}}}}, {"tiny", PM{{"HorizontalRange", {0.1}}, {"VerticalRange", {0.1}}}}}},
         {"sharpen", {{"more", PM{{"Amount", {1.0}}}}, {"little", PM{{"Amount", {0.15}}}}, {"none", PM{{"Amount", {0.0}}}}}},
         {"mirror", {{"tilted", PM{{"Angle", {30}}, {"Center", {0.4, 0.6}}}}, {"vertical", PM{{"Angle", {90}}, {"Center", {0.5, 0.5}}}}, {"back", PM{{"Angle", {-120}}, {"Center", {0.7, 0.3}}}}}},
-        {"glow", {{"strong", PM{{"GlowPercent", {0.5}}, {"Intensity", {2.0}}, {"Suppression", {0.2}}}}, {"tinted", PM{{"Color", {1.0, 0.5, 0.2, 1.0}}, {"Intensity", {0.6}}}}}},
+        {"glow", {{"strong", PM{{"GlowPercent", {0.5}}, {"Intensity", {2.0}}, {"Suppression", {0.2}}}}, {"tinted", PM{{"Color", {1.0, 0.5, 0.2, 1.0}}, {"Intensity", {0.6}}}},
+                  {"wide", PM{{"GlowPercent", {1.0}}, {"Intensity", {5.0}}, {"Suppression", {0.0}}, {"Color", {0.2, 0.9, 0.4, 0.5}}}}, {"none", PM{{"GlowPercent", {0.0}}, {"Intensity", {1.0}}}},
+                  {"strong", PM{{"GlowPercent", {0.3}}, {"Intensity", {25.0}}, {"Suppression", {0.9}}, {"Color", {1.0, 1.0, 1.0, 1.0}}}}}},
         {"chromakeyer", {{"red key", PM{{"color", {1.0, 0.0, 0.0, 1.0}}, {"LowThreshold", {0.3}}, {"HighThreshold", {0.6}}}},
                          {"blurred", PM{{"color", {0.0, 1.0, 0.0, 1.0}}, {"BlurAmount", {0.5}}, {"LowThreshold", {0.2}}, {"HighThreshold", {0.9}}}},
                          {"cut mask", PM{{"color", {0.5, 0.5, 0.5, 1.0}}, {"LowThreshold", {0.5}}, {"HighThreshold", {0.3}}, {"ShowMaskOnly", {1}}}},
@@ -823,10 +1289,14 @@ const std::vector<CaseSet>& caseSets()
         {"labadjust", {{"light", PM{{"Lightness", {1.3}}, {"Channela", {0.3}}, {"Channelb", {-0.2}}}}, {"inverted", PM{{"InvertLuminance", {1}}, {"Desaturate", {0.4}}}}}},
         {"blackrestore", {{"high", PM{{"Threshold", {0.6}}}}, {"low", PM{{"Threshold", {0.1}}}}}},
         {"channelblend", {{"swap", PM{{"RED weight R", {0}}, {"RED weight B", {1}}, {"BLUE weight B", {0}}, {"BLUE weight R", {1}}}},
-                          {"mix", PM{{"Normalize", {1}}, {"RED weight G", {0.8}}, {"GREEN weight R", {0.5}}, {"BLUE weight Offset", {0.1}}, {"ALPHA weight A", {0.7}}}}}},
-        {"vignette", {{"dark", PM{{"Outer", {1.0}}, {"Inner", {0.3}}, {"Feather", {2.0}}, {"Aspect", {1.5}}, {"Rotation", {10}}}}, {"inverted", PM{{"Invert", {1}}, {"Center", {0.3, 0.7}}, {"Color", {1.0, 0.2, 0.2, 0.8}}}}}},
+                          {"mix", PM{{"Normalize", {1}}, {"RED weight G", {0.8}}, {"GREEN weight R", {0.5}}, {"BLUE weight Offset", {0.1}}, {"ALPHA weight A", {0.7}}}},
+                          {"neg", PM{{"RED weight G", {-0.6}}, {"RED weight B", {1.3}}, {"GREEN weight Offset", {-0.2}}, {"BLUE weight A", {0.37}}}},
+                          {"neg norm", PM{{"Normalize", {1}}, {"RED weight G", {-0.6}}, {"RED weight B", {1.3}}, {"GREEN weight Offset", {0.25}}, {"BLUE weight R", {0.33}}, {"BLUE weight G", {0.33}}, {"BLUE weight B", {0.33}}}}}},
+        {"vignette", {{"dark", PM{{"Outer", {1.0}}, {"Inner", {0.3}}, {"Feather", {2.0}}, {"Aspect", {1.5}}, {"Rotation", {10}}}}, {"inverted", PM{{"Invert", {1}}, {"Center", {0.3, 0.7}}, {"Color", {1.0, 0.2, 0.2, 0.8}}}},
+                     {"soft", PM{{"Outer", {0.7}}, {"Inner", {0.0}}, {"Feather", {0.3}}, {"Aspect", {0.4}}, {"Rotation", {200}}, {"Color", {0.1, 0.3, 0.9, 1.0}}}},
+                     {"tight", PM{{"Outer", {0.4}}, {"Inner", {0.9}}, {"Feather", {5.0}}}}}},
         {"unsharpmask", {{"strong", PM{{"Amount", {2.0}}, {"Radius", {0.05}}, {"Threshold", {0.1}}}}, {"narrow", PM{{"Amount", {1.0}}, {"Radius", {0.004}}}}}},
-        {"quickblur", {{"half", PM{{"BlendAmount", {0.5}}}}}},
+        {"quickblur", {{"half", PM{{"BlendAmount", {0.5}}}}, {"mostly", PM{{"BlendAmount", {0.93}}}}, {"little", PM{{"BlendAmount", {0.07}}}}, {"none", PM{{"BlendAmount", {0.0}}}}}},
         {"pixelate", {{"coarse", PM{{"HorizontalPixelization", {0.5}}, {"VerticalPixelization", {0.5}}}}, {"wide", PM{{"HorizontalPixelization", {0.9}}, {"VerticalPixelization", {0.2}}}},
                       {"fine", PM{{"HorizontalPixelization", {0.1}}, {"VerticalPixelization", {0.1}}}}}},
         {"spherize", {{"bulge", PM{{"Amount", {0.8}}, {"Center", {0.4, 0.6}}, {"ScalingHorizontal", {1.2}}}}, {"pinch", PM{{"Amount", {-0.7}}, {"ScalingProportional", {0}}, {"ScalingVertical", {0.6}}}}}},
@@ -838,7 +1308,7 @@ const std::vector<CaseSet>& caseSets()
         {"gradientmap", {{"mix", PM{{"Amount", {0.7}}, {"Mode", {0}}}}, {"add", PM{{"Amount", {0.9}}, {"Mode", {1}}}}}},
         {"maskgenerator", {{"luma", PM{{"Type", {0}}, {"LowIn", {0.2}}, {"HighIn", {0.8}}}}, {"red inverted", PM{{"Type", {1}}, {"Invert", {1}}, {"LowOut", {0.1}}, {"HighOut", {0.9}}}},
                            {"alpha", PM{{"Type", {4}}}}, {"blue", PM{{"Type", {3}}, {"LowIn", {0.1}}, {"HighIn", {0.5}}}}}},
-        {"broadcastcolors", {{"limits", PM{{"LumaMin", {10}}, {"LumaMax", {90}}, {"ChromaMax", {60}}}}, {"studio", PM{{"StudioRGB16To135", {1}}, {"75IREsetup", {1}}, {"ChromaMax", {40}}}},
+        {"broadcastcolors", {{"studio no setup", PM{{"StudioRGB16To135", {1}}, {"75IREsetup", {0}}, {"LumaMin", {15}}, {"LumaMax", {85}}, {"ChromaMax", {50}}}}, {"smooth", PM{{"LumaMin", {20}}, {"LumaMinSmoothness", {0.6}}, {"LumaMax", {80}}, {"LumaMaxSmoothness", {0.7}}, {"ChromaMax", {30}}, {"ChromaSmoothness", {0.5}}, {"CompositeMin", {30}}, {"CompositeMinSmoothness", {0.4}}, {"CompositeMax", {90}}, {"CompositeMaxSmoothness", {0.8}}}}, {"limits", PM{{"LumaMin", {10}}, {"LumaMax", {90}}, {"ChromaMax", {60}}}}, {"studio", PM{{"StudioRGB16To135", {1}}, {"75IREsetup", {1}}, {"ChromaMax", {40}}}},
                             {"composite", PM{{"CompositeMax", {100}}, {"CompositeMin", {-8}}, {"ChromaMax", {100}}}},
                             {"smooth", PM{{"LumaMin", {16}}, {"LumaMax", {85}}, {"ChromaMax", {74}}, {"CompositeMin", {-27.5}}, {"CompositeMax", {124}}, {"LumaMinSmoothness", {0.5}},
                                           {"LumaMaxSmoothness", {1}}, {"ChromaSmoothness", {0.5}}, {"CompositeMinSmoothness", {0.5}}, {"CompositeMaxSmoothness", {1}}, {"StudioRGB16To135", {0}}}}}},
@@ -858,17 +1328,30 @@ const std::vector<CaseSet>& caseSets()
 
 }  // namespace
 
+void gpuDericheBlur(gpu::Plan& p, int from, int to, double sigmaX, double sigmaY, bool levels) { gpuAddDeriche(p, from, to, sigmaX, sigmaY, levels); }
+
+// Effects whose GPU picture is not yet bit-identical to the CPU's: they stay on the CPU (the planner is not attached).
+// Their kernels are kept in this file for when each is made exact.
+static bool gpuDeclinedForExactness(const std::string& id)
+{
+    static const char* const names[] = {"checkerboard"};
+    for (const char* n : names)
+        if (id == fullId(n)) return true;
+    return false;
+}
+
+// Float tolerance: 0 (bit-identical) except where the CPU result depends on libm / the compiler's float contraction,
+// which a GPU cannot reproduce to the last bit: there a few ulps are allowed (8-bit pictures are always exact).
 double gpuFloatTolerance(const Def& d)
 {
-    static const char* const positional[] = {"mirror", "convolutionkernel", "wave", "swirl", "pinchpunch", "spherize"};
-    for (const char* n : positional)
-        if (d.id == std::string(kPrefix) + n) return 2e-3;
-    // LAB Adjust truncates to 8-bit levels like VEGAS: a value a hair under a level on one side and over on the other
-    // (pow/cbrt differ in the last bits between the CPU and a GPU) is a whole level apart
-    if (d.id == std::string(kPrefix) + "labadjust") return 1.0 / 255.0 + 1e-4;
-    // the Chroma Keyer's alpha is a whole 8-bit level like VEGAS's: a distance a hair either side of a level in float
-    if (d.id == std::string(kPrefix) + "chromakeyer") return 1.0 / 255.0 + 1e-4;
-    return 1e-4;
+    { double t; if (extraGpuFloatTolerance(d.id, t)) return t; }      // (the transitions and generators: vktrans.cpp)
+    static const char* const ulp[] = {"colorcorrector", "colorgrading", "colormatch", "tvsimulator", "mirror", "clockwipe",
+                                      "linearwipe", "push", "barndoor", "broadcastcolors", "lensflare", "colorcorrectorsecondary"};
+    for (const char* n : ulp)
+        if (d.id == fullId(n)) return 5e-5;
+    for (const FilterGpuEntry& e : filterGpuEntries())
+        if (d.id == fullId(e.id)) return e.floatTol;
+    return 0.0;
 }
 
 std::vector<GpuCheckCase> gpuCheckCases(const Def& d)
@@ -876,7 +1359,10 @@ std::vector<GpuCheckCase> gpuCheckCases(const Def& d)
     std::vector<GpuCheckCase> v;
     v.push_back(GpuCheckCase{"defaults", PM()});
     for (const CaseSet& s : caseSets())
-        if (d.id == std::string(kPrefix) + s.id) v.insert(v.end(), s.cases.begin(), s.cases.end());
+        if (d.id == fullId(s.id)) v.insert(v.end(), s.cases.begin(), s.cases.end());
+    extraGpuCases(d.id, v);
+    for (const FilterGpuEntry& e : filterGpuEntries())
+        if (d.id == fullId(e.id)) v.insert(v.end(), e.cases.begin(), e.cases.end());
     return v;
 }
 
@@ -917,13 +1403,24 @@ void attachGpuPlanners(std::vector<Def>& all)
 {
     for (Def& d : all)
         for (const Entry& e : kEntries)
-            if (d.id == std::string(kPrefix) + e.id && !d.generator) d.gpu = e.plan;
+            if (d.id == fullId(e.id) && !gpuDeclinedForExactness(d.id)) d.gpu = e.plan;
+    for (Def& d : all)
+        for (const FilterGpuEntry& e : filterGpuEntries())
+            if (e.plan && d.id == fullId(e.id)) d.gpu = e.plan;
+    for (Def& d : all)                      // (the transitions and generators of vktrans.cpp take over the ids they list)
+        for (const ExtraGpuEntry& e : extraGpuEntries())
+            if (d.id == fullId(e.id)) d.gpu = e.plan;
 }
 
 std::vector<std::string> gpuEffectIds()
 {
     std::vector<std::string> v;
-    for (const Entry& e : kEntries) v.push_back(std::string(kPrefix) + e.id);
+    for (const Entry& e : kEntries)
+        if (!gpuDeclinedForExactness(fullId(e.id))) v.push_back(fullId(e.id));
+    for (const FilterGpuEntry& e : filterGpuEntries())
+        if (e.plan && std::find(v.begin(), v.end(), fullId(e.id)) == v.end()) v.push_back(fullId(e.id));
+    for (const ExtraGpuEntry& e : extraGpuEntries())
+        if (std::find(v.begin(), v.end(), fullId(e.id)) == v.end()) v.push_back(fullId(e.id));
     return v;
 }
 
@@ -947,6 +1444,7 @@ bool gpuRender(const Def& d, Ctx& c, GpuFrame& f)
     io.outRowBytes = f.outRowBytes;
     io.inSerial = f.inSerial;
     io.outSerial = f.outSerial;
+    io.noInput = f.noInput;
     return gpu::run(plan, io);
 }
 
@@ -1043,6 +1541,7 @@ bool renderFrameGpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
     io.outRowBytes = outStride;
     io.inSerial = inSerial;
     io.outSerial = outSerial;
+    io.noInput = d.generator;
     return gpu::run(plan, io, stats);
 }
 

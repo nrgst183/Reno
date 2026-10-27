@@ -6,6 +6,7 @@
 //   - the ellipse's edge is a pixel wide, its coverage from a table (area of a circle's segment), laid on the paper by removing (255 - colour) * coverage / 256 from each channel;
 //   - Dot sizes under 0.15 are faded in from the picture (Monochrome: from its grey); at 0 it is the picture itself.
 #include "builtins_impl.h"
+#include "vkfilters.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -43,22 +44,6 @@ struct CoverTable {
 
 inline int rnd(double v) { return (int)std::nearbyint(v); }
 
-// The weights of the source columns for each of n cells of a box shrink: the cell i takes [i * step, i * step + step) (14-bit
-// units), each source pixel by the part of it inside.
-void boxWeights(int nOut, int nIn, i64 step, std::vector<std::vector<std::pair<int, int> > >& res)
-{
-    res.assign((size_t)nOut, std::vector<std::pair<int, int> >());
-    for (int i = 0; i < nOut; ++i) {
-        const i64 a = (i64)i * step, b = a + step;
-        i64 j = a >> 14;
-        while ((j << 14) < b && j < nIn) {
-            const i64 lo = std::max(a, j << 14), hi = std::min(b, (j + 1) << 14);
-            res[(size_t)i].push_back(std::make_pair((int)j, (int)(hi - lo)));
-            ++j;
-        }
-    }
-}
-
 struct Pic {
     int w = 0, h = 0;
     std::vector<int> p;     // 4 ints per pixel, B G R A (VEGAS's order)
@@ -66,37 +51,78 @@ struct Pic {
     const int* at(int x, int y) const { return &p[((size_t)y * w + x) * 4]; }
 };
 
-// The picture shrunk into a rect of x2 by y2 cells (a part of a cell at the end), cells P pixels wide: sw x sh of them.
+inline int magicRound(double v)
+{
+    double t = v + 1.5e-8;
+    t = t + 6755399441055744.0;
+    int64_t b;
+    std::memcpy(&b, &t, 8);
+    return (int)(b & 0xff);
+}
+
+// The cells of one axis of the shrink (VEGAS: SfDibScale_BilinearSubPixel, large-scale path): each takes the source interval from its (truncated, 14-bit) start;
+// S/E: first and one past the last source pixel, F/L: the parts of the first and last pixel inside (14-bit).
+static inline int ceil14(int v) { return (((v - 1) | 0x3fff) + 1) >> 14; }
+void newsAxisImpl(int dR, int step, int cells, std::vector<NewsAxisCell>& out)
+{
+    out.clear();
+    const double inv14 = 6.103515625e-05;
+    const int i1 = ceil14(dR);
+    const int last = dR - ((i1 - 1) << 14);
+    int first = (i1 >= 2) ? 16384 : dR;
+    int pos = 0, wf = first;
+    for (int i = 0; i < i1 && i < cells; ++i) {
+        const int e = (int)((double)wf * (double)step * inv14);
+        const int end = pos + e;
+        NewsAxisCell c;
+        c.S = pos >> 14; c.E = ceil14(end);
+        const int n = c.E - c.S;
+        c.L = end - ((c.E - 1) << 14);
+        c.F = n >= 2 ? (((c.S + 1) << 14) - pos) : e;
+        out.push_back(c);
+        pos = end;
+        wf = (i == i1 - 2) ? last : 16384;
+    }
+}
+
 void boxShrink(const Pic& M, Pic& S, int sw, int sh, double x2, double y2)
 {
     const int W = M.w, H = M.h;
-    const i64 dRx = (i64)(x2 * 16384), dRy = (i64)(y2 * 16384);
-    S.w = sw;
-    S.h = sh;
-    S.p.assign((size_t)sw * sh * 4, 0);
+    const int dRx = (int)(x2 * 16384), dRy = (int)(y2 * 16384);
+    S.w = sw; S.h = sh; S.p.assign((size_t)sw * sh * 4, 0);
     if (dRx <= 0 || dRy <= 0) return;
-    const i64 sx = (i64)((double)((i64)W << 14) * 16384.0 / (double)dRx), sy = (i64)((double)((i64)H << 14) * 16384.0 / (double)dRy);
-    const i64 nrm = (i64)((double)(sx * sy) * 6.103515625e-05);
+    const int sxs = (int)((double)((i64)W << 14) * 16384.0 / (double)dRx), sys = (int)((double)((i64)H << 14) * 16384.0 / (double)dRy);
+    const i64 nrm = ((i64)sxs * sys) >> 14;
     if (nrm <= 0) return;
     const double norm = 1.0 / (double)nrm;
-    std::vector<std::vector<std::pair<int, int> > > ax, ay;
-    boxWeights(sw, W, sx, ax);
-    boxWeights(sh, H, sy, ay);
-    for (int y = 0; y < sh; ++y)
-        for (int x = 0; x < sw; ++x) {
+    const double inv14 = 6.103515625e-05;
+    std::vector<NewsAxisCell> axX, axY;
+    newsAxisImpl(dRx, sxs, sw, axX);
+    newsAxisImpl(dRy, sys, sh, axY);
+    auto px = [&](int x, int y) -> const int* { static const int z[4] = {0,0,0,0}; if (x < 0 || y < 0 || x >= W || y >= H) return z; return M.at(x, y); };
+    for (size_t j = 0; j < axY.size(); ++j) {
+        const int iyS = axY[j].S, iyE = axY[j].E, wyF = axY[j].F, wyL = axY[j].L;
+        const int nrows = iyE - iyS;
+        for (size_t i = 0; i < axX.size(); ++i) {
+            const int ixS = axX[i].S, ixE = axX[i].E, wxF = axX[i].F, wxL = axX[i].L;
+            const int ncols = ixE - ixS;
             i64 acc[4] = {0, 0, 0, 0};
-            for (size_t a = 0; a < ay[(size_t)y].size(); ++a)
-                for (size_t b = 0; b < ax[(size_t)x].size(); ++b) {
-                    const int wy = ay[(size_t)y][a].second, wx = ax[(size_t)x][b].second;
-                    const i64 w = (wx == 16384 && wy == 16384) ? 16384 : (i64)((double)((i64)wx * wy) * 6.103515625e-05);
-                    const int* q = M.at(ax[(size_t)x][b].first, ay[(size_t)y][a].first);
-                    for (int k = 0; k < 4; ++k) acc[k] += (i64)q[k] * w;
-                }
-            int* o = S.at(x, y);
-            for (int k = 0; k < 4; ++k) o[k] = (int)std::floor((double)acc[k] * norm + 1.5e-8 + 0.5);
+            auto add = [&](int x, int y, i64 w) { const int* q = px(x, y); for (int k = 0; k < 4; ++k) acc[k] += q[k] * w; };
+            for (int yy = iyS + 1; yy < iyE - 1; ++yy)
+                for (int xx = ixS + 1; xx < ixE - 1; ++xx) add(xx, yy, 16384);
+            add(ixS, iyS, (int)((double)wyF * (double)wxF * inv14));
+            if (ncols > 1) add(ixE - 1, iyS, (int)((double)wxL * (double)wyF * inv14));
+            if (nrows > 1) {
+                add(ixS, iyE - 1, (int)((double)wyL * (double)wxF * inv14));
+                if (ncols > 1) add(ixE - 1, iyE - 1, (int)((double)wxL * (double)wyL * inv14));
+            }
+            for (int xx = ixS + 1; xx < ixE - 1; ++xx) { add(xx, iyS, wyF); if (nrows > 1) add(xx, iyE - 1, wyL); }
+            for (int yy = iyS + 1; yy < iyE - 1; ++yy) { add(ixS, yy, wxF); if (ncols > 1) add(ixE - 1, yy, wxL); }
+            int* o = S.at((int)i, (int)j);
+            for (int k = 0; k < 4; ++k) o[k] = magicRound((double)acc[k] * norm);
         }
+    }
 }
-
 // The small picture at the place (sx, sy) in 14-bit cells: bilinear (14-bit weights); at the last row / column the nearer ones.
 void sampleS(const Pic& S, i64 sx, i64 sy, int* out)
 {
@@ -162,12 +188,51 @@ void ellipse(Pic& D, const CoverTable& tab, double X, double Y, double rx, doubl
 
 }  // namespace
 
+void newsprintAxis(int dR, int step, int cells, std::vector<NewsAxisCell>& out) { newsAxisImpl(dR, step, cells, out); }
+
+void newsprintGeometry(Ctx& c, int W, int H, NewsGeo& g)
+{
+    g.ok = false;
+    g.W = W; g.H = H;
+    g.dot = clampd(c.d("DotSize"), 0, 1);
+    const int type = c.i("Type");
+    if (g.dot <= 0.0 || W < 2 || H < 2) return;
+    g.P = std::max(W, H) * g.dot / 20.0 + 3.0;
+    const double P = g.P;
+    g.sw = rnd((double)W / P + 0.499999985); g.sh = rnd((double)H / P + 0.499999985);
+    g.x2 = (double)W / P; g.y2 = (double)H / P;
+    if (g.sw < 2 || g.sh < 2 || g.x2 < 1.5 || g.y2 < 1.5) return;
+    const i64 dRx = (i64)(g.x2 * 16384), dRy = (i64)(g.y2 * 16384);
+    g.dRx = dRx; g.dRy = dRy;
+    g.mode = type == 2 ? 2 : (type == 0 ? 1 : 0);
+    g.nbx = (int)g.x2; g.nby = (int)g.y2;
+    g.maxX = (i64)((g.x2 - 1.5) * 16384); g.maxY = (i64)((g.y2 - 1.5) * 16384);
+    const double x3 = (W - g.x2) * 0.5, x7 = (H - g.y2) * 0.5;
+    g.fxo = -std::fmod(x3, 1.0); g.fyo = -std::fmod(x7, 1.0);
+    g.par = ~(int)x7;
+    g.fadeT = g.dot < 0.15 ? (rnd((1.0 - g.dot / 0.15) * 255 + 0.5 - 0.499999985) & 255) : -1;
+    if (dRx > 0 && dRy > 0) {
+        g.sx = (int)((double)((i64)W << 14) * 16384.0 / (double)dRx);
+        g.sy = (int)((double)((i64)H << 14) * 16384.0 / (double)dRy);
+        g.nrm = ((i64)g.sx * g.sy) >> 14;
+    }
+    g.ok = true;
+}
+
+void newsprintCoverTable(int* t)
+{
+    static const CoverTable tab;
+    std::memcpy(t, tab.t, sizeof(int) * 256);
+}
+
 void vegasNewsprint(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
-    const double dot = clampd(c.d("DotSize"), 0, 1);
+    NewsGeo g;
+    newsprintGeometry(c, W, H, g);
+    const double dot = g.dot;
     const int type = c.i("Type");
-    if (dot <= 0.0 || W < 2 || H < 2) {
+    if (!g.ok) {
         c.out.px = c.src.px;
         return;
     }
@@ -185,13 +250,9 @@ void vegasNewsprint(Ctx& c)
             q[2] = rnd(clamp01(p[0]) * 255.f);
             q[3] = rnd(clamp01(p[3]) * 255.f);
         }
-    const double P = std::max(W, H) * dot / 20.0 + 3.0;
-    const int sw = rnd((double)W / P + 0.499999985), sh = rnd((double)H / P + 0.499999985);
-    const double x2 = (double)W / P, y2 = (double)H / P;
-    if (sw < 2 || sh < 2 || x2 < 1.5 || y2 < 1.5) {
-        c.out.px = c.src.px;
-        return;
-    }
+    const double P = g.P;
+    const int sw = g.sw, sh = g.sh;
+    const double x2 = g.x2, y2 = g.y2;
     static const CoverTable tab;
     Pic S;
     boxShrink(M, S, sw, sh, x2, y2);
@@ -199,12 +260,12 @@ void vegasNewsprint(Ctx& c)
     D.w = W;
     D.h = H;
     D.p.assign((size_t)W * H * 4, 255);
-    const int mode = type == 2 ? 2 : (type == 0 ? 1 : 0);
-    const int nbx = (int)x2, nby = (int)y2;
-    const i64 maxX = (i64)((x2 - 1.5) * 16384), maxY = (i64)((y2 - 1.5) * 16384);
-    const double x3 = (W - x2) * 0.5, x7 = (H - y2) * 0.5;
-    const double fxo = -std::fmod(x3, 1.0), fyo = -std::fmod(x7, 1.0);
-    const int par = ~(int)x7;
+    const int mode = g.mode;
+    const int nbx = g.nbx, nby = g.nby;
+    const i64 maxX = g.maxX, maxY = g.maxY;
+    const double fxo = g.fxo, fyo = g.fyo;
+    const int par = g.par;
+    (void)type;
     for (int j = -1; j < nby + 3; ++j) {
         const double yy = (double)j + 0.0 + fyo;
         const double shift = ((j + par) & 1) ? 0.5 : 0.0;
@@ -234,7 +295,7 @@ void vegasNewsprint(Ctx& c)
         }
     }
     if (dot < 0.15) {
-        const int t = rnd((1.0 - dot / 0.15) * 255 + 0.5 - 0.499999985) & 255;
+        const int t = g.fadeT;
         auto mix = [&](int A, int B) {
             const int q = (B - A) * t + 128;
             const int v = A + ((q + (q >> 8)) >> 8);

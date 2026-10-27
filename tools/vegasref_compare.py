@@ -17,6 +17,21 @@ def load_json(p):
         return json.load(f)
 
 
+# Reference results that Reno is expected to differ from, with the reason. (effect name substring, test index) -> reason
+KNOWN_ANOMALIES = {
+    ("layerdimensionality", 3): "light at (3,3,6): the reference shows no inner shadow, but VEGAS's decoded render code (run on Linux) draws one "
+                                 "for that light; the host's value for the parameter is unexplained, so Reno follows the decoded render",
+    ("broadcastcolors", 24): "75IREsetup=0 with Studio on: Vfx1 run on Linux differs from this capture by 462 pixels, the capture equals both on; redo in VEGAS",
+}
+
+
+def known_anomaly(name, test):
+    for (sub, t), why in KNOWN_ANOMALIES.items():
+        if t == test and sub.lower() in name.lower():
+            return why
+    return None
+
+
 def diff_stats(a, b):
     n = min(len(a), len(b))
     if n == 0:
@@ -155,7 +170,9 @@ def main():
                     if st is None:
                         print("     %3d.%d %-48s Reno made no picture" % (i, f, nm[:48]))
                     elif st[1] > 0:
-                        print("     %3d.%d %-48s mean %7.3f  max %3d  >2: %5.1f%%" % (i, f, nm[:48], st[0], st[1], st[2]))
+                        why = known_anomaly(name, i)
+                        print("     %3d.%d %-48s mean %7.3f  max %3d  >2: %5.1f%%%s" % (i, f, nm[:48], st[0], st[1], st[2],
+                              ("  [known anomaly: " + why + "]") if why else ""))
             if o.png and worst:
                 os.makedirs(o.png, exist_ok=True)
                 diff = bytes(min(255, abs(a - b)) if (k % 4) != 3 else 255 for k, (a, b) in enumerate(zip(worst[3], worst[4])))

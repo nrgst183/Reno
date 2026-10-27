@@ -90,8 +90,74 @@ double oddCover(double u0, double u1)
     return u1 > u0 ? (F(u1) - F(u0)) / (u1 - u0) : 0.0;
 }
 
+// VEGAS's 8-bit checkerboard, transliterated from the plug-in: single-precision tile maths walked pixel by pixel (x advances by 1.0 in float),
+// colours cut to bytes first, edges blended in 16.16 weights. Row 0 here is the top of the picture.
+static bool checkerboardFx8(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    const Color ca = c.color("Color1"), cb = c.color("Color2");
+    auto toByte = [](double col, double al) { return (int)((float)(col * al) * 255.0f); };
+    int P1[4] = {toByte(ca.r, ca.a), toByte(ca.g, ca.a), toByte(ca.b, ca.a), (int)((float)ca.a * 255.0f)};
+    int P2[4] = {toByte(cb.r, cb.a), toByte(cb.g, cb.a), toByte(cb.b, cb.a), (int)((float)cb.a * 255.0f)};
+    float tw = (float)c.d("TileDimensionsWidth") * (float)W;
+    float th = (float)c.d("TileDimensionsHeight") * (float)H;
+    if (c.b("TileDimensionsSquare")) th = tw * 1.0f;
+    const float inv = 1.0f / 1.0f;
+    if (inv > tw) { th = th * inv / tw; tw = inv; }
+    if (1.0f > th) { tw = tw / th; th = 1.0f; }
+    const float hx = std::max(0.5f, (float)c.d("EdgeBlendingHorizontal") * tw * 0.5f);
+    const double bvd = c.b("EdgeBlendingProportional") ? c.d("EdgeBlendingHorizontal") : c.d("EdgeBlendingVertical");
+    const float hy = std::max(0.5f, (float)bvd * th * 0.5f);
+    const float kx = 32768.0f / hx, ky = 32768.0f / hy;
+    const float ox = (float)c.d("GridOffsetX") * (float)W, oy = (float)c.d("GridOffsetY") * (float)H;
+    // nonsense settings (not a number, huge): the plain float picture below copes with them, the tile walk would not end
+    const float lim = 1e6f;
+    if (!(std::fabs(tw) < lim && std::fabs(th) < lim && tw >= 1.0f && th >= 1.0f && std::fabs(ox) < lim && std::fabs(oy) < lim && hx < lim && hy < lim)) return false;
+    forRows(H, W, [&](int y) {
+        // memory row m = H-1-y in the plug-in; its counter is the row index from the top
+        const float yc = (float)y + 0.5f - oy;
+        float x = 0.5f - ox;
+        int ix = (int)(x / tw);
+        if ((float)ix * tw > x) --ix;
+        int iy = (int)(yc / th);
+        if ((float)iy * th > yc) --iy;
+        float xl = (float)ix * tw + hx, xr = (float)(ix + 1) * tw - hx;
+        const float yl = (float)iy * th + hy, yu = (float)(iy + 1) * th - hy;
+        int C0[2][4], C1[2][4]; // [parity] colours: tile colour, neighbour colour
+        int A[4], B[4];
+        if (yc >= yl && yu > yc) {
+            for (int k = 0; k < 4; ++k) { A[k] = P1[k]; B[k] = P2[k]; }
+        } else {
+            int wv;
+            if (yl > yc) wv = (int)((yl - yc) * ky + 0.5f);
+            else wv = (int)((yc - yu) * ky + 0.5f);
+            for (int k = 0; k < 4; ++k) {
+                A[k] = (P1[k] * (0x10000 - wv) + P2[k] * wv) >> 16;
+                B[k] = (P2[k] * (0x10000 - wv) + P1[k] * wv) >> 16;
+            }
+        }
+        // even tile: c0 = A, c1 = B; odd tile: c0 = B, c1 = A
+        for (int k = 0; k < 4; ++k) { C0[0][k] = A[k]; C1[0][k] = B[k]; C0[1][k] = B[k]; C1[1][k] = A[k]; }
+        for (int px = 0; px < W; ++px) {
+            while (!(xl > x) && !(xr > x)) { ++ix; xl += tw; xr += tw; }
+            const int par = (ix + iy) & 1;
+            float* o = c.out.at(px, y);
+            if (xl > x) {
+                const int w = (int)((xl - x) * kx + 0.5f);
+                for (int k = 0; k < 4; ++k)
+                    o[k] = (float)((C0[par][k] * (0x10000 - w) + C1[par][k] * w) >> 16) / 255.0f;
+            } else {
+                for (int k = 0; k < 4; ++k) o[k] = (float)C0[par][k] / 255.0f;
+            }
+            x += 1.0f;
+        }
+    });
+    return true;
+}
+
 void checkerboard(Ctx& c)
 {
+    if (c.levels && checkerboardFx8(c)) return;
     const int W = c.out.w, H = c.out.h;
     // tiles are never smaller than a pixel
     const double tw = std::max(1.0 / std::max(1, W), c.d("TileDimensionsWidth"));
@@ -1132,6 +1198,146 @@ void addGenerators(std::vector<Def>& out)
         }
         d.render = titlesAndText;
         out.push_back(d);
+    }
+}
+
+
+// ---- for the GPU (vkeffects.cpp): the numbers the CPU code above works out in double precision, so the kernels only mix them.
+// Solid Color's premultiplied levels.
+void solidColorGpu(Ctx& c, float p[4])
+{
+    putGen(p, c.color("Color"));
+}
+
+// Checkerboard: the horizontal wave of each column, then the vertical wave of each row (as checkerboard() works them out), and the two premultiplied colours.
+void checkerboardGpu(Ctx& c, int W, int H, std::vector<float>& tab, float pa[4], float pb[4])
+{
+    const double tw = std::max(1.0 / std::max(1, W), c.d("TileDimensionsWidth"));
+    const bool square = c.b("TileDimensionsSquare");
+    const double th = std::max(1.0 / std::max(1, H), square ? tw * W / std::max(1, H) : c.d("TileDimensionsHeight"));
+    const double bh = clampd(c.d("EdgeBlendingHorizontal"), 0, 1);
+    const double bv = c.b("EdgeBlendingProportional") ? bh : clampd(c.d("EdgeBlendingVertical"), 0, 1);
+    const Color a = c.color("Color1"), b = c.color("Color2");
+    const double ox = c.d("GridOffsetX"), oy = c.d("GridOffsetY");
+    tab.assign((size_t)W + (size_t)H, 0.f);
+    for (int x = 0; x < W; ++x) {
+        const double u = (((x + 0.5) / W) - ox) / tw;
+        tab[(size_t)x] = (float)(bh <= 1e-6 ? oddCover(((double)x / W - ox) / tw, ((double)(x + 1) / W - ox) / tw) : tileWave(u, bh));
+    }
+    for (int y = 0; y < H; ++y) {
+        const double v = (((y + 0.5) / H) - oy) / th;
+        tab[(size_t)W + (size_t)y] = (float)(bv <= 1e-6 ? oddCover(((double)y / H - oy) / th, ((double)(y + 1) / H - oy) / th) : tileWave(v, bv));
+    }
+    const double da[4] = {a.r * a.a, a.g * a.a, a.b * a.a, a.a}, db[4] = {b.r * b.a, b.g * b.a, b.b * b.a, b.a};
+    for (int k = 0; k < 4; ++k) { pa[k] = (float)da[k]; pb[k] = (float)db[k]; }
+}
+
+// Checkerboard in doubles: the horizontal wave of every column and the vertical wave of every row, and the premultiplied colours (as checkerboard() works them out).
+void checkerboardGpuD(Ctx& c, int W, int H, std::vector<double>& sx, std::vector<double>& sy, double pa[4], double pb[4])
+{
+    const double tw = std::max(1.0 / std::max(1, W), c.d("TileDimensionsWidth"));
+    const bool square = c.b("TileDimensionsSquare");
+    const double th = std::max(1.0 / std::max(1, H), square ? tw * W / std::max(1, H) : c.d("TileDimensionsHeight"));
+    const double bh = clampd(c.d("EdgeBlendingHorizontal"), 0, 1);
+    const double bv = c.b("EdgeBlendingProportional") ? bh : clampd(c.d("EdgeBlendingVertical"), 0, 1);
+    const Color a = c.color("Color1"), b = c.color("Color2");
+    const double ox = c.d("GridOffsetX"), oy = c.d("GridOffsetY");
+    sx.assign((size_t)W, 0.0);
+    sy.assign((size_t)H, 0.0);
+    for (int x = 0; x < W; ++x) {
+        const double u = (((x + 0.5) / W) - ox) / tw;
+        sx[(size_t)x] = bh <= 1e-6 ? oddCover(((double)x / W - ox) / tw, ((double)(x + 1) / W - ox) / tw) : tileWave(u, bh);
+    }
+    for (int y = 0; y < H; ++y) {
+        const double v = (((y + 0.5) / H) - oy) / th;
+        sy[(size_t)y] = bv <= 1e-6 ? oddCover(((double)y / H - oy) / th, ((double)(y + 1) / H - oy) / th) : tileWave(v, bv);
+    }
+    const double da[4] = {a.r * a.a, a.g * a.a, a.b * a.a, a.a}, db[4] = {b.r * b.a, b.g * b.a, b.b * b.a, b.a};
+    for (int k = 0; k < 4; ++k) { pa[k] = da[k]; pb[k] = db[k]; }
+}
+
+// Checkerboard on 8-bit pictures (checkerboardFx8 above): what its tile walk gives each column (parity of the tile, the blend weight or -1) and each row (parity
+// of the tile row, the two colours A and B), as ints for the kernel; false where checkerboardFx8 gives up (the float picture is made then).
+bool checkerboard8Gpu(Ctx& c, int W, int H, std::vector<int>& t)
+{
+    const Color ca = c.color("Color1"), cb = c.color("Color2");
+    auto toByte = [](double col, double al) { return (int)((float)(col * al) * 255.0f); };
+    int P1[4] = {toByte(ca.r, ca.a), toByte(ca.g, ca.a), toByte(ca.b, ca.a), (int)((float)ca.a * 255.0f)};
+    int P2[4] = {toByte(cb.r, cb.a), toByte(cb.g, cb.a), toByte(cb.b, cb.a), (int)((float)cb.a * 255.0f)};
+    float tw = (float)c.d("TileDimensionsWidth") * (float)W;
+    float th = (float)c.d("TileDimensionsHeight") * (float)H;
+    if (c.b("TileDimensionsSquare")) th = tw * 1.0f;
+    const float inv = 1.0f / 1.0f;
+    if (inv > tw) { th = th * inv / tw; tw = inv; }
+    if (1.0f > th) { tw = tw / th; th = 1.0f; }
+    const float hx = std::max(0.5f, (float)c.d("EdgeBlendingHorizontal") * tw * 0.5f);
+    const double bvd = c.b("EdgeBlendingProportional") ? c.d("EdgeBlendingHorizontal") : c.d("EdgeBlendingVertical");
+    const float hy = std::max(0.5f, (float)bvd * th * 0.5f);
+    const float kx = 32768.0f / hx, ky = 32768.0f / hy;
+    const float ox = (float)c.d("GridOffsetX") * (float)W, oy = (float)c.d("GridOffsetY") * (float)H;
+    const float lim = 1e6f;
+    if (!(std::fabs(tw) < lim && std::fabs(th) < lim && tw >= 1.0f && th >= 1.0f && std::fabs(ox) < lim && std::fabs(oy) < lim && hx < lim && hy < lim)) return false;
+    t.clear();
+    {
+        float x = 0.5f - ox;
+        int ix = (int)(x / tw);
+        if ((float)ix * tw > x) --ix;
+        float xl = (float)ix * tw + hx, xr = (float)(ix + 1) * tw - hx;
+        for (int px = 0; px < W; ++px) {
+            while (!(xl > x) && !(xr > x)) { ++ix; xl += tw; xr += tw; }
+            t.push_back(ix & 1);
+            t.push_back(xl > x ? (int)((xl - x) * kx + 0.5f) : -1);
+            x += 1.0f;
+        }
+    }
+    for (int y = 0; y < H; ++y) {
+        const float yc = (float)y + 0.5f - oy;
+        int iy = (int)(yc / th);
+        if ((float)iy * th > yc) --iy;
+        const float yl = (float)iy * th + hy, yu = (float)(iy + 1) * th - hy;
+        int A[4], B[4];
+        if (yc >= yl && yu > yc) {
+            for (int k = 0; k < 4; ++k) { A[k] = P1[k]; B[k] = P2[k]; }
+        } else {
+            int wv;
+            if (yl > yc) wv = (int)((yl - yc) * ky + 0.5f);
+            else wv = (int)((yc - yu) * ky + 0.5f);
+            for (int k = 0; k < 4; ++k) {
+                A[k] = (P1[k] * (0x10000 - wv) + P2[k] * wv) >> 16;
+                B[k] = (P2[k] * (0x10000 - wv) + P1[k] * wv) >> 16;
+            }
+        }
+        t.push_back(iy & 1);
+        for (int k = 0; k < 4; ++k) t.push_back(A[k]);
+        for (int k = 0; k < 4; ++k) t.push_back(B[k]);
+    }
+    return true;
+}
+
+// Test Pattern: the type, the bar width and the table testpattern's kernel reads (see there).
+void testPatternGpu(Ctx& c, int W, int H, int& type, int& barW, std::vector<float>& tab)
+{
+    type = c.i("TestPatternType");
+    barW = std::max(1, W / 7);
+    static const int bars[7][3] = {{180, 180, 180}, {16, 180, 180}, {180, 180, 16}, {16, 180, 16}, {180, 16, 180}, {16, 16, 180}, {180, 16, 16}};
+    static const int castle[7][3] = {{235, 7, 7}, {16, 16, 16}, {180, 7, 180}, {16, 16, 16}, {180, 180, 7}, {16, 16, 16}, {180, 180, 180}};
+    tab.clear();
+    for (const auto& r : bars) for (int v : r) tab.push_back((float)v);
+    for (const auto& r : castle) for (int v : r) tab.push_back((float)v);
+    for (int x = 0; x < W; ++x) {
+        const bool colIn = x * 10 >= W && x * 10 <= 9 * W;
+        tab.push_back(colIn ? 1.f : 0.f);
+        tab.push_back((float)std::min(6, x / barW));
+        tab.push_back((float)(int)std::floor(25.0 + (x - 0.1 * W) * 204.0 / (0.8 * W) + 0.5));
+        tab.push_back((float)std::max(0, std::min(3, (int)std::floor((x - 0.1 * W) * 4.0 / (0.8 * W)))));
+    }
+    for (int y = 0; y < H; ++y) {
+        const int yb = H - 1 - y;
+        const bool rowIn = yb * 10 >= H && yb * 10 <= 9 * H;
+        int stepRow = 0;
+        if (rowIn) stepRow = std::min(3, std::max(0, (int)std::ceil(4.0 * (yb - 0.1 * H) / (0.8 * H)) - 1));
+        tab.push_back(rowIn ? 1.f : 0.f);
+        tab.push_back((float)stepRow);
     }
 }
 

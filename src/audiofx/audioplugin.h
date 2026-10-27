@@ -2,6 +2,7 @@
 #pragma once
 #include "../core/base.h"
 #include "../core/json.h"
+#include <vector>
 
 namespace reno {
 
@@ -20,6 +21,28 @@ struct AudioPluginDesc {
     static AudioPluginDesc fromJson(const Json& j);
 };
 
+// The tempo and time signature of the project whose sound is being mixed, for the effects with tempo sync (VEGAS's plug-ins
+// ask the host for them). The mixer puts them here (ProjectTempoScope, per thread) around every effect chain it runs;
+// outside a mix they are 120 beats a minute in 4/4. Read it inside process().
+struct ProjectTempo {
+    double bpm = 120.0;
+    int beatsPerMeasure = 4;
+    int beatUnit = 4;
+    bool operator==(const ProjectTempo& o) const { return bpm == o.bpm && beatsPerMeasure == o.beatsPerMeasure && beatUnit == o.beatUnit; }
+    bool operator!=(const ProjectTempo& o) const { return !(*this == o); }
+};
+ProjectTempo projectTempo();
+void setProjectTempo(double bpm, int beatsPerMeasure, int beatUnit = 4);     // this thread's, until the next call
+class ProjectTempoScope {
+public:
+    ProjectTempoScope(double bpm, int beatsPerMeasure, int beatUnit = 4);
+    ~ProjectTempoScope();
+    ProjectTempoScope(const ProjectTempoScope&) = delete;
+    ProjectTempoScope& operator=(const ProjectTempoScope&) = delete;
+private:
+    ProjectTempo prev_;
+};
+
 class AudioPlugin {
 public:
     virtual ~AudioPlugin() {}
@@ -31,6 +54,19 @@ public:
     virtual void deactivate() = 0;
     virtual void process(float* left, float* right, int frames, int64_t samplePos, bool playing) = 0;
     virtual int latencySamples() { return 0; }
+
+    // Effects that make the sound longer or shorter (Time Stretch, Gapper/Snipper, Vibrato): a track's effect chain gives
+    // and takes blocks of the same size, so process() lines what they deliver up in a queue. Tools > Audio > Apply
+    // Non-Real-Time Event FX has no such limit: processWhole() runs a whole sound (from its start to its end) through a
+    // fresh run of the effect, with its current settings, and returns everything the effect delivers, however long that
+    // is. False (and nothing done) for the effects that give back what they are given. changesLength() says whether the
+    // effect is of the first kind.
+    virtual bool changesLength() { return false; }
+    virtual bool processWhole(const float* inL, const float* inR, int64_t frames, std::vector<float>& outL, std::vector<float>& outR)
+    {
+        (void)inL; (void)inR; (void)frames; (void)outL; (void)outR;
+        return false;
+    }
 
     // Multichannel processing for a 5.1 project's master (L R C LFE Ls Rs, VST's and FFmpeg's 5.1 order).
     // setChannels(6) asks for six channels in and out as one stream (VST3: kSpeakerArr51 on the main buses; VST2: six
@@ -74,6 +110,12 @@ public:
     virtual bool openEditor(void* /*parentWindow*/, int* /*width*/, int* /*height*/) { return false; }
     virtual void closeEditor() {}
     virtual void idle() {}                                              // call ~20 times a second while the window is open
+
+    // Level meters a plug-in's page shows (Track Compressor, Multi-Band Dynamics). meterTake(i) is the biggest value
+    // since the last call (peaks: linear amplitude; gain meters: the smallest gain, 1 = untouched), 0 when there was
+    // no sound; it may be called from the interface thread while the sound runs.
+    virtual int meterCount() { return 0; }
+    virtual float meterTake(int /*i*/) { return 0.f; }
 
     // Non-empty once the plug-in has stopped working and passes sound through: why. E.g. a 32-bit plug-in's bridge
     // process crashed or hung; it restarts when playback next starts.

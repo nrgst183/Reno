@@ -12,6 +12,8 @@
 #include "builtins_more_internal.h"
 #include "../core/base.h"
 #include "builtins_vec.h"
+#include "builtins_cgblur.h"
+#include "vkfilters.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -24,12 +26,15 @@
 namespace reno {
 namespace ofx {
 namespace builtin {
+void cgGaussianBlurPlane(float* px, int w, int h, double sigmaX, double sigmaY);  // builtins_cgblur.cpp
 namespace more {
 namespace {
 
 void lineBlurAll(float* v, int count, int n, ptrdiff_t stride, ptrdiff_t lineStride, double sigma);
 
 constexpr double kPiV = 3.14159265358979323846;
+struct LineBlurCoefs { double c1, c2, c3, B; };
+LineBlurCoefs lineBlurCoefs(double q);
 
 // ------------------------------------------------------------------ CoreGraphics' ParamLibrary pieces
 // Evaluator::GetSegment: the point at or before pos and the next one, with the fraction between (clamped to the first/last point).
@@ -76,7 +81,12 @@ struct Gradient {
         std::array<float, 4> v = vals[(size_t)i];
         if (next < 0) return v;
         const std::array<float, 4>& w = vals[(size_t)next];
-        for (int k = 0; k < 4; ++k) v[(size_t)k] = (float)(v[(size_t)k] + (w[(size_t)k] - v[(size_t)k]) * frac);
+        // XmlColorFloat arithmetic: c0 + (c1 - c0) * frac, every operator stores a float
+        for (int k = 0; k < 4; ++k) {
+            const float diff = w[(size_t)k] - v[(size_t)k];
+            const float prod = (float)((double)diff * frac);
+            v[(size_t)k] = v[(size_t)k] + prod;
+        }
         return v;
     }
 };
@@ -233,21 +243,20 @@ struct Plane {
 };
 
 // The luma byte of a premultiplied pixel, as CoreGraphics' Desaturate makes it.
-inline int lumaByte(const float* p)
-{
-    const double v = 255.0 * (0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]);
-    return (int)clampd(std::floor(v + 0.5), 0.0, 255.0);
-}
+inline int byteOf(float v);
+inline int lumaInt(int r, int g, int b) { return (19595 * r + 38469 * g + 7472 * b + 32768) >> 16; }
+inline int lumaByte(const float* p) { return lumaInt(byteOf(p[0]), byteOf(p[1]), byteOf(p[2])); }
 inline int alphaByte(const float* p) { return (int)clampd(std::floor(255.0 * p[3] + 0.5), 0.0, 255.0); }
 
-// Screen of a premultiplied byte colour over a premultiplied pixel (Composite, Screen).
+inline int byteOf(float v) { return (int)clampd(std::floor((double)(v * 255.f) + 0.5), 0.0, 255.0); }
+
+// Screen of a premultiplied byte colour over a premultiplied pixel (Composite, Screen), as CompositeNative does it on bytes: colour a + b - a x b / 255 (truncated), alpha a + b - (a x b + 127) / 255.
 inline void screenOver(float* o, const uint8_t c[4])
 {
-    const float a = c[0] / 255.f, r = c[1] / 255.f, g = c[2] / 255.f, b = c[3] / 255.f;
-    o[0] = o[0] + r - o[0] * r;
-    o[1] = o[1] + g - o[1] * g;
-    o[2] = o[2] + b - o[2] * b;
-    o[3] = o[3] + a - o[3] * a;
+    const int d[4] = {byteOf(o[0]), byteOf(o[1]), byteOf(o[2]), byteOf(o[3])};
+    const int s[4] = {c[1], c[2], c[3], c[0]};
+    for (int k = 0; k < 3; ++k) o[k] = (float)(d[k] + s[k] - d[k] * s[k] / 255) * (1.f / 255.f);
+    o[3] = (float)(d[3] + s[3] - (d[3] * s[3] + 127) / 255) * (1.f / 255.f);
 }
 
 // Reduce flicker: CoreGraphics' Blur3x3 (a 1 2 1 binomial each way) of a byte plane.
@@ -272,7 +281,7 @@ void blur3x3(std::vector<int>& g, int W, int H)
 // corners rounded by corner x height / 3. Native drawing puts pixel centres on whole coordinates (half a pixel right and down of the plain
 // mapping). With a blur the shape is drawn on a canvas 1.25 times the frame, blurred there (diameter blur x canvas width), and cropped.
 } // namespace
-void shapeMaskVelvet(int W, int H, double xpos, double ypos, double w, double h, double corner, double blur, bool ellipse, std::vector<float>& m)
+static void shapeMaskImpl(bool cgBytes, int W, int H, double xpos, double ypos, double w, double h, double corner, double blur, bool ellipse, std::vector<float>& m)
 {
     m.assign((size_t)W * H, 0.f);
     if (W <= 0 || H <= 0) return;
@@ -301,7 +310,17 @@ void shapeMaskVelvet(int W, int H, double xpos, double ypos, double w, double h,
                 }
             cv[(size_t)y * CW + x] = (float)in / (ss * ss);
         }
-    if (soft) {
+    if (soft && cgBytes) {
+        // RectangleMask / EllipseMask: the shape drawn white on a transparent byte canvas, then GaussianBlur's native (Young - van Vliet on bytes)
+        std::vector<float> px((size_t)CW * CH * 4);
+        for (size_t i = 0; i < (size_t)CW * CH; ++i) {
+            const float b8 = (float)(int)clampd(std::floor((double)cv[i] * 255.0 + 0.5), 0.0, 255.0);
+            px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = px[i * 4 + 3] = b8;
+        }
+        const double sigma = sigmaForDiameter(blur * CW);
+        cgGaussianBlur(px.data(), CW, CH, sigma, sigma);
+        for (size_t i = 0; i < (size_t)CW * CH; ++i) cv[i] = (float)cgBlurByte(px[i * 4 + 3]) * (1.f / 255.f);
+    } else if (soft) {
         const double sigma = sigmaForDiameter(blur * CW);
         lineBlurAll(cv.data(), CH, CW, 1, CW, sigma);
         lineBlurAll(cv.data(), CW, CH, CW, 1, sigma);
@@ -310,6 +329,17 @@ void shapeMaskVelvet(int W, int H, double xpos, double ypos, double w, double h,
     for (int y = 0; y < H; ++y)
         for (int x = 0; x < W; ++x) m[(size_t)y * W + x] = (float)clampd(cv[(size_t)(y + oy) * CW + x + ox], 0.0, 1.0);
 }
+
+void shapeMaskVelvet(int W, int H, double xpos, double ypos, double w, double h, double corner, double blur, bool ellipse, std::vector<float>& m)
+{
+    shapeMaskImpl(false, W, H, xpos, ypos, w, h, corner, blur, ellipse, m);
+}
+
+static void shapeMaskCgBytes(int W, int H, double xpos, double ypos, double w, double h, double corner, double blur, bool ellipse, std::vector<float>& m)
+{
+    shapeMaskImpl(true, W, H, xpos, ypos, w, h, corner, blur, ellipse, m);
+}
+
 namespace {
 
 // Mask settings for these effects: mode Disabled / Effect / Source / Show mask only, and a shape, as per-pixel coverage 0..1:
@@ -384,15 +414,25 @@ void multiplyBy(Buf& b, const std::vector<float>& m)
 // each run starting from the value at its end (edges carried on outside).
 // A third-order recursive blur along lines, eight at once (line l starts at v + l * lineStride, its values 'stride' apart), each line's sums in the same order, so the same results;
 // lines are independent, so the recursion's waiting is shared out between them.
-void lineBlurLanes(float* v, int n, ptrdiff_t stride, ptrdiff_t lineStride, int lines, double sigma, std::vector<double>& tmp)
+LineBlurCoefs lineBlurCoefs(double q)
 {
-    if (n <= 1 || !(sigma > 0.05)) return;
-    const double q = sigma;
     const double b0 = 1.57825 + 2.44413 * q + 1.4281 * q * q + 0.422205 * q * q * q;
     const double b1 = 2.44413 * q + 2.85619 * q * q + 1.26661 * q * q * q;
     const double b2 = -(1.4281 * q * q + 1.26661 * q * q * q);
     const double b3 = 0.422205 * q * q * q;
-    const double c1 = b1 / b0, c2 = b2 / b0, c3 = b3 / b0, B = 1 - (c1 + c2 + c3);
+    LineBlurCoefs r;
+    r.c1 = b1 / b0;
+    r.c2 = b2 / b0;
+    r.c3 = b3 / b0;
+    r.B = 1 - (r.c1 + r.c2 + r.c3);
+    return r;
+}
+
+void lineBlurLanes(float* v, int n, ptrdiff_t stride, ptrdiff_t lineStride, int lines, double sigma, std::vector<double>& tmp)
+{
+    if (n <= 1 || !(sigma > 0.05)) return;
+    const LineBlurCoefs lc = lineBlurCoefs(sigma);
+    const double c1 = lc.c1, c2 = lc.c2, c3 = lc.c3, B = lc.B;
     tmp.resize((size_t)n * 8);
     const d2::D2 kB = d2::set(B), k1 = d2::set(c1), k2 = d2::set(c2), k3 = d2::set(c3);
     d2::D2 p1[4], p2[4], p3[4];
@@ -430,71 +470,113 @@ void lineBlurAll(float* v, int count, int n, ptrdiff_t stride, ptrdiff_t lineStr
     });
 }
 
-// DirectionalBlur of one plane: angle in degrees (0: vertical), blur diameter in pixels.
-void directionalBlur(std::vector<float>& g, int W, int H, double angleDeg, double diameter)
+// VEGAS's DirectionalBlur on one grey plane of bytes (top row first), as FilterLibrary.DirectionalBlur does it with CoreGraphics.Native: the angle is brought to -90..90 and the
+// picture (its rows in Reno's order: the angle's sense matches VEGAS's output so) is sheared (ShearNative: every line moves by |line x t| pixels, 12 bit fixed-point weights of the two neighbours, +0x800 >> 12, edge
+// pixels repeated; columns for the 0th and 3rd 45 degree sector, rows for the others), blurred across the shear by the Gaussian (always both directions, the other at least 0.5)
+// with bytes in between, and sheared back by -t. Exactly an axis, only the blur.
+// The per-line numbers of a shear (line k moves by |k t| pixels: whole pixels and 12 bit weight), shared with the GPU plan
+inline void shearLineOf(int k, double t, int& ip, int& fr)
 {
+    const double off = std::fabs((double)k * t);
+    ip = (int)std::floor(off);
+    fr = (int)((off - (double)ip) * 4096.0);
+}
+
+void shearLines(const uint8_t* src, int lines, int len, ptrdiff_t lineStep, ptrdiff_t posStep, uint8_t* dst, int dlen, ptrdiff_t dLineStep, ptrdiff_t dPosStep, double t, bool rev)
+{
+    const bool side1 = !(t >= 0);
+    forRows(lines, (size_t)dlen * 4, [&](int k) {
+        int ip, fr;
+        shearLineOf(k, t, ip, fr);
+        const uint8_t* s = src + (ptrdiff_t)k * lineStep;
+        uint8_t* d = dst + (ptrdiff_t)k * dLineStep;
+        auto at = [&](int i) -> int {
+            i = i < 0 ? 0 : (i > len - 1 ? len - 1 : i);
+            return s[(ptrdiff_t)(rev ? len - 1 - i : i) * posStep];
+        };
+        for (int x = 0; x < dlen; ++x) {
+            const int xr = rev ? dlen - 1 - x : x;
+            int a, b;
+            if (!side1) { a = xr - ip; b = a - 1; }
+            else { a = xr + ip; b = a + 1; }
+            d[(ptrdiff_t)x * dPosStep] = (uint8_t)((at(a) * (4096 - fr) + at(b) * fr + 2048) >> 12);
+        }
+    });
+}
+
+// What directionalBlur() works out from the angle and the size: mode 0 nothing at all, 1 / 2 the plane blurred in place (1: rows by the minimal blur, columns by sigma; 2 the other
+// way round), 3 sheared by t (columns when cols), blurred across the shear and sheared back.
+void directionalGeom(int W, int H, double angleDeg, double diameter, DbGeom& o)
+{
+    o = DbGeom();
     double a = std::fmod(angleDeg, 360.0);
     if (a < 0) a += 360.0;
     if (a > 90) a = a < 270 ? a - 180 : a - 360;
     a = clampd(a, -90, 90);
-    const double sigma = sigmaForDiameter(diameter);
-    if (!(sigma > 0)) return;
-    if (std::fabs(a) <= 0.1) {
-        lineBlurAll(g.data(), W, H, W, 1, sigma);
-        return;
-    }
-    if (std::fabs(std::fabs(a) - 90) <= 0.1) {
-        lineBlurAll(g.data(), H, W, 1, W, sigma);
-        return;
-    }
+    o.sigma = sigmaForDiameter(diameter);
+    if (!(o.sigma > 0) || W <= 0 || H <= 0) return;
+    if (std::fabs(a) <= 0.1) { o.mode = 1; return; }
+    if (std::fabs(std::fabs(a) - 90) <= 0.1) { o.mode = 2; return; }
     const int q = std::max(0, std::min(3, (int)(a + 90) / 45));
-    const bool cols = q == 0 || q == 3;
-    const double t = cols ? std::tan((q == 0 ? a + 90 : 90 - a) * kPiV / 180) : std::tan((q == 1 ? -a : a) * kPiV / 180);
-    const int L = cols ? W : H, M = cols ? H : W;
-    const int sign = (q == 0 || q == 1) ? 1 : -1;
-    const int M2 = (int)std::ceil(M + t * L);
-    if (M2 > 200000 || (size_t)M2 * (size_t)L > (size_t)400000000) return;
-    std::vector<float> sh((size_t)M2 * L, 0.f);
-    auto offOf = [&](int i) { return sign > 0 ? i * t : (L - 1 - i) * t; };
-    auto src = [&](int i, int j) -> float { return cols ? g[(size_t)j * W + i] : g[(size_t)i * W + j]; };
-    for (int i = 0; i < L; ++i) {
-        const double off = offOf(i);
-        for (int r = 0; r < M2; ++r) {
-            const double pos = clampd(r - off, 0.0, (double)(M - 1));
-            int j0 = (int)pos;
-            if (j0 > M - 2) j0 = std::max(0, M - 2);
-            const int j1 = std::min(M - 1, j0 + 1);
-            const float f = (float)(pos - j0);
-            sh[(size_t)r * L + i] = src(i, j0) + (src(i, j1) - src(i, j0)) * f;
-        }
-    }
-    lineBlurAll(sh.data(), M2, L, 1, L, sigma);
-    for (int i = 0; i < L; ++i) {
-        const double off = offOf(i);
-        for (int j = 0; j < M; ++j) {
-            const double pos = clampd(j + off, 0.0, (double)(M2 - 1));
-            int r0 = (int)pos;
-            if (r0 > M2 - 2) r0 = std::max(0, M2 - 2);
-            const int r1 = std::min(M2 - 1, r0 + 1);
-            const float f = (float)(pos - r0);
-            const float v = sh[(size_t)r0 * L + i] + (sh[(size_t)r1 * L + i] - sh[(size_t)r0 * L + i]) * f;
-            if (cols) g[(size_t)j * W + i] = v; else g[(size_t)i * W + j] = v;
-        }
+    o.cols = q == 0 || q == 3;
+    double tn;
+    if (q == 0) tn = std::tan((a + 90.0) * kPiV / 180.0);
+    else if (q == 1) tn = std::tan(-a * kPiV / 180.0);
+    else if (q == 2) tn = std::tan(a * kPiV / 180.0);
+    else tn = std::tan((90.0 - a) * kPiV / 180.0);
+    const double dim = o.cols ? (double)W : (double)H;
+    o.t = (tn * dim) / dim;
+    o.rev = q <= 1;
+    o.SW = o.cols ? W : (int)std::ceil((double)W + tn * H);
+    o.SH = o.cols ? (int)std::ceil((double)H + tn * W) : H;
+    if ((size_t)o.SW * (size_t)o.SH > (size_t)400000000) return;
+    o.mode = 3;
+}
+
+void directionalBlur(std::vector<uint8_t>& g, int W, int H, double angleDeg, double diameter, float scale, bool blurIt)
+{
+    DbGeom d;
+    directionalGeom(W, H, angleDeg, diameter, d);
+    if (d.mode == 0) return;
+    const double sigma = d.sigma;
+    std::vector<uint8_t>& nat = g;
+    auto blurBytes = [&](std::vector<uint8_t>& p, int w, int h, double sx, double sy) {
+        if (!blurIt) return;
+        std::vector<float> f(p.begin(), p.end());
+        cgGaussianBlurPlane(f.data(), w, h, sx, sy);
+        for (size_t i = 0; i < f.size(); ++i) p[i] = (uint8_t)cgBlurByte(f[i] * scale);
+    };
+    if (d.mode == 1) blurBytes(nat, W, H, 0.0, sigma);
+    else if (d.mode == 2) blurBytes(nat, W, H, sigma, 0.0);
+    else {
+        const bool cols = d.cols, rev = d.rev;
+        const double t = d.t;
+        const int SW = d.SW, SH = d.SH;
+        std::vector<uint8_t> sh((size_t)SW * SH);
+        if (cols) shearLines(nat.data(), W, H, 1, W, sh.data(), SH, 1, SW, t, rev);
+        else shearLines(nat.data(), H, W, W, 1, sh.data(), SW, SW, 1, t, rev);
+        if (cols) blurBytes(sh, SW, SH, sigma, 0.0);
+        else blurBytes(sh, SW, SH, 0.0, sigma);
+        if (cols) shearLines(sh.data(), W, SH, 1, SW, nat.data(), H, 1, W, -t, rev);
+        else shearLines(sh.data(), H, SW, SW, 1, nat.data(), W, W, 1, -t, rev);
     }
 }
 
-// Rays' noise texture (GenerateNoiseMask, 512 x 512, uniform in lo..hi from seed 12335). VEGAS's generator is native code Reno lacks;
-// this is a plain LCG, so streaks look alike but differ.
+// Rays' noise texture: CoreGraphics.Native GenerateNoiseMask (512 x 512, seed 12335), read off its machine code. A table of 1024 floats lo + i / 1023 x (hi - lo) is indexed per
+// pixel, in rows, by bits 16..25 of the MSVC rand state (state = state x 214013 + 2531011, kept as a signed 32-bit number).
 const std::vector<float>& noiseTexture(double lo, double hi)
 {
     static thread_local std::vector<float> tex;
     static thread_local double tlo = -1, thi = -1;
     if (tex.empty() || tlo != lo || thi != hi) {
         tex.resize(512 * 512);
+        const float flo = (float)lo, span = (float)hi - (float)lo;
+        float table[1024];
+        for (int i = 0; i < 1024; ++i) table[i] = (float)i / 1023.f * span + flo;
         uint32_t x = 12335u;
         for (float& v : tex) {
             x = x * 214013u + 2531011u;
-            v = (float)(lo + (hi - lo) * ((x >> 16) & 0x7FFF) / 32767.0);
+            v = table[(int32_t)x >> 16 & 0x3ff];
         }
         tlo = lo;
         thi = hi;
@@ -615,7 +697,6 @@ void firGaussian(std::vector<float>& v, int W, int H, int planes, double sigma)
     firBlurDoubles(v, W, H, planes, k, k);
 }
 
-inline int byteOf(float v) { return (int)clampd(std::floor((double)v * 255.0 + 0.5), 0.0, 255.0); }
 
 
 // ------------------------------------------------------------------ Starburst's pieces
@@ -789,19 +870,17 @@ std::vector<std::array<double, 2>> starOutline(int n, double inner, double varia
 }  // namespace
 
 // ================================================================== Rays
-void raysVelvet(Ctx& c)
+// What Rays works out from the settings alone (shared by the CPU code and the GPU plan): false when the effect shows the mask (mode 3). The noise stretch and every blur pass are
+// index and weight tables per axis (11 bit fixed point steps of the native scaler).
+bool raysSetup(Ctx& c, int W, int H, RaysSetup& o)
 {
-    const int W = c.out.w, H = c.out.h;
-    if (W <= 0 || H <= 0) return;
     static const char* const kRaysMasks[4] = {"Wipe", "Rectangle", "Bar", "Ellipse"};
-    const int maskMode = c.i("MaskMaskMode");
-    std::vector<float> mask;
-    if (maskMode >= 1 && maskMode <= 3) maskCoverage(c, c.i("MaskMaskType"), kRaysMasks, mask, W, H);
-    if (maskMode == 3) { maskOnly(c, mask); return; }
-    Buf srcCopy;
-    const Buf* src = &c.src;
-    if (maskMode == 2) { srcCopy = c.src; multiplyBy(srcCopy, mask); src = &srcCopy; }
-    const bool alpha = c.b("EffectKeyAlphaChannel"), effectOnly = c.b("EffectEffectOnly");
+    o.maskMode = c.i("MaskMaskMode");
+    o.mask.clear();
+    if (o.maskMode >= 1 && o.maskMode <= 3) maskCoverage(c, c.i("MaskMaskType"), kRaysMasks, o.mask, W, H);
+    if (o.maskMode == 3) return false;
+    o.alpha = c.b("EffectKeyAlphaChannel");
+    o.effectOnly = c.b("EffectEffectOnly");
     const double threshold = std::min(c.d("EffectThreshold") / 100.0, 0.996078431372549);
     const double amount = c.d("EffectAmount") / 100.0, aspect = c.d("EffectAspect"), boost = c.d("EffectBoost") / 100.0;
     const double peak = c.d("EffectPeak") / 100.0, noise = c.d("EffectNoise") / 100.0, quality = clampd(c.d("EffectQuality"), 0.0, 1.0);
@@ -815,8 +894,84 @@ void raysVelvet(Ctx& c)
     const float v8 = (float)(255.0 * (threshold + boost)), v9 = (float)(255.0 * (1.0 + boost + peak));
     tg.add(threshold, v8, v8, v8, v8);
     tg.add(1.0, v9, v9, v9, v9);
-    float tlut[256];
-    for (int i = 0; i < 256; ++i) tlut[i] = tg.at(i / 255.0)[3];
+    for (int i = 0; i < 256; ++i) o.tlut[i] = tg.at(i / 255.0)[3];
+    o.flicker = c.b("EffectReduceFlicker");
+
+    o.noise = noise > 0;
+    if (o.noise) {
+        const double nlo = 1 - noise * 2, nhi = 1 + noise * 2;
+        o.tex = noiseTexture((float)nlo, (float)nhi);
+        // ScaleMaskNative (mode 2): the 512 x 512 texture stretched over a square of side 512 x max(W/512, H/512) at the frame's corner, cut to the frame, with 11 bit fixed-point
+        // steps (srcSpan - 1) / (dstSpan - 1) and bilinear weights of 11 bits; multiplied into the mask
+        auto axis = [&](int dn, std::vector<int>& i0, std::vector<float>& fr) {
+            const float R = 512.f * (float)std::max(W / 512.f, H / 512.f);
+            const float sw = (float)dn < R ? 512.f * (float)dn / R : 512.f;
+            const int step = dn > 1 ? (int)(2048.f * (sw - 1.f) / (float)(dn - 1)) : 0;
+            i0.resize((size_t)dn);
+            fr.resize((size_t)dn);
+            for (int k = 0; k < dn; ++k) {
+                const long long f = (long long)k * step;
+                i0[(size_t)k] = (int)(f >> 11);
+                fr[(size_t)k] = (float)(f & 2047) / 2048.f;
+            }
+        };
+        axis(W, o.nxi, o.nxf);
+        axis(H, o.nyi, o.nyf);
+    }
+
+    o.passes.clear();
+    if (amount > 0) {
+        // Rays_RadialBlurMask: passes of ScaleMaskNative (mode 1, weight 0.35) that blend the mask with a copy of itself zoomed by (1 + s x aspect, 1 + s) about the centre; s grows by k per pass.
+        // The native scaler walks the source in 11 bit fixed point: start = -rect origin x srcSpan / rect span, step = (srcSpan - 1) / (dstSpan - 1), bilinear weights of 11 bits
+        const float cx = (float)(px * W), cy = (float)((1 - py) * H);
+        const double k = 1.45 + 0.25 * (1.0 - quality);
+        const double L = std::max(W, H) * amount * 4.0 * std::sqrt(2.0);
+        const int n = L > 1 ? (int)std::nearbyint(std::log(L) / std::log(k)) : 0;
+        double s = amount * 4.0 / std::pow(k, n);
+        const int passes = std::min(n, steps);
+        auto axis = [](int dn, float c0, float scale, std::vector<int>& i0, std::vector<float>& fr) {
+            const float r0 = c0 - scale * c0, rw = scale * (float)dn;
+            const float start = r0 < 0.f ? (0.f - r0) * (float)dn / rw : 0.f;
+            const float span = (float)dn * (float)dn / rw;
+            const int stepv = dn > 1 ? (int)(2048.f * (span - 1.f) / (float)(dn - 1)) : 0;
+            const long long st = (long long)(start * 2048.f);
+            i0.resize((size_t)dn);
+            fr.resize((size_t)dn);
+            for (int q = 0; q < dn; ++q) {
+                const long long f = st + (long long)q * stepv;
+                i0[(size_t)q] = (int)(f >> 11);
+                fr[(size_t)q] = (float)(f & 2047) / 2048.f;
+            }
+        };
+        for (int i = 0; i < passes; ++i) {
+            const float sx = (float)(1.0 + s * aspect), sy = (float)(1.0 + s);
+            if (sx > 1e-6f && sy > 1e-6f) {
+                o.passes.emplace_back();
+                RaysSetup::Pass& ps = o.passes.back();
+                axis(W, cx, sx, ps.xi, ps.xf);
+                axis(H, cy, sy, ps.yi, ps.yf);
+            }
+            s *= k;
+        }
+    }
+    const double hue = c.d("EffectHue"), sweep = c.d("EffectHueSweep"), sat = c.d("EffectSaturation") / 100.0;
+    colourLut(hue, sweep, sat, 1.1, 0.25, hue + sweep, o.clut);
+    return true;
+}
+
+void raysVelvet(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    RaysSetup su;
+    if (!raysSetup(c, W, H, su)) { maskOnly(c, su.mask); return; }
+    const int maskMode = su.maskMode;
+    const std::vector<float>& mask = su.mask;
+    Buf srcCopy;
+    const Buf* src = &c.src;
+    if (maskMode == 2) { srcCopy = c.src; multiplyBy(srcCopy, mask); src = &srcCopy; }
+    const bool alpha = su.alpha, effectOnly = su.effectOnly;
+    const float* tlut = su.tlut;
 
     std::vector<int> g((size_t)W * H);
     for (int y = 0; y < H; ++y)
@@ -826,78 +981,63 @@ void raysVelvet(Ctx& c)
             if (maskMode == 1) v = (int)std::floor(v * mask[(size_t)y * W + x] + 0.5);
             g[(size_t)y * W + x] = v;
         }
-    if (c.b("EffectReduceFlicker")) blur3x3(g, W, H);
+    if (su.flicker) blur3x3(g, W, H);
     Plane m;
     m.resize(W, H);
     for (size_t i = 0; i < g.size(); ++i) m.v[i] = tlut[std::max(0, std::min(255, g[i]))];
 
-    if (noise > 0) {
-        const double nlo = 1 - noise * 2, nhi = 1 + noise * 2;
-        const std::vector<float>& tex = noiseTexture((float)nlo, (float)nhi);
+    if (su.noise) {
         Plane np;
         np.w = np.h = 512;
-        np.v = tex;
-        const double sc = std::max(W / 512.0, H / 512.0);
-        SampleAxis nx;
-        nx.set(W, 512, [&](int x) { return (x + 0.5) / sc - 0.5; });
+        np.v = su.tex;
+        const std::vector<int>& xi = su.nxi;
+        const std::vector<int>& yi = su.nyi;
+        const std::vector<float>& xf = su.nxf;
+        const std::vector<float>& yf = su.nyf;
         forRows(H, W, [&](int y) {
-            int y0, y1;
-            float fy;
-            sampleAxisAt((y + 0.5) / sc - 0.5, 512, y0, y1, fy);
+            const int y0 = std::min(511, yi[(size_t)y]), y1 = std::min(511, yi[(size_t)y] + 1);
+            const float fy = yf[(size_t)y];
             const float* r0 = &np.v[(size_t)y0 * 512];
             const float* r1 = &np.v[(size_t)y1 * 512];
             for (int x = 0; x < W; ++x) {
-                const int x0 = nx.i0[(size_t)x], x1 = nx.i1[(size_t)x];
-                const float fx = nx.f[(size_t)x];
-                const float a = r0[x0] + (r0[x1] - r0[x0]) * fx;
-                const float b = r1[x0] + (r1[x1] - r1[x0]) * fx;
-                m.at(x, y) *= a + (b - a) * fy;
+                const int x0 = std::min(511, xi[(size_t)x]), x1 = std::min(511, xi[(size_t)x] + 1);
+                const float fx = xf[(size_t)x];
+                const float a = r0[x0] * (1.f - fx) + r0[x1] * fx;
+                const float b = r1[x0] * (1.f - fx) + r1[x1] * fx;
+                m.at(x, y) *= a * (1.f - fy) + b * fy;
             }
         });
     }
 
-    if (amount > 0) {
-        const float cx = (float)(px * W), cy = (float)((1 - py) * H);
-        const double k = 1.45 + 0.25 * (1.0 - quality);
-        const double L = std::max(W, H) * amount * 4.0 * std::sqrt(2.0);
-        const int n = L > 1 ? (int)std::lround(std::log(L) / std::log(k)) : 0;
-        double s = amount * 4.0 / std::pow(k, n);
-        const int passes = std::min(n, steps);
+    if (!su.passes.empty()) {
         Plane next;
         next.resize(W, H);
-        SampleAxis xa;
-        for (int i = 0; i < passes; ++i) {
-            const double sx = (float)(1.0 + s * aspect), sy = (float)(1.0 + s);
-            if (sx > 1e-6 && sy > 1e-6) {
-                xa.set(W, W, [&](int x) { return cx + (x + 0.5 - cx) / sx - 0.5; });
-                forRows(H, W, [&](int y) {
-                    const double qy = cy + (y + 0.5 - cy) / sy - 0.5;
-                    int y0, y1;
-                    float fy;
-                    sampleAxisAt(qy, H, y0, y1, fy);
-                    const float* r0 = &m.v[(size_t)y0 * W];
-                    const float* r1 = &m.v[(size_t)y1 * W];
-                    const float* own = &m.v[(size_t)y * W];
-                    float* o = &next.v[(size_t)y * W];
-                    for (int x = 0; x < W; ++x) {
-                        const int x0 = xa.i0[(size_t)x], x1 = xa.i1[(size_t)x];
-                        const float fx = xa.f[(size_t)x];
-                        const float a = r0[x0] + (r0[x1] - r0[x0]) * fx;
-                        const float b = r1[x0] + (r1[x1] - r1[x0]) * fx;
-                        const float z = a + (b - a) * fy;
-                        const float d = own[x];
-                        o[x] = d + (z - d) * 0.35f;
-                    }
-                });
-                m.v.swap(next.v);
-            }
-            s *= k;
+        for (const RaysSetup::Pass& ps : su.passes) {
+            const std::vector<int>& xi = ps.xi;
+            const std::vector<int>& yi = ps.yi;
+            const std::vector<float>& xf = ps.xf;
+            const std::vector<float>& yf = ps.yf;
+            forRows(H, W, [&](int y) {
+                const int y0 = std::min(H - 1, yi[(size_t)y]), y1 = std::min(H - 1, yi[(size_t)y] + 1);
+                const float fy = yf[(size_t)y];
+                const float* r0 = &m.v[(size_t)y0 * W];
+                const float* r1 = &m.v[(size_t)y1 * W];
+                const float* own = &m.v[(size_t)y * W];
+                float* o = &next.v[(size_t)y * W];
+                for (int x = 0; x < W; ++x) {
+                    const int x0 = std::min(W - 1, xi[(size_t)x]), x1 = std::min(W - 1, xi[(size_t)x] + 1);
+                    const float fx = xf[(size_t)x];
+                    const float a = r0[x0] * (1.f - fx) + r0[x1] * fx;
+                    const float b = r1[x0] * (1.f - fx) + r1[x1] * fx;
+                    const float z = a * (1.f - fy) + b * fy;
+                    o[x] = own[x] * (1.f - 0.35f) + z * 0.35f;
+                }
+            });
+            m.v.swap(next.v);
         }
     }
 
-    uint8_t clut[256][4];
-    const double hue = c.d("EffectHue"), sweep = c.d("EffectHueSweep"), sat = c.d("EffectSaturation") / 100.0;
-    colourLut(hue, sweep, sat, 1.1, 0.25, hue + sweep, clut);
+    const uint8_t (*clut)[4] = su.clut;
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const float* s0 = c.src.at(x, y);
@@ -911,30 +1051,69 @@ void raysVelvet(Ctx& c)
 }
 
 // ================================================================== Glint
-void glintVelvet(Ctx& c)
+// What Glint works out from the settings alone (shared by the CPU code and the GPU plan): false when the effect shows the mask (mode 3)
+bool glintSetup(Ctx& c, int W, int H, GlintSetup& o)
 {
-    const int W = c.out.w, H = c.out.h;
-    if (W <= 0 || H <= 0) return;
     static const char* const kGlintMasks[4] = {"Rectangle", "Bar", "Wipe", "Ellipse"};
-    const int maskMode = c.i("MaskMaskMode");
-    std::vector<float> mask;
-    if (maskMode >= 1 && maskMode <= 3) maskCoverage(c, c.i("MaskMaskType"), kGlintMasks, mask, W, H);
-    if (maskMode == 3) { maskOnly(c, mask); return; }
-    Buf srcCopy;
-    const Buf* src = &c.src;
-    if (maskMode == 2) { srcCopy = c.src; multiplyBy(srcCopy, mask); src = &srcCopy; }
-    const bool effectOnly = c.b("EffectEffectOnly");
+    o.maskMode = c.i("MaskMaskMode");
+    o.mask.clear();
+    if (o.maskMode >= 1 && o.maskMode <= 3) maskCoverage(c, c.i("MaskMaskType"), kGlintMasks, o.mask, W, H);
+    if (o.maskMode == 3) return false;
+    o.effectOnly = c.b("EffectEffectOnly");
     const double threshold = c.d("EffectThreshold") / 100.0, boost = c.d("EffectBoost") / 100.0;
     const double dx = c.d("EffectHorizontalRadius") / 100.0, dy = c.d("EffectVerticalRadius") / 100.0;
     const double hue = c.d("EffectHue"), sweep = c.d("EffectHueSweep"), sat = c.d("EffectSaturation") / 100.0;
     const double rotation = c.d("EffectOrientation");
-    const int n = std::max(0, std::min(64, c.i("EffectStreaks")));
-
+    o.n = std::max(0, std::min(64, c.i("EffectStreaks")));
     Gradient tg;
     tg.add(threshold - 0.05, 0, 0, 0, 0);
     tg.add(threshold, 1, 1, 1, 1);
-    int tlut[256];
-    for (int i = 0; i < 256; ++i) tlut[i] = (int)clampd((double)tg.at(i / 255.0)[3] * 255.0 + 0.5, 0.0, 255.0);
+    for (int i = 0; i < 256; ++i) o.tlut[i] = (int)clampd((double)tg.at(i / 255.0)[3] * 255.0 + 0.5, 0.0, 255.0);
+    o.flicker = c.b("EffectReduceFlicker");
+    const double bs = boost > 0 ? boost * 2.0 : boost;
+    o.scale = (float)(1.0 + bs);
+    double v16 = 0.3;
+    if (boost > 0) v16 -= v16 * boost / 2.0;
+    colourLut(hue, sweep, sat, 0.9, 0.15, hue + sweep * (1.0 - v16), o.clut);
+    o.streaks.assign((size_t)o.n, DbGeom());
+    for (int i = 0; i < o.n; ++i) {
+        const double ang = i * 180.0 / o.n;
+        const double a = ang * kPiV / 180.0;
+        const double rx = -std::sin(a) * dy, ry = std::cos(a) * dy;
+        const double sxf = dy > 0 ? dx / dy : 0.0;
+        const double blur = std::hypot(rx * sxf, ry);
+        directionalGeom(W, H, ang + rotation, blur * W, o.streaks[(size_t)i]);
+    }
+    return true;
+}
+
+// the (whole pixels, 12 bit weight) of every line of a shear by t, as floats pairs
+void shearParamsGpu(int lines, double t, std::vector<float>& tab)
+{
+    tab.resize((size_t)lines * 2);
+    for (int k = 0; k < lines; ++k) {
+        int ip, fr;
+        shearLineOf(k, t, ip, fr);
+        tab[(size_t)k * 2] = (float)ip;
+        tab[(size_t)k * 2 + 1] = (float)fr;
+    }
+}
+
+void glintVelvet(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    GlintSetup su;
+    if (!glintSetup(c, W, H, su)) { maskOnly(c, su.mask); return; }
+    const int maskMode = su.maskMode;
+    const std::vector<float>& mask = su.mask;
+    Buf srcCopy;
+    const Buf* src = &c.src;
+    if (maskMode == 2) { srcCopy = c.src; multiplyBy(srcCopy, mask); src = &srcCopy; }
+    const bool effectOnly = su.effectOnly;
+    const int n = su.n;
+    const int* tlut = su.tlut;
+    const double dx = c.d("EffectHorizontalRadius") / 100.0, dy = c.d("EffectVerticalRadius") / 100.0, rotation = c.d("EffectOrientation");
     std::vector<int> g((size_t)W * H);
     for (int y = 0; y < H; ++y)
         for (int x = 0; x < W; ++x) {
@@ -942,14 +1121,9 @@ void glintVelvet(Ctx& c)
             if (maskMode == 1) v = (int)std::floor(v * mask[(size_t)y * W + x] + 0.5);
             g[(size_t)y * W + x] = v;
         }
-    if (c.b("EffectReduceFlicker")) blur3x3(g, W, H);
-
-    const double bs = boost > 0 ? boost * 2.0 : boost;
-    const float scale = (float)(1.0 + bs);
-    uint8_t clut[256][4];
-    double v16 = 0.3;
-    if (boost > 0) v16 -= v16 * boost / 2.0;
-    colourLut(hue, sweep, sat, 0.9, 0.15, hue + sweep * (1.0 - v16), clut);
+    if (su.flicker) blur3x3(g, W, H);
+    const float scale = su.scale;
+    const uint8_t (*clut)[4] = su.clut;
 
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
@@ -960,21 +1134,19 @@ void glintVelvet(Ctx& c)
         }
     });
     if (n <= 0) return;
-    std::vector<std::vector<uint8_t>> streaks((size_t)n);
-    auto one = [&](int i) {
+    // FilterLibrary.Glint blurs the picture's channels one after the other: streak i is DirectionalBlur(angle i x 180 / n + rotation) on channel i, but the sheared picture has all its
+    // channels in it, so every other channel also goes through that streak's shear and its shear back (and loses a little on the way).
+    std::vector<uint8_t> first((size_t)W * H);
+    for (size_t k = 0; k < first.size(); ++k) first[k] = (uint8_t)tlut[std::max(0, std::min(255, g[k]))];
+    std::vector<std::vector<uint8_t>> streaks((size_t)n, first);
+    for (int i = 0; i < n; ++i) {
         const double ang = i * 180.0 / n;
         const double a = ang * kPiV / 180.0;
         const double rx = -std::sin(a) * dy, ry = std::cos(a) * dy;
         const double sxf = dy > 0 ? dx / dy : 0.0;
         const double blur = std::hypot(rx * sxf, ry);
-        std::vector<float> p((size_t)W * H);
-        for (size_t k = 0; k < p.size(); ++k) p[k] = (float)tlut[std::max(0, std::min(255, g[k]))];
-        directionalBlur(p, W, H, ang + rotation, blur * W);
-        std::vector<uint8_t>& out = streaks[(size_t)i];
-        out.resize(p.size());
-        for (size_t k = 0; k < p.size(); ++k) out[k] = (uint8_t)clampd(std::floor(p[k] * scale + 0.5f), 0.0, 255.0);
-    };
-    parallelTasks(n, one);
+        parallelTasks(n, [&](int j) { directionalBlur(streaks[(size_t)j], W, H, ang + rotation, blur * W, scale, j == i); });
+    }
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             float* o = c.out.at(x, y);
@@ -985,17 +1157,19 @@ void glintVelvet(Ctx& c)
 
 
 // ================================================================== Fill Light
-// FilterLibrary.FillLight: the luma (Desaturate) through a lookup table - a Bezier curve that is 0 at black, 0.3 at 0.25 + 0.08 bias and 0 from 0.85, as grey coloured by Colorize(hue, 0.1 x correction),
-// sampled at 128 points into a Gradient, read as 256 bytes - softened by GaussianBlur(softness) and ADDED at strength x 0.5 (bytes, sum truncated). Hue in degrees (class turns x 360), Strength / Bias / Tint
-// (= Correction) in percent, Softness = class value x 500 (fraction of the width). The native blur's deviation, read off VEGAS's pictures: 0.45 + 0.3016 x the diameter in pixels, cut at 3 deviations.
-void fillLightVelvet(Ctx& c)
+// FilterLibrary.FillLight, as CoreGraphics.Native does it: the picture goes to bytes (float x 255 in float, +0.5, floor), Desaturate makes the luma ((19595 r + 38469 g + 7472 b + 32768) >> 16), ChannelMap looks it up in a table
+// of 256 colours - a Bezier curve that is 0 at black, 0.3 at 0.25 + 0.08 bias and 0 from 0.85, as grey coloured by Colorize(hue, 0.1 x correction), sampled at 128 points into a Gradient - GaussianBlur(Softness) of the
+// bytes (the Young - van Vliet blur of builtins_cgblur, deviation from the diameter Softness x width) and the mask, back in floats (m / 255), is ADDED to the float picture at Strength x 0.5, without a limit.
+// Hue in degrees, Strength / Bias / Tint (= Correction) / Softness in percent. Not exact: about 4 % of the pixels are a level off, where the mask climbs in steps (VEGAS may blur on the GPU).
+// What Fill Light works out from the settings alone (shared by the CPU code and the GPU plan): copy true when the picture goes through unchanged, else the byte table of the
+// colour made from the luma, the blur (cgGaussianBlur's coefficients, blur false for none) and the opacity of the Add.
+bool fillLightSetup(Ctx& c, int W, FillLightSetup& o)
 {
-    const int W = c.out.w, H = c.out.h;
-    if (W <= 0 || H <= 0) return;
     const double strength = c.d("Strength") / 100.0, bias = c.d("Bias") / 100.0, correction = c.d("Tint") / 100.0;
-    const double softness = c.d("Softness") / 500.0, hue = c.d("Hue") / 360.0;
-    c.out.px = c.src.px;
-    if (!(strength > 0)) return;
+    const double softness = c.d("Softness") / 100.0, hue = c.d("Hue") / 360.0;
+    o.copy = true;
+    o.blur = false;
+    if (!(strength > 0)) return true;
     std::vector<BezierPoint> curve = {{0.0, 0.0, 0.0, 0.0}, {0.25 + bias * 0.08, 0.3, 0.0, 0.0}, {0.85, 0.0, 0.0, 0.0}};
     std::sort(curve.begin(), curve.end(), [](const BezierPoint& a, const BezierPoint& b) { return a.key < b.key; });
     ColorMatrix cm;
@@ -1004,41 +1178,205 @@ void fillLightVelvet(Ctx& c)
     for (int i = 0; i < 128; ++i) {
         const double x = i / 127.0;
         const float v = (float)bezierCurve(curve, x);
-        float o[4];
-        cm.transform(v, v, v, o);
-        g.add(x, o[0], o[1], o[2], o[3]);
+        float oc[4];
+        cm.transform(v, v, v, oc);
+        g.add(x, oc[0], oc[1], oc[2], oc[3]);
     }
-    uint8_t lut[256][4];
     for (int i = 0; i < 256; ++i) {
         const std::array<float, 4> col = g.at(i / 255.0);
-        for (int k = 0; k < 4; ++k) lut[i][k] = (uint8_t)clampd((double)col[(size_t)k] * 255.0 + 0.5, 0.0, 255.0);
+        for (int k = 0; k < 4; ++k) o.lut[i][k] = (uint8_t)clampd((double)col[(size_t)k] * 255.0 + 0.5, 0.0, 255.0);
     }
-    std::vector<float> mask((size_t)W * H * 3);
+    const double diameter = softness * W;
+    if (diameter > 0) {
+        const double sigma = sigmaForDiameter(diameter);
+        o.blur = true;
+        o.sigma = sigma;
+    }
+    // The mask, blurred in bytes, goes back to floats (m / 255) and CompositeOp 3 (Add) at the opacity adds it to the (float) picture without a limit: colour d + m x op, alpha d + m x op x (1 - d)
+    const double op = clampd(strength * 0.5, 0.0, 1.0);
+    if (op < 0.00392156862745098) return true;
+    o.fop = (float)op;
+    o.copy = false;
+    return true;
+}
+
+void fillLightVelvet(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    c.out.px = c.src.px;
+    FillLightSetup su;
+    fillLightSetup(c, W, su);
+    if (su.copy) return;
+    std::vector<float> mask((size_t)W * H * 4);
     for (int y = 0; y < H; ++y)
         for (int x = 0; x < W; ++x) {
             const float* p = c.src.at(x, y);
             const int r = byteOf(p[0]), gg = byteOf(p[1]), b = byteOf(p[2]);
-            const int l = (int)clampd(std::floor(0.299 * r + 0.587 * gg + 0.114 * b + 0.5), 0.0, 255.0);
-            float* m = &mask[((size_t)y * W + x) * 3];
-            m[0] = lut[l][1]; m[1] = lut[l][2]; m[2] = lut[l][3];
+            const int l = lumaInt(r, gg, b);
+            float* m = &mask[((size_t)y * W + x) * 4];
+            m[0] = su.lut[l][1]; m[1] = su.lut[l][2]; m[2] = su.lut[l][3]; m[3] = su.lut[l][0];
         }
-    const double diameter = softness * W;
-    if (diameter > 0) {
-        firGaussian(mask, W, H, 3, 0.45 + 0.3016 * diameter);
-        for (float& v : mask) v = (float)clampd(std::floor(v + 0.5), 0.0, 255.0);
+    if (su.blur) {
+        cgGaussianBlur(mask.data(), W, H, su.sigma, su.sigma);
+        for (float& v : mask) v = (float)cgBlurByte(v);
     }
-    const double op = clampd(strength * 0.5, 0.0, 1.0);
-    if (op < 0.00392156862745098) return;
+    const float fop = su.fop;
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const float* s0 = c.src.at(x, y);
             float* o = c.out.at(x, y);
-            const int ab = byteOf(s0[3]);
-            const float* m = &mask[((size_t)y * W + x) * 3];
+            const float* m = &mask[((size_t)y * W + x) * 4];
+            for (int k = 0; k < 3; ++k) o[k] = s0[k] + m[k] * (1.f / 255.f) * fop;
+            o[3] = s0[3] + m[3] * (1.f / 255.f) * fop * (1.f - s0[3]);
+        }
+    });
+}
+
+
+// ================================================================== Soft Contrast
+// FilterLibrary.Softlight (8-bit path, exact against VEGAS): 1. every colour channel through a table min(255, floor(i x (1 + 0.2 Stretch) + 0.5)); 2. a grey copy (byte luma) blurred like Fill Light's mask
+// (GaussianBlur of Diffusion x width pixels); 3. the grey through a table made from the Low / High trim spline; 4. the Overlay composite (CompositeNative op 5) of the grey over the picture at Contrast
+// (opacity rounded to a byte); 5. the Vignette (mask cut to a byte, MaskedFadeNative). Tint: the grey through HslAdjust's colour matrix. Exact for the default and the Moderate / Heavy presets; with a Vignette the
+// mask's soft edge is still a level or two off (the mask's own native blur / drawing is not rebuilt).
+namespace {
+struct ScTcb { double key, value, t, c, b; };
+double scTcb(const ScTcb* p, int n, double x)
+{
+    int i = n - 1, j = -1;
+    double f = 0;
+    for (int k = 0; k < n; ++k)
+        if (p[k].key > x) {
+            if (k == 0) i = 0;
+            else { i = k - 1; j = k; f = (x - p[i].key) / (p[j].key - p[i].key); }
+            break;
+        }
+    if (j < 0) return p[i].value;
+    const double dt = p[j].key - p[i].key;
+    const double prev = i > 0 ? p[i - 1].value : p[i].value, dtp = i > 0 ? p[i].key - p[i - 1].key : dt;
+    const double next = j + 1 < n ? p[j + 1].value : p[j].value, dtn = j + 1 < n ? p[j + 1].key - p[j].key : dt;
+    const ScTcb& a = p[i];
+    const ScTcb& b = p[j];
+    const double d1 = ((1 - a.t) * (1 + a.c) * (1 + a.b) / 2 * (a.value - prev) + (1 - a.t) * (1 - a.c) * (1 - a.b) / 2 * (b.value - a.value)) * (2 * dt / (dtp + dt));
+    const double d2 = ((1 - b.t) * (1 - b.c) * (1 + b.b) / 2 * (b.value - a.value) + (1 - b.t) * (1 + b.c) * (1 - b.b) / 2 * (next - b.value)) * (2 * dt / (dtn + dt));
+    const double s2 = f * f, s3 = s2 * f;
+    return (2 * s3 - 3 * s2 + 1) * a.value + (-2 * s3 + 3 * s2) * b.value + (s3 - 2 * s2 + f) * d1 + (s3 - s2) * d2;
+}
+}  // namespace
+
+// What Soft Contrast works out from the settings alone: the tables and the vignette mask (shared by the CPU code and the GPU plan).
+bool softContrastSetup(Ctx& c, int W, int H, ScSetup& o)
+{
+    const double stretch = c.d("EffectStretchRange") / 100.0, strength = c.d("EffectContrast") / 100.0, diffusion = c.d("EffectDiffusion") / 100.0;
+    const double tint = c.d("EffectTint") / 100.0, hue = c.d("EffectCorrectionHue");
+    o.ext = c.i("VignetteExteriorEffect");
+    for (int i = 0; i < 256; ++i) o.stl[i] = (int)std::min(255.0, std::floor((double)i * (1.0 + stretch * 0.2) + 0.5));
+    o.blur = diffusion > 0;
+    o.sigma = o.blur ? sigmaForDiameter(diffusion * 0.5 * W) : 0.0;
+    const double lowTrim = std::max(0.0, c.d("EffectLowTrim") / 100.0), highTrim = std::max(0.0, c.d("EffectHighTrim") / 100.0);
+    o.trim = lowTrim > 0 || highTrim > 0;
+    if (o.trim) {
+        const ScTcb pts[3] = {{0.0, lowTrim * 0.25, 0, -1, 0}, {0.5, 0.5, 0, 0, 0}, {1.0, 1.0 - highTrim * 0.25, 0, -1, 0}};
+        for (int i = 0; i < 256; ++i) o.tl[i] = (int)clampd(std::floor(scTcb(pts, 3, i / 255.0) * 255.0 + 0.5), 0.0, 255.0);
+    }
+    // HslAdjust (mode 1, "tint") draws the grey through a GDI+ colour matrix: Saturation(0), then Colorize(TintHue, TintSaturation x 0.299)
+    o.tint = tint > 0.0;
+    if (o.tint) {
+        ColorMatrix cm;
+        cm.saturation(0.f);
+        cm.colorize((float)(hue / 360.0), (float)(tint * 0.299));
+        for (int g = 0; g < 256; ++g) {
+            const float v = (float)g * (1.f / 255.f);
+            float oc[4];
+            cm.transform(v, v, v, oc);
+            for (int k = 0; k < 3; ++k) o.tl3[g][k] = (int)clampd(std::floor((double)oc[1 + k] * 255.0 + 0.5), 0.0, 255.0);
+        }
+    }
+    o.oq = (int)(clampd(strength, 0.0, 1.0) * 255.0 + 0.5);
+    const double vs = clampd(c.d("VignetteStrength") / 100.0, 0.0, 1.0);
+    o.vscale = vs < 1.0;
+    o.vq = (int)(vs * 255.0 + 0.5);
+    const bool ellipse = c.i("VignetteShape") == 1;
+    double cx = 0.5, cy = 0.5;
+    c.xy("VignettePosition", cx, cy);
+    o.vmask.clear();
+    if (o.ext != 0)
+        shapeMaskCgBytes(W, H, cx, 1.0 - cy, std::max(0.0, c.d("VignetteWidth") / 100.0), std::max(0.0, c.d("VignetteHeight") / 100.0),
+                        ellipse ? 0.0 : std::max(0.0, c.d("VignetteCornerRadius") / 100.0), std::max(0.0, c.d("VignetteSoftness") / 100.0), ellipse, o.vmask);
+    return true;
+}
+
+void softContrast(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    ScSetup su;
+    softContrastSetup(c, W, H, su);
+    const int ext = su.ext;
+    const bool tintOn = su.tint;
+    const int oq = su.oq;
+    const std::vector<float>& vmask = su.vmask;
+    const int* stl = su.stl;
+    std::vector<float> st((size_t)W * H * 4), gray((size_t)W * H * 4, 0.f);
+    std::vector<float> alpha((size_t)W * H);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            float r, g, b, a;
+            unpremul(c.src.at(x, y), r, g, b, a);
+            const size_t i = (size_t)y * W + x;
+            alpha[i] = a;
+            const int R = stl[byteOf(clamp01(r))], G = stl[byteOf(clamp01(g))], B = stl[byteOf(clamp01(b))];
+            st[i * 4] = (float)R; st[i * 4 + 1] = (float)G; st[i * 4 + 2] = (float)B; st[i * 4 + 3] = 255.f;
+            const float l = (float)lumaInt(R, G, B);
+            gray[i * 4] = gray[i * 4 + 1] = gray[i * 4 + 2] = l; gray[i * 4 + 3] = 255.f;
+        }
+    if (su.blur) {
+        cgGaussianBlur(gray.data(), W, H, su.sigma, su.sigma);
+        for (float& v : gray) v = (float)cgBlurByte(v);
+    }
+    if (su.trim) {
+        for (size_t i = 0; i < (size_t)W * H; ++i)
+            for (int k = 0; k < 3; ++k) gray[i * 4 + k] = (float)su.tl[(int)gray[i * 4 + k]];
+    }
+    const int (*tl3)[3] = su.tl3;
+    const bool vscale = su.vscale;
+    const int vq = su.vq;
+    Buf soft;
+    if (ext == 1) {
+        soft = c.src;
+        const double bx = c.d("VignetteHorizontalBlur") * 0.05 * W, by = c.d("VignetteVerticalBlur") * 0.05 * H;
+        gaussianBlur(soft, bx, by);
+    }
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            const size_t i = (size_t)y * W + x;
+            float* o = c.out.at(x, y);
+            float a = alpha[i];
+            if (a <= 0.f) { o[0] = o[1] = o[2] = o[3] = 0.f; continue; }
+            int v[3];
             for (int k = 0; k < 3; ++k) {
-                const double v = std::floor(byteOf(s0[k]) + m[k] * op);
-                o[k] = (float)(std::min(v, (double)ab) / 255.0);
+                const int d = (int)st[i * 4 + k];
+                const int gv = (int)gray[i * 4 + k];
+                const int s = tintOn ? tl3[gv][k] : gv;
+                const int ov = d < 128 ? (2 * d * s) / 255 : 255 - (2 * (255 - d) * (255 - s)) / 255;
+                v[k] = (d * (255 - oq) + ov * oq) / 255;
             }
+            if (ext != 0) {
+                // Vignette: the mask (coverage cut to a byte, 255 - that), scaled by Strength through a table, fades the picture towards the exterior colour (MaskedFadeNative: (e M + d (255 - M)) / 255)
+                int M = 255 - (int)std::floor((double)vmask[i] * 255.0);
+                M = (int)clampd((double)M, 0.0, 255.0);
+                if (vscale) M = (int)std::floor((double)M * (double)vq / 255.0 + 0.5);
+                int e[4] = {0, 0, 0, 0};
+                if (ext == 1) {
+                    float sr, sg2, sb, sa;
+                    unpremul(soft.at(x, y), sr, sg2, sb, sa);
+                    e[0] = byteOf(clamp01(sr)); e[1] = byteOf(clamp01(sg2)); e[2] = byteOf(clamp01(sb)); e[3] = 255;
+                } else if (ext == 3) e[0] = e[1] = e[2] = e[3] = 255;
+                else if (ext == 2) e[3] = 255;
+                for (int q = 0; q < 3; ++q) v[q] = (e[q] * M + v[q] * (255 - M)) / 255;
+                if (ext == 4) a = (float)((e[3] * M + byteOf(a) * (255 - M)) / 255) * (1.f / 255.f);
+            }
+            premul(o, v[0] * (1.f / 255.f), v[1] * (1.f / 255.f), v[2] * (1.f / 255.f), a);
         }
     });
 }

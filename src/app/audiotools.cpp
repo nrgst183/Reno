@@ -7,6 +7,8 @@
 #include "../engine/engine.h"
 #include "strconv.h"
 #include <QAction>
+#include <QCoreApplication>
+#include <QFile>
 #include <QApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -195,6 +197,120 @@ Project nrtProject(const Project& p, const Event& e, const MediaItem& m, const F
 
 QString lowerPath(const QString& s) { return QDir::cleanPath(s).toLower(); }
 
+// ---- effects that make the sound longer or shorter (Time Stretch, Gapper/Snipper, Vibrato)
+// A render of the event through them would cut what they deliver to the event's length (and a block-by-block chain cannot
+// give more or fewer samples than it takes), so the file is made the way the DirectX filter graph of VEGAS makes it: the
+// event's sound as it is in the media is run through the effects one after the other, each effect giving everything it
+// delivers, and that is the file. The take's file is then as long as the effects make it (Time Stretch at 200 %: twice as
+// long); the event itself keeps its length.
+
+bool chainChangesLength(AppState& app, const Project& q, const FxChain& chain)
+{
+    app.fx.prepare(q);
+    FxRuntime::Hold hold(app.fx);
+    for (const FxSlot& s : chain) {
+        if (s.kind != "audio" || s.bypass) continue;
+        AudioPlugin* pl = app.fx.audio(s.id);
+        if (pl && pl->changesLength()) return true;
+    }
+    return false;
+}
+
+// 32-bit float stereo Wave file (the intermediate the render then converts to the format that was asked for)
+bool writeFloatWav(const std::string& path, const std::vector<float>& l, const std::vector<float>& r, int rate)
+{
+    QFile f(qs(path));
+    if (!f.open(QIODevice::WriteOnly)) return false;
+    const uint32_t frames = (uint32_t)std::min<size_t>(l.size(), 0x1FFFFFF0u);
+    const uint32_t bytes = frames * 8;
+    auto u32 = [&](uint32_t v) { char b[4] = {(char)(v & 255), (char)((v >> 8) & 255), (char)((v >> 16) & 255), (char)((v >> 24) & 255)}; f.write(b, 4); };
+    auto u16 = [&](uint16_t v) { char b[2] = {(char)(v & 255), (char)((v >> 8) & 255)}; f.write(b, 2); };
+    f.write("RIFF", 4);
+    u32(36 + bytes);
+    f.write("WAVEfmt ", 8);
+    u32(16);
+    u16(3);
+    u16(2);
+    u32((uint32_t)rate);
+    u32((uint32_t)rate * 8);
+    u16(8);
+    u16(32);
+    f.write("data", 4);
+    u32(bytes);
+    std::vector<float> chunk;
+    for (uint32_t at = 0; at < frames;) {
+        const uint32_t n = std::min<uint32_t>(frames - at, 16384);
+        chunk.resize((size_t)n * 2);
+        for (uint32_t k = 0; k < n; ++k) {
+            chunk[(size_t)k * 2] = l[at + k];
+            chunk[(size_t)k * 2 + 1] = r[at + k];
+        }
+        f.write((const char*)chunk.data(), (qint64)n * 8);
+        at += n;
+    }
+    return f.error() == QFileDevice::NoError;
+}
+
+// The event's sound, then every effect of the chain over all of it. 'step' is told how far along it is (0..1) and says
+// whether to go on.
+bool nrtSoundThroughChain(AppState& app, const Project& dry, const Project& withFx, const FxChain& chain, double length,
+                          const std::function<bool(double)>& step, std::vector<float>* outL, std::vector<float>* outR, std::string* why)
+{
+    const ProjectTempoScope tempoScope(dry.settings.tempo, dry.settings.beatsPerMeasure);
+    const int rate = std::max(8000, dry.settings.sampleRate);
+    const int64_t n = std::max<int64_t>(1, timeToSample(length, rate));
+    std::vector<float> L((size_t)n, 0.f), R((size_t)n, 0.f);
+    {
+        MediaPool pool;
+        if (app.mediaOpener) pool.setOpener(app.mediaOpener);
+        app.fx.prepare(dry);
+        AudioEngine audio(pool, app.fx);
+        const int block = 4096;
+        for (int64_t at = 0; at < n; at += block) {
+            const int c = (int)std::min<int64_t>(block, n - at);
+            audio.render(dry, at, c, L.data() + at, R.data() + at, false);
+            if (!step(0.4 * (double)(at + c) / (double)n)) {
+                if (why) *why = "stopped";
+                return false;
+            }
+        }
+    }
+    app.fx.prepare(withFx);
+    FxRuntime::Hold hold(app.fx);
+    size_t done = 0;
+    for (const FxSlot& s : chain) {
+        if (s.kind != "audio" || s.bypass) continue;
+        AudioPlugin* pl = app.fx.audio(s.id);
+        ++done;
+        if (!pl) continue;
+        std::vector<float> oL, oR;
+        if (pl->changesLength() && pl->processWhole(L.data(), R.data(), (int64_t)L.size(), oL, oR)) {
+            L.swap(oL);
+            R.swap(oR);
+        } else {
+            // an effect that gives back what it is given: block by block, a late one (latency) read ahead as the mixer does
+            const int lat = std::max(0, pl->latencySamples());
+            L.resize(L.size() + (size_t)lat, 0.f);
+            R.resize(R.size() + (size_t)lat, 0.f);
+            const int64_t total = (int64_t)L.size();
+            for (int64_t at = 0; at < total; at += FxRuntime::kAudioBlock)
+                pl->process(L.data() + at, R.data() + at, (int)std::min<int64_t>(FxRuntime::kAudioBlock, total - at), at, false);
+            if (lat > 0) {
+                L.erase(L.begin(), L.begin() + lat);
+                R.erase(R.begin(), R.begin() + lat);
+            }
+        }
+        if (!step(0.4 + 0.1 * (double)done / (double)std::max<size_t>(1, chain.size()))) {
+            if (why) *why = "stopped";
+            return false;
+        }
+    }
+    if (L.size() != R.size()) R.resize(L.size(), 0.f);
+    *outL = std::move(L);
+    *outR = std::move(R);
+    return true;
+}
+
 }  // namespace
 
 std::string nrtDefaultFolder(const Project& p, uint64_t eventId)
@@ -369,24 +485,73 @@ bool applyNonRealTimeFxToEvents(const std::vector<uint64_t>& eventIds, const FxC
         const MediaItem* m = e ? app.project().findMedia(e->mediaId) : nullptr;
         if (!e || !m) return fail("the event has gone");
         double length = 0;
-        const Project q = nrtProject(app.project(), *e, *m, chain, &length);
+        Project q = nrtProject(app.project(), *e, *m, chain, &length);
+        const double n = (double)jobs.size();
+        // the progress window and the caller's progress: 'within' is how far along this event is (0..1)
+        auto step = [&](double within) {
+            const double all = (k + std::min(1.0, std::max(0.0, within))) / n;
+            if (dlg) {
+                dlg->setValue((int)std::lround(all * 1000.0));
+                QApplication::processEvents();
+                if (dlg->wasCanceled()) return false;
+            }
+            return !opt.progress || opt.progress(all);
+        };
+        // effects that change the length: the sound goes through them whole into an intermediate file, which the render
+        // below converts
+        std::string tempWav;
+        double from = 0.0;
+        if (chainChangesLength(app, q, chain)) {
+            const Project dry = nrtProject(app.project(), *e, *m, FxChain(), nullptr);
+            std::vector<float> L, R;
+            std::string why;
+            if (!nrtSoundThroughChain(app, dry, q, chain, length, step, &L, &R, &why)) return fail(why.empty() ? "the sound could not be made" : why);
+            const int rate = std::max(8000, q.settings.sampleRate);
+            tempWav = s8(QDir(QDir::tempPath()).filePath(QString("reno_nrt_%1_%2.wav").arg(QCoreApplication::applicationPid()).arg(k)));
+            made.push_back(tempWav);
+            if (!writeFloatWav(tempWav, L, R, rate)) return fail("the intermediate file could not be written");
+            length = std::max(1e-3, (double)L.size() / (double)rate);
+            MediaItem tm;
+            tm.id = 1;
+            tm.path = tempWav;
+            tm.name = "nrt";
+            tm.info.path = tempWav;
+            tm.info.hasAudio = true;
+            tm.info.sampleRate = rate;
+            tm.info.channels = 2;
+            tm.info.duration = length;
+            tm.info.audioCodec = "pcm_f32le";
+            Project q2;
+            q2.settings = q.settings;
+            q2.media.push_back(tm);
+            Track t;
+            t.id = 1;
+            t.type = TrackType::Audio;
+            Event x;
+            x.id = 2;
+            x.mediaId = tm.id;
+            x.start = 0;
+            x.length = length;
+            x.loop = false;
+            t.events.push_back(x);
+            q2.tracks.push_back(t);
+            q2.nextId = 3;
+            q = q2;
+            from = 0.0;
+        }
         RenderSpec spec;
         std::string why;
         if (!nrtSpec(opt.format, q, j.path, &spec, nullptr, &why)) return fail(why);
         if (dlg) dlg->setLabelText(QString("Rendering %1 (%2 of %3)...").arg(qs(j.takeName)).arg(k + 1).arg(jobs.size()));
-        const double n = (double)jobs.size();
         made.push_back(j.path);
-        const bool ok = renderProjectAs(q, app.fx, spec, 0.0, length,
-                                        [&](const ExportProgress& ep) {
-                                            const double all = (k + std::min(1.0, std::max(0.0, ep.fraction))) / n;
-                                            if (dlg) {
-                                                dlg->setValue((int)std::lround(all * 1000.0));
-                                                QApplication::processEvents();
-                                                if (dlg->wasCanceled()) return false;
-                                            }
-                                            return !opt.progress || opt.progress(all);
-                                        },
+        const double base = tempWav.empty() ? 0.0 : 0.5;
+        const bool ok = renderProjectAs(q, app.fx, spec, from, length,
+                                        [&](const ExportProgress& ep) { return step(base + (1.0 - base) * std::min(1.0, std::max(0.0, ep.fraction))); },
                                         &why, app.mediaOpener);
+        if (!tempWav.empty()) {
+            QFile::remove(qs(tempWav));
+            made.erase(std::remove(made.begin(), made.end(), tempWav), made.end());
+        }
         if (!ok) return fail(why.empty() ? "the sound could not be rendered" : why);
     }
     dlg.reset();

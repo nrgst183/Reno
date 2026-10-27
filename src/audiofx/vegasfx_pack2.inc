@@ -768,6 +768,19 @@ public:
     }
     int latencySamples() override { return dsp_.block(); }
 
+    // The level meters of the plug-in's page: for each band the loudest filtered sample of the left and right channel
+    // (linear) and the smallest gain its compressor used (1 = none), since the last call. 3 values a band.
+    int meterCount() override { return 12; }
+    float meterTake(int i) override
+    {
+        if (i < 0 || i >= 12) return 0.f;
+        if (i % 3 == 2) {
+            const float g = gainAcc_[i / 3].exchange(2.f);
+            return g > 1.5f ? 1.f : g;
+        }
+        return peakAcc_[i / 3 * 2 + i % 3].exchange(0.f);
+    }
+
 protected:
     void prepare() override
     {
@@ -836,9 +849,21 @@ protected:
             fifo_.erase(fifo_.begin(), fifo_.begin() + (std::ptrdiff_t)head_);
             head_ = 0;
         }
+        for (int k = 0; k < vegmb::kBands; ++k) {          // the meters: what the bands saw in the blocks worked on
+            for (int c = 0; c < 2; ++c) {
+                const float pk = (float)dsp_.stateDouble(c, k, 0x1c8);
+                float old = peakAcc_[k * 2 + c].load();
+                while (pk > old && !peakAcc_[k * 2 + c].compare_exchange_weak(old, pk)) {}
+            }
+            const float g = (float)dsp_.stateDouble(0, k, 0x1d0);
+            float old = gainAcc_[k].load();
+            while (g < old && !gainAcc_[k].compare_exchange_weak(old, g)) {}
+        }
     }
 
 private:
+    std::atomic<float> peakAcc_[8] = {};
+    std::atomic<float> gainAcc_[4] = {{2.f}, {2.f}, {2.f}, {2.f}};
     // the parameters, ten for each band (threshold, amount, gain, attack, release, type, center, width, bypass, solo),
     // then Stereo Sync Channels, Output Gain and Bypass
     static std::vector<Param> paramList()

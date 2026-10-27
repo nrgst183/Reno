@@ -11,6 +11,7 @@
 // Identifiers, parameter names, types, choices and labels come from VEGAS's plug-in descriptions (resource files) and presets; defaults come from its
 // presets where it has them, otherwise Reno's own, as are ranges, maths and pictures. Parameters needing what Reno has no counterpart of (a lens
 // database, motion analysis, auto-align) are declared with the same name and kept in the project, and do nothing.
+#include "vkfilters.h"
 #include "builtins_mask_internal.h"
 #include <algorithm>
 #include <cmath>
@@ -29,25 +30,40 @@ const char* const kGroup = "Reno Built-in";
 // a point at distance r comes from f = (k1 R^3 + k2 R^2 + k3 R + 1 - k1 - k2 - k3) / Scale times as far, R = r / (half the shorter side). The map holds those places / (W, H), read back at * (W - 1, H - 1);
 // a place beyond -0.4 .. W - 0.6 (H) is transparent, else a bilinear mix with 10-bit weights, truncated (255 can come out 254); the pixel right of the last column is the next row's first.
 // All k 0 and Scale 1, or Show Distortion: unchanged.
-void lensCorrection(Ctx& c)
+// The settings the lens correction works from, in the CPU's float steps (shared with the GPU plan)
+bool lensSetup(Ctx& c, int W, int H, LensSetup& o)
 {
-    const int W = c.out.w, H = c.out.h;
-    if (W <= 0 || H <= 0) return;
+    if (W <= 0 || H <= 0) return false;
     double pcx = 0.5, pcy = 0.5;
     c.xy("DistCenter", pcx, pcy);
-    const double p1 = clampd(c.d("RadialDistParam1"), -2, 2), p2 = clampd(c.d("RadialDistParam2"), -2, 2), p3 = clampd(c.d("RadialDistParam3"), -2, 2);
+    double p1 = clampd(c.d("RadialDistParam1"), -2, 2), p2 = clampd(c.d("RadialDistParam2"), -2, 2), p3 = clampd(c.d("RadialDistParam3"), -2, 2);
+    // Choosing a lens from the found list copies its three coefficients into k1..k3 (entry n of the list is the n-th lens by name, case-sensitive; 0 is "Nothing found");
+    // only the last one of VEGAS's list is known here.
+    if (c.i("QueryResult") == 668) { p1 = 0.00266415; p2 = -0.0099024; p3 = 0.0120246; }
     const double scale = clampd(c.d("Scale"), 0.05, 20);
-    const bool plain = (std::fabs(p1) < 1e-12 && std::fabs(p2) < 1e-12 && std::fabs(p3) < 1e-12 && std::fabs(scale - 1) < 1e-12) || c.b("ShowMesh");
-    if (plain) { c.out.px = c.src.px; return; }
+    o.plain = (std::fabs(p1) < 1e-12 && std::fabs(p2) < 1e-12 && std::fabs(p3) < 1e-12 && std::fabs(scale - 1) < 1e-12) || c.b("ShowMesh");
+    if (o.plain) return true;
     const int cix = (int)((float)W * (float)pcx), ciy = (int)((float)H * (float)pcy);
     float ncx = 0.5f, ncy = 0.5f;
     if (cix >= 0) { ncx = (float)cix / (float)W; ncy = (float)ciy / (float)H; }
     const float q = 2.0f / (float)std::min(W, H);
     const float a0 = (float)p3, a1 = (float)p2, a2 = (float)p1;
-    const float d = 1.0f - a0 - a1 - a2;
-    const float x14 = a0 * q, q2 = q * q, x3 = q2 * a1, x13 = q2 * q * a2;
-    const float cxp = (float)W * ncx, cyp = (float)H * ncy;
-    const float s = (float)(1.0 / scale), iw = 1.0f / (float)W, ih = 1.0f / (float)H;
+    o.d = 1.0f - a0 - a1 - a2;
+    o.x14 = a0 * q;
+    const float q2 = q * q;
+    o.x3 = q2 * a1; o.x13 = q2 * q * a2;
+    o.cxp = (float)W * ncx; o.cyp = (float)H * ncy;
+    o.s = (float)(1.0 / scale); o.iw = 1.0f / (float)W; o.ih = 1.0f / (float)H;
+    return true;
+}
+
+void lensCorrection(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    LensSetup su;
+    if (!lensSetup(c, W, H, su)) return;
+    if (su.plain) { c.out.px = c.src.px; return; }
+    const float cxp = su.cxp, cyp = su.cyp, d = su.d, x14 = su.x14, x3 = su.x3, x13 = su.x13, s = su.s, iw = su.iw, ih = su.ih;
     const bool lv = c.levels;
     const size_t N = (size_t)W * H;
     auto px = [&](size_t i, float* v) {
@@ -200,6 +216,8 @@ void timeWarp(Ctx& c) { c.out.px = c.src.px; }
 void bumpMapGeneral(Ctx& c) { more::bumpMapRender(c, "DualLocation3DAnd2DSrc", "DualLocation3DAnd2DDst"); }
 
 }  // namespace
+
+bool lensSetupGpu(Ctx& c, int W, int H, LensSetup& o) { return lensSetup(c, W, H, o); }
 
 void addFiltersMask(std::vector<Def>& out)
 {

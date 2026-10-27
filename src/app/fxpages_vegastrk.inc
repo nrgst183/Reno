@@ -190,8 +190,37 @@
         SMap one;
         QVBoxLayout* col = new QVBoxLayout();
         col->setSpacing(7);
+        // the meters (dialog: the input's and the output's level as two bars each, and the reduction); range 48 dB
+        auto levelMeter = [this](const char* name, int first) {
+            LevelMeter* m = new LevelMeter(this, false, 2, -48.0, false);
+            m->setObjectName(name);
+            m->setFixedSize(411, 50);
+            addMeterPoll([this, m, first] {
+                for (int c = 0; c < 2; ++c) m->feed(c, meterDb(h_.meter(first + c), -48.0));
+            });
+            return m;
+        };
+        col->addWidget(levelMeter("dxMeterInput", 0));
         col->addWidget(trkBlock(0, "<u>I</u>nput gain (dB):", 850, g));
+        col->addWidget(levelMeter("dxMeterOutput", 2));
         col->addWidget(trkBlock(1, "<u>O</u>utput gain (dB):", 850, g));
+        {
+            QHBoxLayout* rr = new QHBoxLayout();
+            rr->setSpacing(8);
+            QLabel* rl = text("Reduction (dB):");
+            rl->setFixedWidth(105);
+            rr->addWidget(rl);
+            LevelMeter* m = new LevelMeter(this, false, 1, -30.0, true);
+            m->setObjectName("dxMeterReduction");
+            m->setFixedSize(303, 22);
+            addMeterPoll([this, m] {
+                const float g2 = h_.meter(4);
+                m->feed(0, g2 > 0.f && g2 < 1.f ? -20.0 * std::log10((double)g2) : 0.0, 0.8);
+            });
+            rr->addWidget(m);
+            rr->addStretch(1);
+            col->addLayout(rr);
+        }
         col->addWidget(trkBlock(2, "<u>T</u>hreshold (dB):", 600, one));
         col->addWidget(trkBlock(3, "Amount (<u>x</u>:1):", 490, one));
         col->addWidget(trkBlock(4, "Attac<u>k</u> (ms):", 5000, one));
