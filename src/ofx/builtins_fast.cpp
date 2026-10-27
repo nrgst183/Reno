@@ -430,11 +430,25 @@ void defocusFast(const Buf& src, Buf& out, double radius, int sides, double turn
         std::vector<float> num((size_t)W * 4);
         for (int y = y0; y < y1; ++y) {
             std::fill(num.begin(), num.end(), 0.f);
+            // eight pixels at a time with their sums kept in registers (each pixel adds the spans in the same order)
+            const int W8 = W & ~7;
+            for (int x0 = 0; x0 < W8; x0 += 8) {
+                V4 acc[8];
+                for (int i = 0; i < 8; ++i) acc[i] = zero();
+                for (const Span& s : spans) {
+                    const float* a = &ps[(size_t)(y + m + s.dy) * (Wp + 1) * 4];
+                    const float* pa = a + (size_t)(x0 + m + s.lo) * 4;
+                    const float* pb = a + (size_t)(x0 + m + s.hi + 1) * 4;
+                    const V4 bw = set(s.w);
+                    for (int i = 0; i < 8; ++i) acc[i] = add(acc[i], mul(sub(ld(pb + (size_t)i * 4), ld(pa + (size_t)i * 4)), bw));
+                }
+                for (int i = 0; i < 8; ++i) st(&num[(size_t)(x0 + i) * 4], acc[i]);
+            }
             for (const Span& s : spans) {
                 const int row = y + m + s.dy;
                 const float* a = &ps[(size_t)row * (Wp + 1) * 4];
                 const V4 bw = set(s.w);
-                for (int x = 0; x < W; ++x) {
+                for (int x = W8; x < W; ++x) {
                     const int ia = x + m + s.lo, ib = x + m + s.hi + 1;
                     st(&num[(size_t)x * 4], add(ld(&num[(size_t)x * 4]), mul(sub(ld(a + (size_t)ib * 4), ld(a + (size_t)ia * 4)), bw)));
                 }

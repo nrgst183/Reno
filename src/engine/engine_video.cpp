@@ -1,6 +1,7 @@
 // The compositor: a project's frame at a moment.
 #include "engine.h"
 #include "../core/pixrows.h"
+#include "blendrows.h"
 #include "opticalflow.h"
 #include "profile.h"
 #include "colormgmt.h"
@@ -1014,8 +1015,7 @@ double trackMotion3dCamera(int W, double par) { return kCameraDistance * W * par
 MotionKey motionKeyAt(const std::vector<MotionKey>& keys, double t) { return motionAt(keys, t); }
 
 // ---------------------------------------------------------------------- compositing modes
-// VEGAS's compositing modes.
-enum class Blend { Over, Add, Subtract, Multiply, Screen, Overlay, HardLight, Dodge, Burn, Darken, Lighten, Difference, DiffSquared, Cut };
+// VEGAS's compositing modes (the Blend enum is in blendrows.h).
 
 static Blend blendOf(const std::string& s)
 {
@@ -1061,7 +1061,10 @@ static void blendRows(Image& dst, const Image& src, float opacity, int y0, int y
     for (int y = y0; y < y1; ++y) {
         uint8_t* d = dst.row(y);
         const uint8_t* s = src.row(y);
-        for (int x = 0; x < dst.w; ++x, d += 4, s += 4) {
+        const int done = pix::blendModeRow<M>(d, s, dst.w, opacity);
+        d += (size_t)done * 4;
+        s += (size_t)done * 4;
+        for (int x = done; x < dst.w; ++x, d += 4, s += 4) {
             const float sa = s[3] * k * opacity;
             if (sa <= 0.f) continue;
             const float da = d[3] * k;

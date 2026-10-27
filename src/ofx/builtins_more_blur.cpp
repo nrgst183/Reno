@@ -41,7 +41,7 @@ void radialBlur(Ctx& c)
     for (int y = 0; y < H; ++y) {
         const float* r = c.src.at(0, H - 1 - y);
         float* o = &src[(size_t)y * W * 4];
-        for (int i = 0; i < W * 4; ++i) o[i] = q8 ? (float)(int)std::lround(std::min(std::max(r[i], 0.f), 1.f) * 255.f) : r[i] * 255.f;
+        for (int i = 0; i < W * 4; ++i) o[i] = q8 ? (float)roundNonNeg(std::min(std::max(r[i], 0.f), 1.f) * 255.f) : r[i] * 255.f;
     }
     dst = src;
     const double k = std::min(W, H) / 300.0;

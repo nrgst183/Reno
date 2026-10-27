@@ -2,6 +2,7 @@
 #include "ffmpeg_common.h"
 #include "hwdecode.h"
 #include "../engine/profile.h"
+#include "../core/pixrows.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1810,7 +1811,8 @@ ImagePtr FFReader::convert(const AVFrame* f, int ow, int oh)
             if (alpha) {
                 for (int x = 0; x < ow; ++x) copyPremultiplied(d + 4 * x, s + 4 * x);
             } else {
-                for (int x = 0; x < ow; ++x) copyOpaque(d + 4 * x, s + 4 * x);
+                std::memcpy(d, s, (size_t)ow * 4);
+                pix::opaqueRow(d, ow);
             }
         }
     } else {

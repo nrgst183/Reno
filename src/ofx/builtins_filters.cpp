@@ -644,10 +644,30 @@ void chromaKeyer(Ctx& c)
         const std::vector<float> k = chromaKeyBlurWeights(sigma);
         const int r = (int)k.size() - 1;
         std::vector<float> tmp((size_t)W * H);
+        // each sum is s = in[x] * k0, then s += (in[x - j] + in[x + j]) * k[j] for j = 1 .. r (the pair added in floats, the rest in doubles); four or eight pixels at a time where no tap passes an edge
         forRows(H, W * (r + 1), [&](int y) {
             const float* in = &mask[(size_t)y * W];
             float* o = &tmp[(size_t)y * W];
-            for (int x = 0; x < W; ++x) {
+            int x = 0;
+#ifdef RENO_PIXROWS_SSE2
+            for (; x + 8 <= W && x - r >= 0 && x + 7 + r <= W - 1; x += 8) {
+                const __m128d k0 = _mm_set1_pd((double)k[0]);
+                __m128d s0 = _mm_mul_pd(_mm_cvtps_pd(_mm_loadu_ps(in + x)), k0), s1 = _mm_mul_pd(_mm_cvtps_pd(_mm_loadu_ps(in + x + 2)), k0);
+                __m128d s2 = _mm_mul_pd(_mm_cvtps_pd(_mm_loadu_ps(in + x + 4)), k0), s3 = _mm_mul_pd(_mm_cvtps_pd(_mm_loadu_ps(in + x + 6)), k0);
+                for (int j = 1; j <= r; ++j) {
+                    const __m128 pa = _mm_add_ps(_mm_loadu_ps(in + x - j), _mm_loadu_ps(in + x + j));
+                    const __m128 pb = _mm_add_ps(_mm_loadu_ps(in + x + 4 - j), _mm_loadu_ps(in + x + 4 + j));
+                    const __m128d kk = _mm_set1_pd((double)k[(size_t)j]);
+                    s0 = _mm_add_pd(s0, _mm_mul_pd(_mm_cvtps_pd(pa), kk));
+                    s1 = _mm_add_pd(s1, _mm_mul_pd(_mm_cvtps_pd(_mm_movehl_ps(pa, pa)), kk));
+                    s2 = _mm_add_pd(s2, _mm_mul_pd(_mm_cvtps_pd(pb), kk));
+                    s3 = _mm_add_pd(s3, _mm_mul_pd(_mm_cvtps_pd(_mm_movehl_ps(pb, pb)), kk));
+                }
+                _mm_storeu_ps(o + x, _mm_movelh_ps(_mm_cvtpd_ps(s0), _mm_cvtpd_ps(s1)));
+                _mm_storeu_ps(o + x + 4, _mm_movelh_ps(_mm_cvtpd_ps(s2), _mm_cvtpd_ps(s3)));
+            }
+#endif
+            for (; x < W; ++x) {
                 double s = in[x] * (double)k[0];
                 for (int j = 1; j <= r; ++j) s += (in[std::max(0, x - j)] + in[std::min(W - 1, x + j)]) * (double)k[(size_t)j];
                 o[x] = (float)s;
@@ -655,10 +675,40 @@ void chromaKeyer(Ctx& c)
         });
         forRows(H, W * (r + 1), [&](int y) {
             float* o = &mask[(size_t)y * W];
-            for (int x = 0; x < W; ++x) {
-                double s = tmp[(size_t)y * W + x] * (double)k[0];
-                for (int j = 1; j <= r; ++j)
-                    s += (tmp[(size_t)std::max(0, y - j) * W + x] + tmp[(size_t)std::min(H - 1, y + j) * W + x]) * (double)k[(size_t)j];
+            std::vector<const float*> up((size_t)r + 1), down((size_t)r + 1);
+            for (int j = 1; j <= r; ++j) {
+                up[(size_t)j] = &tmp[(size_t)std::max(0, y - j) * W];
+                down[(size_t)j] = &tmp[(size_t)std::min(H - 1, y + j) * W];
+            }
+            const float* mid = &tmp[(size_t)y * W];
+            int x = 0;
+#ifdef RENO_PIXROWS_SSE2
+            for (; x + 8 <= W; x += 8) {
+                const __m128d k0 = _mm_set1_pd((double)k[0]);
+                __m128d s0 = _mm_mul_pd(_mm_cvtps_pd(_mm_loadu_ps(mid + x)), k0), s1 = _mm_mul_pd(_mm_cvtps_pd(_mm_loadu_ps(mid + x + 2)), k0);
+                __m128d s2 = _mm_mul_pd(_mm_cvtps_pd(_mm_loadu_ps(mid + x + 4)), k0), s3 = _mm_mul_pd(_mm_cvtps_pd(_mm_loadu_ps(mid + x + 6)), k0);
+                for (int j = 1; j <= r; ++j) {
+                    const float* ua = up[(size_t)j] + x;
+                    const float* da = down[(size_t)j] + x;
+                    const __m128 pa = _mm_add_ps(_mm_loadu_ps(ua), _mm_loadu_ps(da));
+                    const __m128 pb = _mm_add_ps(_mm_loadu_ps(ua + 4), _mm_loadu_ps(da + 4));
+                    const __m128d kk = _mm_set1_pd((double)k[(size_t)j]);
+                    s0 = _mm_add_pd(s0, _mm_mul_pd(_mm_cvtps_pd(pa), kk));
+                    s1 = _mm_add_pd(s1, _mm_mul_pd(_mm_cvtps_pd(_mm_movehl_ps(pa, pa)), kk));
+                    s2 = _mm_add_pd(s2, _mm_mul_pd(_mm_cvtps_pd(pb), kk));
+                    s3 = _mm_add_pd(s3, _mm_mul_pd(_mm_cvtps_pd(_mm_movehl_ps(pb, pb)), kk));
+                }
+                double s[8];
+                _mm_storeu_pd(s, s0);
+                _mm_storeu_pd(s + 2, s1);
+                _mm_storeu_pd(s + 4, s2);
+                _mm_storeu_pd(s + 6, s3);
+                for (int i = 0; i < 8; ++i) o[x + i] = (float)std::floor(s[i] - 0.005);
+            }
+#endif
+            for (; x < W; ++x) {
+                double s = mid[x] * (double)k[0];
+                for (int j = 1; j <= r; ++j) s += (up[(size_t)j][x] + down[(size_t)j][x]) * (double)k[(size_t)j];
                 o[x] = (float)std::floor(s - 0.005);          // (truncated, a little under: VEGAS's 255 blurs to 254)
             }
         });
@@ -750,7 +800,7 @@ void border(Ctx& c)
     // the source as bytes (or floats in 0..255), rows bottom first; channel k of the colour goes to byte k (BGRA: blue first)
     auto px = [&](int x, int y) { return c.src.at(x, H - 1 - y); };
     auto outp = [&](int x, int y) { return c.out.at(x, H - 1 - y); };
-    auto v8 = [&](float v) { return q8 ? (float)(int)std::lround(std::min(std::max(v, 0.f), 1.f) * 255.f) : v * 255.f; };
+    auto v8 = [&](float v) { return q8 ? (float)roundNonNeg(std::min(std::max(v, 0.f), 1.f) * 255.f) : v * 255.f; };
     auto chOfByte = [](int k) { return k == 3 ? 3 : 2 - k; };
     const double colv[4] = {col.r, col.g, col.b, col.a};
     if (type == 2) {

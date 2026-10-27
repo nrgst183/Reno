@@ -1021,6 +1021,64 @@ void gaussianBlur(Buf& b, double sigmaX, double sigmaY, const bool channels[4])
     }
 }
 
+// A separable blur of interleaved float planes with symmetric kernels of 2r + 1 doubles (edges carried on): rows with kx, then columns with ky, each value one sum
+// of acc += k[j] * value in order j = -r .. r, in doubles, kept as a float.
+void firBlurDoubles(std::vector<float>& v, int W, int H, int planes, const std::vector<double>& kx, const std::vector<double>& ky)
+{
+    if (W <= 0 || H <= 0 || planes <= 0 || kx.empty() || ky.empty() || v.size() < (size_t)W * H * planes) return;
+    const int rx = (int)kx.size() / 2, ry = (int)ky.size() / 2;
+    std::vector<float> tmp(v.size());
+    const size_t rowLen = (size_t)W * planes;
+#ifdef RENO_PIXROWS_SSE2
+    // eight neighbouring values at once, each its own sum in the plain order: tap j reads 'in' + j * step, or, with 'rows', row j of them at offset e
+    auto group8 = [](const double* k, int r, const float* const* rows, size_t e, const float* in, ptrdiff_t step, float* out) {
+        __m128d a0 = _mm_setzero_pd(), a1 = a0, a2 = a0, a3 = a0;
+        for (int j = -r; j <= r; ++j) {
+            const float* s = rows ? rows[j + r] + e : in + (ptrdiff_t)j * step;
+            const __m128d kk = _mm_set1_pd(k[j + r]);
+            const __m128 lo = _mm_loadu_ps(s), hi = _mm_loadu_ps(s + 4);
+            a0 = _mm_add_pd(a0, _mm_mul_pd(kk, _mm_cvtps_pd(lo)));
+            a1 = _mm_add_pd(a1, _mm_mul_pd(kk, _mm_cvtps_pd(_mm_movehl_ps(lo, lo))));
+            a2 = _mm_add_pd(a2, _mm_mul_pd(kk, _mm_cvtps_pd(hi)));
+            a3 = _mm_add_pd(a3, _mm_mul_pd(kk, _mm_cvtps_pd(_mm_movehl_ps(hi, hi))));
+        }
+        _mm_storeu_ps(out, _mm_movelh_ps(_mm_cvtpd_ps(a0), _mm_cvtpd_ps(a1)));
+        _mm_storeu_ps(out + 4, _mm_movelh_ps(_mm_cvtpd_ps(a2), _mm_cvtpd_ps(a3)));
+    };
+#endif
+    forRows(H, W, [&](int y) {
+        const float* row = &v[(size_t)y * rowLen];
+        float* orow = &tmp[(size_t)y * rowLen];
+        for (size_t e = 0; e < rowLen;) {
+#ifdef RENO_PIXROWS_SSE2
+            if (e + 8 <= rowLen && (long long)(e / planes) - rx >= 0 && (long long)((e + 7) / planes) + rx <= W - 1) {
+                group8(kx.data(), rx, nullptr, e, row + e, planes, orow + e);
+                e += 8;
+                continue;
+            }
+#endif
+            const int x = (int)(e / planes), p = (int)(e % planes);
+            double acc = 0;
+            for (int j = -rx; j <= rx; ++j) acc += kx[(size_t)(j + rx)] * row[((size_t)std::max(0, std::min(W - 1, x + j))) * planes + p];
+            orow[e++] = (float)acc;
+        }
+    });
+    forRows(H, W, [&](int y) {
+        float* orow = &v[(size_t)y * rowLen];
+        std::vector<const float*> rows((size_t)(2 * ry + 1));
+        for (int j = -ry; j <= ry; ++j) rows[(size_t)(j + ry)] = &tmp[(size_t)std::max(0, std::min(H - 1, y + j)) * rowLen];
+        size_t e = 0;
+#ifdef RENO_PIXROWS_SSE2
+        for (; e + 8 <= rowLen; e += 8) group8(ky.data(), ry, rows.data(), e, nullptr, 0, orow + e);
+#endif
+        for (; e < rowLen; ++e) {
+            double acc = 0;
+            for (int j = -ry; j <= ry; ++j) acc += ky[(size_t)(j + ry)] * rows[(size_t)(j + ry)][e];
+            orow[e] = (float)acc;
+        }
+    });
+}
+
 // VEGAS's Gaussian Blur: sigma 96 * Range + 0.45 pixels in a 320 wide frame (fitted; same across and down), never under 0.6 (even at Range 0 the picture
 // softens a little: a 3 tap kernel 1/6 2/3 1/6).
 // Pixelate's cells along one axis of n pixels (vertical counted from the bottom row): 'starts' holds each cell's first pixel and n at the end, K the

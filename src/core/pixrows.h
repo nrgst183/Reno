@@ -4,9 +4,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cmath>
-// (SSE2 for GCC/clang on Linux, and for Visual C++ itself. Not for clang working against Visual C++'s headers - the cross
-// build here and clang-cl - where those headers declare the intrinsics for the compiler Microsoft makes, not for clang:
-// it takes the plain loops, which give the same bytes.)
+// (Every x64 compiler takes the SSE2 path; define RENO_NO_SSE2 for the plain loops, which give the same bytes.)
 #if !defined(RENO_NO_SSE2) && (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64))
 #  include <emmintrin.h>
 #  define RENO_PIXROWS_SSE2 1

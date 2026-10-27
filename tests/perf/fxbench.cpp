@@ -2,7 +2,8 @@
 // compare two builds byte for byte: each effect runs with its defaults and with several randomly chosen (but always the
 // same) settings, and a hash of every output is printed ("HASH <effect> <variant> <hex>"). Diff the output of two builds.
 //
-//   fxbench [--size W H] [--variants N] [--time] [--reps N] [--only id1,id2,...] [--list] [--scale S]
+//   fxbench [--size W H] [--variants N] [--time] [--reps N] [--only id1,id2,...] [--list] [--scale S] [--float]
+//   --float: Ctx::levels off (a float picture: the effects that cut to 8-bit levels do not)
 //   --time: "TIME <effect> <ms>" (best of --reps, default 3) for the defaults and for every variant (the slowest)
 //   Without --time only the hashes are printed.
 #include "../../src/ofx/builtins_impl.h"
@@ -99,7 +100,7 @@ int main(int argc, char** argv)
 {
     int W = 480, H = 270, variants = 6, reps = 3;
     double scale = 1.0;
-    bool timing = false, list = false;
+    bool timing = false, list = false, floatPic = false;
     std::set<std::string> only;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--size") && i + 2 < argc) { W = std::atoi(argv[i + 1]); H = std::atoi(argv[i + 2]); i += 2; }
@@ -107,6 +108,7 @@ int main(int argc, char** argv)
         else if (!std::strcmp(argv[i], "--reps") && i + 1 < argc) reps = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--scale") && i + 1 < argc) scale = std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--time")) timing = true;
+        else if (!std::strcmp(argv[i], "--float")) floatPic = true;
         else if (!std::strcmp(argv[i], "--list")) list = true;
         else if (!std::strcmp(argv[i], "--only") && i + 1 < argc) {
             std::string s = argv[++i];
@@ -133,6 +135,7 @@ int main(int argc, char** argv)
             c.testParams = &store;
             c.frameW = W; c.frameH = H;
             c.scale = scale;
+            c.levels = !floatPic;
             c.progress = 0.3 + 0.1 * v;
             double best = 1e30, bestCpu = 1e30;
             uint64_t h = 1469598103934665603ull;

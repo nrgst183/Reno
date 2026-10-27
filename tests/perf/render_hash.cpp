@@ -84,6 +84,7 @@ int main(int argc, char** argv)
         else if (!std::strcmp(argv[i], "--no-audio")) noAudio = true;
         else if (!std::strcmp(argv[i], "--wav") && i + 1 < argc) gWavFile = argv[++i];
         else if (!std::strcmp(argv[i], "--no-fx")) gNoFx = true;
+        else if (!std::strcmp(argv[i], "--no-proxy")) setAudioProxyOptions(false, false);      // nested projects' sound mixed live (a proxy being built in the background makes runs differ)
         else if (!std::strcmp(argv[i], "--no-cache")) {
 #ifndef RENO_NO_PREFETCH
             AudioEngine::setEventCacheLimit(0);      // the mixer makes every event as it plays, block by block (no event cache)

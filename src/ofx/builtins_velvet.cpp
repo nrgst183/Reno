@@ -10,6 +10,8 @@
 //        vertical) blurs it along its direction into its own channel (length from the two radii, as a fraction of the width), scaled by
 //        1 + boost (2 boost above 0), coloured by the colour gradient and screened over the picture.
 #include "builtins_more_internal.h"
+#include "../core/base.h"
+#include "builtins_vec.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,8 +25,9 @@ namespace reno {
 namespace ofx {
 namespace builtin {
 namespace more {
-
 namespace {
+
+void lineBlurAll(float* v, int count, int n, ptrdiff_t stride, ptrdiff_t lineStride, double sigma);
 
 constexpr double kPiV = 3.14159265358979323846;
 
@@ -187,6 +190,26 @@ double sigmaForDiameter(double px)
 }
 
 // ------------------------------------------------------------------ planes
+// What Plane::sample works out along one axis (the two pixels and the weight of the second), for a plane len long.
+inline void sampleAxisAt(double x, int len, int& i0, int& i1, float& f)
+{
+    x = clampd(x, 0.0, (double)(len - 1));
+    i0 = (int)x;
+    if (i0 > len - 2) i0 = std::max(0, len - 2);
+    f = (float)(x - i0);
+    i1 = std::min(len - 1, i0 + 1);
+}
+// That for 'count' positions along an axis (the plane's len long), so a warp does it once per column.
+struct SampleAxis {
+    std::vector<int> i0, i1;
+    std::vector<float> f;
+    template <class F> void set(int count, int len, F pos)
+    {
+        i0.resize((size_t)count); i1.resize((size_t)count); f.resize((size_t)count);
+        for (int k = 0; k < count; ++k) sampleAxisAt(pos(k), len, i0[(size_t)k], i1[(size_t)k], f[(size_t)k]);
+    }
+};
+
 struct Plane {
     int w = 0, h = 0;
     std::vector<float> v;
@@ -244,7 +267,6 @@ void blur3x3(std::vector<int>& g, int W, int H)
 }
 
 // ------------------------------------------------------------------ the masks (SimpleMask)
-void lineBlur(float* v, int n, int stride, double sigma, std::vector<double>& tmp);
 
 // EllipseMask / RectangleMask coverage 0..1 per pixel: Width x Height (fractions of the frame) about (xpos, ypos) (y from the top), rectangle
 // corners rounded by corner x height / 3. Native drawing puts pixel centres on whole coordinates (half a pixel right and down of the plain
@@ -281,9 +303,8 @@ void shapeMaskVelvet(int W, int H, double xpos, double ypos, double w, double h,
         }
     if (soft) {
         const double sigma = sigmaForDiameter(blur * CW);
-        std::vector<double> tmp;
-        for (int y = 0; y < CH; ++y) lineBlur(&cv[(size_t)y * CW], CW, 1, sigma, tmp);
-        for (int x = 0; x < CW; ++x) lineBlur(&cv[(size_t)x], CH, CW, sigma, tmp);
+        lineBlurAll(cv.data(), CH, CW, 1, CW, sigma);
+        lineBlurAll(cv.data(), CW, CH, CW, 1, sigma);
     }
     const int ox = (CW - W) / 2, oy = (CH - H) / 2;
     for (int y = 0; y < H; ++y)
@@ -361,7 +382,9 @@ void multiplyBy(Buf& b, const std::vector<float>& m)
 // CoreGraphics.Native's GaussianBlurMaskNative (the one-channel blur used by DirectionalBlur and the masks) is not in the assembly; VEGAS's
 // pictures match Young & van Vliet's third-order recursive Gaussian run forwards then backwards, q = the deviation GaussianBlur passes,
 // each run starting from the value at its end (edges carried on outside).
-void lineBlur(float* v, int n, int stride, double sigma, std::vector<double>& tmp)
+// A third-order recursive blur along lines, eight at once (line l starts at v + l * lineStride, its values 'stride' apart), each line's sums in the same order, so the same results;
+// lines are independent, so the recursion's waiting is shared out between them.
+void lineBlurLanes(float* v, int n, ptrdiff_t stride, ptrdiff_t lineStride, int lines, double sigma, std::vector<double>& tmp)
 {
     if (n <= 1 || !(sigma > 0.05)) return;
     const double q = sigma;
@@ -370,19 +393,41 @@ void lineBlur(float* v, int n, int stride, double sigma, std::vector<double>& tm
     const double b2 = -(1.4281 * q * q + 1.26661 * q * q * q);
     const double b3 = 0.422205 * q * q * q;
     const double c1 = b1 / b0, c2 = b2 / b0, c3 = b3 / b0, B = 1 - (c1 + c2 + c3);
-    tmp.resize((size_t)n);
-    double p1 = v[0], p2 = p1, p3 = p1;
+    tmp.resize((size_t)n * 8);
+    const d2::D2 kB = d2::set(B), k1 = d2::set(c1), k2 = d2::set(c2), k3 = d2::set(c3);
+    d2::D2 p1[4], p2[4], p3[4];
+    double x[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (int l = 0; l < 8; ++l) x[l] = l < lines ? (double)v[(ptrdiff_t)l * lineStride] : 0.0;
+    for (int g = 0; g < 4; ++g) p1[g] = p2[g] = p3[g] = d2::ld(x + 2 * g);
     for (int i = 0; i < n; ++i) {
-        const double w = B * v[(size_t)i * stride] + c1 * p1 + c2 * p2 + c3 * p3;
-        tmp[(size_t)i] = w;
-        p3 = p2; p2 = p1; p1 = w;
+        for (int l = 0; l < lines; ++l) x[l] = (double)v[(ptrdiff_t)l * lineStride + i * stride];
+        for (int g = 0; g < 4; ++g) {
+            const d2::D2 w = d2::add(d2::add(d2::add(d2::mul(kB, d2::ld(x + 2 * g)), d2::mul(k1, p1[g])), d2::mul(k2, p2[g])), d2::mul(k3, p3[g]));
+            d2::st(&tmp[(size_t)i * 8 + 2 * g], w);
+            p3[g] = p2[g]; p2[g] = p1[g]; p1[g] = w;
+        }
     }
-    p1 = p2 = p3 = tmp[(size_t)n - 1];
+    for (int g = 0; g < 4; ++g) p1[g] = p2[g] = p3[g] = d2::ld(&tmp[(size_t)(n - 1) * 8 + 2 * g]);
     for (int i = n - 1; i >= 0; --i) {
-        const double w = B * tmp[(size_t)i] + c1 * p1 + c2 * p2 + c3 * p3;
-        v[(size_t)i * stride] = (float)w;
-        p3 = p2; p2 = p1; p1 = w;
+        double o[8];
+        for (int g = 0; g < 4; ++g) {
+            const d2::D2 w = d2::add(d2::add(d2::add(d2::mul(kB, d2::ld(&tmp[(size_t)i * 8 + 2 * g])), d2::mul(k1, p1[g])), d2::mul(k2, p2[g])), d2::mul(k3, p3[g]));
+            d2::st(o + 2 * g, w);
+            p3[g] = p2[g]; p2[g] = p1[g]; p1[g] = w;
+        }
+        for (int l = 0; l < lines; ++l) v[(ptrdiff_t)l * lineStride + i * stride] = (float)o[l];
     }
+}
+
+// lineBlur of 'count' lines in parallel: line k starts at v + k * lineStride.
+void lineBlurAll(float* v, int count, int n, ptrdiff_t stride, ptrdiff_t lineStride, double sigma)
+{
+    if (n <= 1 || !(sigma > 0.05)) return;
+    forRows((count + 7) / 8, n * 64, [&](int gi) {
+        std::vector<double> tmp;
+        const int first = gi * 8;
+        lineBlurLanes(v + (ptrdiff_t)first * lineStride, n, stride, lineStride, std::min(8, count - first), sigma, tmp);
+    });
 }
 
 // DirectionalBlur of one plane: angle in degrees (0: vertical), blur diameter in pixels.
@@ -394,13 +439,12 @@ void directionalBlur(std::vector<float>& g, int W, int H, double angleDeg, doubl
     a = clampd(a, -90, 90);
     const double sigma = sigmaForDiameter(diameter);
     if (!(sigma > 0)) return;
-    std::vector<double> tmp;
     if (std::fabs(a) <= 0.1) {
-        for (int x = 0; x < W; ++x) lineBlur(&g[(size_t)x], H, W, sigma, tmp);
+        lineBlurAll(g.data(), W, H, W, 1, sigma);
         return;
     }
     if (std::fabs(std::fabs(a) - 90) <= 0.1) {
-        for (int y = 0; y < H; ++y) lineBlur(&g[(size_t)y * W], W, 1, sigma, tmp);
+        lineBlurAll(g.data(), H, W, 1, W, sigma);
         return;
     }
     const int q = std::max(0, std::min(3, (int)(a + 90) / 45));
@@ -424,7 +468,7 @@ void directionalBlur(std::vector<float>& g, int W, int H, double angleDeg, doubl
             sh[(size_t)r * L + i] = src(i, j0) + (src(i, j1) - src(i, j0)) * f;
         }
     }
-    for (int r = 0; r < M2; ++r) lineBlur(&sh[(size_t)r * L], L, 1, sigma, tmp);
+    lineBlurAll(sh.data(), M2, L, 1, L, sigma);
     for (int i = 0; i < L; ++i) {
         const double off = offOf(i);
         for (int j = 0; j < M; ++j) {
@@ -568,62 +612,75 @@ void firGaussian(std::vector<float>& v, int W, int H, int planes, double sigma)
     double sum = 0;
     for (int i = -r; i <= r; ++i) sum += (k[(size_t)(i + r)] = std::exp(-0.5 * i * i / (sigma * sigma)));
     for (double& w : k) w /= sum;
-    std::vector<float> tmp(v.size());
-    forRows(H, W, [&](int y) {
-        for (int x = 0; x < W; ++x)
-            for (int p = 0; p < planes; ++p) {
-                double acc = 0;
-                for (int j = -r; j <= r; ++j) acc += k[(size_t)(j + r)] * v[((size_t)y * W + std::max(0, std::min(W - 1, x + j))) * planes + p];
-                tmp[((size_t)y * W + x) * planes + p] = (float)acc;
-            }
-    });
-    forRows(H, W, [&](int y) {
-        for (int x = 0; x < W; ++x)
-            for (int p = 0; p < planes; ++p) {
-                double acc = 0;
-                for (int j = -r; j <= r; ++j) acc += k[(size_t)(j + r)] * tmp[((size_t)std::max(0, std::min(H - 1, y + j)) * W + x) * planes + p];
-                v[((size_t)y * W + x) * planes + p] = (float)acc;
-            }
-    });
+    firBlurDoubles(v, W, H, planes, k, k);
 }
 
 inline int byteOf(float v) { return (int)clampd(std::floor((double)v * 255.0 + 0.5), 0.0, 255.0); }
 
 
 // ------------------------------------------------------------------ Starburst's pieces
-// An in-place radix-2 FFT of n (a power of two) complex values with a stride; inverse unscaled.
-void fft1(std::complex<double>* a, int n, int stride, bool inverse)
+// The twiddle factors of an FFT of n (a power of two): for each stage (len 2, 4 .. n) len / 2 values, w[k + 1] = w[k] * wl as the butterflies take them.
+struct FftTwiddles {
+    std::vector<double> w;                   // re, im pairs, the stages one after the other
+    FftTwiddles(int n, bool inverse)
+    {
+        for (int len = 2; len <= n; len <<= 1) {
+            const double ang = 2 * kPiV / len * (inverse ? 1 : -1);
+            const double lr = std::cos(ang), li = std::sin(ang);
+            double wr = 1, wi = 0;
+            for (int k = 0; k < len / 2; ++k) {
+                w.push_back(wr);
+                w.push_back(wi);
+                const double nr = wr * lr - wi * li, ni = wr * li + wi * lr;
+                wr = nr;
+                wi = ni;
+            }
+        }
+    }
+};
+
+// An in-place radix-2 FFT of n (a power of two) complex values; inverse unscaled.
+void fft1(std::complex<double>* a, int n, const FftTwiddles& tw)
 {
     for (int i = 1, j = 0; i < n; ++i) {
         int bit = n >> 1;
         for (; j & bit; bit >>= 1) j ^= bit;
         j ^= bit;
-        if (i < j) std::swap(a[(size_t)i * stride], a[(size_t)j * stride]);
+        if (i < j) std::swap(a[i], a[j]);
     }
+    double* d = reinterpret_cast<double*>(a);
+    const double* stage = tw.w.data();
     for (int len = 2; len <= n; len <<= 1) {
-        const double ang = 2 * kPiV / len * (inverse ? 1 : -1);
-        const std::complex<double> wl(std::cos(ang), std::sin(ang));
+        const int half = len / 2;
         for (int i = 0; i < n; i += len) {
-            std::complex<double> w(1, 0);
-            for (int k = 0; k < len / 2; ++k) {
-                std::complex<double>& u = a[(size_t)(i + k) * stride];
-                std::complex<double>& v = a[(size_t)(i + k + len / 2) * stride];
-                const std::complex<double> t = v * w;
-                v = u - t;
-                u = u + t;
-                w *= wl;
+            double* u = d + (size_t)i * 2;
+            double* v = u + (size_t)half * 2;
+            for (int k = 0; k < half; ++k) {
+                const double wr = stage[2 * k], wi = stage[2 * k + 1];
+                const double tr = v[2 * k] * wr - v[2 * k + 1] * wi, ti = v[2 * k] * wi + v[2 * k + 1] * wr;
+                const double ur = u[2 * k], ui = u[2 * k + 1];
+                v[2 * k] = ur - tr;
+                v[2 * k + 1] = ui - ti;
+                u[2 * k] = ur + tr;
+                u[2 * k + 1] = ui + ti;
             }
         }
+        stage += (size_t)half * 2;
     }
 }
-void fft2(std::vector<std::complex<double>>& a, int w, int h, bool inverse)
+// The 2-D transform, rows then columns. Rows 'zeroRow' marks hold only zeros (their transform is zero: left as they are); only the first 'cols' columns are wanted.
+void fft2(std::vector<std::complex<double>>& a, int w, int h, bool inverse, const std::vector<char>* zeroRow, int cols)
 {
-    forRows(h, w, [&](int y) { fft1(&a[(size_t)y * w], w, 1, inverse); });
-    forRows(w / 8, h, [&](int xb) {
+    const FftTwiddles tw(w, inverse), th(h, inverse);
+    forRows(h, w, [&](int y) {
+        if (zeroRow && (*zeroRow)[(size_t)y]) return;
+        fft1(&a[(size_t)y * w], w, tw);
+    });
+    forRows((std::min(w, cols) + 7) / 8, h, [&](int xb) {
         std::vector<std::complex<double>> col((size_t)h * 8);
         for (int y = 0; y < h; ++y)
             for (int k = 0; k < 8; ++k) col[(size_t)k * h + y] = a[(size_t)y * w + xb * 8 + k];
-        for (int k = 0; k < 8; ++k) fft1(&col[(size_t)k * h], h, 1, inverse);
+        for (int k = 0; k < 8; ++k) fft1(&col[(size_t)k * h], h, th);
         for (int y = 0; y < h; ++y)
             for (int k = 0; k < 8; ++k) a[(size_t)y * w + xb * 8 + k] = col[(size_t)k * h + y];
     });
@@ -781,8 +838,21 @@ void raysVelvet(Ctx& c)
         np.w = np.h = 512;
         np.v = tex;
         const double sc = std::max(W / 512.0, H / 512.0);
+        SampleAxis nx;
+        nx.set(W, 512, [&](int x) { return (x + 0.5) / sc - 0.5; });
         forRows(H, W, [&](int y) {
-            for (int x = 0; x < W; ++x) m.at(x, y) *= np.sample((x + 0.5) / sc - 0.5, (y + 0.5) / sc - 0.5);
+            int y0, y1;
+            float fy;
+            sampleAxisAt((y + 0.5) / sc - 0.5, 512, y0, y1, fy);
+            const float* r0 = &np.v[(size_t)y0 * 512];
+            const float* r1 = &np.v[(size_t)y1 * 512];
+            for (int x = 0; x < W; ++x) {
+                const int x0 = nx.i0[(size_t)x], x1 = nx.i1[(size_t)x];
+                const float fx = nx.f[(size_t)x];
+                const float a = r0[x0] + (r0[x1] - r0[x0]) * fx;
+                const float b = r1[x0] + (r1[x1] - r1[x0]) * fx;
+                m.at(x, y) *= a + (b - a) * fy;
+            }
         });
     }
 
@@ -793,20 +863,34 @@ void raysVelvet(Ctx& c)
         const int n = L > 1 ? (int)std::lround(std::log(L) / std::log(k)) : 0;
         double s = amount * 4.0 / std::pow(k, n);
         const int passes = std::min(n, steps);
-        Plane prev;
+        Plane next;
+        next.resize(W, H);
+        SampleAxis xa;
         for (int i = 0; i < passes; ++i) {
-            prev = m;
             const double sx = (float)(1.0 + s * aspect), sy = (float)(1.0 + s);
-            if (sx > 1e-6 && sy > 1e-6)
+            if (sx > 1e-6 && sy > 1e-6) {
+                xa.set(W, W, [&](int x) { return cx + (x + 0.5 - cx) / sx - 0.5; });
                 forRows(H, W, [&](int y) {
                     const double qy = cy + (y + 0.5 - cy) / sy - 0.5;
+                    int y0, y1;
+                    float fy;
+                    sampleAxisAt(qy, H, y0, y1, fy);
+                    const float* r0 = &m.v[(size_t)y0 * W];
+                    const float* r1 = &m.v[(size_t)y1 * W];
+                    const float* own = &m.v[(size_t)y * W];
+                    float* o = &next.v[(size_t)y * W];
                     for (int x = 0; x < W; ++x) {
-                        const double qx = cx + (x + 0.5 - cx) / sx - 0.5;
-                        const float z = prev.sample(qx, qy);
-                        float& d = m.at(x, y);
-                        d = d + (z - d) * 0.35f;
+                        const int x0 = xa.i0[(size_t)x], x1 = xa.i1[(size_t)x];
+                        const float fx = xa.f[(size_t)x];
+                        const float a = r0[x0] + (r0[x1] - r0[x0]) * fx;
+                        const float b = r1[x0] + (r1[x1] - r1[x0]) * fx;
+                        const float z = a + (b - a) * fy;
+                        const float d = own[x];
+                        o[x] = d + (z - d) * 0.35f;
                     }
                 });
+                m.v.swap(next.v);
+            }
             s *= k;
         }
     }
@@ -890,7 +974,7 @@ void glintVelvet(Ctx& c)
         out.resize(p.size());
         for (size_t k = 0; k < p.size(); ++k) out[k] = (uint8_t)clampd(std::floor(p[k] * scale + 0.5f), 0.0, 255.0);
     };
-    for (int i = 0; i < n; ++i) one(i);
+    parallelTasks(n, one);
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             float* o = c.out.at(x, y);
@@ -1004,9 +1088,8 @@ void starburstVelvet(Ctx& c)
                 cv[(size_t)y * CW + x] = in / 16.f;
             }
         const double sigma = sigmaForDiameter(blur * CW);
-        std::vector<double> tmp;
-        for (int y = 0; y < CH; ++y) lineBlur(&cv[(size_t)y * CW], CW, 1, sigma, tmp);
-        for (int x = 0; x < CW; ++x) lineBlur(&cv[(size_t)x], CH, CW, sigma, tmp);
+        lineBlurAll(cv.data(), CH, CW, 1, CW, sigma);
+        lineBlurAll(cv.data(), CW, CH, CW, 1, sigma);
         const int ox = (CW - W) / 2, oy = (CH - H) / 2;
         for (int y = 0; y < H; ++y)
             for (int x = 0; x < W; ++x) {
@@ -1068,12 +1151,22 @@ void starburstVelvet(Ctx& c)
             A[(size_t)y * P + x] = std::complex<double>(v[0], v[1]);
             B[(size_t)y * P + x] = std::complex<double>(v[2], v[3]);
         }
-    fft2(K, P, Q, false);
-    fft2(A, P, Q, false);
-    fft2(B, P, Q, false);
-    for (size_t i = 0; i < K.size(); ++i) { A[i] *= K[i]; B[i] *= K[i]; }
-    fft2(A, P, Q, true);
-    fft2(B, P, Q, true);
+    std::vector<char> zeroK((size_t)Q, 1), zeroImg((size_t)Q, 1);
+    for (int y = 0; y < KS; ++y) zeroK[(size_t)(((y - R) % Q + Q) % Q)] = 0;
+    for (int y = 0; y < H; ++y) zeroImg[(size_t)y] = 0;
+    fft2(K, P, Q, false, &zeroK, P);
+    fft2(A, P, Q, false, &zeroImg, P);
+    fft2(B, P, Q, false, &zeroImg, P);
+    forRows(Q, P, [&](int y) {
+        for (size_t i = (size_t)y * P, e = i + P; i < e; ++i) {
+            const double kr = K[i].real(), ki = K[i].imag();
+            const double ar = A[i].real(), ai = A[i].imag(), br = B[i].real(), bi = B[i].imag();
+            A[i] = std::complex<double>(ar * kr - ai * ki, ar * ki + ai * kr);
+            B[i] = std::complex<double>(br * kr - bi * ki, br * ki + bi * kr);
+        }
+    });
+    fft2(A, P, Q, true, nullptr, W);
+    fft2(B, P, Q, true, nullptr, W);
     const double norm = 1.0 / ((double)P * Q);
     const double op = clampd(strength, 0.0, 1.0);
     forRows(H, W, [&](int y) {

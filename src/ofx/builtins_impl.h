@@ -256,6 +256,13 @@ void linearBlurTaps(double len, double dx, double dy, int& n, double& sx, double
 void pixelateAxis(int n, double p, double scale, std::vector<int>& starts, int& K);
 // Chroma Blur's kernel (builtins_more_blur.cpp): a box (triangle = false) of radius r or a triangle of half width r, normalised, 2n+1 taps.
 std::vector<float> chromaBlurKernel(bool triangle, double r);
+// A value of 0 .. 2^31 rounded to the nearest whole number, halves up (what std::lround gives there, without a library call).
+inline int roundNonNeg(float v)
+{
+    const int i = (int)v;
+    return i + ((v - (float)i) >= 0.5f ? 1 : 0);
+}
+void firBlurDoubles(std::vector<float>& v, int W, int H, int planes, const std::vector<double>& kx, const std::vector<double>& ky);
 inline float floor8(float v) { v = !(v >= 0.f) ? 0.f : (v > 2.f ? 2.f : v); return std::floor(v * 255.f + 1e-3f) / 255.f; }
 inline void premul(float* p, float r, float g, float b, float a) { p[0] = r * a; p[1] = g * a; p[2] = b * a; p[3] = a; }
 // An effect's render function for a row function: runs it over every row of Ctx::src into Ctx::out (on all cores for big frames).

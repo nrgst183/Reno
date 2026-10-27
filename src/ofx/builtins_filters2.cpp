@@ -534,7 +534,7 @@ void spherize(Ctx& c)
             if (q8) {
                 const int fy = (int)((sy - iy) * 256.0), fx = (int)((sx - ix) * 256.0);
                 for (int k = 0; k < 4; ++k) {
-                    auto v8 = [](float v) { return (int)std::lround(std::min(std::max(v, 0.f), 1.f) * 255.f); };
+                    auto v8 = [](float v) { return roundNonNeg(std::min(std::max(v, 0.f), 1.f) * 255.f); };
                     const int a = (v8(p00[k]) * (256 - fx) + v8(p10[k]) * fx) * (256 - fy) + (v8(p01[k]) * (256 - fx) + v8(p11[k]) * fx) * fy;
                     o[k] = (float)(a >> 16) * (1.f / 255.f);
                 }

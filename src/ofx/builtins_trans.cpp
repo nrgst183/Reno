@@ -937,7 +937,7 @@ void irisFx(Ctx& c)
     const uint8_t bc[4] = {bR, bG, bB, 255};
     const bool hardF = F < 1e-6f, noBorder = B < 1e-6f;
 
-    auto byteOf = [](float v) { return (uint8_t)std::lround(std::min(std::max(std::isfinite(v) ? v : 0.f, 0.f), 1.f) * 255.f); };
+    auto byteOf = [](float v) { return (uint8_t)roundNonNeg(std::min(std::max(std::isfinite(v) ? v : 0.f, 0.f), 1.f) * 255.f); };
     forRows(H, W, [&](int y) {
         const int j = H - 1 - y;
         for (int x = 0; x < W; ++x) {
@@ -1010,15 +1010,18 @@ void irisFx(Ctx& c)
 
 // Distance of a point in units of the star's tip radius; the star alternates tips (radius 1) and valleys (radius Ratio).
 // dx runs right, dy up, ang0 is the first tip's angle.
-double starMetric(double dx, double dy, int arms, double ratio, double ang0)
+struct StarShape {
+    double seg, ey, ex, ang0;
+    StarShape(int arms, double ratio, double a0) : seg(2 * kPi / arms), ey(ratio * std::sin(seg * 0.5)), ex(ratio * std::cos(seg * 0.5) - 1.0), ang0(a0) {}
+};
+double starMetric(double dx, double dy, const StarShape& s)
 {
-    const double seg = 2 * kPi / arms;
-    double u = std::fmod(std::atan2(dy, dx) - ang0, seg);
+    const double seg = s.seg;
+    double u = std::fmod(std::atan2(dy, dx) - s.ang0, seg);
     if (u < 0) u += seg;
     if (u > seg * 0.5) u = seg - u;
-    const double ey = ratio * std::sin(seg * 0.5), ex = ratio * std::cos(seg * 0.5) - 1.0;
-    const double den = std::cos(u) * ey - std::sin(u) * ex;
-    const double rb = den > 1e-12 ? ey / den : 1e12;
+    const double den = std::cos(u) * s.ey - std::sin(u) * s.ex;
+    const double rb = den > 1e-12 ? s.ey / den : 1e12;
     return std::sqrt(dx * dx + dy * dy) / rb;
 }
 
@@ -1034,6 +1037,7 @@ void starWipe(Ctx& c)
     const int W = c.out.w, H = c.out.h;
     const double cx = cxn * W, cy = cyn * H;
     const double p = clampd(c.progress, 0, 1);
+    const StarShape shape(arms, ratio, ang0);
     // Flips turn the star about its own centre; a mirror folds the picture about its middle (right/upper half kept).
     // VEGAS carries the centre along with the vertical turn but not the horizontal one.
     auto metric = [&](double px, double py, bool foldX, bool foldY) {
@@ -1047,12 +1051,17 @@ void starWipe(Ctx& c)
         if (flipX && !foldX) dx = -(px - cx);                          // (turned about the centre, not the picture)
         double dy = Py - Cyy;
         if (flipY && !foldY) dy = -((H - py) - cy);
-        return starMetric(dx, dy, arms, ratio, ang0);
+        return starMetric(dx, dy, shape);
     };
     const bool foldRx = mirX && std::fabs(cxn - 0.5) < 1e-6, foldRy = mirY && std::fabs(cyn - 0.5) < 1e-6;
     double rmax = 0;                                                        // the star must cover the whole picture at the end
-    for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x) rmax = std::max(rmax, metric(x + 0.5, y + 0.5, foldRx, foldRy));
+    std::vector<double> rowMax((size_t)H, 0.0);
+    forRows(H, W * 40, [&](int y) {
+        double m = 0;
+        for (int x = 0; x < W; ++x) m = std::max(m, metric(x + 0.5, y + 0.5, foldRx, foldRy));
+        rowMax[(size_t)y] = m;
+    });
+    for (int y = 0; y < H; ++y) rmax = std::max(rmax, rowMax[(size_t)y]);
     const double q0 = rmax > 0 ? 1.0 / rmax : 0.0;
     const double fv = clampd(c.d("Feather"), 0, 1), bv = clampd(c.d("Border"), 0, 1);
     const double wf = fv * 0.25 * (tooth ? 2.0 : 1.0), hw = bv * 0.125 * (tooth ? 2.0 : 1.0);
@@ -1278,27 +1287,17 @@ void flashFx(Ctx& c)
                 const float* q = gs.at(x, y);
                 lum[(size_t)y * W + x] = (0.299f * q[0] + 0.587f * q[1] + 0.114f * q[2]) * 255.f;
             }
-        std::vector<float> tmp(lum.size());
+        std::vector<double> kern[2];
         for (int pass = 0; pass < 2; ++pass) {
-            const bool horiz = pass == 0;
-            const double sg = std::max(0.01, (horiz ? dh : dv) * 0.05 * diag);
+            const double sg = std::max(0.01, (pass == 0 ? dh : dv) * 0.05 * diag);
             const int rad = std::max(1, (int)std::ceil(sg * 4));
-            std::vector<double> k((size_t)rad * 2 + 1);
+            std::vector<double>& k = kern[pass];
+            k.assign((size_t)rad * 2 + 1, 0.0);
             double sum = 0;
             for (int i = -rad; i <= rad; ++i) sum += k[(size_t)(i + rad)] = std::exp(-0.5 * i * i / (sg * sg));
             for (double& v : k) v /= sum;
-            const int n = horiz ? W : H, m = horiz ? H : W;
-            for (int j = 0; j < m; ++j)
-                for (int i = 0; i < n; ++i) {
-                    double acc = 0;
-                    for (int t = -rad; t <= rad; ++t) {
-                        const int ii = std::min(std::max(i + t, 0), n - 1);
-                        acc += k[(size_t)(t + rad)] * (horiz ? lum[(size_t)j * W + ii] : lum[(size_t)ii * W + j]);
-                    }
-                    (horiz ? tmp[(size_t)j * W + i] : tmp[(size_t)i * W + j]) = (float)acc;
-                }
-            lum.swap(tmp);
         }
+        firBlurDoubles(lum, W, H, 1, kern[0], kern[1]);
     }
     const double gain = (dh + dv) * 0.5 * 2.947, base = diffuse ? 251.6 : 255.0;
     forRows(H, W, [&](int y) {
@@ -1443,7 +1442,7 @@ Img8 toBytes(const Buf& b)
         uint8_t* d = r.at(0, y);
         for (int k = 0; k < b.w * 4; ++k) {
             const float v = std::isfinite(s[k]) ? std::min(std::max(s[k], 0.f), 1.f) : 0.f;
-            d[k] = (uint8_t)std::lround(v * 255.f);
+            d[k] = (uint8_t)roundNonNeg(v * 255.f);
         }
     }
     return r;
@@ -1852,7 +1851,7 @@ Img8 toBytesTop(const Buf& b)
     r.px.resize((size_t)b.w * b.h * 4);
     for (size_t k = 0; k < r.px.size(); ++k) {
         const float v = std::isfinite(b.px[k]) ? std::min(std::max(b.px[k], 0.f), 1.f) : 0.f;
-        r.px[k] = (uint8_t)std::lround(v * 255.f);
+        r.px[k] = (uint8_t)roundNonNeg(v * 255.f);
     }
     return r;
 }

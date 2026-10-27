@@ -2,6 +2,7 @@
 // 0.6318, 1.997, -0.6803, -0.2598 of his 1993 report, as single-precision numbers); its causal and anti-causal halves run along each line at once, the picture's edge values taken
 // to continue forever; values below 1e-17 count as 0. Every step is in doubles in VEGAS's order, so 8-bit results match to the level.
 #include "builtins_deriche.h"
+#include "builtins_vec.h"
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -50,32 +51,122 @@ double vegasBlurSigma(double s)
 
 namespace {
 
-// One line of L values: out[i] = causal[i] + anti-causal[i] (yc, ya: scratch of L each).
-void dericheLine(const double* x, int L, const DericheCoefs& c, double* yc, double* ya, double* out)
+typedef d2::D2 D2;
+inline D2 d2ld(const double* p) { return d2::ld(p); }
+inline void d2st(double* p, D2 v) { d2::st(p, v); }
+inline D2 d2set(double x) { return d2::set(x); }
+inline D2 d2add(D2 a, D2 b) { return d2::add(a, b); }
+inline D2 d2sub(D2 a, D2 b) { return d2::sub(a, b); }
+inline D2 d2mul(D2 a, D2 b) { return d2::mul(a, b); }
+inline D2 d2tiny(D2 a, D2 lim) { return d2::tiny(a, lim); }
+
+const int kLanes = 16;           // four lines (rows or columns) of four channels, side by side
+
+// The filter along 'L' values of each of the kLanes independent lines: x[i * kLanes + lane] in, yc (causal) and ya (anti-causal) out, the line's result being yc + ya.
+// The first and last five values take the edge terms; after that every value is a sum of five taps in the scalar filter's order (the taps that are exactly 0 left out).
+void dericheLanes(const DericheCoefs& c, int L, const double* x, double* yc, double* ya)
 {
     if (L <= 0) return;
-    const double xL = x[0], xR = x[L - 1];
     double eN[5], eM[5];
     for (int k = 0; k < 5; ++k) { eN[k] = c.n[k] - c.bn[k]; eM[k] = c.m[k] - c.bm[k]; }
-    for (int i = 0; i < L; ++i) {
-        const int h = std::min(i, 5), j = L - 1 - i;
-        double acc = 0.0, acca = 0.0;
-        yc[i] = 0.0;
-        ya[j] = 0.0;
-        for (int k = 0; k < h; ++k) {
-            acc += x[i - k] * c.n[k] - c.d[k] * yc[i - k];
-            acca += x[j + k] * c.m[k] - c.d[k] * ya[j + k];
+    const double tiny = 1e-17;
+    const int LN = kLanes;
+    for (int l = 0; l < LN; ++l) {
+        const double xL = x[l], xR = x[(size_t)(L - 1) * LN + l];
+        for (int i = 0; i < L && i < 5; ++i) {
+            yc[(size_t)i * LN + l] = 0.0;
+            double acc = 0.0;
+            for (int k = 0; k < i; ++k) acc += x[(size_t)(i - k) * LN + l] * c.n[k] - c.d[k] * yc[(size_t)(i - k) * LN + l];
+            for (int k = i; k < 5; ++k) acc += eN[k] * xL;
+            if (acc < tiny && acc > -tiny) acc = 0.0;
+            yc[(size_t)i * LN + l] = acc;
         }
-        for (int k = h; k < 5; ++k) {
-            acc += eN[k] * xL;
-            acca += eM[k] * xR;
+        for (int i = 0; i < L && i < 5; ++i) {
+            const int j = L - 1 - i;
+            ya[(size_t)j * LN + l] = 0.0;
+            double acca = 0.0;
+            for (int k = 0; k < i; ++k) acca += x[(size_t)(j + k) * LN + l] * c.m[k] - c.d[k] * ya[(size_t)(j + k) * LN + l];
+            for (int k = i; k < 5; ++k) acca += eM[k] * xR;
+            if (acca < tiny && acca > -tiny) acca = 0.0;
+            ya[(size_t)j * LN + l] = acca;
         }
-        if (acc < 1e-17 && acc > -1e-17) acc = 0.0;
-        if (acca < 1e-17 && acca > -1e-17) acca = 0.0;
-        yc[i] = acc;
-        ya[j] = acca;
     }
-    for (int i = 0; i < L; ++i) out[i] = yc[i] + ya[i];
+    const D2 n0 = d2set(c.n[0]), n1 = d2set(c.n[1]), n2 = d2set(c.n[2]), n3 = d2set(c.n[3]);
+    const D2 m1 = d2set(c.m[1]), m2 = d2set(c.m[2]), m3 = d2set(c.m[3]), m4 = d2set(c.m[4]);
+    const D2 d1 = d2set(c.d[1]), d2 = d2set(c.d[2]), d3 = d2set(c.d[3]), d4 = d2set(c.d[4]);
+    const D2 lim = d2set(tiny);
+    for (int p = 0; p < LN; p += 2) {
+        for (int i = 5; i < L; ++i) {
+            const double* xi = x + (size_t)i * LN + p;
+            double* yi = yc + (size_t)i * LN + p;
+            D2 acc = d2mul(d2ld(xi), n0);
+            acc = d2add(acc, d2sub(d2mul(d2ld(xi - LN), n1), d2mul(d1, d2ld(yi - LN))));
+            acc = d2add(acc, d2sub(d2mul(d2ld(xi - 2 * LN), n2), d2mul(d2, d2ld(yi - 2 * LN))));
+            acc = d2add(acc, d2sub(d2mul(d2ld(xi - 3 * LN), n3), d2mul(d3, d2ld(yi - 3 * LN))));
+            acc = d2sub(acc, d2mul(d4, d2ld(yi - 4 * LN)));
+            d2st(yi, d2tiny(acc, lim));
+        }
+        for (int j = L - 6; j >= 0; --j) {
+            const double* xj = x + (size_t)j * LN + p;
+            double* yj = ya + (size_t)j * LN + p;
+            D2 acc = d2sub(d2mul(d2ld(xj + LN), m1), d2mul(d1, d2ld(yj + LN)));
+            acc = d2add(acc, d2sub(d2mul(d2ld(xj + 2 * LN), m2), d2mul(d2, d2ld(yj + 2 * LN))));
+            acc = d2add(acc, d2sub(d2mul(d2ld(xj + 3 * LN), m3), d2mul(d3, d2ld(yj + 3 * LN))));
+            acc = d2add(acc, d2sub(d2mul(d2ld(xj + 4 * LN), m4), d2mul(d4, d2ld(yj + 4 * LN))));
+            d2st(yj, d2tiny(acc, lim));
+        }
+    }
+}
+
+// Scratch of the calling thread for one tile of lines.
+struct DericheScratch {
+    std::vector<double> x, yc, ya;
+    void size(int L)
+    {
+        const size_t n = (size_t)L * kLanes;
+        if (x.size() < n) { x.resize(n); yc.resize(n); ya.resize(n); }
+    }
+};
+
+// Four floats of a pixel as doubles in levels (v * 255, whole levels for 8-bit pictures).
+inline void packPixel(const float* p, double* o, bool levels)
+{
+#ifdef RENO_PIXROWS_SSE2
+    const __m128 f = _mm_loadu_ps(p);
+    __m128d a = _mm_mul_pd(_mm_cvtps_pd(f), _mm_set1_pd(255.0));
+    __m128d b = _mm_mul_pd(_mm_cvtps_pd(_mm_movehl_ps(f, f)), _mm_set1_pd(255.0));
+    if (levels) {
+        a = _mm_cvtepi32_pd(_mm_cvtpd_epi32(_mm_min_pd(_mm_max_pd(a, _mm_setzero_pd()), _mm_set1_pd(255.0))));
+        b = _mm_cvtepi32_pd(_mm_cvtpd_epi32(_mm_min_pd(_mm_max_pd(b, _mm_setzero_pd()), _mm_set1_pd(255.0))));
+    }
+    _mm_storeu_pd(o, a);
+    _mm_storeu_pd(o + 2, b);
+#else
+    for (int k = 0; k < 4; ++k) {
+        const double v = (double)p[k] * 255.0;
+        o[k] = levels ? std::nearbyint(std::min(255.0, std::max(0.0, v))) : v;
+    }
+#endif
+}
+
+// (yc + ya) of four values to four floats, rounded to whole levels first when 'levels', then divided by 255 when 'div'.
+inline void unpackPixel(const double* a, const double* z, float* o, bool levels, bool div)
+{
+#ifdef RENO_PIXROWS_SSE2
+    __m128d s0 = _mm_add_pd(_mm_loadu_pd(a), _mm_loadu_pd(z)), s1 = _mm_add_pd(_mm_loadu_pd(a + 2), _mm_loadu_pd(z + 2));
+    if (levels) {
+        s0 = _mm_cvtepi32_pd(_mm_cvtpd_epi32(_mm_min_pd(_mm_max_pd(s0, _mm_setzero_pd()), _mm_set1_pd(255.0))));
+        s1 = _mm_cvtepi32_pd(_mm_cvtpd_epi32(_mm_min_pd(_mm_max_pd(s1, _mm_setzero_pd()), _mm_set1_pd(255.0))));
+    }
+    if (div) { s0 = _mm_div_pd(s0, _mm_set1_pd(255.0)); s1 = _mm_div_pd(s1, _mm_set1_pd(255.0)); }
+    _mm_storeu_ps(o, _mm_movelh_ps(_mm_cvtpd_ps(s0), _mm_cvtpd_ps(s1)));
+#else
+    for (int k = 0; k < 4; ++k) {
+        double v = a[k] + z[k];
+        if (levels) v = std::nearbyint(std::min(255.0, std::max(0.0, v)));
+        o[k] = (float)(div ? v / 255.0 : v);
+    }
+#endif
 }
 
 }  // namespace
@@ -86,29 +177,43 @@ void vegasDericheBlurSigma(Buf& b, double sigmaX, double sigmaY, bool levels)
     if (W <= 0 || H <= 0) return;
     const DericheCoefs cx = vegasDericheCoefs(sigmaX), cy = vegasDericheCoefs(sigmaY);
     std::vector<float> mid((size_t)W * H * 4);
-    forRows(H, W * 40, [&](int y) {
-        std::vector<double> x((size_t)W), yc((size_t)W), ya((size_t)W), o((size_t)W);
-        for (int k = 0; k < 4; ++k) {
-            for (int i = 0; i < W; ++i) {
-                const double v = (double)b.at(i, y)[k] * 255.0;
-                x[(size_t)i] = levels ? std::nearbyint(std::min(255.0, std::max(0.0, v))) : v;
+    const int rowTiles = (H + 3) / 4, colTiles = (W + 3) / 4;
+    forRows(rowTiles, W * 160, [&](int t) {
+        thread_local DericheScratch s;
+        s.size(W);
+        const int y0 = t * 4;
+        for (int i = 0; i < W; ++i)
+            for (int r = 0; r < 4; ++r) {
+                double* xo = &s.x[(size_t)i * kLanes + r * 4];
+                if (y0 + r >= H) { xo[0] = xo[1] = xo[2] = xo[3] = 0.0; continue; }
+                packPixel(b.at(i, y0 + r), xo, levels);
             }
-            dericheLine(x.data(), W, cx, yc.data(), ya.data(), o.data());
-            for (int i = 0; i < W; ++i) mid[((size_t)y * W + i) * 4 + k] = (float)o[(size_t)i];
-        }
+        dericheLanes(cx, W, s.x.data(), s.yc.data(), s.ya.data());
+        for (int r = 0; r < 4 && y0 + r < H; ++r)
+            for (int i = 0; i < W; ++i) {
+                const double* a = &s.yc[(size_t)i * kLanes + r * 4];
+                const double* z = &s.ya[(size_t)i * kLanes + r * 4];
+                unpackPixel(a, z, &mid[((size_t)(y0 + r) * W + i) * 4], false, false);
+            }
     });
     // columns, from the bottom row up as VEGAS's frames lie in memory
-    forRows(W, H * 40, [&](int col) {
-        std::vector<double> x((size_t)H), yc((size_t)H), ya((size_t)H), o((size_t)H);
-        for (int k = 0; k < 4; ++k) {
-            for (int i = 0; i < H; ++i) x[(size_t)i] = (double)mid[((size_t)(H - 1 - i) * W + col) * 4 + k];
-            dericheLine(x.data(), H, cy, yc.data(), ya.data(), o.data());
-            for (int i = 0; i < H; ++i) {
-                double v = o[(size_t)i];
-                if (levels) v = std::min(255.0, std::max(0.0, std::nearbyint(v)));
-                b.at(col, H - 1 - i)[k] = (float)(v / 255.0);
-            }
+    forRows(colTiles, H * 160, [&](int t) {
+        thread_local DericheScratch s;
+        s.size(H);
+        const int c0 = t * 4;
+        for (int i = 0; i < H; ++i) {
+            const float* row = &mid[((size_t)(H - 1 - i) * W + c0) * 4];
+            double* xo = &s.x[(size_t)i * kLanes];
+            for (int c = 0; c < 4; ++c)
+                for (int k = 0; k < 4; ++k) xo[c * 4 + k] = c0 + c < W ? (double)row[c * 4 + k] : 0.0;
         }
+        dericheLanes(cy, H, s.x.data(), s.yc.data(), s.ya.data());
+        for (int i = 0; i < H; ++i)
+            for (int c = 0; c < 4 && c0 + c < W; ++c) {
+                const double* a = &s.yc[(size_t)i * kLanes + c * 4];
+                const double* z = &s.ya[(size_t)i * kLanes + c * 4];
+                unpackPixel(a, z, b.at(c0 + c, H - 1 - i), levels, true);
+            }
     });
 }
 

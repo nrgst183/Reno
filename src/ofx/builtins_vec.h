@@ -150,6 +150,39 @@ inline void pixelRow(const float* s, float* o, int n, F fn)
 }
 
 }  // namespace v4
+
+// Two doubles at a time (SSE2, or two plain doubles): the same IEEE operations as scalar code, so the results are the same bits.
+namespace d2 {
+#ifdef RENO_PIXROWS_SSE2
+typedef __m128d D2;
+inline D2 ld(const double* p) { return _mm_loadu_pd(p); }
+inline void st(double* p, D2 v) { _mm_storeu_pd(p, v); }
+inline D2 set(double x) { return _mm_set1_pd(x); }
+inline D2 add(D2 a, D2 b) { return _mm_add_pd(a, b); }
+inline D2 sub(D2 a, D2 b) { return _mm_sub_pd(a, b); }
+inline D2 mul(D2 a, D2 b) { return _mm_mul_pd(a, b); }
+inline D2 tiny(D2 a, D2 lim)                    // 0 where -lim < a < lim
+{
+    const D2 m = _mm_and_pd(_mm_cmplt_pd(a, lim), _mm_cmpgt_pd(a, _mm_sub_pd(_mm_setzero_pd(), lim)));
+    return _mm_andnot_pd(m, a);
+}
+#else
+struct D2 { double v[2]; };
+inline D2 ld(const double* p) { D2 r; r.v[0] = p[0]; r.v[1] = p[1]; return r; }
+inline void st(double* p, D2 a) { p[0] = a.v[0]; p[1] = a.v[1]; }
+inline D2 set(double x) { D2 r; r.v[0] = x; r.v[1] = x; return r; }
+inline D2 add(D2 a, D2 b) { a.v[0] += b.v[0]; a.v[1] += b.v[1]; return a; }
+inline D2 sub(D2 a, D2 b) { a.v[0] -= b.v[0]; a.v[1] -= b.v[1]; return a; }
+inline D2 mul(D2 a, D2 b) { a.v[0] *= b.v[0]; a.v[1] *= b.v[1]; return a; }
+inline D2 tiny(D2 a, D2 lim)
+{
+    for (int i = 0; i < 2; ++i)
+        if (a.v[i] < lim.v[0] && a.v[i] > -lim.v[0]) a.v[i] = 0.0;
+    return a;
+}
+#endif
+}  // namespace d2
+
 }  // namespace builtin
 }  // namespace ofx
 }  // namespace reno

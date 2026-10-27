@@ -279,6 +279,49 @@ void whiteBalanceChanged(Change& ch)
     ch.setD("AmountOfCorrection", clampd(std::sqrt(mag / 127.5), 0.0, 1.0));
 }
 
+// LAB Adjust's sRGB steps. Decoding: the 256 values of an 8-bit picture are looked up (any other value is worked out). Encoding: the result is a whole level, so the 255 values
+// of the linear input where the level steps up are found once (by halving, with the formula itself) and the level is looked up among them.
+double srgbToLinear(double v)
+{
+    v = v < 0 ? 0 : (v > 1 ? 1 : v);
+    return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+}
+float labEncodeSlow(double v)
+{
+    v = v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
+    v = v < 0 ? 0 : (v > 1 ? 1 : v);
+    return (float)(std::floor(v * 255.0 + 1e-3) / 255.0);
+}
+struct LabTables {
+    float key[256];
+    double val[256];
+    double step[255];                        // step[k - 1]: the smallest input giving level k or more
+    LabTables()
+    {
+        for (int k = 0; k < 256; ++k) {
+            key[k] = (float)k * (1.f / 255.f);
+            val[k] = srgbToLinear((double)key[k]);
+        }
+        for (int k = 1; k <= 255; ++k) {
+            uint64_t lo = 0, hi = 0;                           // the doubles from 0 to 2 in the order of their bits
+            const double two = 2.0;
+            std::memcpy(&hi, &two, 8);
+            while (lo < hi) {
+                const uint64_t mid = lo + (hi - lo) / 2;
+                double m;
+                std::memcpy(&m, &mid, 8);
+                if ((int)std::lround(labEncodeSlow(m) * 255.0) >= k) hi = mid; else lo = mid + 1;
+            }
+            std::memcpy(&step[k - 1], &lo, 8);
+        }
+    }
+};
+const LabTables& labTables()
+{
+    static const LabTables t;
+    return t;
+}
+
 // LAB Adjust, measured against VEGAS: CIE L*a*b* (sRGB, D65). Invert Luminance turns L into 95.58 - L first (may go below zero, darker than black),
 // then Lightness multiplies L (above 100 not clipped: the colour clips per channel). Channel a / b move the colour by 100 per unit, Desaturate scales
 // them down afterwards. The 8-bit result is truncated.
@@ -287,8 +330,15 @@ void labAdjust(Ctx& c)
     const double light = c.d("Lightness"), da = c.d("Channela"), db = c.d("Channelb"), des = clampd(c.d("Desaturate"), 0, 1);
     const bool invert = c.b("InvertLuminance");
     const double wx = 0.95047, wz = 1.08883, e = 216.0 / 24389.0, kk = 24389.0 / 27.0;
+    const LabTables& labTab = labTables();
     perPixel(c, [&](float& r, float& g, float& b, int, int) {
-        auto lin = [](double v) { v = v < 0 ? 0 : (v > 1 ? 1 : v); return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+        auto lin = [&](float f) {
+            if (f >= 0.f && f <= 1.f) {
+                const int k = (int)(f * 255.f + 0.5f);
+                if (k <= 255 && labTab.key[k] == f) return labTab.val[k];
+            }
+            return srgbToLinear(f);
+        };
         const double lr = lin(r), lg = lin(g), lb = lin(b);
         const double X = (0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb) / wx;
         const double Y = 0.2126729 * lr + 0.7151522 * lg + 0.0721750 * lb;
@@ -306,10 +356,9 @@ void labAdjust(Ctx& c)
         const double cr = 3.24045484 * x2 - 1.53713885 * y2 - 0.49853155 * z2;
         const double cg = -0.96926639 * x2 + 1.87601093 * y2 + 0.04155608 * z2;
         const double cb = 0.05564342 * x2 - 0.20402585 * y2 + 1.05722516 * z2;
-        auto enc = [](double v) {
-            v = v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
-            v = v < 0 ? 0 : (v > 1 ? 1 : v);
-            return (float)(std::floor(v * 255.0 + 1e-3) / 255.0);
+        auto enc = [&](double v) {
+            if (!(v == v)) return labEncodeSlow(v);
+            return (float)((double)(int)(std::upper_bound(labTab.step, labTab.step + 255, v) - labTab.step) / 255.0);
         };
         r = enc(cr); g = enc(cg); b = enc(cb);
     });

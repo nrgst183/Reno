@@ -1069,13 +1069,15 @@ struct NestedShared {
         while (frames.size() > 12) frames.pop_back();
     }
 
-    std::unique_ptr<NestedAudio> takeAudio(int rate, int64_t at)
+    // A mixer for one reader. A final render always gets a new one; otherwise an idle one is reused only if it stopped
+    // exactly where the reader starts, so that it goes on as it would have for the reader that left it.
+    std::unique_ptr<NestedAudio> takeAudio(int rate, int64_t at, bool fresh = false)
     {
-        {
+        if (!fresh) {
             std::lock_guard<std::mutex> lk(mutex);
             size_t pick = idleAudio.size();
             for (size_t k = 0; k < idleAudio.size(); ++k)
-                if (idleAudio[k]->rate == rate && (pick == idleAudio.size() || idleAudio[k]->next == at)) pick = k;
+                if (idleAudio[k]->rate == rate && idleAudio[k]->next == at) pick = k;
             if (pick < idleAudio.size()) {
                 std::unique_ptr<NestedAudio> a = std::move(idleAudio[pick]);
                 idleAudio.erase(idleAudio.begin() + (std::ptrdiff_t)pick);
@@ -1644,6 +1646,12 @@ namespace {
 // Another project, read like a media file: its frame and sound rendered by engines of its own (see above).
 class ProjectReader : public MediaReader {
 public:
+    ~ProjectReader() override
+    {
+        // a final render never reuses a mixer, so what an old one holds cannot reach the sound
+        if (mixer_ && sh_ && gFinalDepth == 0) sh_->giveBack(std::move(mixer_));
+    }
+
     bool open(const std::string& path, std::string* error)
     {
         fileGeneration_ = gNestedFileGeneration.load();
@@ -1663,6 +1671,7 @@ public:
         std::shared_ptr<NestedShared> sh = nestedShared(info_.path, nullptr);
         if (!sh || sh == sh_) return;
         video_.reset();
+        mixer_.reset();
         sh_ = sh;
         rs_ = Resampling();
         describe(info_.path);
@@ -1772,7 +1781,11 @@ private:
     void mix(int64_t start, int frames, float* left, float* right)
     {
         if (proxy_ && proxy_->info().rate == own_ && proxy_->read(start, frames, left, right)) return;
-        std::unique_ptr<NestedAudio> a = sh_->takeAudio(own_, start);
+        // The reader keeps its own mixer: two readers of one nested project sharing mixers (and their stretchers' and
+        // effects' state) made the sound depend on which thread got to a mixer first.
+        if (mixer_ && mixer_->rate != own_) mixer_.reset();
+        if (!mixer_) mixer_ = sh_->takeAudio(own_, start, gFinalDepth > 0);
+        NestedAudio* a = mixer_.get();
         if (!nestedFxReady(a->fx, gFinalDepth > 0)) ++gLeftOut;
         const int rate = a->rate;
         const Project& proj = *a->fx->project;
@@ -1794,7 +1807,6 @@ private:
         }
         --gNestedDepth;
         a->next = start + frames;
-        sh_->giveBack(std::move(a));
     }
 
     // A windowed sinc (Blackman, kHalfTaps zero crossings either side), tabulated.
@@ -1893,6 +1905,7 @@ private:
     int own_ = 0;                               // the nested project's own sample rate
     std::shared_ptr<vegasfiles::AudioProxyFile> proxy_;
     std::unique_ptr<VideoEngine> video_;
+    std::unique_ptr<NestedAudio> mixer_;        // this reader's own sound mixer
 };
 }  // namespace
 

@@ -4,6 +4,9 @@
 #include "builtins_deriche.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <utility>
 #include <vector>
 
 namespace reno {
@@ -48,6 +51,56 @@ std::vector<int> medianKernel(float rx, float ry, bool round, int& kx, int& ky)
 
 }  // namespace
 
+// The sliding histogram of one frame for counts of type N (int where the window's total weight fits, else long long).
+template <class N>
+static void medianRun(const std::vector<uint16_t>& planes, Buf& out, int W, int H, int PW, int PH, int padX, int padY,
+                      const std::vector<std::pair<ptrdiff_t, int>>& cells, const std::vector<std::pair<ptrdiff_t, int>>& steps, long long whole, int r12)
+{
+    forRows(H, W * 40, [&](int y) {
+        for (int ch = 0; ch < 4; ++ch) {
+            const uint16_t* at = &planes[(size_t)ch * PW * PH + (size_t)(y + padY) * PW + padX];       // the pixel (0, y)
+            N hist[257], block[17];
+            std::fill(hist, hist + 257, 0);
+            std::fill(block, block + 17, 0);
+            for (const auto& c : cells) {
+                const int v = at[c.first];
+                hist[v] += c.second; block[v >> 4] += c.second;
+            }
+            float* orow = out.at(0, y);
+            for (int x = 0; x < W; ++x) {
+                const long long total = whole - hist[256];
+                const long long T = 8192 - (long long)((double)(total - 16384) * (double)r12 * -6.103515625e-05);
+                const long long lo = T - 8192, hi = T + 8192;
+                long long acc = 0, start = 0;
+                int v = 256;
+                for (int bk = 0; bk < 16; ++bk) {
+                    if (start + block[bk] <= lo) { start += block[bk]; continue; }
+                    v = bk * 16;
+                    break;
+                }
+                if (start <= hi)
+                    for (; v < 256; ++v) {
+                        const long long c = hist[v];
+                        if (c <= 0) continue;
+                        const long long end = start + c;
+                        const long long a = std::max(start, lo), b = std::min(end, hi);
+                        if (b > a) acc += (long long)v * (b - a);
+                        start = end;
+                        if (end >= hi) break;
+                    }
+                const long long o = (acc + 0x2000) >> 14;
+                orow[(size_t)x * 4 + ch] = (float)std::min<long long>(255, std::max<long long>(0, o)) / 255.f;
+                if (x + 1 == W) break;
+                const uint16_t* p = at + x;
+                for (const auto& s : steps) {
+                    const int v2 = p[s.first];
+                    hist[v2] += s.second; block[v2 >> 4] += s.second;
+                }
+            }
+        }
+    });
+}
+
 void vegasMedian(const Buf& src, Buf& out, double rxd, double ryd, bool round, double offset)
 {
     const int W = src.w, H = src.h;
@@ -56,73 +109,32 @@ void vegasMedian(const Buf& src, Buf& out, double rxd, double ryd, bool round, d
     const float rx = (float)std::max(0.0, rxd), ry = (float)std::max(0.0, ryd);
     int kx = 1, ky = 1;
     const std::vector<int> q = medianKernel(rx, ry, round, kx, ky);
-    std::vector<int> run((size_t)ky, -1);
-    struct Cell { int dx, dy, w; };
-    std::vector<Cell> rim;
-    for (int j = 0; j < ky; ++j) {
-        int h = -1;
-        while (h + 1 < kx && q[(size_t)j * kx + h + 1] == 16384) ++h;
-        run[(size_t)j] = h;
-        for (int i = h + 1; i < kx; ++i) {
-            const int w = q[(size_t)j * kx + i];
-            if (w <= 0) continue;
-            for (int sy = (j ? -1 : 1); sy <= 1; sy += 2)
-                for (int sx = (i ? -1 : 1); sx <= 1; sx += 2) rim.push_back(Cell{sx * i, sy * j, w});
+    auto weight = [&](int i, int j) { return std::abs(i) < kx && std::abs(j) < ky ? q[(size_t)std::abs(j) * kx + std::abs(i)] : 0; };
+    const int padX = kx + 1, padY = ky, PW = W + 2 * padX, PH = H + 2 * padY;
+    // The window's cells (offset in the padded plane, weight) and what changes in the histogram when it moves one pixel right:
+    // the cell at offset t (-(kx-1) .. kx) from the old centre gains weight(t - 1) - weight(t).
+    std::vector<std::pair<ptrdiff_t, int>> cells, steps;
+    long long whole = 0;
+    for (int j = -(ky - 1); j <= ky - 1; ++j) {
+        for (int t = -(kx - 1); t <= kx; ++t) {
+            const int dw = weight(t - 1, j) - weight(t, j);
+            if (dw) steps.push_back(std::make_pair((ptrdiff_t)j * PW + t, dw));
         }
+        for (int i = -(kx - 1); i <= kx - 1; ++i)
+            if (weight(i, j) > 0) { cells.push_back(std::make_pair((ptrdiff_t)j * PW + i, weight(i, j))); whole += weight(i, j); }
     }
     const int r12 = (int)((float)std::min(1.0, std::max(0.0, offset)) * 16384.f);
-    std::vector<uint8_t> lv((size_t)W * H * 4);
-    for (size_t i = 0; i < lv.size(); ++i) lv[i] = (uint8_t)(int)std::nearbyint(std::min(1.f, std::max(0.f, src.px[i])) * 255.f);
-    forRows(H, W * 40, [&](int y) {
+    // the levels of every channel in planes with a rim of value 256 (outside the picture: counted apart, left out of the total)
+    std::vector<uint16_t> planes((size_t)4 * PW * PH, 256);
+    forRows(H, W * 4, [&](int y) {
         for (int ch = 0; ch < 4; ++ch) {
-            int hist[256], block[16];
-            std::fill(hist, hist + 256, 0);
-            std::fill(block, block + 16, 0);
-            long long total = 0;
-            auto add = [&](int xx, int yy, int w) {
-                if (xx < 0 || xx >= W || yy < 0 || yy >= H) return;
-                const int v = lv[((size_t)yy * W + xx) * 4 + ch];
-                hist[v] += w; block[v >> 4] += w; total += w;
-            };
-            for (int dy = -(ky - 1); dy <= ky - 1; ++dy) {
-                const int h = run[(size_t)std::abs(dy)];
-                for (int dx = -h; dx <= h; ++dx) add(dx, y + dy, 16384);
-            }
-            float* orow = out.at(0, y);
-            for (int x = 0; x < W; ++x) {
-                if (x > 0)
-                    for (int dy = -(ky - 1); dy <= ky - 1; ++dy) {
-                        const int h = run[(size_t)std::abs(dy)];
-                        if (h < 0) continue;
-                        add(x - 1 - h, y + dy, -16384);
-                        add(x + h, y + dy, 16384);
-                    }
-                for (const Cell& cl : rim) add(x + cl.dx, y + cl.dy, cl.w);
-                const int T = 8192 - (int)((double)(total - 16384) * (double)r12 * -6.103515625e-05);
-                const int lo = T - 8192, hi = T + 8192;
-                long long acc = 0;
-                int start = 0, v = 256;
-                for (int bk = 0; bk < 16; ++bk) {
-                    if (start + block[bk] <= lo) { start += block[bk]; continue; }
-                    v = bk * 16;
-                    break;
-                }
-                if (start + 0 <= hi)
-                    for (; v < 256; ++v) {
-                        const int c = hist[v];
-                        if (c <= 0) continue;
-                        const int end = start + c;
-                        const int a = std::max(start, lo), b = std::min(end, hi);
-                        if (b > a) acc += (long long)v * (b - a);
-                        start = end;
-                        if (end >= hi) break;
-                    }
-                for (const Cell& cl : rim) add(x + cl.dx, y + cl.dy, -cl.w);
-                const int o = (int)((acc + 0x2000) >> 14);
-                orow[(size_t)x * 4 + ch] = (float)std::min(255, std::max(0, o)) / 255.f;
-            }
+            uint16_t* d = &planes[(size_t)ch * PW * PH + (size_t)(y + padY) * PW + padX];
+            const float* s = src.at(0, y) + ch;
+            for (int x = 0; x < W; ++x) d[x] = (uint16_t)(int)std::nearbyint(std::min(1.f, std::max(0.f, s[(size_t)x * 4])) * 255.f);
         }
     });
+    if (whole < (1ll << 30)) medianRun<int>(planes, out, W, H, PW, PH, padX, padY, cells, steps, whole, r12);
+    else medianRun<long long>(planes, out, W, H, PW, PH, padX, padY, cells, steps, whole, r12);
 }
 
 }  // namespace builtin
