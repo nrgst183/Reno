@@ -22,8 +22,9 @@ VEGAS version. Known gaps are listed in [docs/NOTES.md](docs/NOTES.md).
 
 ## Downloads
 
-GitHub Actions builds Windows, Linux and macOS versions on every push (under the Actions tab). Tagging a commit
-`v*` (for example `v0.1.0`) publishes them as a release. The macOS build is new and untested.
+Builds are on the [Releases](../../releases) page. Every push to `main` updates the "Nightly build" prerelease;
+versioned releases come from pushing a `v*` tag (for example `v0.1.0`) or from Actions > Build > Run workflow with a
+version filled in. The macOS build is new and untested.
 
 ## Building on Windows
 

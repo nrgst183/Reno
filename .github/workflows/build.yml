@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to create, e.g. v0.1.0 (leave empty to update the nightly build)'
+        required: false
+        default: ''
 
 env:
   QT_VERSION: '6.8.3'
@@ -129,19 +134,40 @@ jobs:
           name: reno-macos-arm64
           path: reno-macos-arm64.tar.gz
 
+  # v* tag pushed        -> release with that tag
+  # Run workflow + version -> creates that tag on the built commit and releases it
+  # push to main / Run workflow without version -> replaces the "nightly" prerelease
   release:
-    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v') && needs.windows.result == 'success' && needs.linux.result == 'success' }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.windows.result == 'success' && needs.linux.result == 'success' }}
     needs: [windows, linux, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          generate_release_notes: true
+      - name: Publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l dist
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
+          elif [[ -n "$VERSION" ]]; then
+            gh release create "$VERSION" dist/* --target "$GITHUB_SHA" --generate-notes
+          else
+            gh release delete nightly --cleanup-tag --yes || true
+            gh release create nightly dist/* --prerelease --target "$GITHUB_SHA" \
+              --title "Nightly build" \
+              --notes "Latest build of ${GITHUB_REF_NAME} (${GITHUB_SHA::7}). Not a stable release."
+          fi
