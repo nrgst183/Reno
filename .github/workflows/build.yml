@@ -89,6 +89,8 @@ jobs:
       - name: Package
         run: |
           cp -a deps/ffmpeg/lib/*.so* build/bin/
+          cp resources/reno_256.png build/bin/reno.png
+          cp resources/reno.desktop build/bin/
           for f in build/bin/reno build/bin/reno_cli; do patchelf --set-rpath '$ORIGIN' "$f"; done
           tar -C build/bin -czf reno-linux-x64.tar.gz .
 
@@ -127,7 +129,9 @@ jobs:
         run: test -f build/bin/reno && test -f build/bin/reno_cli
 
       - name: Package
-        run: tar -C build/bin -czf reno-macos-arm64.tar.gz .
+        run: |
+          cp resources/reno_256.png build/bin/reno.png
+          tar -C build/bin -czf reno-macos-arm64.tar.gz .
 
       - uses: actions/upload-artifact@v4
         with:
