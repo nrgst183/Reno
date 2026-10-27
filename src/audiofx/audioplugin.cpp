@@ -317,6 +317,7 @@ std::string audioPluginFileHint(const AudioPluginDesc& desc)
         {"8b7226ee-4584-11d1-b4cb-00a0c9270a10", "sfppack2_x64.dll"},     // Graphic EQ
         {"b97c0f23-196d-11d1-b99b-00a0c9053912", "sfppack2_x64.dll"},     // Noise Gate
         {"a8448720-96fd-11d0-aebc-00a0c9053912", "sfppack2_x64.dll"},     // Parametric EQ
+        {"d616f3e0-d622-11ce-aac5-0020af0b99a3", "sfppack2_x64.dll"},     // Paragraphic EQ
         {"23c9f225-40ec-11d2-9d36-00c04f8edc1e", "sftrkfx1_x64.dll"},     // Track Compressor
         {"8cb69a0a-10e8-11d2-9b89-00104b8d13c2", "sftrkfx1_x64.dll"},     // Track EQ
         {"869419dd-501f-11d3-8cdc-00c04f6b8e4c", "sftrkfx1_x64.dll"},     // Track Noise Gate

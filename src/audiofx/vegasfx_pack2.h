@@ -2,6 +2,7 @@
 // effect's DirectX uid), for the fall back when the DirectX plug-in is missing and for saving as VEGAS's effect.
 #pragma once
 #include "vegasgraphiceq.h"
+#include "vegaspgeq.h"
 #include "vegaspmeq.h"
 #include "vegasnoisegate.h"
 #include <cstring>
@@ -15,6 +16,7 @@ inline std::string pack2BuiltinForDx(const std::string& dxUidLower)
     if (dxUidLower.find(vegng::kClsid) != std::string::npos) return "reno.noisegate";
     if (dxUidLower.find(veggeq::kClsid) != std::string::npos) return "reno.graphiceq";
     if (dxUidLower.find(vegpm::kClsid) != std::string::npos) return "reno.parametriceq";
+    if (dxUidLower.find(vegpg::kClsid) != std::string::npos) return "reno.paragraphiceq";
     return std::string();
 }
 
@@ -24,6 +26,7 @@ inline std::string pack2DxForBuiltin(const std::string& builtinUid)
     if (builtinUid == "reno.noisegate") return vegng::kDxUid;
     if (builtinUid == "reno.graphiceq") return veggeq::kDxUid;
     if (builtinUid == "reno.parametriceq") return vegpm::kDxUid;
+    if (builtinUid == "reno.paragraphiceq") return vegpg::kDxUid;
     return std::string();
 }
 
@@ -33,6 +36,7 @@ inline std::string pack2VegasName(const std::string& builtinUid)
     if (builtinUid == "reno.noisegate") return "VEGAS Noise Gate";
     if (builtinUid == "reno.graphiceq") return "VEGAS Graphic EQ";
     if (builtinUid == "reno.parametriceq") return "VEGAS Parametric EQ";
+    if (builtinUid == "reno.paragraphiceq") return "VEGAS Paragraphic EQ";
     return std::string();
 }
 

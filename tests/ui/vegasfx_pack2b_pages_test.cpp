@@ -5,8 +5,10 @@
 // (run with QT_QPA_PLATFORM=offscreen)
 #include "../../src/app/fxpages.h"
 #include "../../src/audiofx/audioplugin.h"
+#include "../../src/audiofx/vegaspgeq.h"
 #include "../../src/audiofx/vegaspmeq.h"
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QLineEdit>
 #include <QSlider>
@@ -109,11 +111,51 @@ static void parametricEq(const QString& out)
     delete r.page;
 }
 
+static void paragraphicEq(const QString& out)
+{
+    Rig r("reno.paragraphiceq");
+    check(r.page != nullptr, "Paragraphic EQ has a page");
+    if (!r.page) return;
+    r.page->show();
+    r.page->grab().save(out + "/paragraphiceq_default.png");
+    auto state = [&] {
+        vegpg::Settings s;
+        vegpg::decode(r.p->saveState(), &s);
+        return s;
+    };
+    bool all = true;
+    for (int i = 0; i < 14; ++i) all = all && r.page->findChild<QSlider*>(QString("dxParam%1").arg(i)) != nullptr;
+    for (int i = 16; i < 20; ++i) all = all && r.page->findChild<QSlider*>(QString("dxParam%1").arg(i)) != nullptr;
+    QCheckBox* lo = r.page->findChild<QCheckBox*>("dxParam14");
+    QCheckBox* hi = r.page->findChild<QCheckBox*>("dxParam15");
+    check(all && lo && hi, "  dry, wet, 4x(gain, width, frequency), 2 shelf boxes, frequencies and gains");
+    if (!(all && lo && hi)) return;
+    check(state().dry == -250 && state().wet == 0 && state().freq[2] == 1000 && !state().lowOn, "  it shows VEGAS's defaults");
+    QSlider* g1 = r.page->findChild<QSlider*>("dxParam2");
+    g1->setValue(g1->maximum());
+    check(state().gain[0] == 250, "  band 1 gain top is +25 dB");
+    QLineEdit* fb = r.page->findChild<QLineEdit*>("dxParam11Edit");
+    if (fb) {
+        fb->setText("2,500");
+        emit fb->editingFinished();
+        check(state().freq[1] == 2500, "  \"2,500\" in band 2's frequency box");
+    }
+    lo->setChecked(true);
+    check(state().lowOn == 1, "  the low shelf box turns it on");
+    r.page->grab().save(out + "/paragraphiceq_edited.png");
+    r.p->setProgram(2);
+    r.page->refresh();
+    check(state().gain[2] == -150 && state().freq[2] == 1000, "  a preset (\"15 dB notch\") shows in the page");
+    r.page->grab().save(out + "/paragraphiceq_preset.png");
+    delete r.page;
+}
+
 int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
     const QString out = argc > 1 ? argv[1] : ".";
     parametricEq(out);
+    paragraphicEq(out);
     std::printf("%d passed, %d failed\n", gPass, gFail);
     return gFail ? 1 : 0;
 }

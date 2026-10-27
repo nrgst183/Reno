@@ -5,13 +5,16 @@
 public:
     static bool xp3Has(const std::string& uid)
     {
-        return uid == "reno.xpdynamics" || uid == "reno.xpnoisegate";
+        return uid == "reno.xpgeq" || uid == "reno.xpdynamics" || uid == "reno.xpnoisegate";
     }
 
 private:
     bool xp3Page(const std::string& uid, int* width)
     {
-        if (uid == "reno.xpdynamics") {
+        if (uid == "reno.xpgeq") {
+            xpGeq();
+            *width = 465;
+        } else if (uid == "reno.xpdynamics") {
             xpDynamics();
             *width = 420;
         } else if (uid == "reno.xpnoisegate") {
@@ -143,4 +146,43 @@ private:
         });
         x3Track(box, 1, "Attac<u>k</u> (1 to 500 ms):", 55, 20, 145, 205, 30, 0, true);
         x3Track(box, 2, "Relea<u>s</u>e (1 to 5,000 ms):", 55, 46, 145, 205, 30, 0, true);
+    }
+
+    // ============================================================================================ ExpressFX Graphic EQ
+    // Dialog 2001: ten band faders (reading above, centre frequency below), the Output gain fader at the right and Reset.
+    void xpGeq()
+    {
+        QWidget* box = x3Box(265, 130);
+        x3Label(box, "<u>G</u>ain:<br>(-Inf. to 24 dB)", 5, 17, 58, 16, Qt::AlignLeft | Qt::AlignTop);
+        x3Label(box, "Center (Hz):", 5, 98, 46, 8);
+        static const char* const centre[10] = {"28", "56", "113", "225", "450", "900", "1.8k", "3.6k", "7.2k", "15k"};
+        for (int b = 0; b < 10; ++b) {
+            const int x = 64 + 14 * b;
+            QLabel* read = x3Label(box, QString(), x - 2, 19, 14, 8, Qt::AlignHCenter | Qt::AlignVCenter);
+            SMap fm;
+            fm.dec = 1;
+            fm.inf = true;
+            DxSlider* f = slider(Qt::Vertical, fixed(b), fm, QString("dxParam%1").arg(b), nullptr, nullptr);
+            x3Put(box, f, x, 27, 10, 73);
+            x3Label(box, centre[b], x - 2, 100, 14, 8, Qt::AlignHCenter | Qt::AlignVCenter);
+            sync_.push_back([=] {
+                const Rng r = rng(b);
+                const double v = get(b);
+                read->setText(v <= r.lo + 0.05 ? QString("-Inf.") : QString::number(v, 'f', 1));
+            });
+        }
+        QLabel* ol = x3Label(box, "<u>O</u>utput gain<br>(-60 to 20 dB)", 212, 108, 48, 16, Qt::AlignHCenter | Qt::AlignTop);
+        QLabel* oread = x3Label(box, QString(), 222, 17, 30, 8, Qt::AlignHCenter | Qt::AlignVCenter);
+        SMap om;
+        om.dec = 1;
+        DxSlider* of = slider(Qt::Vertical, fixed(10), om, "dxParam10", nullptr, nullptr);
+        x3Put(box, of, 232, 27, 10, 79);
+        ol->setBuddy(of);
+        sync_.push_back([=] { oread->setText(QString::number(get(10), 'f', 1) + " dB"); });
+        QPushButton* reset = button("Rese&t");
+        reset->setObjectName("dxReset");
+        x3Put(box, reset, 162, 111, 40, 14);
+        QObject::connect(reset, &QPushButton::clicked, reset, [this] {
+            for (int b = 0; b < 10; ++b) commit(b, 0.0);
+        });
     }

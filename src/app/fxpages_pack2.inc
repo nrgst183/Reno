@@ -3,7 +3,7 @@
 public:
     // Which pages this file has, and making them (the constructor and hasBuiltinPage call these, so a new page needs no
     // change in fxpages.cpp)
-    static bool pack2Has(const std::string& uid) { return uid == "reno.noisegate" || uid == "reno.graphiceq" || uid == "reno.parametriceq"; }
+    static bool pack2Has(const std::string& uid) { return uid == "reno.noisegate" || uid == "reno.graphiceq" || uid == "reno.parametriceq" || uid == "reno.paragraphiceq"; }
 
 private:
     bool pack2Page(const std::string& uid, int* width)
@@ -17,6 +17,9 @@ private:
         } else if (uid == "reno.parametriceq") {
             parametricEq();
             *width = 470;
+        } else if (uid == "reno.paragraphiceq") {
+            paragraphicEq();
+            *width = 610;
         } else {
             return false;
         }
@@ -354,4 +357,187 @@ private:
         al->setBuddy(acc);
         bottom->addWidget(acc, 1);
         root_->addLayout(bottom);
+    }
+
+    // ============================================================================================ Paragraphic EQ
+    // VEGAS's Paragraphic EQ page: the dry and wet faders and the response graph on top; four bands (gain fader, width,
+    // center frequency) and the low and high shelf below.
+    QWidget* pgeqFader(int i, const QString& name, bool inf, int height)
+    {
+        QWidget* col = new QWidget(this);
+        QVBoxLayout* v = new QVBoxLayout(col);
+        v->setContentsMargins(0, 0, 0, 0);
+        v->setSpacing(3);
+        SMap m;
+        m.inf = inf;
+        QLabel* readout = text(QString(), Qt::AlignHCenter | Qt::AlignVCenter);
+        readout->setFixedHeight(16);
+        v->addWidget(readout);
+        DxSlider* s = slider(Qt::Vertical, fixed(i), m, QString("dxParam%1").arg(i), nullptr, readout, "dB");
+        s->setFixedHeight(height);
+        v->addWidget(s, 0, Qt::AlignHCenter);
+        v->addWidget(text(name + "<br>" + rangeText(i, m, "dB"), Qt::AlignHCenter | Qt::AlignTop));
+        col->setFixedWidth(100);
+        return col;
+    }
+
+    QWidget* pgeqBand(int k)
+    {
+        QWidget* col = new QWidget(this);
+        QGridLayout* g = new QGridLayout(col);
+        g->setContentsMargins(0, 0, 0, 0);
+        g->setHorizontalSpacing(4);
+        g->setVerticalSpacing(2);
+        QLabel* num = text(QString("<b><u>%1</u></b>").arg(k + 1), Qt::AlignHCenter | Qt::AlignVCenter);
+        g->addWidget(num, 0, 0, 1, 2);
+        SMap gm;
+        QLabel* gr = text(QString());
+        DxSlider* gs = slider(Qt::Vertical, fixed(2 + k), gm, QString("dxParam%1").arg(2 + k), nullptr, gr, "dB");
+        gs->setFixedHeight(78);
+        g->addWidget(gs, 1, 0, 3, 1, Qt::AlignHCenter);
+        g->addWidget(gr, 1, 1);
+        SMap wm;
+        QLabel* wr = text(QString());
+        DxSlider* ws = slider(Qt::Horizontal, fixed(6 + k), wm, QString("dxParam%1").arg(6 + k), nullptr, wr, "oct.");
+        g->addWidget(wr, 2, 1);
+        g->addWidget(ws, 3, 1);
+        SMap fm;
+        fm.log = true;
+        fm.dec = 0;
+        QLineEdit* box = editBox(62);
+        DxSlider* fs = slider(Qt::Horizontal, fixed(10 + k), fm, QString("dxParam%1").arg(10 + k), box, nullptr);
+        g->addWidget(box, 4, 0, 1, 2, Qt::AlignRight);
+        g->addWidget(fs, 5, 0, 1, 2);
+        col->setFixedWidth(112);
+        return col;
+    }
+
+    // one shelf: the check box, the frequency (slider and edit box) and the gain (slider and readout)
+    QWidget* pgeqShelf(int on, int freq, int gain, const QString& label)
+    {
+        QWidget* w = new QWidget(this);
+        QHBoxLayout* h = new QHBoxLayout(w);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(6);
+        QCheckBox* c = new QCheckBox(w);
+        c->setObjectName(QString("dxParam%1").arg(on));
+        QLabel* l = text(label);
+        l->setFixedWidth(206);
+        h->addWidget(c);
+        h->addWidget(l);
+        SMap fm;
+        fm.log = true;
+        fm.dec = 0;
+        QLineEdit* box = editBox(62);
+        DxSlider* fs = slider(Qt::Horizontal, fixed(freq), fm, QString("dxParam%1").arg(freq), box, nullptr);
+        h->addWidget(fs, 1);
+        h->addWidget(box);
+        SMap gm;
+        gm.inf = true;
+        QLabel* gr = text(QString(), Qt::AlignRight | Qt::AlignVCenter);
+        gr->setFixedWidth(60);
+        DxSlider* gs = slider(Qt::Horizontal, fixed(gain), gm, QString("dxParam%1").arg(gain), nullptr, gr, "dB");
+        gs->setFixedWidth(80);
+        h->addWidget(gs);
+        h->addWidget(gr);
+        QObject::connect(c, &QCheckBox::toggled, c, [this, on](bool v) { commit(on, v ? 1 : 0); });
+        sync_.push_back([=] {
+            QSignalBlocker b(c);
+            const bool v = get(on) >= 0.5;
+            c->setChecked(v);
+            fs->setEnabled(v);
+            box->setEnabled(v);
+            gs->setEnabled(v);
+        });
+        return w;
+    }
+
+    void pgeqPaint(QPainter& p, const QRectF& pl)
+    {
+        vegpg::Settings st;
+        st.dry = (int)std::lround(get(0) * 10);
+        st.wet = (int)std::lround(get(1) * 10);
+        for (int k = 0; k < 4; ++k) {
+            st.gain[k] = (int)std::lround(get(2 + k) * 10);
+            st.width[k] = (int)std::lround(get(6 + k) * 10);
+            st.freq[k] = (int)std::lround(get(10 + k));
+        }
+        st.lowOn = (int)std::lround(get(14));
+        st.highOn = (int)std::lround(get(15));
+        st.lowFreq = (int)std::lround(get(16));
+        st.highFreq = (int)std::lround(get(17));
+        st.lowGain = (int)std::lround(get(18) * 10);
+        st.highGain = (int)std::lround(get(19) * 10);
+        vegpg::sanitize(st);
+        vegpg::Dsp d;
+        d.setRate(44100);
+        d.setSettings(st);
+        auto Y = [&](double db) { return pl.bottom() - (std::max(-25.0, std::min(25.0, db)) + 25.0) / 50.0 * pl.height(); };
+        auto X = [&](double f) { return pl.left() + std::log(f / 20.0) / std::log(2.0) / 10.0 * pl.width(); };
+        p.setPen(QPen(QColor(200, 200, 200), 1));
+        for (int k = 1; k < 10; ++k) {
+            const double x = std::round(X(20.0 * std::pow(2.0, k))) + 0.5;
+            p.drawLine(QPointF(x, pl.top()), QPointF(x, pl.bottom()));
+        }
+        p.setPen(QPen(QColor(150, 150, 150), 1));
+        for (double db : {25.0, 0.0, -25.0}) {
+            const double y = std::round(Y(db)) + 0.5;
+            p.drawLine(QPointF(pl.left(), y), QPointF(pl.right(), y));
+        }
+        QPainterPath path;
+        const int w = std::max(2, (int)pl.width());
+        for (int x = 0; x < w; ++x) {
+            const double f = 20.0 * std::pow(2.0, 10.0 * x / (w - 1));
+            const QPointF pt(pl.left() + x, Y(d.responseDb(f)));
+            if (x == 0) path.moveTo(pt);
+            else path.lineTo(pt);
+        }
+        p.setPen(QPen(QColor(0, 0, 160), 1));
+        p.drawPath(path);
+        p.setPen(Qt::black);
+        p.drawText(QRectF(0, Y(25) - 7, pl.left() - 3, 14), Qt::AlignRight | Qt::AlignVCenter, "+25");
+        p.drawText(QRectF(0, Y(0) - 7, pl.left() - 3, 14), Qt::AlignRight | Qt::AlignVCenter, "dB 0");
+        p.drawText(QRectF(0, Y(-25) - 7, pl.left() - 3, 14), Qt::AlignRight | Qt::AlignVCenter, "-25");
+        static const char* const xl[11] = {"20", "40", "80", "160", "320", "640", "1.3k", "2.6k", "5.1k", "10k", "20k"};
+        for (int k = 0; k <= 10; ++k) {
+            const double x = X(20.0 * std::pow(2.0, k));
+            p.drawText(QRectF(x - 20, pl.bottom() + 1, 40, 14), Qt::AlignHCenter | Qt::AlignTop, xl[k]);
+        }
+    }
+
+    void paragraphicEq()
+    {
+        QHBoxLayout* top = new QHBoxLayout();
+        top->setSpacing(6);
+        top->addWidget(pgeqFader(0, "<u>D</u>ry out", true, 80), 0, Qt::AlignTop);
+        top->addWidget(pgeqFader(1, "<u>W</u>et out", false, 80), 0, Qt::AlignTop);
+        Graph* g = graph(QSize(330, 120));
+        g->setObjectName("dxPgeqGraph");
+        g->margins = QMargins(32, 4, 8, 18);
+        g->draw = [this](QPainter& p, const QRectF& pl) { pgeqPaint(p, pl); };
+        top->addWidget(g, 0, Qt::AlignTop);
+        top->addStretch(1);
+        root_->addLayout(top);
+
+        QHBoxLayout* bands = new QHBoxLayout();
+        bands->setSpacing(4);
+        QVBoxLayout* labels = new QVBoxLayout();
+        labels->setSpacing(0);
+        labels->addSpacing(20);
+        labels->addWidget(text("<u>G</u>ain<br>(-25 to 25 dB):"));
+        labels->addSpacing(34);
+        labels->addWidget(text("Width<br>(0.3 to 2.5 oct.):"));
+        labels->addSpacing(16);
+        labels->addWidget(text("Center frequency<br>(20 to 15,000 Hz):"));
+        labels->addStretch(1);
+        QWidget* lw = new QWidget(this);
+        lw->setLayout(labels);
+        lw->setFixedWidth(136);
+        bands->addWidget(lw);
+        for (int k = 0; k < 4; ++k) bands->addWidget(pgeqBand(k));
+        bands->addStretch(1);
+        root_->addLayout(bands);
+
+        root_->addWidget(pgeqShelf(14, 16, 18, "Enable l<u>o</u>w-shelf (-Inf. to 25 dB):"));
+        root_->addWidget(pgeqShelf(15, 17, 19, "<u>E</u>nable high-shelf (-Inf. to 25 dB):"));
     }

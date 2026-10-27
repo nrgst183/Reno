@@ -15,6 +15,7 @@
 #include "vegasxpeq.h"
 #include "vegasxpdynamics.h"
 #include "vegasxpnoisegate.h"
+#include "vegasxpgeq.h"
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -53,6 +54,7 @@ const std::vector<const Info*>& allInfos()
         &xpChorusInfo(),
         &xpEqInfo(),
         &xpDelayInfo(),
+        &xpGeqInfo(),
         &xpDynamicsInfo(),
         &xpNoiseGateInfo(),
         &simpleDelayInfo(),

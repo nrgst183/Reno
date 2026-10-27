@@ -241,6 +241,17 @@ public:
         if (i == 3 && v(3) <= -79.95) return "-Inf.";
         return BuiltinAudio::paramText(i);
     }
+    // VEGAS keeps these as whole numbers (semitones in hundredths, Hz in thousandths, dB in tenths): a setting is the
+    // nearest of them, so what is set is what is saved and what an undo brings back
+    void paramSet(int i, float v) override
+    {
+        double lo = 0, hi = 1;
+        if (!paramRange(i, &lo, &hi) || !std::isfinite(v)) return;
+        double x = lo + std::max(0.f, std::min(1.f, v)) * (hi - lo);
+        static const double kStep[4] = {100.0, 1000.0, 1.0, 10.0};
+        if (i >= 0 && i < 4 && i != 2) x = std::round(x * kStep[i]) / kStep[i];
+        BuiltinAudio::paramSet(i, (float)((x - lo) / (hi - lo)));
+    }
     std::string saveState() override { return vegvib::encode(settings()); }
     bool loadState(const std::string& st) override
     {

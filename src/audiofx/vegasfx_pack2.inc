@@ -414,7 +414,137 @@ private:
     }
 };
 
+// ------------------------------------------------------------------------------------------ Paragraphic EQ
+// VEGAS's Paragraphic EQ (four band filters, a low and a high shelf and a dry/wet mix, see vegaspgeq.h): recursive
+// filters, frame by frame, no delay. The parameters are the plug-in's settings in its order (its last setting, which the
+// sound does not use, is kept for the saved form).
+class ParagraphicEq : public BuiltinAudio {
+public:
+    ParagraphicEq()
+        : BuiltinAudio(makeParams(), {})
+    {
+        applyAll(vegpg::presets()[0].s);
+        program_ = 0;
+    }
+
+    std::string paramText(int i) override
+    {
+        if ((i == 0 || i == 18 || i == 19) && v(i) <= -24.95) return "-Inf.";
+        return BuiltinAudio::paramText(i);
+    }
+    std::string saveState() override { return vegpg::encode(settings()); }
+    bool loadState(const std::string& st) override
+    {
+        vegpg::Settings s;
+        if (vegpg::decode(st, &s)) {
+            applyAll(s);
+            return true;
+        }
+        if (st.compare(0, 18, "reno-builtin-audio") == 0) {     // older Reno: other settings; start from VEGAS's defaults
+            applyAll(vegpg::presets()[0].s);
+            return true;
+        }
+        return false;
+    }
+    int programCount() override { return (int)vegpg::presets().size(); }
+    std::string programName(int i) override { return i >= 0 && i < programCount() ? vegpg::presets()[(size_t)i].name : std::string(); }
+    int currentProgram() override { return program_; }
+    bool setProgram(int i) override
+    {
+        if (i < 0 || i >= programCount()) return false;
+        applyAll(vegpg::presets()[(size_t)i].s);
+        program_ = i;
+        return true;
+    }
+
+protected:
+    void prepare() override
+    {
+        dsp_.setRate((int)(sr_ + 0.5));
+        dsp_.setSettings(settings());
+        dsp_.restart();
+    }
+    void reset() override { dsp_.restart(); }
+    void run(float* l, float* r, int n) override
+    {
+        dsp_.setSettings(settings());
+        dsp_.process(l, r, n);
+    }
+
+private:
+    vegpg::Dsp dsp_;
+    int program_ = 0;
+    std::atomic<int> extra_{4};             // the plug-in's last setting (0..4), only kept
+
+    static std::vector<Param> makeParams()
+    {
+        static const char* const gains[4] = {"Band 1 gain", "Band 2 gain", "Band 3 gain", "Band 4 gain"};
+        static const char* const widths[4] = {"Band 1 width", "Band 2 width", "Band 3 width", "Band 4 width"};
+        static const char* const freqs[4] = {"Band 1 center frequency", "Band 2 center frequency", "Band 3 center frequency", "Band 4 center frequency"};
+        static const double def[4] = {100, 300, 1000, 5000};
+        std::vector<Param> p;
+        p.push_back({"Dry out", -25, 25, -25, "dB", {}, 1});
+        p.push_back({"Wet out", -25, 25, 0, "dB", {}, 1});
+        for (int k = 0; k < 4; ++k) p.push_back({gains[k], -25, 25, 0, "dB", {}, 1});
+        for (int k = 0; k < 4; ++k) p.push_back({widths[k], 0.3, 2.5, 1, "oct.", {}, 1});
+        for (int k = 0; k < 4; ++k) p.push_back({freqs[k], 20, 15000, def[k], "Hz", {}, 0});
+        p.push_back({"Low shelf enable", 0, 1, 0, "", {"Off", "On"}, 0});
+        p.push_back({"High shelf enable", 0, 1, 0, "", {"Off", "On"}, 0});
+        p.push_back({"Low shelf frequency", 20, 15000, 300, "Hz", {}, 0});
+        p.push_back({"High shelf frequency", 20, 20000, 500, "Hz", {}, 0});
+        p.push_back({"Low shelf gain", -25, 25, 0, "dB", {}, 1});
+        p.push_back({"High shelf gain", -25, 25, 0, "dB", {}, 1});
+        return p;
+    }
+    vegpg::Settings settings() const
+    {
+        vegpg::Settings s;
+        s.dry = (int)std::lround(v(0) * 10);
+        s.wet = (int)std::lround(v(1) * 10);
+        for (int k = 0; k < 4; ++k) {
+            s.gain[k] = (int)std::lround(v(2 + k) * 10);
+            s.width[k] = (int)std::lround(v(6 + k) * 10);
+            s.freq[k] = (int)std::lround(v(10 + k));
+        }
+        s.lowOn = (int)std::lround(v(14));
+        s.highOn = (int)std::lround(v(15));
+        s.lowFreq = (int)std::lround(v(16));
+        s.highFreq = (int)std::lround(v(17));
+        s.lowGain = (int)std::lround(v(18) * 10);
+        s.highGain = (int)std::lround(v(19) * 10);
+        s.extra = extra_.load();
+        vegpg::sanitize(s);
+        return s;
+    }
+    void applyAll(const vegpg::Settings& in)
+    {
+        vegpg::Settings s = in;
+        vegpg::sanitize(s);
+        auto setReal = [this](int i, double x) {
+            double lo = 0, hi = 1;
+            paramRange(i, &lo, &hi);
+            paramSet(i, (float)((x - lo) / (hi - lo)));
+        };
+        setReal(0, s.dry / 10.0);
+        setReal(1, s.wet / 10.0);
+        for (int k = 0; k < 4; ++k) {
+            setReal(2 + k, s.gain[k] / 10.0);
+            setReal(6 + k, s.width[k] / 10.0);
+            setReal(10 + k, s.freq[k]);
+        }
+        setReal(14, s.lowOn);
+        setReal(15, s.highOn);
+        setReal(16, s.lowFreq);
+        setReal(17, s.highFreq);
+        setReal(18, s.lowGain / 10.0);
+        setReal(19, s.highGain / 10.0);
+        extra_.store(s.extra);
+        program_ = -1;
+    }
+};
+
 // the uids the built-in effects list takes from this file (one line each, continued with a backslash)
 #define RENO_PACK2_KINDS \
     {"reno.graphiceq", "Graphic EQ", makeOne<GraphicEq>}, \
-    {"reno.parametriceq", "Parametric EQ", makeOne<ParametricEq>},
+    {"reno.parametriceq", "Parametric EQ", makeOne<ParametricEq>}, \
+    {"reno.paragraphiceq", "Paragraphic EQ", makeOne<ParagraphicEq>},

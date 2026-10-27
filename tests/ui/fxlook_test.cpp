@@ -14,6 +14,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
+#include <QDoubleSpinBox>
 #include <QComboBox>
 #include <QDir>
 #include <QLabel>
@@ -79,7 +80,8 @@ double real(AudioPlugin* p, int i)
 static bool skipParam(AudioPlugin* p, int i)
 {
     const std::string n = p->paramName(i);
-    return n == "Bypass" || n.compare(0, 4, "Tap ") == 0;
+    // Pitch Shift's Initial time is typed as hr:mn:sc.xxx (checked in vegaspack1_page_test)
+    return n == "Bypass" || n == "Initial Time" || n.compare(0, 4, "Tap ") == 0;
 }
 
 struct Kind {
@@ -96,8 +98,9 @@ struct Found {
     QLineEdit* edit = nullptr;
     QCheckBox* check = nullptr;
     QComboBox* combo = nullptr;
+    QDoubleSpinBox* spin = nullptr;     // a number with a spinner (the tempo-sync multiplier of Flange/Wah-wah and Amplitude Modulation)
     std::vector<QRadioButton*> radios;
-    bool any() const { return slider || edit || check || combo || !radios.empty(); }
+    bool any() const { return slider || edit || check || combo || spin || !radios.empty(); }
 };
 
 Found findControl(int i, const char* eqName = nullptr)
@@ -108,6 +111,7 @@ Found findControl(int i, const char* eqName = nullptr)
     f.edit = ctl<QLineEdit>(base + "Edit");  // also the only control of a setting that has a box and no slider
     f.check = ctl<QCheckBox>(base);
     f.combo = ctl<QComboBox>(base);
+    f.spin = ctl<QDoubleSpinBox>(base);
     for (int k = 0; k < 8; ++k)
         if (QRadioButton* r = ctl<QRadioButton>(QString("dxParam%1_%2").arg(i).arg(k))) f.radios.push_back(r);
     return f;
@@ -172,7 +176,7 @@ int main(int argc, char** argv)
     // ------------------------------------------------------------------ the chain, with Distortion, Vibrato and Reverb
     std::map<std::string, uint64_t> fxs;
     for (const Kind& k : kKinds) fxs[k.uid] = app.addAudioFx(at, builtin(k.uid));
-    check(fxs.size() == 9 && fxs["reno.moderneq"] != 0, "setup: all nine built-in audio effects on an audio event");
+    check(fxs.size() == sizeof kKinds / sizeof kKinds[0] && fxs["reno.moderneq"] != 0, "setup: all built-in audio effects on an audio event");
     // chain of the first three, as in the VEGAS pictures; the others go after them
     w->showTarget(at, fxs["reno.distortion"]);
     w->show();
@@ -314,7 +318,14 @@ int main(int argc, char** argv)
                 f.edit->editingFinished();
                 settle(20);
                 check(std::fabs(real(plugin, i) - (lo + (hi - lo) * 0.25)) <= (hi - lo) * 0.001 + 1e-6, nm + ": its edit box sets it", strfmt("%g", real(plugin, i)));
+            } else if (f.spin) {
+                if (!f.spin->isEnabled()) continue;
+                f.spin->setValue(lo + (hi - lo) * 0.25);
+                settle(20);
+                check(std::fabs(real(plugin, i) - (lo + (hi - lo) * 0.25)) <= (hi - lo) * 0.001 + 1e-6, nm + ": its spin box sets it", strfmt("%g", real(plugin, i)));
             } else if (f.check) {
+                // a disabled box is one VEGAS's page switches off for the settings now (the anti-alias filter below a ratio of 1.1, Preserve duration beyond 12 semitones...)
+                if (!f.check->isEnabled()) continue;
                 const bool was = f.check->isChecked();
                 f.check->click();
                 settle(20);
@@ -349,12 +360,15 @@ int main(int argc, char** argv)
                     if (f.slider) {
                         const double t = (double)f.slider->value() / f.slider->maximum();
                         const double lin = lo + t * (hi - lo), lg = lo > 0 ? lo * std::pow(hi / lo, t) : lin;
-                        ok = std::fabs(v - lin) <= (hi - lo) * 0.002 + 1e-6 || std::fabs(v - lg) <= std::max((hi - lo) * 0.002, std::fabs(lg) * 0.002);
+                        // a slider with whole steps (Reverb's faders: 1 dB) shows the step nearest to a preset's value
+                        const double tolP = std::max((hi - lo) * 0.002 + 1e-6, (hi - lo) / f.slider->maximum() * 0.51);
+                        ok = std::fabs(v - lin) <= tolP || std::fabs(v - lg) <= std::max(tolP, std::fabs(lg) * 0.002);
                     } else if (f.edit) ok = std::fabs(f.edit->text().toDouble() - v) < 1e-3;
+                    else if (f.spin) ok = std::fabs(f.spin->value() - v) < 1e-3;
                     else if (f.check) ok = f.check->isChecked() == (v >= 0.5);
                     else if (f.combo) ok = f.combo->currentIndex() == std::lround(v);
                     else if (!f.radios.empty()) ok = (long)f.radios.size() > std::lround(v) && f.radios[(size_t)std::lround(v)]->isChecked();
-                    if (!ok) { followed = false; bad += strfmt(" [%s: preset %d]", plugin->paramName(i).c_str(), pi); }
+                    if (!ok) { followed = false; bad += strfmt(" [%s: preset %d, value %g, slider %d of %d]", plugin->paramName(i).c_str(), pi, v, f.slider ? f.slider->value() : -1, f.slider ? f.slider->maximum() : -1); }
                 }
             }
             check(pb->count() > 0 && followed, std::string(k.name) + ": the page follows every preset", bad);

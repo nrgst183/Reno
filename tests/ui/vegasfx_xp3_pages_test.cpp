@@ -189,6 +189,7 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
     const QString out = argc > 1 ? argv[1] : "vegasfx_xp3_out";
     QDir().mkpath(out);
+    onePage("reno.xpgeq", "xp graphic eq", out, "xpgeq");
     onePage("reno.xpdynamics", "xp dynamics", out, "xpdynamics");
     onePage("reno.xpnoisegate", "xp noise gate", out, "xpnoisegate");
     std::printf("%d passed, %d failed\n", gPass, gFail);
