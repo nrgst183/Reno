@@ -543,8 +543,519 @@ private:
     }
 };
 
+// ------------------------------------------------------------------------------------------ Graphic Dynamics
+// VEGAS's Graphic Dynamics (a graph of the level out against the level in, with attack and release time: see
+// vegasgdyn.h). It works on 20 ms blocks and gives each one back a block late (latencySamples), with the effect's own
+// way of taking a host's calls (every call to run is one Process call of the plug-in). The graph is not a parameter; it
+// is kept here and edited by the page through the host's state.
+class GraphicDynamics : public BuiltinAudio {
+public:
+    GraphicDynamics()
+        : BuiltinAudio({{"Attack", 0, 500, 1, "ms", {}, 1}, {"Release", 0, 5000, 500, "ms", {}, 1},
+                        {"Auto Gain Compensate", 0, 1, 0, "", {"Off", "On"}, 0}, {"Sync Channel Gains", 0, 1, 1, "", {"Off", "On"}, 0},
+                        {"Output Gain", -25, 25, 0, "dB", {}, 1}, {"Bypass", 0, 1, 0, "", {"Off", "On"}, 0}},
+                       {})
+    {
+        applyAll(veggd::presets()[0].s);
+        program_ = 0;
+    }
+
+    // VEGAS keeps the times and the gain in tenths
+    void paramSet(int i, float val) override
+    {
+        double lo = 0, hi = 1;
+        if (!paramRange(i, &lo, &hi) || !std::isfinite(val)) return;
+        double x = lo + std::max(0.f, std::min(1.f, val)) * (hi - lo);
+        x = (i == 0 || i == 1 || i == 4) ? std::round(x * 10) / 10 : std::round(x);
+        BuiltinAudio::paramSet(i, (float)((x - lo) / (hi - lo)));
+    }
+    std::string saveState() override { return veggd::encode(settings()); }
+    bool loadState(const std::string& st) override
+    {
+        veggd::Settings s;
+        if (veggd::decode(st, &s)) {
+            applyAll(s);
+            return true;
+        }
+        if (st.compare(0, 18, "reno-builtin-audio") == 0) {     // older Reno: other settings; start from VEGAS's defaults
+            applyAll(veggd::presets()[0].s);
+            return true;
+        }
+        return false;
+    }
+    int programCount() override { return (int)veggd::presets().size(); }
+    std::string programName(int i) override { return i >= 0 && i < programCount() ? veggd::presets()[(size_t)i].name : std::string(); }
+    int currentProgram() override { return program_; }
+    bool setProgram(int i) override
+    {
+        if (i < 0 || i >= programCount()) return false;
+        applyAll(veggd::presets()[(size_t)i].s);
+        program_ = i;
+        return true;
+    }
+    int latencySamples() override { return dsp_.block(); }
+
+protected:
+    void prepare() override
+    {
+        dsp_.setSettings(settings());
+        dsp_.setFormat((int)(sr_ + 0.5), 2);
+        clearOutput();
+    }
+    void reset() override
+    {
+        dsp_.restart();
+        clearOutput();
+    }
+    void run(float* l, float* r, int n) override
+    {
+        const veggd::Settings s = settings();
+        if (s.bypass) {                         // the plug-in passes the sound on as it is
+            wasBypassed_ = true;
+            return;
+        }
+        if (wasBypassed_) {
+            wasBypassed_ = false;
+            dsp_.restart();
+            clearOutput();
+        }
+        dsp_.setSettings(s);
+        in_.resize((size_t)n * 2);
+        out_.resize((size_t)n * 2 + 8);
+        for (int k = 0; k < n; ++k) {
+            in_[(size_t)k * 2] = l[k];
+            in_[(size_t)k * 2 + 1] = r[k];
+        }
+        // the host's call: Process takes what it can and is called again with the rest of the buffer
+        int done = 0;
+        while (done < n) {
+            int used = 0, given = 0;
+            dsp_.process(in_.data() + (size_t)done * 2, n - done, out_.data(), n, &used, &given);
+            int from = 0;
+            if (skip_ > 0) {                    // frames that were borrowed from this block earlier
+                from = std::min(skip_, given);
+                skip_ -= from;
+            }
+            fifo_.insert(fifo_.end(), out_.begin() + (size_t)from * 2, out_.begin() + (size_t)given * 2);
+            done += used;
+            if (used == 0 && given == 0) break;
+        }
+        // the sound must come out at the same pace as it goes in: what the plug-in has not handed over yet (a block that
+        // did not fit into its call) is taken from it already
+        const int have = (int)((fifo_.size() - head_) / 2);
+        if (have < n && dsp_.pending() > skip_) {
+            const int want = std::min(n - have, dsp_.pending() - skip_);
+            std::vector<float> peek((size_t)(skip_ + want) * 2);
+            const int got = dsp_.peekPending(peek.data(), skip_ + want);
+            fifo_.insert(fifo_.end(), peek.begin() + (size_t)skip_ * 2, peek.begin() + (size_t)got * 2);
+            skip_ = got;
+        }
+        for (int k = 0; k < n; ++k) {
+            if (head_ + 2 <= fifo_.size()) {
+                l[k] = fifo_[head_];
+                r[k] = fifo_[head_ + 1];
+                head_ += 2;
+            } else {
+                l[k] = r[k] = 0.f;
+            }
+        }
+        if (head_ > 65536) {
+            fifo_.erase(fifo_.begin(), fifo_.begin() + (std::ptrdiff_t)head_);
+            head_ = 0;
+        }
+    }
+
+private:
+    veggd::Dsp dsp_;
+    std::mutex graphMutex_;
+    veggd::Settings graph_;             // the graph (and the threshold and ratio kept with it)
+    int program_ = 0;
+    std::vector<float> in_, out_, fifo_;
+    size_t head_ = 0;
+    int skip_ = 0;                      // frames of the plug-in's pending sound that are in fifo_ already
+    bool wasBypassed_ = false;
+
+    // the block of silence that comes out while the first block is collected
+    void clearOutput()
+    {
+        fifo_.assign((size_t)dsp_.block() * 2, 0.f);
+        head_ = 0;
+        skip_ = 0;
+    }
+    veggd::Settings settings()
+    {
+        veggd::Settings s;
+        {
+            std::lock_guard<std::mutex> lk(graphMutex_);
+            s = graph_;
+        }
+        s.attack = (int)std::lround(v(0) * 10);
+        s.release = (int)std::lround(v(1) * 10);
+        s.autoGain = (int)std::lround(v(2));
+        s.sync = (int)std::lround(v(3));
+        s.outGain = (int)std::lround(v(4) * 10);
+        s.bypass = (int)std::lround(v(5));
+        return s;
+    }
+    void applyAll(const veggd::Settings& in)
+    {
+        veggd::Settings s = in;
+        veggd::sanitize(s);
+        auto setReal = [this](int i, double x) {
+            double lo = 0, hi = 1;
+            paramRange(i, &lo, &hi);
+            paramSet(i, (float)((x - lo) / (hi - lo)));
+        };
+        setReal(0, s.attack / 10.0);
+        setReal(1, s.release / 10.0);
+        setReal(2, s.autoGain);
+        setReal(3, s.sync);
+        setReal(4, s.outGain / 10.0);
+        setReal(5, s.bypass);
+        {
+            std::lock_guard<std::mutex> lk(graphMutex_);
+            graph_ = s;
+        }
+        program_ = -1;
+    }
+};
+
+// ------------------------------------------------------------------------------------------ Multi-Band Dynamics
+// VEGAS's Multi-Band Dynamics (four bands, each a low shelf, band or high shelf with its own threshold, amount of
+// compression, gain, attack and release: see vegasmbdyn.h). It works on 20 ms blocks and gives each one back a block
+// late (latencySamples), with the effect's own way of taking a host's calls (every call to run is one Process call of
+// the plug-in). The 43 parameters are the plug-in's own, in its order; the ten integers its window keeps with the
+// settings are carried along as they are.
+class MultiBandDynamics : public BuiltinAudio {
+public:
+    MultiBandDynamics() : BuiltinAudio(paramList(), {})
+    {
+        applyAll(vegmb::presets()[0].s);
+        program_ = 0;
+    }
+
+    void paramSet(int i, float val) override
+    {
+        double lo = 0, hi = 1;
+        if (!paramRange(i, &lo, &hi) || !std::isfinite(val)) return;
+        double x = lo + std::max(0.f, std::min(1.f, val)) * (hi - lo);
+        x = tenths(i) ? std::round(x * 10) / 10 : std::round(x);
+        BuiltinAudio::paramSet(i, (float)((x - lo) / (hi - lo)));
+    }
+    std::string saveState() override { return vegmb::encode(settings()); }
+    bool loadState(const std::string& st) override
+    {
+        vegmb::Settings s;
+        if (vegmb::decode(st, &s)) {
+            applyAll(s);
+            return true;
+        }
+        if (st.compare(0, 18, "reno-builtin-audio") == 0) {     // older Reno: other settings; start from VEGAS's defaults
+            applyAll(vegmb::presets()[0].s);
+            return true;
+        }
+        return false;
+    }
+    int programCount() override { return (int)vegmb::presets().size(); }
+    std::string programName(int i) override { return i >= 0 && i < programCount() ? vegmb::presets()[(size_t)i].name : std::string(); }
+    int currentProgram() override { return program_; }
+    bool setProgram(int i) override
+    {
+        if (i < 0 || i >= programCount()) return false;
+        applyAll(vegmb::presets()[(size_t)i].s);
+        program_ = i;
+        return true;
+    }
+    int latencySamples() override { return dsp_.block(); }
+
+protected:
+    void prepare() override
+    {
+        dsp_.setSettings(settings());
+        dsp_.setFormat((int)(sr_ + 0.5), 2);
+        clearOutput();
+    }
+    void reset() override
+    {
+        dsp_.restart();
+        clearOutput();
+    }
+    void run(float* l, float* r, int n) override
+    {
+        const vegmb::Settings s = settings();
+        if (s.bypassAll) {                      // the plug-in passes the sound on as it is
+            wasBypassed_ = true;
+            return;
+        }
+        if (wasBypassed_) {
+            wasBypassed_ = false;
+            dsp_.restart();
+            clearOutput();
+        }
+        dsp_.setSettings(s);
+        in_.resize((size_t)n * 2);
+        out_.resize((size_t)n * 2 + 8);
+        for (int k = 0; k < n; ++k) {
+            in_[(size_t)k * 2] = l[k];
+            in_[(size_t)k * 2 + 1] = r[k];
+        }
+        // the host's call: Process takes what it can and is called again with the rest of the buffer
+        int done = 0;
+        while (done < n) {
+            int used = 0, given = 0;
+            dsp_.process(in_.data() + (size_t)done * 2, n - done, out_.data(), n, &used, &given);
+            int from = 0;
+            if (skip_ > 0) {                    // frames that were borrowed from this block earlier
+                from = std::min(skip_, given);
+                skip_ -= from;
+            }
+            fifo_.insert(fifo_.end(), out_.begin() + (size_t)from * 2, out_.begin() + (size_t)given * 2);
+            done += used;
+            if (used == 0 && given == 0) break;
+        }
+        // the sound must come out at the same pace as it goes in: what the plug-in has not handed over yet (a block that
+        // did not fit into its call) is taken from it already
+        const int have = (int)((fifo_.size() - head_) / 2);
+        if (have < n && dsp_.pending() > skip_) {
+            const int want = std::min(n - have, dsp_.pending() - skip_);
+            std::vector<float> peek((size_t)(skip_ + want) * 2);
+            const int got = dsp_.peekPending(peek.data(), skip_ + want);
+            fifo_.insert(fifo_.end(), peek.begin() + (size_t)skip_ * 2, peek.begin() + (size_t)got * 2);
+            skip_ = got;
+        }
+        for (int k = 0; k < n; ++k) {
+            if (head_ + 2 <= fifo_.size()) {
+                l[k] = fifo_[head_];
+                r[k] = fifo_[head_ + 1];
+                head_ += 2;
+            } else {
+                l[k] = r[k] = 0.f;
+            }
+        }
+        if (head_ > 65536) {
+            fifo_.erase(fifo_.begin(), fifo_.begin() + (std::ptrdiff_t)head_);
+            head_ = 0;
+        }
+    }
+
+private:
+    // the parameters, ten for each band (threshold, amount, gain, attack, release, type, center, width, bypass, solo),
+    // then Stereo Sync Channels, Output Gain and Bypass
+    static std::vector<Param> paramList()
+    {
+        static std::vector<std::string> names;
+        if (names.empty()) {
+            const char* what[10] = {"Threshold", "Amount", "Gain", "Attack", "Release", "Type", "Center", "Width", "Bypass", "Solo"};
+            for (int b = 1; b <= 4; ++b)
+                for (int k = 0; k < 10; ++k) names.push_back("Band " + std::to_string(b) + " " + what[k]);
+            names.push_back("Stereo Sync Channels");
+            names.push_back("Output Gain");
+            names.push_back("Bypass");
+            names.reserve(names.size());
+        }
+        const vegmb::Settings& d = vegmb::presets()[0].s;
+        std::vector<Param> v;
+        for (int b = 0; b < 4; ++b) {
+            const char* nm[10];
+            for (int k = 0; k < 10; ++k) nm[k] = names[(size_t)(b * 10 + k)].c_str();
+            v.push_back({nm[0], -60, 0, d.threshold[b] / 10.0, "dB", {}, 1});
+            v.push_back({nm[1], 1, 50, d.amount[b] / 10.0, ":1", {}, 1});
+            v.push_back({nm[2], -25, 25, d.gain[b] / 10.0, "dB", {}, 1});
+            v.push_back({nm[3], 0, 500, d.attack[b] / 10.0, "ms", {}, 1});
+            v.push_back({nm[4], 0, 5000, d.release[b] / 10.0, "ms", {}, 1});
+            v.push_back({nm[5], 0, 2, (double)d.type[b], "", {"Low-shelf", "Band-notch", "High-shelf"}, 0});
+            v.push_back({nm[6], 50, 15000, (double)d.freq[b], "Hz", {}, 0});
+            v.push_back({nm[7], 0.3, 3, d.width[b] / 10.0, "octaves", {}, 1});
+            v.push_back({nm[8], 0, 1, (double)d.bypass[b], "", {"Off", "On"}, 0});
+            v.push_back({nm[9], 0, 1, (double)d.solo[b], "", {"Off", "On"}, 0});
+        }
+        v.push_back({names[40].c_str(), 0, 1, (double)d.sync, "", {"Off", "On"}, 0});
+        v.push_back({names[41].c_str(), -25, 25, d.outGain / 10.0, "dB", {}, 1});
+        v.push_back({names[42].c_str(), 0, 1, (double)d.bypassAll, "", {"Off", "On"}, 0});
+        return v;
+    }
+    // the parameters VEGAS keeps in tenths
+    static bool tenths(int i)
+    {
+        if (i >= 40) return i == 41;
+        const int k = i % 10;
+        return k <= 4 || k == 7;
+    }
+
+    vegmb::Dsp dsp_;
+    std::mutex extraMutex_;
+    vegmb::Settings extra_;             // what the settings keep besides the parameters (the ten integers of the window)
+    int program_ = 0;
+    std::vector<float> in_, out_, fifo_;
+    size_t head_ = 0;
+    int skip_ = 0;                      // frames of the plug-in's pending sound that are in fifo_ already
+    bool wasBypassed_ = false;
+
+    // the block of silence that comes out while the first block is collected
+    void clearOutput()
+    {
+        fifo_.assign((size_t)dsp_.block() * 2, 0.f);
+        head_ = 0;
+        skip_ = 0;
+    }
+    vegmb::Settings settings()
+    {
+        vegmb::Settings s;
+        {
+            std::lock_guard<std::mutex> lk(extraMutex_);
+            s = extra_;
+        }
+        for (int b = 0; b < 4; ++b) {
+            const int o = b * 10;
+            s.threshold[b] = (int)std::lround(v(o) * 10);
+            s.amount[b] = (int)std::lround(v(o + 1) * 10);
+            s.gain[b] = (int)std::lround(v(o + 2) * 10);
+            s.attack[b] = (int)std::lround(v(o + 3) * 10);
+            s.release[b] = (int)std::lround(v(o + 4) * 10);
+            s.type[b] = (int)std::lround(v(o + 5));
+            s.freq[b] = (int)std::lround(v(o + 6));
+            s.width[b] = (int)std::lround(v(o + 7) * 10);
+            s.bypass[b] = (int)std::lround(v(o + 8));
+            s.solo[b] = (int)std::lround(v(o + 9));
+        }
+        s.sync = (int)std::lround(v(40));
+        s.outGain = (int)std::lround(v(41) * 10);
+        s.bypassAll = (int)std::lround(v(42));
+        return s;
+    }
+    void applyAll(const vegmb::Settings& in)
+    {
+        vegmb::Settings s = in;
+        vegmb::sanitize(s);
+        auto setReal = [this](int i, double x) {
+            double lo = 0, hi = 1;
+            paramRange(i, &lo, &hi);
+            paramSet(i, (float)((x - lo) / (hi - lo)));
+        };
+        for (int b = 0; b < 4; ++b) {
+            const int o = b * 10;
+            setReal(o, s.threshold[b] / 10.0);
+            setReal(o + 1, s.amount[b] / 10.0);
+            setReal(o + 2, s.gain[b] / 10.0);
+            setReal(o + 3, s.attack[b] / 10.0);
+            setReal(o + 4, s.release[b] / 10.0);
+            setReal(o + 5, s.type[b]);
+            setReal(o + 6, s.freq[b]);
+            setReal(o + 7, s.width[b] / 10.0);
+            setReal(o + 8, s.bypass[b]);
+            setReal(o + 9, s.solo[b]);
+        }
+        setReal(40, s.sync);
+        setReal(41, s.outGain / 10.0);
+        setReal(42, s.bypassAll);
+        {
+            std::lock_guard<std::mutex> lk(extraMutex_);
+            extra_ = s;
+        }
+        program_ = -1;
+    }
+};
+
+// ------------------------------------------------------------------------------------------ Resonant Filter
+// VEGAS's Resonant Filter (a state variable filter, low, band or high pass, second or fourth order, see
+// vegasresfilter.h). It works in place without any delay. The six parameters are the plug-in's: frequency, resonance,
+// filter type, filter order, bypass (the host's: the plug-in's sound does not look at it, so it passes the sound on as
+// it is) and wet / dry.
+class ResonantFilter : public BuiltinAudio {
+public:
+    ResonantFilter()
+        : BuiltinAudio({{"Frequency", 20, 20000, 20000, "Hz", {}, 0},
+                        {"Resonance", 0, 100, 0, "%", {}, 1},
+                        {"Filter Type", 0, 2, 0, "", {"Low Pass", "Band Pass", "High Pass"}, 0},
+                        {"Filter Order", 0, 1, 0, "", {"Second Order", "Fourth Order"}, 0},
+                        {"Bypass", 0, 1, 0, "", {"Off", "On"}, 0},
+                        {"Wet/Dry", 0, 100, 100, "%", {}, 1}},
+                       {})
+    {
+        applyAll(vegrf::presets()[0].s);
+        program_ = 0;
+    }
+
+    // VEGAS's setters keep whole Hz and tenths of a percent
+    void paramSet(int i, float val) override
+    {
+        double lo = 0, hi = 1;
+        if (!paramRange(i, &lo, &hi) || !std::isfinite(val)) return;
+        double x = lo + std::max(0.f, std::min(1.f, val)) * (hi - lo);
+        if (i == 1 || i == 5) x = std::round(x * 10) / 10;
+        else x = std::round(x);
+        setRaw(i, x);
+    }
+    std::string saveState() override { return vegrf::encode(settings()); }
+    bool loadState(const std::string& st) override
+    {
+        vegrf::Settings s;
+        if (vegrf::decode(st, &s)) {
+            applyAll(s);
+            return true;
+        }
+        if (st.compare(0, 18, "reno-builtin-audio") == 0) {     // older Reno: other settings; start from VEGAS's defaults
+            applyAll(vegrf::presets()[0].s);
+            return true;
+        }
+        return false;
+    }
+    int programCount() override { return (int)vegrf::presets().size(); }
+    std::string programName(int i) override { return i >= 0 && i < programCount() ? vegrf::presets()[(size_t)i].name : std::string(); }
+    int currentProgram() override { return program_; }
+    bool setProgram(int i) override
+    {
+        if (i < 0 || i >= programCount()) return false;
+        applyAll(vegrf::presets()[(size_t)i].s);
+        program_ = i;
+        return true;
+    }
+
+protected:
+    void prepare() override { dsp_.setFormat((int)(sr_ + 0.5), 2); }
+    void reset() override { dsp_.restart(); }
+    void run(float* l, float* r, int n) override
+    {
+        const vegrf::Settings s = settings();
+        if (s.bypass >= 0.5f) return;           // the host leaves the plug-in out
+        dsp_.setSettings(s);
+        dsp_.process(l, r, n);
+    }
+
+private:
+    vegrf::Dsp dsp_;
+    int program_ = 0;
+
+    vegrf::Settings settings() const
+    {
+        vegrf::Settings s;
+        s.freq = (float)v(0);
+        s.res = (float)v(1);
+        s.type = (float)v(2);
+        s.order = (float)v(3);
+        s.bypass = (float)v(4);
+        s.wet = (float)v(5);
+        return s;
+    }
+    void applyAll(const vegrf::Settings& in)
+    {
+        vegrf::Settings s = in;
+        vegrf::sanitize(s);
+        setRaw(0, s.freq);
+        setRaw(1, s.res);
+        setRaw(2, s.type);
+        setRaw(3, s.order);
+        setRaw(4, s.bypass);
+        setRaw(5, s.wet);
+        program_ = -1;
+    }
+};
+
 // the uids the built-in effects list takes from this file (one line each, continued with a backslash)
 #define RENO_PACK2_KINDS \
     {"reno.graphiceq", "Graphic EQ", makeOne<GraphicEq>}, \
     {"reno.parametriceq", "Parametric EQ", makeOne<ParametricEq>}, \
-    {"reno.paragraphiceq", "Paragraphic EQ", makeOne<ParagraphicEq>},
+    {"reno.paragraphiceq", "Paragraphic EQ", makeOne<ParagraphicEq>}, \
+    {"reno.graphicdynamics", "Graphic Dynamics", makeOne<GraphicDynamics>}, \
+    {"reno.multibanddynamics", "Multi-Band Dynamics", makeOne<MultiBandDynamics>}, \
+    {"reno.resonantfilter", "Resonant Filter", makeOne<ResonantFilter>},

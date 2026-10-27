@@ -87,7 +87,7 @@ int main()
     const auto isXp = [](const std::string& uid) { return uid.compare(0, 7, "reno.xp") == 0; };
     size_t standIns = 0;
     for (const AudioPluginDesc& d : all) if (!isTrk(d.uid) && !isXp(d.uid)) ++standIns;
-    check(standIns == 16, "list: sixteen built-in audio effects besides the track and ExpressFX ones");
+    check(standIns == 19, "list: nineteen built-in audio effects besides the track and ExpressFX ones");
     for (const AudioPluginDesc& d : all) {
         if (isTrk(d.uid)) continue;
         std::unique_ptr<AudioPlugin> p = make(d.uid);

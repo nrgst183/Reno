@@ -129,6 +129,8 @@ public:
     std::function<void(int phase)> edited;      // 0 start of a drag, 1 during, 2 end (a delete: 0 then 2)
     QLabel* readout = nullptr;
     QMargins margins = QMargins(32, 4, 8, 16);
+    size_t maxPts = (size_t)vegdist::kMaxPoints;                    // the most points the graph takes
+    std::function<QString(const vegdist::Point&)> format;           // the text of the readout for a point (else "In .. dB, out .. dB")
 
     explicit EnvelopeGraph(QWidget* parent) : QWidget(parent) { setMouseTracking(true); }
     bool dragging() const { return drag_ >= 0; }
@@ -171,7 +173,8 @@ protected:
     static QString db(int v) { return v <= -840 ? QString("-Inf.") : QString::number(v / 10.0, 'f', 1); }
     void show(const vegdist::Point& p)
     {
-        if (readout) readout->setText(QString("In %1 dB, out %2 dB").arg(db(p.x), db(p.y)));
+        if (!readout) return;
+        readout->setText(format ? format(p) : QString("In %1 dB, out %2 dB").arg(db(p.x), db(p.y)));
     }
 
     void paintEvent(QPaintEvent*) override
@@ -217,7 +220,7 @@ protected:
         if (e->button() != Qt::LeftButton) return;
         if (k < 0) {
             const int seg = onLine(q);
-            if (seg < 0 || pts.size() >= (size_t)vegdist::kMaxPoints) return;
+            if (seg < 0 || pts.size() >= maxPts) return;
             vegdist::Point np = level(q);
             np.x = std::max(pts[(size_t)seg].x, std::min(pts[(size_t)seg + 1].x, np.x));
             pts.insert(pts.begin() + seg + 1, np);

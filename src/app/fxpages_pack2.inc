@@ -3,7 +3,7 @@
 public:
     // Which pages this file has, and making them (the constructor and hasBuiltinPage call these, so a new page needs no
     // change in fxpages.cpp)
-    static bool pack2Has(const std::string& uid) { return uid == "reno.noisegate" || uid == "reno.graphiceq" || uid == "reno.parametriceq" || uid == "reno.paragraphiceq"; }
+    static bool pack2Has(const std::string& uid) { return uid == "reno.noisegate" || uid == "reno.graphiceq" || uid == "reno.parametriceq" || uid == "reno.paragraphiceq" || uid == "reno.graphicdynamics" || uid == "reno.multibanddynamics" || uid == "reno.resonantfilter"; }
 
 private:
     bool pack2Page(const std::string& uid, int* width)
@@ -20,6 +20,15 @@ private:
         } else if (uid == "reno.paragraphiceq") {
             paragraphicEq();
             *width = 610;
+        } else if (uid == "reno.graphicdynamics") {
+            graphicDynamics();
+            *width = 530;
+        } else if (uid == "reno.multibanddynamics") {
+            multiBandDynamics();
+            *width = 600;
+        } else if (uid == "reno.resonantfilter") {
+            resonantFilter();
+            *width = 480;
         } else {
             return false;
         }
@@ -503,6 +512,333 @@ private:
             const double x = X(20.0 * std::pow(2.0, k));
             p.drawText(QRectF(x - 20, pl.bottom() + 1, 40, 14), Qt::AlignHCenter | Qt::AlignTop, xl[k]);
         }
+    }
+
+    // ============================================================================================ Graphic Dynamics
+    // VEGAS's Graphic Dynamics page (dialog 2000), placed as the dialog places things (dialog units): the output gain fader, the
+    // graph of the level out against the level in (with a readout of the gain at the point under the pointer), the two check
+    // boxes, Reset Graph, attack and release (a slider and a box each) and the threshold and ratio sliders, which move the
+    // graph's points the way the plug-in's own page does (veggd::setThreshold, veggd::setRatio).
+    veggd::Settings gdSettings() const
+    {
+        veggd::Settings s;
+        if (h_.state) veggd::decode(h_.state(), &s);
+        return s;
+    }
+    void gdStore(const veggd::Settings& s, const std::string& what)
+    {
+        if (updating_ || !h_.setState) return;
+        h_.setState(veggd::encode(s), what);
+        syncAll();
+    }
+
+    void graphicDynamics()
+    {
+        const double kx = 1.75, ky = 1.875;
+        QWidget* box = new QWidget(this);
+        box->setFixedSize((int)std::lround(288 * kx), (int)std::lround((238 - 16) * ky));
+        root_->addWidget(box);
+        auto put = [=](QWidget* w, int x, int y, int cw, int ch) {
+            w->setParent(box);
+            w->setGeometry((int)std::lround(x * kx), (int)std::lround((y - 16) * ky), (int)std::lround(cw * kx), (int)std::lround(ch * ky));
+            w->show();
+            return w;
+        };
+        auto label = [=](const QString& t, int x, int y, int cw, int ch, Qt::Alignment a = Qt::AlignLeft | Qt::AlignVCenter) {
+            QLabel* l = text(t, a);
+            put(l, x, y, cw, ch);
+            return l;
+        };
+
+        // output gain: the fader with its readout above and its caption below
+        {
+            SMap db;
+            db.inf = false;
+            QLabel* r = label(QString(), 27, 17, 35, 8, Qt::AlignHCenter | Qt::AlignVCenter);
+            DxSlider* s = slider(Qt::Vertical, fixed(4), db, "dxParam4", nullptr, r, "dB");
+            put(s, 40, 26, 10, 70);
+            label("<u>O</u>utput gain<br>(-25 to 25 dB)", 21, 97, 48, 16, Qt::AlignHCenter | Qt::AlignTop);
+        }
+
+        // the graph
+        label("<u>G</u>raph:", 113, 17, 32, 8);
+        QLabel* readout = label(QString(), 147, 17, 136, 8, Qt::AlignRight | Qt::AlignVCenter);
+        readout->setObjectName("dxGraphReadout");
+        EnvelopeGraph* g = new EnvelopeGraph(this);
+        g->setObjectName("dxGraph");
+        g->maxPts = (size_t)veggd::kMaxPoints;
+        g->margins = QMargins(26, 4, 8, 16);
+        graphs_.push_back(g);
+        g->readout = readout;
+        g->format = [](const vegdist::Point& p) {
+            auto f = [](int v) { return QString::number(v / 10.0, 'f', 1); };
+            return QString("Gain of %1 dB at %2, %3 dB").arg(f(p.y - p.x), f(p.x), f(p.y));
+        };
+        g->edited = [this, g](int phase) {
+            veggd::Settings s = gdSettings();
+            s.count = (int32_t)std::min<size_t>(g->pts.size(), (size_t)veggd::kMaxPoints);
+            std::memset(s.pt, 0, sizeof s.pt);
+            for (int k = 0; k < s.count; ++k) {
+                s.pt[k][0] = g->pts[(size_t)k].x;
+                s.pt[k][1] = g->pts[(size_t)k].y;
+            }
+            veggd::graphEdited(s);
+            if (phase == 0 && h_.beginEdit) h_.beginEdit("Edit Graphic Dynamics graph");
+            gdStore(s, "Edit Graphic Dynamics graph");
+            if (phase == 2) endDrag();
+        };
+        sync_.push_back([this, g] {
+            if (g->dragging()) return;
+            const veggd::Settings s = gdSettings();
+            g->pts.clear();
+            for (int k = 0; k < s.count; ++k) g->pts.push_back(vegdist::Point{s.pt[k][0], s.pt[k][1]});
+        });
+        put(g, 113 - 15, 26 - 2, 170 + 15 + 5, 139 + 2 + 9);
+        label("O<br>U<br>T", 88, 84, 8, 24, Qt::AlignHCenter | Qt::AlignVCenter);
+        label("IN", 193, 172, 8, 8);
+
+        // the check boxes and Reset Graph
+        put(checkBox(2, "Auto gain <u>c</u>ompensate"), 5, 122, 88, 10);
+        put(checkBox(3, "S<u>y</u>nc channel gains"), 5, 135, 87, 10);
+        QPushButton* reset = button("Rese&t Graph");
+        reset->setObjectName("dxResetGraph");
+        QObject::connect(reset, &QPushButton::clicked, reset, [this] {
+            veggd::Settings s = gdSettings();
+            veggd::resetGraph(s);
+            gdStore(s, "Reset graph");
+        });
+        put(reset, 5, 151, 84, 14);
+
+        // attack and release: a slider and a box each
+        auto timeRow = [=](int i, const QString& cap, int ly, int sy, int by) {
+            label(cap, 5, ly, 95, 8);
+            SMap m;
+            m.dec = 1;
+            QLineEdit* e = editBox(52);
+            DxSlider* s = slider(Qt::Horizontal, fixed(i), m, QString("dxParam%1").arg(i), e, nullptr);
+            put(s, 5, sy, 135, 12);
+            put(e, 105, by, 35, 12);
+        };
+        timeRow(0, "Attac<u>k</u> (0 to 500 ms):", 182, 193, 180);
+        timeRow(1, "R<u>e</u>lease (0 to 5,000 ms):", 208, 221, 208);
+
+        // threshold and ratio: they act on the graph's points
+        auto graphSlider = [=](int lo, int hi, const QString& name, const std::string& what, std::function<int(const veggd::Settings&)> get,
+                               std::function<void(veggd::Settings&, int)> set, std::function<QString(int)> show, QLabel* readoutLabel) {
+            DxSlider* s = new DxSlider(Qt::Horizontal, this);
+            s->setObjectName(name);
+            s->setRange(lo, hi);
+            QObject::connect(s, &QSlider::valueChanged, s, [=](int pos) {
+                if (updating_) return;
+                veggd::Settings st = gdSettings();
+                set(st, pos);
+                gdStore(st, what);
+            });
+            QObject::connect(s, &QSlider::sliderPressed, s, [=] {
+                if (h_.beginEdit) h_.beginEdit(what.c_str());
+            });
+            QObject::connect(s, &QSlider::sliderReleased, s, [=] { endDrag(); });
+            sync_.push_back([=] {
+                const int v = get(gdSettings());
+                QSignalBlocker b(s);
+                if (!s->isSliderDown()) s->setValue(v);
+                readoutLabel->setText(show(v));
+            });
+            return s;
+        };
+        label("Threshol<u>d</u> (-80 to -0.1 dB):", 148, 182, 87, 8);
+        QLabel* thrRead = label(QString(), 248, 182, 35, 8, Qt::AlignRight | Qt::AlignVCenter);
+        thrRead->setObjectName("dxThresholdReadout");
+        put(graphSlider(
+                -800, -1, "dxThreshold", "Change \"Threshold\"", [](const veggd::Settings& s) { return (int)s.threshold; },
+                [](veggd::Settings& s, int v) { veggd::setThreshold(s, v); }, [](int v) { return QString::number(v / 10.0, 'f', 1) + " dB"; }, thrRead),
+            148, 193, 135, 12);
+        label("Rat<u>i</u>o (1.0:1 to Inf.:1):", 148, 209, 85, 8);
+        QLabel* ratRead = label(QString(), 248, 209, 35, 8, Qt::AlignRight | Qt::AlignVCenter);
+        ratRead->setObjectName("dxRatioReadout");
+        put(graphSlider(
+                10, 500, "dxRatio", "Change \"Ratio\"", [](const veggd::Settings& s) { return (int)s.ratio; },
+                [](veggd::Settings& s, int v) { veggd::setRatio(s, v); },
+                [](int v) { return v >= 500 ? QString("Inf.:1") : QString("%1 :1").arg(QString::number(v / 10.0, 'f', 1)); }, ratRead),
+            148, 221, 135, 12);
+    }
+
+    // ============================================================================================ Multi-Band Dynamics
+    // VEGAS's Multi-Band Dynamics page (dialogs 5000 and 5001, the tabs "Bands 1 & 2" and "Bands 3 & 4"), placed as the
+    // dialog places things (dialog units): for each band the threshold, amount and gain faders, attack and release (a
+    // slider and a box each), the type, the frequency, the width (only for the band-notch), Bypass and Solo; beside the
+    // tabs the output gain fader, below them Sync channels. (The level meters, their channel choice, "Enable meters" and
+    // "Capture threshold" are not here: Reno's effect has no meters.)
+    void mbBand(QWidget* box, int b, int y0)
+    {
+        const double kx = 1.75, ky = 1.875;
+        const int o = b * 10;
+        auto put = [=](QWidget* w, int x, int y, int cw, int ch) {
+            w->setParent(box);
+            w->setGeometry((int)std::lround(x * kx), (int)std::lround((y - 16) * ky), (int)std::lround(cw * kx), (int)std::lround(ch * ky));
+            w->show();
+            return w;
+        };
+        auto label = [=](const QString& tx, int x, int y, int cw, int ch, Qt::Alignment a = Qt::AlignLeft | Qt::AlignVCenter) {
+            QLabel* l = text(tx, a);
+            put(l, x, y, cw, ch);
+            return l;
+        };
+        const QString n = QString::number(b + 1);
+        // the three faders
+        struct Fader { int idx; int x, fx; const char* cap; const char* unit; };
+        const Fader fd[3] = {{o, 5, 20, "Threshol<u>d</u>", "dB"}, {o + 1, 40, 52, "Amount", ":1"}, {o + 2, 72, 85, "Gain", "dB"}};
+        for (int k = 0; k < 3; ++k) {
+            SMap m;
+            m.inf = false;
+            QLabel* r = label(QString(), fd[k].x, y0, 35, 8, Qt::AlignHCenter | Qt::AlignVCenter);
+            DxSlider* s = slider(Qt::Vertical, fixed(fd[k].idx), m, QString("dxParam%1").arg(fd[k].idx), nullptr, r, fd[k].unit);
+            put(s, fd[k].fx, y0 + 9, 10, 68);
+            QString cap = fd[k].cap;
+            if (k == 0 && (b % 2) == 1) cap = "Thresho<u>l</u>d";
+            label(cap, fd[k].x, y0 + 78, 35, 8, Qt::AlignHCenter | Qt::AlignVCenter);
+        }
+        // attack and release
+        auto timeRow = [=](int idx, const QString& cap, int ly) {
+            label(cap, 110, y0 + ly, 100, 8);
+            SMap m;
+            m.dec = 1;
+            QLineEdit* e = editBox(52);
+            DxSlider* s = slider(Qt::Horizontal, fixed(idx), m, QString("dxParam%1").arg(idx), e, nullptr);
+            put(s, 110, y0 + ly + 9, 100, 12);
+            put(e, 213, y0 + ly + 9, 35, 12);
+        };
+        timeRow(o + 3, (b % 2) ? "Attack t<u>i</u>me (0 to 500 ms):" : "Attac<u>k</u> time (0 to 500 ms):", 0);
+        timeRow(o + 4, "Release time (0 to 5,000 ms):", 23);
+        // type
+        label((b % 2) ? "Typ<u>e</u>:" : "<u>T</u>ype:", 110, y0 + 52, 24, 8);
+        QComboBox* ty = combo(fixed(o + 5), {"Low-shelf", "Band-notch", "High-shelf"}, QString("dxParam%1").arg(o + 5));
+        put(ty, 135, y0 + 50, 113, 14);
+        // frequency
+        QLabel* fl = label(QString(), 110, y0 + 66, 138, 8);
+        {
+            SMap m;
+            m.log = true;
+            m.dec = 0;
+            QLineEdit* e = editBox(52);
+            DxSlider* s = slider(Qt::Horizontal, fixed(o + 6), m, QString("dxParam%1").arg(o + 6), e, nullptr);
+            put(s, 110, y0 + 75, 100, 12);
+            put(e, 213, y0 + 75, 35, 12);
+            fl->setBuddy(s);
+        }
+        // width
+        QLabel* wl = label("Width (0.3 to 3 oct.):", 110, y0 + 92, 70, 8);
+        QLabel* wv = label(QString(), 213, y0 + 92, 35, 8, Qt::AlignRight | Qt::AlignVCenter);
+        SMap wm;
+        wm.dec = 1;
+        DxSlider* ws = slider(Qt::Horizontal, fixed(o + 7), wm, QString("dxParam%1").arg(o + 7), nullptr, wv);
+        put(ws, 182, y0 + 90, 29, 12);
+        sync_.push_back([=] {
+            const int type = (int)std::lround(get(o + 5));
+            static const char* const names[3] = {"Below (50 to 15,000 Hz):", "Center (50 to 15,000 Hz):", "Above (50 to 15,000 Hz):"};
+            fl->setText(names[std::max(0, std::min(2, type))]);
+            const bool band = type == 1;         // only the band-notch has a width
+            wl->setEnabled(band);
+            wv->setEnabled(band);
+            ws->setEnabled(band);
+        });
+        // bypass and solo
+        put(checkBox(o + 8, QString("Band <u>%1</u> bypass").arg(n)), 8, y0 + 91, 66, 10);
+        put(checkBox(o + 9, "Solo"), 75, y0 + 91, 30, 10);
+    }
+
+    QWidget* mbTab(int first)
+    {
+        const double kx = 1.75, ky = 1.875;
+        QWidget* box = new QWidget(this);
+        box->setFixedSize((int)std::lround(252 * kx), (int)std::lround((234 - 16) * ky));
+        mbBand(box, first, 17);
+        mbBand(box, first + 1, 128);
+        QFrame* sep = new QFrame(box);
+        sep->setFrameShape(QFrame::HLine);
+        sep->setFrameShadow(QFrame::Sunken);
+        sep->setGeometry((int)std::lround(8 * kx), (int)std::lround((123 - 16) * ky), (int)std::lround(240 * kx), 2);
+        return box;
+    }
+
+    void multiBandDynamics()
+    {
+        QHBoxLayout* top = new QHBoxLayout();
+        top->setSpacing(6);
+        QTabWidget* tabs = new QTabWidget(this);
+        tabs->setObjectName("dxMbTabs");
+        tabs->addTab(mbTab(0), "Bands 1 && 2");
+        tabs->addTab(mbTab(2), "Bands 3 && 4");
+        top->addWidget(tabs, 0, Qt::AlignTop);
+        top->addWidget(gainColumn(41, "<u>O</u>utput gain", false, 96), 0, Qt::AlignTop);
+        top->addStretch(1);
+        root_->addLayout(top);
+        root_->addWidget(checkBox(40, "S<u>y</u>nc channels"));
+    }
+
+    // ============================================================================================ Resonant Filter
+    // VEGAS's Resonant Filter page (dialog 102), placed as the dialog places things (dialog units): the frequency,
+    // resonance and wet / dry as a slider and a box each, the filter type (low, band, high pass) and the filter order
+    // (second, fourth). The sliders are the plug-in's own: one step for each Hz (frequency) or each tenth of a percent
+    // (the other two), from the left end to the right end in a straight line. (The dialog's logo strip is not here.)
+    struct RfRadio {
+        const char* text;
+        int x, y, w;
+    };
+    void resonantFilter()
+    {
+        const double kx = 1.75, ky = 1.875;
+        QWidget* box = new QWidget(this);
+        box->setFixedSize((int)std::lround(252 * kx), (int)std::lround((104 - 16) * ky));
+        auto put = [=](QWidget* w, int x, int y, int cw, int ch) {
+            w->setParent(box);
+            w->setGeometry((int)std::lround(x * kx), (int)std::lround((y - 16) * ky), (int)std::lround(cw * kx), (int)std::lround(ch * ky));
+            w->show();
+            return w;
+        };
+        auto row = [=](int idx, const QString& cap, int ly, int ty, int dec, int stepCount) {
+            QLabel* l = text(cap);
+            put(l, 5, ly, 55, 8);
+            SMap m;
+            m.dec = dec;
+            m.stepCount = stepCount;
+            QLineEdit* e = editBox(52);
+            DxSlider* s = slider(Qt::Horizontal, fixed(idx), m, QString("dxParam%1").arg(idx), e, nullptr);
+            put(s, 61, ty, 145, 12);
+            put(e, 209, ty, 40, 12);
+            l->setBuddy(s);
+        };
+        row(0, "<u>F</u>requency (Hz):", 20, 18, 0, 19980);
+        row(1, "<u>R</u>esonance (%):", 37, 35, 1, 1000);
+        row(5, "<u>W</u>et / Dry (%):", 55, 53, 1, 1000);
+        auto radioRow = [=](int idx, const QString& cap, int ly, std::initializer_list<RfRadio> items) {
+            put(text(cap), 5, ly, 55, 8);
+            QButtonGroup* g = new QButtonGroup(box);
+            g->setExclusive(true);
+            int k = 0;
+            for (const auto& it : items) {
+                QRadioButton* r = new QRadioButton(QString::fromLatin1(it.text), box);
+                r->setObjectName(QString("dxParam%1_%2").arg(idx).arg(k));
+                g->addButton(r, k);
+                put(r, it.x, it.y, it.w, 10);
+                const int kk = k;
+                QObject::connect(r, &QRadioButton::toggled, r, [=](bool on) {
+                    if (on) commit(idx, kk);
+                });
+                ++k;
+            }
+            sync_.push_back([=] {
+                const int k2 = (int)std::lround(std::max(0.0, std::min(1.0 + (idx == 2 ? 1 : 0), get(idx))));
+                if (QAbstractButton* b = g->button(k2)) {
+                    QSignalBlocker blocker(b);
+                    b->setChecked(true);
+                }
+            });
+        };
+        radioRow(2, "Filter type:", 74, {{"&Low Pass", 61, 73, 47}, {"&Band Pass", 110, 73, 50}, {"&High Pass", 165, 73, 47}});
+        radioRow(3, "Filter order:", 93, {{"&Second", 61, 92, 41}, {"F&ourth", 110, 92, 36}});
+        root_->addWidget(box, 0, Qt::AlignLeft | Qt::AlignTop);
+        root_->addStretch(1);
     }
 
     void paragraphicEq()
