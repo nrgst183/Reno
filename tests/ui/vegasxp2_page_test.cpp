@@ -229,6 +229,33 @@ int main(int argc, char** argv)
             delete page;
         }
     }
+    // ---- ExpressFX Amplitude Modulation
+    {
+        Rig rig("reno.xpampmod");
+        DxPage* page = makeBuiltinPage(nullptr, "reno.xpampmod", rig.host);
+        check(page != nullptr, "ampmod: has a page");
+        if (page) {
+            rig.p->setProgram(2);   // Fast modulation
+            page->refresh();
+            page->show();
+            settle(100);
+            page->grab().save(out + "/xpampmod.png");
+            sliderAndBox(rig, page, 0, "ampmod: Rate", 0.1, 0.1, 5000);
+            sliderAndBox(rig, page, 1, "ampmod: Depth", 0.1, 0, 100);
+            QSlider* f = ctl<QSlider>(page, "dxParam2");
+            check(f && f->maximum() == 1000, "ampmod: the fader runs 0 to 1000");
+            if (f) {
+                f->setValue(250);
+                settle();
+                check(std::fabs(rig.real(2) - 25.0) < 0.06, "ampmod: the fader sets the mix", std::to_string(rig.real(2)));
+                QStringList texts;
+                for (QLabel* l : page->findChildren<QLabel*>()) texts << l->text();
+                check(texts.contains("25.0 %") && texts.contains("75.0 %"), "ampmod: the readouts show the modulation and the original shares", texts.join("|").toStdString());
+            }
+            followsPresets(rig, page, "ampmod", {{0, 10}, {1, 10}, {2, 10}});
+            delete page;
+        }
+    }
     std::printf("%d passed, %d failed\n", gPass, gFail);
     return gFail ? 1 : 0;
 }

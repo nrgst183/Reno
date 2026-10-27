@@ -9,6 +9,7 @@
 #include "vegasxpflange.h"
 #include "vegasxpreverb.h"
 #include "vegasxpstutter.h"
+#include "vegasxpampmod.h"
 #include "vegasxpchorus.h"
 #include "vegasxpdelay.h"
 #include "vegasxpeq.h"
@@ -48,6 +49,7 @@ void setTempo(double bpm, int beatsPerMeasure)
 const std::vector<const Info*>& allInfos()
 {
     static const std::vector<const Info*> all = {
+        &xpAmpModInfo(),
         &xpChorusInfo(),
         &xpEqInfo(),
         &xpDelayInfo(),
