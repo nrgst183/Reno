@@ -17,6 +17,10 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
+#ifdef __APPLE__
+#include <pthread.h>
+#include <sys/qos.h>
+#endif
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -492,6 +496,8 @@ void lowerThreadPriority()
     errno = 0;
     const int now = getpriority(PRIO_PROCESS, (id_t)tid);
     if (errno == 0 && now < 2) setpriority(PRIO_PROCESS, (id_t)tid, 2);
+#elif defined(__APPLE__)
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
 #endif
 }
 

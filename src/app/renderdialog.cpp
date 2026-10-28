@@ -5,6 +5,9 @@
 // rates.
 //
 // No moc (the Windows build doesn't run it): lambdas on existing signals, as everywhere in src/app.
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 #include "logbook.h"
 #include "vprefs.h"
 #include "renderdialog.h"
@@ -104,6 +107,11 @@ qint64 processMemory()
 #ifdef _WIN32
     PROCESS_MEMORY_COUNTERS pmc;
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) return (qint64)pmc.WorkingSetSize;
+    return 0;
+#elif defined(__APPLE__)
+    mach_task_basic_info info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) == KERN_SUCCESS) return (qint64)info.resident_size;
     return 0;
 #else
     QFile f("/proc/self/statm");

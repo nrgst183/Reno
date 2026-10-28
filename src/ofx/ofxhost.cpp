@@ -181,6 +181,9 @@ std::vector<std::string> Host::defaultSearchDirs()
             a = b + 1;
         }
     }
+#ifdef __APPLE__
+    add("/Library/OFX/Plugins");
+#endif
     add("/usr/OFX/Plugins");
     add("/usr/local/OFX/Plugins");
     const char* home = std::getenv("HOME");

@@ -1,4 +1,5 @@
 #include "playback.h"
+#include <QDir>
 #include <QFile>
 #include <QGuiApplication>
 #include <QScreen>
@@ -616,7 +617,13 @@ void Playback::diagWrite(bool first)
     const double now = steadyNow();
     const double span = first || diag_.lastWrite <= 0 ? 1.0 : now - diag_.lastWrite;
     diag_.lastWrite = now;
+#ifdef __APPLE__
+    const QString logDir = QDir::homePath() + "/Library/Logs/Reno";      // (not inside Reno.app: it is signed)
+    QDir().mkpath(logDir);
+    const QString path = logDir + "/playback-log.txt";
+#else
     const QString path = QCoreApplication::applicationDirPath() + "/playback-log.txt";
+#endif
     QFile f(path);
     if (!f.open(first ? (QIODevice::WriteOnly | QIODevice::Truncate) : (QIODevice::WriteOnly | QIODevice::Append))) return;
     std::string line;

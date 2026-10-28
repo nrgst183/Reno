@@ -14,8 +14,12 @@
 #  include <fcntl.h>
 #  include <sys/wait.h>
 #  include <climits>
+#  include <cstdlib>
 #  include <chrono>
 #  include <thread>
+#  ifdef __APPLE__
+#    include <mach-o/dyld.h>
+#  endif
 #endif
 
 namespace reno {
@@ -123,9 +127,17 @@ ProcessResult runProcess(const std::string& exe, const std::vector<std::string>&
 
 std::string selfExePath()
 {
+#ifdef __APPLE__
+    char buf[PATH_MAX];
+    uint32_t size = sizeof buf;
+    if (_NSGetExecutablePath(buf, &size) != 0) return std::string();
+    char real[PATH_MAX];
+    return realpath(buf, real) ? std::string(real) : std::string(buf);
+#else
     char buf[PATH_MAX];
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     return n > 0 ? std::string(buf, (size_t)n) : std::string();
+#endif
 }
 
 void quietCrashes() {}

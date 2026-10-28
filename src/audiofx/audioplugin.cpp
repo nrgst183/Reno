@@ -284,6 +284,14 @@ std::vector<std::string> audioPluginSearchDirs()
     }
     // VEGAS's own VST plug-ins (eFX) and the folders VEGAS searches
     for (const auto& d : vegasPluginDirs()) add(d);
+#elif defined(__APPLE__)
+    const char* home = std::getenv("HOME");
+    if (home) {
+        add(pathJoin(home, "Library/Audio/Plug-Ins/VST"));
+        add(pathJoin(home, "Library/Audio/Plug-Ins/VST3"));
+    }
+    add("/Library/Audio/Plug-Ins/VST");
+    add("/Library/Audio/Plug-Ins/VST3");
 #else
     const char* home = std::getenv("HOME");
     if (home) { add(pathJoin(home, ".vst")); add(pathJoin(home, ".vst3")); }
@@ -371,12 +379,27 @@ static void findAudioIn(const std::string& dir, int depth, std::vector<std::stri
 #ifdef _WIN32
     const char* vst2Ext = ".dll";
     const char* vst3Arch = "x86_64-win";
+#elif defined(__APPLE__)
+    const char* vst2Ext = ".vst";               // (a bundle folder: its binary is in Contents/MacOS)
+    const char* vst3Arch = "MacOS";
+#elif defined(__aarch64__)
+    const char* vst2Ext = ".so";
+    const char* vst3Arch = "aarch64-linux";
 #else
     const char* vst2Ext = ".so";
     const char* vst3Arch = "x86_64-linux";
 #endif
     for (const auto& name : listDir(dir)) {
         std::string p = pathJoin(dir, name);
+#ifdef __APPLE__
+        // macOS bundles: Name.vst/Contents/MacOS/Name (VST2) and Name.vst3/Contents/MacOS/Name (VST3), binaries without extensions
+        if ((endsWithNoCase(name, ".vst") || endsWithNoCase(name, ".vst3")) && dirExists(p)) {
+            const std::string bin = pathJoin(pathJoin(p, "Contents"), "MacOS");
+            for (const auto& f : listDir(bin))
+                if (!f.empty() && f[0] != '.' && !dirExists(pathJoin(bin, f))) { out.push_back(pathJoin(bin, f)); break; }
+            continue;
+        }
+#endif
         if (endsWithNoCase(name, ".vst3")) {
             if (dirExists(p)) {             // a VST3 bundle: Name.vst3/Contents/<arch>/Name.vst3 (or .so)
                 std::string bin = pathJoin(pathJoin(p, "Contents"), vst3Arch);

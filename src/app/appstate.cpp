@@ -465,7 +465,13 @@ bool AppState::open(const std::string& path, std::string* error)
         if (!m.generated && m.path.compare(0, 6, "synth:") != 0) m.offline = !fileExists(m.path);
     path_ = path;
     afterChange(kFile | kSelection | kCursor);
+#ifdef __APPLE__
+    const std::string logDir = (QDir::homePath() + "/Library/Logs/Reno").toStdString();      // (not inside Reno.app: it is signed)
+    QDir().mkpath(QString::fromStdString(logDir));
+    writeFxLog(project_, fx, path, logDir);
+#else
     writeFxLog(project_, fx, path, QCoreApplication::instance() ? QCoreApplication::applicationDirPath().toStdString() : std::string());
+#endif
     return true;
 }
 

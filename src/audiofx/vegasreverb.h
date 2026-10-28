@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 
+#include <cstdint>
 #if defined(_M_X64) || defined(__SSE2__)
 #include <xmmintrin.h>
 #endif
@@ -79,6 +80,11 @@ public:
         // the plug-in runs with denormals flushed to zero
         const unsigned oldCsr = _mm_getcsr();
         _mm_setcsr(oldCsr | 0x8040u);
+#elif defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
+        // (ARM: FPCR's FZ bit flushes denormal inputs and results to zero, as MXCSR's FTZ and DAZ do)
+        uint64_t oldFpcr;
+        __asm__ __volatile__("mrs %0, fpcr" : "=r"(oldFpcr));
+        __asm__ __volatile__("msr fpcr, %0" : : "r"(oldFpcr | (1ull << 24)));
 #endif
         for (int k = 0; k < frames; ++k) {
             double l = (double)left[k], r = (double)right[k];
@@ -88,6 +94,8 @@ public:
         }
 #if defined(_M_X64) || defined(__SSE2__)
         _mm_setcsr(oldCsr);
+#elif defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
+        __asm__ __volatile__("msr fpcr, %0" : : "r"(oldFpcr));
 #endif
     }
 

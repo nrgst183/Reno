@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
+# macOS: runs on macOS 11 and later (the first with Apple Silicon); the architecture is the machine's own unless
+# CMAKE_OSX_ARCHITECTURES says otherwise (arm64 or x86_64; FFmpeg from Homebrew is one architecture only)
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Oldest macOS Reno runs on")
+endif()
 project(Reno LANGUAGES CXX)
 
 # Reno builds on Windows (Visual Studio 2022 with clang-cl - the default in build_msvc.bat and Reno.sln - or MSVC), Linux (GCC or Clang) and macOS (Apple Clang), and
@@ -37,6 +42,9 @@ if(MSVC)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX UNICODE _UNICODE)
 else()
   add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+  # no fused multiply-adds: on ARM (Apple Silicon) compilers fuse a*b+c by default, which changes results by a rounding
+  # step; the effects are made and checked to match VEGAS without them
+  add_compile_options(-ffp-contract=off)
   add_compile_definitions(__cdecl=)          # the VST2 header names a Windows calling convention
 endif()
 
@@ -57,6 +65,9 @@ add_library(reno_core STATIC ${RENO_CORE_SOURCES})
 target_include_directories(reno_core PUBLIC third_party/openfx third_party/vst2 src/ofx)
 find_package(Threads REQUIRED)
 target_link_libraries(reno_core PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+if(APPLE)
+  target_link_libraries(reno_core PUBLIC "-framework CoreFoundation")   # VST3 bundles (bundleEntry)
+endif()
 if(WIN32)
   target_link_libraries(reno_core PUBLIC msdmo dmoguids strmiids wmcodecdspuuid ole32 oleaut32 uuid shell32 shlwapi
                                          advapi32 user32 gdi32 comdlg32 comctl32 version propsys winmm ws2_32)
@@ -117,6 +128,14 @@ if(RENO_WITH_APP AND TARGET reno_media)
     if(WIN32)
       target_sources(reno PRIVATE resources/reno.rc)
     endif()
+    if(APPLE)
+      # macOS: Reno.app, with reno_cli, scripting/ and the README beside the program in Contents/MacOS (where Reno looks
+      # for them on every system); package it with macdeployqt (it copies Qt and FFmpeg into the bundle)
+      set_target_properties(reno PROPERTIES MACOSX_BUNDLE ON OUTPUT_NAME Reno
+        MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in
+        MACOSX_BUNDLE_BUNDLE_NAME Reno MACOSX_BUNDLE_GUI_IDENTIFIER org.reno.editor
+        MACOSX_BUNDLE_BUNDLE_VERSION 1.0 MACOSX_BUNDLE_SHORT_VERSION_STRING 1.0)
+    endif()
     target_link_libraries(reno PRIVATE reno_engine Qt6::Widgets)
     # effects' on-screen controls are drawn with OpenGL (Qt's offscreen framebuffer)
     if(TARGET Qt6::OpenGL)
@@ -143,13 +162,21 @@ if(RENO_WITH_APP AND TARGET reno_media)
       target_sources(reno_cli PRIVATE resources/reno.rc)
     endif()
     target_link_libraries(reno_cli PRIVATE reno_engine Qt6::Gui)
+    if(APPLE)
+      set_target_properties(reno_cli PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Reno.app/Contents/MacOS)
+    endif()
 
     # Tools > Scripting: the ScriptPortal.Vegas source (compiled on first use) and an empty Script Menu folder, next to reno
     file(GLOB RENO_SCRIPTING_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/scripting/*.cs)
+    if(APPLE)
+      set(_renodata $<TARGET_BUNDLE_CONTENT_DIR:reno>/Resources)    # (macOS: data files go in Contents/Resources, not beside the program)
+    else()
+      set(_renodata $<TARGET_FILE_DIR:reno>)
+    endif()
     add_custom_command(TARGET reno POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:reno>/scripting "$<TARGET_FILE_DIR:reno>/Script Menu"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${RENO_SCRIPTING_FILES} $<TARGET_FILE_DIR:reno>/scripting
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/README.md $<TARGET_FILE_DIR:reno>
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${_renodata}/scripting "${_renodata}/Script Menu"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${RENO_SCRIPTING_FILES} ${_renodata}/scripting
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/README.md ${_renodata}
       VERBATIM)
 
     # Windows: Qt's and FFmpeg's DLLs next to reno.exe, so it runs from the build folder and the debugger

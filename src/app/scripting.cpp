@@ -88,7 +88,7 @@ std::vector<std::string> scriptMenuFolders()
             }
 #endif
     const QString exe = QCoreApplication::applicationDirPath();
-    dirs << exe + "/Script Menu" << exe + "/../tools/scripts" << exe + "/scripts";
+    dirs << exe + "/Script Menu" << exe + "/../Resources/Script Menu" << exe + "/../tools/scripts" << exe + "/scripts";
     std::vector<std::string> out;
     QStringList seen;
     for (const QString& d : dirs) {
@@ -223,7 +223,7 @@ namespace {
 QStringList shimSources()
 {
     const QString exe = QCoreApplication::applicationDirPath();
-    for (const QString& d : {exe + "/scripting", exe + "/../scripting", exe + "/../src/scripting", exe + "/../../src/scripting"}) {
+    for (const QString& d : {exe + "/scripting", exe + "/../Resources/scripting", exe + "/../scripting", exe + "/../src/scripting", exe + "/../../src/scripting"}) {
         const QString a = d + "/ScriptPortal.Vegas.cs", b = d + "/ScriptPortal.Vegas.Unsupported.cs";
         if (QFileInfo::exists(a) && QFileInfo::exists(b)) return {QFileInfo(a).canonicalFilePath(), QFileInfo(b).canonicalFilePath()};
     }

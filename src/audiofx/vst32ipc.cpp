@@ -258,12 +258,31 @@ struct Endpoint::Impl {
 // The descriptors the process gets (fixed numbers, so the server finds them)
 static const int kFdShm = 200, kFdIn = 201, kFdOut = 202;
 
+// A pipe whose ends are not inherited by programs started later (pipe2 where there is one; macOS has only pipe)
+static bool pipeCloexec(int fds[2])
+{
+#ifdef __APPLE__
+    if (pipe(fds) != 0) return false;
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return true;
+#else
+    return pipe2(fds, O_CLOEXEC) == 0;
+#endif
+}
+
 Endpoint::Endpoint() : d_(new Impl()) {}
 Endpoint::~Endpoint() { close(); delete d_; }
 
 bool Endpoint::start(const std::string& exe, std::string* error)
 {
     close();
+#ifdef __APPLE__
+    // macOS runs no 32-bit programs at all (and has no process-shared unnamed semaphores): there is no bridge to start
+    (void)exe;
+    if (error) *error = "32-bit plug-ins cannot run on macOS";
+    return false;
+#endif
     d_->owner = true;
     d_->reaped = false;
     signal(SIGPIPE, SIG_IGN);       // a write to a closed pipe is an error to handle, not a reason to exit
@@ -284,8 +303,8 @@ bool Endpoint::start(const std::string& exe, std::string* error)
     sem_init((sem_t*)h->sems[1], 1, 0);
 
     int c2s[2], s2c[2];
-    if (pipe2(c2s, O_CLOEXEC) != 0) { if (error) *error = "could not make a pipe"; close(); return false; }
-    if (pipe2(s2c, O_CLOEXEC) != 0) { ::close(c2s[0]); ::close(c2s[1]); if (error) *error = "could not make a pipe"; close(); return false; }
+    if (!pipeCloexec(c2s)) { if (error) *error = "could not make a pipe"; close(); return false; }
+    if (!pipeCloexec(s2c)) { ::close(c2s[0]); ::close(c2s[1]); if (error) *error = "could not make a pipe"; close(); return false; }
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_adddup2(&fa, d_->shmFd, kFdShm);
@@ -402,6 +421,14 @@ static bool semWait(sem_t* s, int ms)
     }
     if (sem_trywait(s) == 0) return true;
     if (ms == 0) return false;
+#ifdef __APPLE__
+    // (no sem_timedwait on macOS: tried every millisecond until the time is up)
+    for (int waited = 0; waited < ms; ++waited) {
+        usleep(1000);
+        if (sem_trywait(s) == 0) return true;
+    }
+    return false;
+#else
     timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += ms / 1000;
@@ -411,6 +438,7 @@ static bool semWait(sem_t* s, int ms)
         if (sem_timedwait(s, &ts) == 0) return true;
         if (errno != EINTR) return false;
     }
+#endif
 }
 
 bool Endpoint::waitRequest(int ms)

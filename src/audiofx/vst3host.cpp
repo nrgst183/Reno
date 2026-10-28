@@ -37,6 +37,10 @@
 #  include <windows.h>
 #endif
 
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 namespace reno {
 
 namespace {
@@ -53,6 +57,9 @@ const char* const kBundleArch = "x86_64-win";
 #  else
 const char* const kBundleArch = "x86-win";
 #  endif
+#elif defined(__APPLE__)
+const FIDString kWindowType = kPlatformTypeNSView;                  // openEditor's parent is an NSView (what QWidget::winId() is on macOS)
+const char* const kBundleArch = "MacOS";                            // Name.vst3/Contents/MacOS/Name
 #else
 const FIDString kWindowType = kPlatformTypeX11EmbedWindowID;        // openEditor's parent is an X11 window id
 #  if defined(__aarch64__)
@@ -593,7 +600,11 @@ std::string moduleFile(const std::string& path)
     if (!dirExists(path)) return path;
     const std::string bin = pathJoin(pathJoin(path, "Contents"), kBundleArch);
     for (const auto& f : listDir(bin))
+#ifdef __APPLE__
+        if (!f.empty() && f[0] != '.' && !dirExists(pathJoin(bin, f))) return pathJoin(bin, f);     // (the binary has no extension)
+#else
         if (endsWithNoCase(f, ".vst3") || endsWithNoCase(f, ".so")) return pathJoin(bin, f);
+#endif
     return path;
 }
 
@@ -687,6 +698,19 @@ Module* loadModule(const std::string& path, std::string* error)
 #ifdef _WIN32
     InitDllProc start = (InitDllProc)mod->lib.symbol("InitDll");
     const bool started = !start || start();
+#elif defined(__APPLE__)
+    // macOS modules start with bundleEntry(CFBundleRef of the .vst3 folder)
+    bool started = true;
+    if (ModuleEntryProc start = (ModuleEntryProc)mod->lib.symbol("bundleEntry")) {
+        std::string bundle = file;
+        const std::string marker = ".vst3/Contents/MacOS/";
+        const size_t at = toLower(bundle).find(toLower(marker));
+        if (at != std::string::npos) bundle = bundle.substr(0, at + 5);
+        CFURLRef url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, (const UInt8*)bundle.c_str(), (CFIndex)bundle.size(), true);
+        CFBundleRef ref = url ? CFBundleCreate(kCFAllocatorDefault, url) : nullptr;
+        if (url) CFRelease(url);
+        started = start(ref);                       // (the bundle reference is kept for as long as the module lives: never)
+    }
 #else
     ModuleEntryProc start = (ModuleEntryProc)mod->lib.symbol("ModuleEntry");
     const bool started = !start || start(mod->lib.nativeHandle());

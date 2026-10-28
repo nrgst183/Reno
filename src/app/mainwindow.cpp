@@ -2795,7 +2795,7 @@ void MainWindow::showHelp()
         readme->setObjectName("helpReadme");
         QString text;
         const QString exeDir = QCoreApplication::applicationDirPath();
-        for (const QString& f : {exeDir + "/README.md", exeDir + "/../README.md", exeDir + "/../../README.md", QDir::currentPath() + "/README.md"}) {
+        for (const QString& f : {exeDir + "/README.md", exeDir + "/../Resources/README.md", exeDir + "/../README.md", exeDir + "/../../README.md", QDir::currentPath() + "/README.md"}) {
             QFile file(f);
             if (file.open(QIODevice::ReadOnly)) {
                 text = QString::fromUtf8(file.readAll());

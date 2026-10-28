@@ -152,6 +152,20 @@ bool makeInstance(VkApi& api, VkInstance& inst, std::string* why)
     VkInstanceCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ci.pApplicationInfo = &app;
+    // macOS: Vulkan there is MoltenVK, a "portability" implementation the loader lists only when asked to
+    const char* portability = "VK_KHR_portability_enumeration";
+    if (api.vkEnumerateInstanceExtensionProperties) {
+        uint32_t n = 0;
+        api.vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+        std::vector<VkExtensionProperties> ext(n);
+        if (n) api.vkEnumerateInstanceExtensionProperties(nullptr, &n, ext.data());
+        for (const VkExtensionProperties& e : ext)
+            if (std::strcmp(e.extensionName, portability) == 0) {
+                ci.enabledExtensionCount = 1;
+                ci.ppEnabledExtensionNames = &portability;
+                ci.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+            }
+    }
     inst = VK_NULL_HANDLE;
     api.instanceApiVersion = app.apiVersion;
     VkResult r = api.vkCreateInstance(&ci, nullptr, &inst);
@@ -583,6 +597,19 @@ std::shared_ptr<Core> openCore(int selected, std::string& why)
     di.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     di.queueCreateInfoCount = 1;
     di.pQueueCreateInfos = &qi;
+    // a portability implementation (MoltenVK) must have its subset extension turned on when it offers it
+    const char* subset = "VK_KHR_portability_subset";
+    {
+        uint32_t n = 0;
+        c->api.vkEnumerateDeviceExtensionProperties(c->phys, nullptr, &n, nullptr);
+        std::vector<VkExtensionProperties> ext(n);
+        if (n) c->api.vkEnumerateDeviceExtensionProperties(c->phys, nullptr, &n, ext.data());
+        for (const VkExtensionProperties& e : ext)
+            if (std::strcmp(e.extensionName, subset) == 0) {
+                di.enabledExtensionCount = 1;
+                di.ppEnabledExtensionNames = &subset;
+            }
+    }
     VkResult r = c->api.vkCreateDevice(c->phys, &di, nullptr, &c->dev);
     if (r != VK_SUCCESS || !c->dev) { c->dev = VK_NULL_HANDLE; return fail(strfmt("vkCreateDevice failed (%d)", (int)r)); }
     std::string e2;

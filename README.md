@@ -43,7 +43,13 @@ VEGAS version. Known gaps are listed in [docs/NOTES.md](docs/NOTES.md).
 
 Builds are on the [Releases](../../releases) page. Every push to `main` updates the "Nightly build" prerelease;
 versioned releases come from pushing a `v*` tag (for example `v0.1.0`) or from Actions > Build > Run workflow with a
-version filled in. The macOS build is new and untested.
+version filled in.
+
+macOS builds come for Apple Silicon (`reno-macos-arm64.zip`) and Intel Macs (`reno-macos-x64.zip`). They are new and
+not yet tried on a Mac. Reno.app is not signed by a developer account, so macOS refuses it at first: right-click it and
+choose Open, or run `xattr -dr com.apple.quarantine Reno.app`. Effects use Vulkan through MoltenVK when it is
+installed (`brew install molten-vk`), and the CPU otherwise. 32-bit plug-ins and VEGAS's DirectX audio plug-ins are
+Windows-only; Reno's own versions of VEGAS's effects work everywhere.
 
 ## Building on Windows
 
@@ -67,6 +73,19 @@ other folders.
     cmake --build --preset linux-release
 
 Other presets are in `CMakePresets.json`.
+
+## Building on macOS
+
+    brew install cmake ninja ffmpeg
+    pip3 install aqtinstall
+    aqt install-qt mac desktop 6.8.3 clang_64 -m qtmultimedia -O ~/Qt
+    cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=~/Qt/6.8.3/macos -DRENO_FFMPEG_DIR="$(brew --prefix)"
+    cmake --build build
+    open build/bin/Reno.app
+
+The build is for the Mac's own processor (Apple Silicon or Intel). To make a Reno.app to give to someone else, run
+`macdeployqt build/bin/Reno.app -executable=build/bin/Reno.app/Contents/MacOS/reno_cli` and then
+`codesign --force --deep --sign - build/bin/Reno.app`.
 
 ## Usage
 

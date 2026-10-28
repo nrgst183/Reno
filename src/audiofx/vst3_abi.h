@@ -209,7 +209,7 @@ RENO_VST3_IID(IPluginFactory3, 0x4555A2AB, 0xC1234E57, 0x9B122910, 0x36878931)
 extern "C" {
 typedef IPluginFactory* (PLUGIN_API* GetFactoryProc)();         // "GetPluginFactory"
 typedef bool (PLUGIN_API* InitDllProc)();                       // "InitDll", "ExitDll", "ModuleExit"
-typedef bool (PLUGIN_API* ModuleEntryProc)(void*);              // "ModuleEntry" (given the library handle)
+typedef bool (PLUGIN_API* ModuleEntryProc)(void*);              // "ModuleEntry" (given the library handle); macOS: "bundleEntry" (given a CFBundleRef)
 }
 
 constexpr const char* kVstAudioEffectClass = "Audio Module Class";             // PClassInfo::category of an effect or instrument
@@ -239,6 +239,7 @@ struct ViewRect {
 
 constexpr FIDString kPlatformTypeHWND = "HWND";
 constexpr FIDString kPlatformTypeX11EmbedWindowID = "X11EmbedWindowID";
+constexpr FIDString kPlatformTypeNSView = "NSView";                  // macOS: the parent is an NSView*
 
 class IPlugFrame;
 

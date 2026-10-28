@@ -100,8 +100,17 @@ jobs:
           path: reno-linux-x64.tar.gz
 
   macos:
-    runs-on: macos-14
-    # (the macOS build is new and untested: a failure here doesn't block the other builds or a release)
+    # Apple Silicon (arm64) and Intel (x86_64), each on its own kind of runner (FFmpeg from Homebrew is one architecture)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    # (until a macOS build has been tried on a Mac, a failure here doesn't block the other builds or a release)
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -126,17 +135,26 @@ jobs:
         run: cmake --build build
 
       - name: Check
-        run: test -f build/bin/reno && test -f build/bin/reno_cli
+        run: |
+          test -x build/bin/Reno.app/Contents/MacOS/Reno
+          test -x build/bin/Reno.app/Contents/MacOS/reno_cli
+          file build/bin/Reno.app/Contents/MacOS/Reno
+          QT_QPA_PLATFORM=offscreen build/bin/Reno.app/Contents/MacOS/reno_cli --help | head -3
 
       - name: Package
         run: |
-          cp resources/reno_256.png build/bin/reno.png
-          tar -C build/bin -czf reno-macos-arm64.tar.gz .
+          # Qt's frameworks and plug-ins and FFmpeg's libraries into the bundle, then a (local, ad-hoc) signature, which
+          # Apple Silicon needs for anything to run
+          macdeployqt build/bin/Reno.app -executable=build/bin/Reno.app/Contents/MacOS/reno_cli -verbose=1
+          mkdir -p build/bin/Reno.app/Contents/Resources
+          cp resources/reno_256.png build/bin/Reno.app/Contents/Resources/reno.png
+          codesign --force --deep --sign - build/bin/Reno.app
+          ditto -c -k --keepParent build/bin/Reno.app reno-macos-${{ matrix.arch }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: reno-macos-arm64
-          path: reno-macos-arm64.tar.gz
+          name: reno-macos-${{ matrix.arch }}
+          path: reno-macos-${{ matrix.arch }}.zip
 
   # v* tag pushed        -> release with that tag
   # Run workflow + version -> creates that tag on the built commit and releases it
