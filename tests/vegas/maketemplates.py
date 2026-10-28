@@ -155,7 +155,11 @@ print()
 print('const std::vector<KnownVst>& knownVsts()')
 print('{')
 print('    static const std::vector<KnownVst> v = {')
+# only plug-ins anyone may have (MAGIX's eFX, common third-party ones): a user's own plug-ins stay out of the source
+PUBLIC_VSTS = ('eFX ', 'MAutoPitch', 'Auto-Tune')
 for (vid, name), clsid in sorted(vsts.items()):
+    if not name.startswith(PUBLIC_VSTS):
+        continue
     print('        {0x%08xu, "%s", {%s}},' % (vid, name.replace('"', '\\"'), ', '.join('0x%02x' % x for x in clsid)))
 print('    };')
 print('    return v;')

@@ -144,7 +144,7 @@ int main()
         for (int k = 0; k < 4 && same; ++k) same = p3test::bitsOf(out[at[k]]) == c.samples[k];
         check(same, "stored samples match (" + tag + ")");
     }
-    // saved form: [u32 length 0x12c][the effect's GUID][0x118 bytes]; this one is from a real project (colbert.veg)
+    // saved form: [u32 length 0x12c][the effect's GUID][0x118 bytes]; this one is from a real VEGAS project
     {
         static const char* kReal =
             "00000000b1040000c800000000000000020000000000000000000000e80300009cffffff0000000000000000";

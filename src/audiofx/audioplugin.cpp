@@ -6,6 +6,7 @@
 #include "vegaspack1.h"
 #include <algorithm>
 #include <set>
+#include <atomic>
 #include <cstdlib>
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -104,6 +105,10 @@ std::vector<AudioPluginDesc> describeAudioPluginFile(const std::string& path, st
     return vst2Describe(path, error);
 }
 
+static std::atomic<bool> gPreferDxBuiltin{true};
+bool dxPreferBuiltin() { return gPreferDxBuiltin.load(); }
+void setDxPreferBuiltin(bool on) { gPreferDxBuiltin.store(on); }
+
 std::unique_ptr<AudioPlugin> createAudioPlugin(const AudioPluginDesc& desc, std::string* error)
 {
     if (desc.format == "VST2" && efxPreferBuiltin() && efxReproducedId(desc.uid)) return efxCreate(desc, error);
@@ -113,7 +118,8 @@ std::unique_ptr<AudioPlugin> createAudioPlugin(const AudioPluginDesc& desc, std:
         const std::string mine = builtinUidForDx(desc.uid);
         if (mine.empty()) return dxCreate(desc, error);
         std::string dxError;
-        if (auto p = dxCreate(desc, &dxError)) return p;
+        if (!dxPreferBuiltin())                     // the installed DirectX plug-in first, Reno's version if it cannot be made
+            if (auto p = dxCreate(desc, &dxError)) return p;
         AudioPluginDesc b = desc;
         b.uid = mine;
         auto p = builtinAudioCreate(b, error);

@@ -4,7 +4,7 @@
 #   asan+ubsan -fsanitize=address,undefined -fno-sanitize-recover=undefined
 #   tsan       -fsanitize=thread
 # Usage: run_tests.sh [build-dir]        (default a folder under the system temp dir)
-# Environment: RENO_TEST_PLUGIN  the SlopFX .ofx to test (SLOPFX_PATH also works); its tests are skipped, with a message, if it is not set.
+# Environment: RENO_TEST_PLUGIN  the test effects plug-in (.ofx) to test; its tests are skipped, with a message, if it is not set.
 #              CXX          the compiler (default g++)
 #              CONFIGS      which of "plain asan tsan" to run (default all three)
 set -u
@@ -13,12 +13,12 @@ ROOT=$(cd "$HERE/../.." && pwd)
 OUT=${1:-${TMPDIR:-/tmp}/reno_ofx_tests}
 CXX=${CXX:-g++}
 CONFIGS=${CONFIGS:-"plain asan tsan"}
-SLOPFX_PATH=${RENO_TEST_PLUGIN:-${SLOPFX_PATH:-}}
-export SLOPFX_PATH RENO_TEST_PLUGIN=$SLOPFX_PATH
+RENO_TEST_PLUGIN=${RENO_TEST_PLUGIN:-}
+export RENO_TEST_PLUGIN
 mkdir -p "$OUT" || exit 2
 
-if [ ! -f "$SLOPFX_PATH" ]; then
-    echo "NOTE: SlopFX not found (RENO_TEST_PLUGIN='$SLOPFX_PATH') - its tests will be skipped (set RENO_TEST_PLUGIN to run them)"
+if [ ! -f "$RENO_TEST_PLUGIN" ]; then
+    echo "NOTE: the test effects plug-in was not found (RENO_TEST_PLUGIN='$RENO_TEST_PLUGIN') - its tests will be skipped (set RENO_TEST_PLUGIN to run them)"
 fi
 
 COMMON="-std=c++17 -g -Wall -Wextra -I$ROOT/src/ofx -I$ROOT/third_party/openfx"

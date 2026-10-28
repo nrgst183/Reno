@@ -523,9 +523,10 @@ private:
                            "Plug-in GPU use also needs \"GPU acceleration\" above. \"reno_cli vkcheck\" tests Vulkan.");
         f->addRow("GPU &API:", gpuApi);
         QComboBox* vegasFx = combo(b, "prefs/vegasFxSource", "vegasFxSource",
-                                   {{"Use VEGAS's own plug-ins when installed", "real"}, {"Always use Reno's built-in versions", "builtin"}});
-        vegasFx->setToolTip("VEGAS's own effects (Gaussian Blur, Cookie Cutter, ...) come from VEGAS's OpenFX plug-ins when VEGAS is installed and they work here. "
-                            "Reno's built-in versions are faster and the same on every computer, but not always pixel-identical. "
+                                   {{"Reno's built-in versions (ignore the installed ones)", "builtin"}, {"VEGAS's own plug-ins when installed", "real"}});
+        vegasFx->setToolTip("VEGAS's own effects (Gaussian Blur, Cookie Cutter, ...) are reproduced in Reno to match VEGAS's output. By default Reno uses its "
+                            "versions and ignores VEGAS's installed OpenFX plug-ins; effects Reno has no version of still come from the installed plug-ins. "
+                            "The other choice uses VEGAS's plug-ins when VEGAS is installed and they work here. "
                             "Effects already in the project are recreated when this changes. (reno_cli vegasfx compares the two.)");
         f->addRow("VEGAS &effects:", vegasFx);
         QComboBox* vegasEfx = combo(b, "prefs/vegasEfxSource", "vegasEfxSource",
@@ -534,6 +535,12 @@ private:
                              "(the Limiter, for one, does not limit elsewhere). Reno's built-in versions read the same settings and show the same controls, but sound different. "
                              "Effects already in the project are recreated when this changes.");
         f->addRow("VEGAS &eFX audio effects:", vegasEfx);
+        QComboBox* vegasDx = combo(b, "prefs/vegasDxSource", "vegasDxSource",
+                                   {{"Reno's built-in versions (ignore the installed ones)", "builtin"}, {"The installed DirectX plug-ins when they work", "real"}});
+        vegasDx->setToolTip("VEGAS's DirectX audio effects (Reverb, Distortion, the EQs, Track Compressor, ...) are reproduced in Reno to sound the same. "
+                            "By default Reno uses its versions and ignores the installed DirectX plug-ins. The other choice uses the installed ones on Windows "
+                            "when they load, and Reno's version otherwise. Effects already in the project are recreated when this changes.");
+        f->addRow("VEGAS &DirectX audio effects:", vegasDx);
         {
             QCheckBox* all = check(b, "Render every effect at the preview's size in smaller previews", "prefs/previewSizeAllFx", "previewSizeAllFx");
             all->setToolTip("At Draft/Preview quality or a small preview window, effects that cannot render at a smaller size "

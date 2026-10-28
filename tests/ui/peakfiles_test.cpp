@@ -156,7 +156,7 @@ int main(int argc, char** argv)
     {
         const std::string dir = pathJoin(out, "nolength");
         QDir().mkpath(QString::fromStdString(dir));
-        const std::string wav = pathJoin(dir, "gsss.wav"), sfk = pathJoin(dir, "gsss.sfk");
+        const std::string wav = pathJoin(dir, "peaktest.wav"), sfk = pathJoin(dir, "peaktest.sfk");
         copyFile(pathJoin(fx, "peaks_b.wav"), wav);
         app.newProject(true);
         std::string err;
@@ -202,11 +202,11 @@ int main(int argc, char** argv)
         app.applyPreferences();
         const std::string dir = pathJoin(out, "off");
         QDir().mkpath(QString::fromStdString(dir));
-        const std::string wav = pathJoin(dir, "gsss.wav");
+        const std::string wav = pathJoin(dir, "peaktest.wav");
         copyFile(pathJoin(fx, "peaks_a.wav"), wav);
         const int rpk = rpkCount();
         showFile(w, wav);
-        check(waitFor([&] { return rpkCount() > rpk; }) && !fileExists(pathJoin(dir, "gsss.sfk")), "with the preference off, no .sfk is written (Reno's cache)");
+        check(waitFor([&] { return rpkCount() > rpk; }) && !fileExists(pathJoin(dir, "peaktest.sfk")), "with the preference off, no .sfk is written (Reno's cache)");
         app.prefs.vegasPeakFiles = true;
         app.applyPreferences();
     }

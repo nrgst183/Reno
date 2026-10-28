@@ -640,11 +640,13 @@ void AppState::applyPreferences()
     // Preferences > Reno and the VEGAS ones that set how Reno works inside: threads, caches, proxy and peak folders...
     const bool builtinFxBefore = hc.preferBuiltinVegasFx;
     const bool builtinEfxBefore = efxPreferBuiltin();
+    const bool builtinDxBefore = dxPreferBuiltin();
     const bool previewSizeBefore = hc.previewSizeForAll;
     prefsapply::apply();
     // the choice of VEGAS's plug-ins / Reno's built-in versions changed: effects are remade from the other; the effect
     // working size for previews changed: frames kept so far are stale
-    if (hc.preferBuiltinVegasFx != builtinFxBefore || hc.previewSizeForAll != previewSizeBefore || efxPreferBuiltin() != builtinEfxBefore) afterChange();
+    if (hc.preferBuiltinVegasFx != builtinFxBefore || hc.previewSizeForAll != previewSizeBefore || efxPreferBuiltin() != builtinEfxBefore ||
+        dxPreferBuiltin() != builtinDxBefore) afterChange();
     const double quick = prefs.quickFadeEdits ? std::min(1000.0, std::max(1.0, prefs.quickFadeMs)) / 1000.0 : 0.0;
     if (project_.quickFade != quick) {
         if (dragging_) dragBase_.quickFade = quick;

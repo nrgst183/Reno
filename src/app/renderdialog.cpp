@@ -140,7 +140,7 @@ QString hmsText(double seconds)
     return QString("%1:%2:%3").arg(s / 3600, 2, 10, QChar('0')).arg(s / 60 % 60, 2, 10, QChar('0')).arg(s % 60, 2, 10, QChar('0'));
 }
 
-// A label that shortens its text in the middle (C:\Users\USER\Desktop\Master F...\Montage Video 2021.mp4) to fit its width.
+// A label that shortens its text in the middle (C:\Users\USER\Videos\My Pro...\Final Render.mp4) to fit its width.
 class ElidedLabel : public QLabel {
 public:
     explicit ElidedLabel(QWidget* parent) : QLabel(parent)

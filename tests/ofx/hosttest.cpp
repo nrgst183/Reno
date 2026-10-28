@@ -1,7 +1,7 @@
 // hosttest - tests for Reno's OpenFX host (src/ofx).
 //
 //   hosttest <path to testfx.ofx> [--only <section>]
-//   RENO_TEST_PLUGIN=<SlopFX.ofx> names the 28 real effects to test (SLOPFX_PATH is the older name); without it those tests SKIP.
+//   RENO_TEST_PLUGIN=<effects.ofx> names the 28 real effects to test; without it those tests SKIP.
 //
 // One line per check ("PASS name" / "FAIL name: detail"), a summary at the end, and a non-zero exit code if
 // anything failed. testfx.cpp holds the purpose-built effects; they write what they saw into a log that is read
@@ -2469,28 +2469,28 @@ static ImagePtr cachedPattern(int w, int h, double t)
     return p;
 }
 
-static void testSlopFX(const std::string& path)
+static void testRealEffects(const std::string& path)
 {
     if (!fileExists(path)) {
-        skip("slopfx: all", "SlopFX not found at " + path + " (set RENO_TEST_PLUGIN to run the real-effect tests)");
+        skip("realfx: all", "the test plug-in was not found at " + path + " (set RENO_TEST_PLUGIN to run the real-effect tests)");
         return;
     }
     std::string err;
     Binary* bin = host().loadBinary(path, &err);
-    record("slopfx: binary loads", bin != nullptr, err);
+    record("realfx: binary loads", bin != nullptr, err);
     if (!bin) return;
-    checkEq("slopfx: 28 effects", bin->plugins.size(), (size_t)28);
+    checkEq("realfx: 28 effects", bin->plugins.size(), (size_t)28);
     std::set<std::string> ids;
     for (auto& p : bin->plugins) ids.insert(p->info.id);
-    checkEq("slopfx: ids are unique", ids.size(), (size_t)bin->plugins.size());
+    checkEq("realfx: ids are unique", ids.size(), (size_t)bin->plugins.size());
     int loadedOk = 0;
     for (auto& p : bin->plugins) {
         std::string e;
         bool ok = p->load(&e);
-        record("slopfx: " + p->info.id + " loads and describes", ok && !p->info.label.empty(), e);
+        record("realfx: " + p->info.id + " loads and describes", ok && !p->info.label.empty(), e);
         if (ok) ++loadedOk;
     }
-    checkEq("slopfx: all load", loadedOk, 28);
+    checkEq("realfx: all load", loadedOk, 28);
 
     struct Size { int w, h; };
     std::vector<Size> sizes = {{640, 360}, {1920, 1080}};
@@ -2498,7 +2498,7 @@ static void testSlopFX(const std::string& path)
         Plugin* pl = up.get();
         if (!pl->loaded) continue;
         for (Size sz : sizes) {
-            std::string tag = "slopfx: " + pl->info.id + strfmt(" %dx%d: ", sz.w, sz.h);
+            std::string tag = "realfx: " + pl->info.id + strfmt(" %dx%d: ", sz.w, sz.h);
             InstanceSetup s;
             s.width = sz.w;
             s.height = sz.h;
@@ -2558,7 +2558,7 @@ static void testSlopFX(const std::string& path)
         auto a = make();
         auto a2 = make();
         auto b = make();
-        if (!a || !a2 || !b) { record("slopfx: " + pl->info.id + " state: instances", false, e); continue; }
+        if (!a || !a2 || !b) { record("realfx: " + pl->info.id + " state: instances", false, e); continue; }
         // vary a few parameters first
         int changedParams = 0;
         for (auto& p : a->params.params) {
@@ -2576,17 +2576,17 @@ static void testSlopFX(const std::string& path)
         Json::parse(st.dump(), parsed);
         b->loadState(parsed);
         ImagePtr ra = renderOnce(*a, 10, &e, false), ra2 = renderOnce(*a2, 10, &e, false), rb = renderOnce(*b, 10, &e, false);
-        if (!ra || !ra2 || !rb) { record("slopfx: " + pl->info.id + " state: render", false, e); continue; }
+        if (!ra || !ra2 || !rb) { record("realfx: " + pl->info.id + " state: render", false, e); continue; }
         if (!sameImage(*ra, *ra2)) {
-            note("slopfx: " + pl->info.id + " is not repeatable between two fresh instances with equal parameters; its state round trip is not compared");
+            note("realfx: " + pl->info.id + " is not repeatable between two fresh instances with equal parameters; its state round trip is not compared");
             continue;
         }
         ++stateChecked;
         bool same = sameImage(*ra, *rb);
         if (same) ++stateOk;
-        record("slopfx: " + pl->info.id + " state saved, loaded into a new instance, same picture", same, strfmt("first difference at byte %d", firstDifference(*ra, *rb)));
+        record("realfx: " + pl->info.id + " state saved, loaded into a new instance, same picture", same, strfmt("first difference at byte %d", firstDifference(*ra, *rb)));
     }
-    CHECK("slopfx: most effects are repeatable enough to compare", stateChecked >= 20);
+    CHECK("realfx: most effects are repeatable enough to compare", stateChecked >= 20);
 
     // limits
     Rng rng(99);
@@ -2622,7 +2622,7 @@ static void testSlopFX(const std::string& path)
                 if (out && out->w == 96 && out->h == 54) ++rendered; else ++failed;
             }
         }
-        record("slopfx: " + pl->info.id + " renders with every parameter at its minimum, maximum and a random value", failed == 0 && !pl->crashed,
+        record("realfx: " + pl->info.id + " renders with every parameter at its minimum, maximum and a random value", failed == 0 && !pl->crashed,
                strfmt("%d of 6 renders failed", failed));
     }
 }
@@ -2635,7 +2635,7 @@ static const Json* findPlugin(const Json& rep, const std::string& id)
     return nullptr;
 }
 
-static void testProbe(const std::string& slopPath)
+static void testProbe(const std::string& realFxPath)
 {
     ProbeOptions opt;
     opt.width = 64;
@@ -2729,18 +2729,18 @@ static void testProbe(const std::string& slopPath)
     CHECK("probe: 1x1 pattern", tiny && tiny->w == 1 && tiny->h == 1);
     CHECK("probe: bad size gives no picture", makeTestPattern(0, 5, 0) == nullptr);
 
-    if (fileExists(slopPath)) {
-        Json sr = probeBinary(slopPath, opt);
-        CHECK("probe: SlopFX ok", sr.get("ok").asBool() && sr.get("plugins").size() == 28);
+    if (fileExists(realFxPath)) {
+        Json sr = probeBinary(realFxPath, opt);
+        CHECK("probe: the test plug-in ok", sr.get("ok").asBool() && sr.get("plugins").size() == 28);
         int good = 0, changed = 0;
         for (const auto& p : sr.get("plugins").items()) {
             if (p.get("ok").asBool() && p.get("rendered").asInt() == 3) ++good;
             if (p.get("changedPicture").asBool()) ++changed;
         }
-        checkEq("probe: every SlopFX effect rendered three frames", good, 28);
-        checkEq("probe: every SlopFX effect changed the picture", changed, 28);
+        checkEq("probe: every effect of the test plug-in rendered three frames", good, 28);
+        checkEq("probe: every effect of the test plug-in changed the picture", changed, 28);
     } else
-        skip("probe: SlopFX", "SlopFX not found at " + slopPath);
+        skip("probe: the test plug-in", "the test plug-in was not found at " + realFxPath);
 
     // a hash change in a place the old probe did not look at is still a change: a picture that differs in one byte only
     struct OneByte {
@@ -3024,8 +3024,7 @@ int main(int argc, char** argv)
         return 1;
     }
     const char* sp = std::getenv("RENO_TEST_PLUGIN");
-    if (!sp || !*sp) sp = std::getenv("SLOPFX_PATH");
-    const std::string slopPath = sp && *sp ? sp : "(RENO_TEST_PLUGIN not set)";
+    const std::string realFxPath = sp && *sp ? sp : "(RENO_TEST_PLUGIN not set)";
     // plug-in messages and logs go to stderr; keep them out of the result lines
     setLogSink([](const std::string&) {});
 
@@ -3058,8 +3057,8 @@ int main(int argc, char** argv)
         {"threads", testConcurrency},
         {"overlay", testOverlay},
         {"paraminteract", testParamInteract},
-        {"slopfx", [&] { testSlopFX(slopPath); }},
-        {"probe", [&] { testProbe(slopPath); }},
+        {"realfx", [&] { testRealEffects(realFxPath); }},
+        {"probe", [&] { testProbe(realFxPath); }},
     };
     auto t0 = std::chrono::steady_clock::now();
     for (auto& s : sections) {

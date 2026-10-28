@@ -6,8 +6,9 @@ A video editor that works like VEGAS Pro 18. It opens and saves `.veg` projects,
 and runs the same plug-ins (OpenFX video effects, VST2/VST3/DirectX audio effects). C++17, Qt 6 and FFmpeg.
 Windows first; most of it also runs on Linux.
 
-Not affiliated with VEGAS, MAGIX or Sony. No VEGAS code or files are included. To use VEGAS's own effects you need
-VEGAS Pro installed; without it Reno uses its own versions of the common ones.
+Not affiliated with VEGAS, MAGIX or Sony. No VEGAS code or files are included. Reno has its own versions of VEGAS's
+effects, made to match VEGAS's output, and uses them by default even when VEGAS is installed (Preferences can switch
+to the installed plug-ins). Effects Reno has no version of still need VEGAS Pro installed.
 
 ## Features
 

@@ -1,5 +1,5 @@
-// Options > Preferences > Video > "VEGAS effects" (prefs/vegasFxSource): VEGAS's own plug-ins when installed, or always Reno's
-// built-in versions. Set in the real dialog, saved with OK, read back, and the project's effect instances rebuilt from the other
+// Options > Preferences > Video > "VEGAS effects" (prefs/vegasFxSource): Reno's built-in versions (default; the installed ones are ignored), or
+// VEGAS's own plug-ins when installed. Set in the real dialog, saved with OK, read back, and the project's effect instances rebuilt from the other
 // source with settings kept (AppState::applyPreferences -> FxRuntime).
 //
 //   vegasfxpref_test <standinfx.ofx>        (tests/ofx/standinfx.cpp: a plug-in with VEGAS's Invert identifier)
@@ -61,8 +61,8 @@ int main(int argc, char** argv)
     check(host.loadBinary(argv[1], nullptr) != nullptr, "the stand-in plug-in loads");
     AppState& app = AppState::get();
     app.loadPreferences();
-    check(vprefs::text("prefs/vegasFxSource") == "real", "the default is VEGAS's own plug-ins");
-    check(!host.config.preferBuiltinVegasFx, "  and the host says so");
+    check(vprefs::text("prefs/vegasFxSource") == "builtin", "the default is Reno's built-in versions (the installed ones are ignored)");
+    check(host.config.preferBuiltinVegasFx, "  and the host says so");
 
     const uint64_t slot = 7001;
     app.edit("Add Invert", [&](Project& p) {
@@ -73,21 +73,21 @@ int main(int argc, char** argv)
         s.name = "Invert";
         p.videoOut.push_back(s);
     });
-    check(app.fx.video(slot) != nullptr && !builtinInstance(app, slot), "the effect is made from VEGAS's (stand-in) plug-in");
+    check(app.fx.video(slot) != nullptr && builtinInstance(app, slot), "the effect is made from the built-in, not the installed (stand-in) plug-in");
     if (ofx::Instance* inst = app.fx.video(slot)) inst->userSetValue(inst->params.find("BlendAmount"), std::vector<double>{0.25}, 0.0);
 
     withPrefs([](QDialog* d) {
         QComboBox* c = sourceCombo(d);
         check(c != nullptr, "Preferences > Video has the VEGAS effects choice");
         if (!c) return;
-        check(c->currentData().toString() == "real", "  it shows VEGAS's own plug-ins");
+        check(c->currentData().toString() == "builtin", "  it shows Reno's built-in versions");
         check(c->count() == 2, "  with two choices");
-        c->setCurrentIndex(c->findData("builtin"));
+        c->setCurrentIndex(c->findData("real"));
     });
     uitest::settle(200);
-    check(vprefs::text("prefs/vegasFxSource") == "builtin", "OK saves it");
-    check(host.config.preferBuiltinVegasFx, "  the host follows");
-    check(builtinInstance(app, slot), "  the project's effect is made again from the built-in");
+    check(vprefs::text("prefs/vegasFxSource") == "real", "OK saves it");
+    check(!host.config.preferBuiltinVegasFx, "  the host follows");
+    check(!builtinInstance(app, slot), "  the project's effect is made again from VEGAS's (stand-in) plug-in");
     ofx::Instance* now = app.fx.video(slot);
     check(now && now->params.find("BlendAmount") && std::fabs(now->params.find("BlendAmount")->value[0] - 0.25) < 1e-9, "  with its setting kept");
 
@@ -96,11 +96,11 @@ int main(int argc, char** argv)
     withPrefs([](QDialog* d) {
         QComboBox* c = sourceCombo(d);
         if (!c) { check(false, "the choice is there again"); return; }
-        check(c->currentData().toString() == "builtin", "the dialog shows the saved choice");
-        c->setCurrentIndex(c->findData("real"));
+        check(c->currentData().toString() == "real", "the dialog shows the saved choice");
+        c->setCurrentIndex(c->findData("builtin"));
     });
     uitest::settle(200);
-    check(!host.config.preferBuiltinVegasFx && !builtinInstance(app, slot), "choosing VEGAS's again makes the effect from the stand-in again");
+    check(host.config.preferBuiltinVegasFx && builtinInstance(app, slot), "choosing the built-in again makes the effect from the built-in again");
     now = app.fx.video(slot);
     check(now && now->params.find("BlendAmount") && std::fabs(now->params.find("BlendAmount")->value[0] - 0.25) < 1e-9, "  with its setting kept");
     return uitest::summary();

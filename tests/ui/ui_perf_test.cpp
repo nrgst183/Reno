@@ -628,7 +628,7 @@ int main(int argc, char** argv)
         else if (args[k] == "--tracks" && k + 1 < args.size()) extraTracks = args[++k].toInt();
         else names << args[k];
     }
-    if (names.isEmpty()) names << "stutter combined 1.veg";
+    if (names.isEmpty()) names << QDir(samples).entryList(QStringList() << "*.veg", QDir::Files, QDir::Name).mid(0, 1);     // the first sample project
     QDir().mkpath(out);
     if (!QFileInfo(samples).isDir() || !QFileInfo(media + "/clip720.mp4").exists()) {
         std::printf("SKIP: no sample projects in %s or no stand-in clips in %s\nSUMMARY: 0 passed, 0 failed\n", qPrintable(samples), qPrintable(media));

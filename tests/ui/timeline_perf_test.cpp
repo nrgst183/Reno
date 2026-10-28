@@ -565,7 +565,7 @@ int main(int argc, char** argv)
         else if (args[k] == "--flat") flat = true;
         else names << args[k];
     }
-    if (names.isEmpty() && !gBench) names << "stutter combined 1.veg";
+    if (names.isEmpty() && !gBench) names << QDir(samples).entryList(QStringList() << "*.veg", QDir::Files, QDir::Name).mid(0, 1);     // the first sample project
     QDir().mkpath(out);
     if (!shots.isEmpty()) QDir().mkpath(shots);
     uitest::setup({}, {});

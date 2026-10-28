@@ -128,10 +128,12 @@ inline void apply()
     applyGpuApi(vprefs::text("prefs/gpuApi").toStdString(), vprefs::on("prefs/gpuAccel"));
     // VEGAS's effects: its own plug-ins when installed, or always Reno's built-in versions (FxRuntime recreates the
     // instances)
-    ofx::Host::get().config.preferBuiltinVegasFx = vprefs::text("prefs/vegasFxSource") == "builtin";
+    ofx::Host::get().config.preferBuiltinVegasFx = vprefs::text("prefs/vegasFxSource") != "real";
     // VEGAS's eFX audio effects: Reno's own versions (default) or the installed MAGIX plug-ins (FxRuntime recreates the
     // instances)
     reno::setEfxPreferBuiltin(vprefs::text("prefs/vegasEfxSource") != "real");
+    // VEGAS's DirectX audio effects (Reverb, EQ, Track FX...): Reno's versions (default) or the installed plug-ins
+    reno::setDxPreferBuiltin(vprefs::text("prefs/vegasDxSource") != "real");
     ofx::Host::get().config.previewSizeForAll = vprefs::on("prefs/previewSizeAllFx");
     reno::setProbeExeOverride(QDir::fromNativeSeparators(vprefs::text("prefs/renoCliPath").trimmed()).toStdString());
     ofx::Param::newKeyCurve().store(vprefs::curveCode("prefs/curveVideoFx"));

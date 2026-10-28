@@ -399,10 +399,10 @@ struct HostConfig {
     // Render effects with OpenGL on the graphics card where they can, as VEGAS does (Preferences > Video: "GPU acceleration of video processing";
     // reno_cli --gpu on|off): the host then reports kOfxImageEffectPropOpenGLRenderSupported "true" when a context can be made (call applyConfig after changing).
     bool gpu = true;
-    // For VEGAS's own effects (isVegasOwnEffect) that Reno has a built-in reproduction of: false uses VEGAS's plug-in when installed and working, true
-    // always uses the built-in (faster, same on every platform). Preferences > Video, reno_cli --vegas-fx real|builtin. Effects already made keep their
-    // choice until FxRuntime::prepare makes them again.
-    bool preferBuiltinVegasFx = false;
+    // For VEGAS's own effects (isVegasOwnEffect) that Reno has a built-in reproduction of: true (default) always uses the built-in and ignores VEGAS's
+    // installed plug-in; false uses VEGAS's plug-in when installed and working. Effects Reno has no version of always use the installed plug-in.
+    // Preferences > Video, reno_cli --vegas-fx real|builtin. Effects already made keep their choice until FxRuntime::prepare makes them again.
+    bool preferBuiltinVegasFx = true;
     // Previews at a smaller size: effects without multi-resolution work at the preview's size too, as VEGAS does (RenderOptions::previewSizeForAll).
     // False (Preferences > Video, reno_cli --full-size-fx): they work at the project's size in previews as well.
     bool previewSizeForAll = true;

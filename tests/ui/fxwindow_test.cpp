@@ -1,6 +1,6 @@
 // Effects window (src/app/fxwindow.cpp), without a screen.
 //
-//   fxwindow_test <output folder> <testfx.ofx> [SlopFX.ofx] [--vst file.so ...]
+//   fxwindow_test <output folder> <testfx.ofx> [effects.ofx] [--vst file.so ...]
 //
 // Pass the test plug-in from tests/ui/fxwindow_testvst.cpp among the --vst files (its name must contain "fxwintest"). With
 // -DRENO_FX_HOST_PLUGIN_WINDOWS the window also goes through embedding plug-in windows (normally Windows only), using plug-ins
@@ -223,7 +223,7 @@ int main(int argc, char** argv)
     QApplication::setApplicationName("fxwindow_test");
     applyTheme();
     const QStringList args = QApplication::arguments();
-    if (args.size() < 3) { qWarning("usage: fxwindow_test <output folder> <testfx.ofx> [SlopFX.ofx] [--vst file ...]"); return 2; }
+    if (args.size() < 3) { qWarning("usage: fxwindow_test <output folder> <testfx.ofx> [effects.ofx] [--vst file ...]"); return 2; }
     gOut = args[1];
     QDir().mkpath(gOut);
     std::vector<std::string> ofxFiles, vstFiles;
@@ -938,7 +938,7 @@ int main(int argc, char** argv)
             seen.push_back({s, e.id, n});
         }
         if (!seen.empty()) {
-            check(built == (int)seen.size() && failed == 0, "every SlopFX effect gets its controls",
+            check(built == (int)seen.size() && failed == 0, "every effect of the test plug-in gets its controls",
                   std::to_string(built) + " of " + std::to_string(seen.size()) + ", " + std::to_string(failed) + " failed");
             std::sort(seen.begin(), seen.end(), [](const Seen& a, const Seen& b) { return a.params > b.params; });
             const QSize was = w->size();
@@ -946,7 +946,7 @@ int main(int argc, char** argv)
             for (size_t k = 0; k < seen.size() && k < 3; ++k) {
                 w->showTarget(out, seen[k].slot);
                 settle(150);
-                uitest::shot(w, gOut + QString("/fxwindow_slopfx_%1.png").arg(k + 1));
+                uitest::shot(w, gOut + QString("/fxwindow_realfx_%1.png").arg(k + 1));
                 std::printf("  (picture %d: %s, %d parameters)\n", (int)k + 1, seen[k].id.c_str(), (int)seen[k].params);
             }
             w->resize(was);

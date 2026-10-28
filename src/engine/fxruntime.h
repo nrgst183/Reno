@@ -105,6 +105,7 @@ private:
         std::string error;
         int sampleRate = 0;
         std::string keptState;                          // the settings an eFX slot had when its plug-in could not be made (kept for the next one)
+        bool dxBuiltinChosen = false;                   // dxPreferBuiltin() when this DX slot (one Reno reproduces) was made
         bool efxBuiltin = false;                        // 'plugin' is Reno's version of one of VEGAS's eFX effects (not the installed plug-in)
     };
     // Instances taken out of the maps: destroyed at once if no render holds instances, else kept for later.

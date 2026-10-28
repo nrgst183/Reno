@@ -1,10 +1,10 @@
 // vegofxstate: the effects of the sample projects through Reno's OpenFX host and back into a .veg.
 //
-//   vegofxstate <SlopFX.ofx> [folder with .veg files (default $RENO_SAMPLES)] [folder with VST2 plug-ins (default $RENO_TEST_VST_DIR)]
+//   vegofxstate <effects.ofx> [folder with .veg files (default $RENO_SAMPLES)] [folder with VST2 plug-ins (default $RENO_TEST_VST_DIR)]
 //
 // Every effect Reno can host is made live, its settings are put into it (loadState) and taken out again before saving
 // (saveState). The record written from that state must be the bytes VEGAS wrote, and after a setting is changed the
-// record must read back with the new value. SlopFX's effects are hosted here (built from source for Linux); the samples
+// record must read back with the new value. The test plug-in's effects are hosted here (built from source for Linux); the samples
 // use them a lot. The same for the VST2 audio effects: the program written from what Reno's VST2 host saved must be
 // the one VEGAS wrote.
 #include "../../src/vegas/vegas.h"
@@ -29,7 +29,7 @@ static void check(bool ok, const std::string& what)
 
 int main(int argc, char** argv)
 {
-    if (argc < 2) { std::printf("usage: vegofxstate SlopFX.ofx [folder]\n"); return 2; }
+    if (argc < 2) { std::printf("usage: vegofxstate effects.ofx [folder]\n"); return 2; }
     const std::string dir = argc > 2 ? argv[2] : testDataDir("RENO_SAMPLES");
     if (testDataMissing(dir)) return 0;
     std::string err;

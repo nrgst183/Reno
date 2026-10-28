@@ -51,11 +51,12 @@ inline const std::map<QString, QVariant>& defaults()
         {"prefs/gpuApi", QString("vulkan")},
         // VEGAS's own effects: "real" (VEGAS's plug-ins when installed, else Reno's built-in versions) or "builtin"
         // (always Reno's)
-        {"prefs/vegasFxSource", QString("real")},
+        {"prefs/vegasFxSource", QString("builtin")},
         // VEGAS's eFX audio effects (Limiter, Compressor, Reverb, Tube Stage, Phaser, Chorus/Flanger): "builtin"
         // (Reno's own versions) or "real" (the installed MAGIX plug-ins: they need VEGAS's licence and run restricted
         // outside VEGAS)
         {"prefs/vegasEfxSource", QString("builtin")},
+        {"prefs/vegasDxSource", QString("builtin")},
         // Smaller previews: every effect at the preview's size (as VEGAS), also those without multi-resolution
         {"prefs/previewSizeAllFx", true},
         {"prefs/autoProxy4k", true},                // Automatically create video proxies for greater than 4K resolution media

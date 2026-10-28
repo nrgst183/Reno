@@ -172,10 +172,13 @@ std::unique_ptr<AudioPlugin> dxCreate(const AudioPluginDesc& desc, std::string* 
 std::vector<AudioPluginDesc> builtinAudioPlugins();
 std::unique_ptr<AudioPlugin> builtinAudioCreate(const AudioPluginDesc& desc, std::string* error);
 extern const char* const kBuiltinAudioVendor;
-// Reno's version of a VEGAS DirectX effect it reproduces exactly (now: Distortion), used for a "DX" slot when the
+// Reno's version of a VEGAS DirectX effect it reproduces exactly (Distortion, Reverb, the EQs, the Track FX...). A "DX"
+// slot gets it when dxPreferBuiltin() (Preferences > Audio "VEGAS's DirectX audio effects", default on) or when the
 // DirectX one cannot be made (not Windows, VEGAS not installed). The plug-in keeps the slot's DX description with
 // vendor kBuiltinAudioVendor. Empty uid: none.
 std::string builtinUidForDx(const std::string& dxUid);
+bool dxPreferBuiltin();
+void setDxPreferBuiltin(bool on);
 std::string dxUidForBuiltin(const std::string& builtinUid);     // the other way: "dshow:{...}" or ""
 // The built-in effect whose page shows this plug-in ("reno.distortion"...), or "" for one with no page.
 std::string builtinPageUid(const AudioPluginDesc& desc);

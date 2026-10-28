@@ -142,9 +142,11 @@ const char* kHelp =
     "                           dxva2, cuda, vaapi, vdpau, videotoolbox). Default: auto on Windows, off elsewhere.\n"
     "  --gpu on|off             render OpenFX effects with OpenGL where they support it (default on); off uses the\n"
     "                           processor only. Effects that fail with OpenGL fall back to the processor.\n"
-    "  --vegas-fx real|builtin  VEGAS's own effects (Gaussian Blur, Cookie Cutter ...): use VEGAS's OpenFX plug-ins\n"
-    "                           if installed and working (real; default, or the Preferences > Video setting), or\n"
-    "                           always Reno's built-in versions (builtin)\n"
+    "  --vegas-fx real|builtin  VEGAS's own effects (Gaussian Blur, Cookie Cutter ...): Reno's built-in versions,\n"
+    "                           ignoring the installed ones (builtin; default, or the Preferences > Video setting),\n"
+    "                           or VEGAS's OpenFX plug-ins if installed and working (real)\n"
+    "  --dx-fx real|builtin     VEGAS's DirectX audio effects (Reverb, EQ, Track FX ...): Reno's versions (builtin;\n"
+    "                           default, or the Preferences setting) or the installed plug-ins on Windows (real)\n"
     "  --efx real|builtin       VEGAS's eFX audio effects (Limiter, Compressor, Reverb, TubeStage, Phaser,\n"
     "                           ChorusFlanger): Reno's own versions (builtin; default, or the Preferences setting)\n"
     "                           or the installed MAGIX plug-ins (real; they need a VEGAS licence)\n"
@@ -565,6 +567,7 @@ struct Options {
     std::string hashFile;
     int efx = -1;                           // --efx real|builtin (-1: use the preference)
     int vegasFx = -1;                       // --vegas-fx real|builtin (-1: use the preference)
+    int dxFx = -1;                          // --dx-fx real|builtin (-1: use the preference)
     std::string gpuApi;                     // --gpu-api vulkan|opengl|off (empty: use the preference)
     bool previewProfile = false;            // --profile <project>
     std::string vstParams;                  // --vst-params <plug-in file or folder>
@@ -759,6 +762,13 @@ bool parseArgs(const std::vector<std::string>& args, Options& o, std::string* pr
             if (v == "real" || v == "vegas" || v == "own") o.vegasFx = 0;
             else if (v == "builtin" || v == "built-in" || v == "reno") o.vegasFx = 1;
             else { *problem = "--vegas-fx wants real or builtin"; return false; }
+        }
+        else if (a == "--dx-fx") {
+            if (!need(k, a, &v)) return false;
+            for (char& c : v) c = (char)std::tolower((unsigned char)c);
+            if (v == "real" || v == "vegas" || v == "installed") o.dxFx = 0;
+            else if (v == "builtin" || v == "built-in" || v == "reno") o.dxFx = 1;
+            else { *problem = "--dx-fx wants real or builtin"; return false; }
         }
         else if (a == "--efx") {
             if (!need(k, a, &v)) return false;
@@ -1468,6 +1478,7 @@ void setUpHost(const Options& o, AppState& app)
     if (!o.gpuApi.empty()) app::prefsapply::applyGpuApi(o.gpuApi, o.gpu != 0 && ofx::Host::get().config.gpu);
     if (o.vegasFx >= 0) ofx::Host::get().config.preferBuiltinVegasFx = o.vegasFx == 1;
     if (o.efx >= 0) setEfxPreferBuiltin(o.efx == 1);
+    if (o.dxFx >= 0) setDxPreferBuiltin(o.dxFx == 1);
     if (o.fullSizeFx) ofx::Host::get().config.previewSizeForAll = false;
 #ifdef _WIN32
     if (HWND host = makeHiddenHostWindow()) {

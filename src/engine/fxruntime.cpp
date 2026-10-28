@@ -406,13 +406,15 @@ void FxRuntime::prepareAudio(const FxSlot& s, const Project& p)
     // VEGAS's own eFX effects (VST2 ids MX21..MX2B): Reno's reproduction or the installed plug-in, as Preferences says
     const bool efxSlot = s.audio.format == "VST2" && efxReproducedId(s.audio.uid);
     const bool efxBuiltin = efxSlot && efxPreferBuiltin();
+    // VEGAS's DirectX effects that Reno reproduces: Reno's version or the installed plug-in, as Preferences says
+    const bool dxSlot = s.audio.format == "DX" && !builtinUidForDx(s.audio.uid).empty();
     std::string carried;                                    // the settings of an instance made again because that choice changed
     std::vector<AudioFx> old;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         auto it = audio_.find(s.id);
         if (it != audio_.end()) have = &it->second;
-        if (have && efxSlot && have->efxBuiltin != efxBuiltin) {
+        if (have && ((efxSlot && have->efxBuiltin != efxBuiltin) || (dxSlot && have->dxBuiltinChosen != dxPreferBuiltin()))) {
             carried = have->plugin ? have->plugin->saveState() : have->keptState;
             old.push_back(std::move(it->second));
             audio_.erase(it);
@@ -464,6 +466,7 @@ void FxRuntime::prepareAudio(const FxSlot& s, const Project& p)
         logf("audio effect %s: %s%s", s.name.c_str(), efxIsReproduction(fx.plugin->desc) ? "Reno's version" : pathFileName(desc.path).c_str(),
              audioPluginKindNote(fx.plugin->desc).c_str());
     fx.efxBuiltin = fx.plugin && efxIsReproduction(fx.plugin->desc);
+    fx.dxBuiltinChosen = dxPreferBuiltin();
     if (fx.plugin) {
         if (!carried.empty() && fx.plugin->loadState(carried)) {
         } else if (s.state.isString() && !s.state.asString().empty() && !fx.plugin->loadState(s.state.asString()))

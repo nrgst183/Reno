@@ -314,7 +314,7 @@ own command-line argument wins) and print a `SKIP` line, which does not count as
 | `RENO_SAMPLES` | folder of sample VEGAS projects (`.veg`, searched recursively) and their media; tests that look at "the samples" run over every `.veg` in it |
 | `RENO_SAMPLE_VEG` | one particular `.veg` file for the tests that look at a single project (`cookie_paste_test`, `vegmatrix_diff_test`, `open_media_test`, `zoombar_test`, `scrollzoom_test`, `load_lag_test`, `shortclips_test`, `builtins_test`, `reno_cli_test.sh`); without it each picks a suitable project from `RENO_SAMPLES`, and the test skips when there is none |
 | `RENO_CMP` | folder the VEGAS bridge scripts (`tools/vegas/bridge_scripts`) wrote: `info` (`real_<project>.vegas.reno`), `loud` (`loud_sweep.veg`), `pitchtests`, `shorttests`, `vegas` (VEGAS's own renders: `nofx_<project>.wav` with `<project>` the name of a `.veg` under this folder, spaces as `_`, and `nofx_loud_sweep.wav`) |
-| `RENO_TEST_PLUGIN` | the test OpenFX plug-in file (`SlopFX.ofx`) for `tests/ofx` and `tests/vegas/vegofxstate` (`SLOPFX_PATH` also works) |
+| `RENO_TEST_PLUGIN` | the test OpenFX plug-in file (`effects.ofx`) for `tests/ofx` and `tests/vegas/vegofxstate` |
 | `RENO_TEST_VST_DIR` | folder with test VST2 plug-ins (`vegofxstate`) |
 | `RENO_EFX_REF` | text dump of the real eFX plug-ins' settings (`efx_test`'s sweep) |
 | `RENO_EFFECT_REF` | folder written by `tools/scripts/Reno Effect Reference.cs` (`tools/effectref_compare.py`) |

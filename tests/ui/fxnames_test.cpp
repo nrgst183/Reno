@@ -105,7 +105,7 @@ int main(int argc, char** argv)
     check(readableFxId("com.NewBlue.STCartoonrPlus") == "ST Cartoonr Plus", "readable: com.NewBlue.STCartoonrPlus", readableFxId("com.NewBlue.STCartoonrPlus"));
     check(readableFxId("com.vegascreativesoftware:Filters.Stereoscopic3DAdjust") == "Stereoscopic 3D Adjust", "readable: VEGAS's Stereoscopic 3D Adjust",
           readableFxId("com.vegascreativesoftware:Filters.Stereoscopic3DAdjust"));
-    check(readableFxId("com.weirdfx.MotionMelt") == "Motion Melt", "readable: com.weirdfx.MotionMelt", readableFxId("com.weirdfx.MotionMelt"));
+    check(readableFxId("com.example.SoftFocus") == "Soft Focus", "readable: com.example.SoftFocus", readableFxId("com.example.SoftFocus"));
     check(readableFxId("com.wmmfx.art.25") == "Art 25", "readable: a number takes the part before it", readableFxId("com.wmmfx.art.25"));
     check(readableFxId("de.magix:stereographicProjectionOCL") == "Stereographic Projection OCL", "readable: de.magix:stereographicProjectionOCL",
           readableFxId("de.magix:stereographicProjectionOCL"));
@@ -119,7 +119,7 @@ int main(int argc, char** argv)
     // with no plug-in list at all: VEGAS's effects by VEGAS's labels, others readable, never the identifier
     check(videoFxLabel("com.vegascreativesoftware:cookiecutter") == "VEGAS Cookie Cutter", "no plug-in: a VEGAS effect by VEGAS's label",
           videoFxLabel("com.vegascreativesoftware:cookiecutter"));
-    check(videoFxLabel("com.weirdfx.DeepFry") == "Deep Fry", "no plug-in: another effect by its identifier made readable", videoFxLabel("com.weirdfx.DeepFry"));
+    check(videoFxLabel("com.example.ColorWash") == "Color Wash", "no plug-in: another effect by its identifier made readable", videoFxLabel("com.example.ColorWash"));
     {
         FxSlot a;
         a.kind = "audio";
@@ -209,7 +209,7 @@ int main(int argc, char** argv)
         {"reno.test.invert", "Test Invert"},
         {"reno.nolabel:resourceNamed", "Reno Resource & Label"},
         {"com.vegascreativesoftware:cookiecutter", "VEGAS Cookie Cutter"},
-        {"com.weirdfx.MotionMelt", "Motion Melt"},
+        {"com.example.SoftFocus", "Soft Focus"},
     };
     std::vector<uint64_t> ids;
     app.edit("Effects as a VEGAS project has them", [&](Project& p) {

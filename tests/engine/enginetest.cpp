@@ -1,7 +1,7 @@
 // Tests of the project model, the compositor, the mixer and the export, with made-up media
 // (every picture says which frame it is; every sound is a steady tone) and real plug-ins.
 //
-//   enginetest <testfx.ofx> [SlopFX.ofx] [a VST2 effect] [folder to write a test render into]
+//   enginetest <testfx.ofx> [effects.ofx] [a VST2 effect] [folder to write a test render into]
 #include "../../src/engine/engine.h"
 #include "../../src/engine/catalog.h"
 #include <cstdio>
@@ -137,11 +137,11 @@ static double tone(const std::vector<float>& s, double freq, int rate)
 
 int main(int argc, char** argv)
 {
-    if (argc < 2) { std::fprintf(stderr, "usage: enginetest testfx.ofx [SlopFX.ofx] [vst2 effect] [output folder]\n"); return 2; }
-    const std::string testfx = argv[1], slopfx = argc > 2 ? argv[2] : "", vst = argc > 3 ? argv[3] : "", outDir = argc > 4 ? argv[4] : "";
+    if (argc < 2) { std::fprintf(stderr, "usage: enginetest testfx.ofx [effects.ofx] [vst2 effect] [output folder]\n"); return 2; }
+    const std::string testfx = argv[1], realfx = argc > 2 ? argv[2] : "", vst = argc > 3 ? argv[3] : "", outDir = argc > 4 ? argv[4] : "";
     std::string err;
     check(ofx::Host::get().loadBinary(testfx, &err) != nullptr, "the test effects load", err);
-    if (!slopfx.empty()) check(ofx::Host::get().loadBinary(slopfx, &err) != nullptr, "SlopFX loads", err);
+    if (!realfx.empty()) check(ofx::Host::get().loadBinary(realfx, &err) != nullptr, "the test plug-in loads", err);
 
     // ---------------------------------------------------------------- the project as a value
     {
@@ -367,8 +367,8 @@ int main(int argc, char** argv)
         check(fx.video(ps) == nullptr, "instances that are no longer wanted are let go");
     }
 
-    // ---------------------------------------------------------------- SlopFX through the engine
-    if (!slopfx.empty()) {
+    // ---------------------------------------------------------------- the test plug-in through the engine
+    if (!realfx.empty()) {
         Project p;
         p.settings.width = 640;
         p.settings.height = 360;
@@ -393,7 +393,7 @@ int main(int argc, char** argv)
             }
             if (good) ++ok; else bad += " " + pl->info.id + "(" + fx.error(sid) + ")";
         }
-        check(total > 0 && ok == total, strfmt("all %d SlopFX effects render on an event through the engine", total), bad);
+        check(total > 0 && ok == total, strfmt("all %d of the test plug-in's effects render on an event through the engine", total), bad);
         fx.clear();
     }
 
