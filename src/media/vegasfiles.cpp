@@ -153,7 +153,12 @@ int64_t fileTime(const std::string& path)
 #else
     struct stat st;
     if (stat(path.c_str(), &st) != 0) return 0;
-    return (int64_t)st.st_mtim.tv_sec * 10000000LL + st.st_mtim.tv_nsec / 100 + kUnixEpochFileTime;
+#ifdef __APPLE__
+    const struct timespec& mt = st.st_mtimespec;      // (macOS's name for it)
+#else
+    const struct timespec& mt = st.st_mtim;
+#endif
+    return (int64_t)mt.tv_sec * 10000000LL + mt.tv_nsec / 100 + kUnixEpochFileTime;
 #endif
 }
 
