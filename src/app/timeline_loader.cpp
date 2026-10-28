@@ -421,11 +421,15 @@ void Loader::savePeaks(const Wave& w)
     mediacache::write(w.cacheFile, data);
 }
 
+// While the preview plays, a thumbnail that is not in the cache is decoded at most this often (seconds).
+static const double kThumbPlayingGap = 0.25;
+
 void Loader::run(std::shared_ptr<Shared> s, MediaPool* pool)
 {
     std::vector<float> l, r;
     std::unique_ptr<Wave> wave;
     auto lastWake = std::chrono::steady_clock::now();
+    auto lastDecode = lastWake - std::chrono::seconds(10);
     mediacache::Signatures sigs;
     mediacache::trim("thumbs", (qint64)std::max(0, vprefs::number("prefs/thumbCacheMb")) * 1024 * 1024);
     mediacache::trim("peaks", (qint64)std::max(0, vprefs::number("prefs/peakCacheMb")) * 1024 * 1024);
@@ -493,7 +497,21 @@ void Loader::run(std::shared_ptr<Shared> s, MediaPool* pool)
             const QString file = sig.empty() ? QString()
                                              : mediacache::fileFor("thumbs", sig + strfmt("|%d|%d|%lld|%.6f", job.w, job.h, (long long)job.key.ms, job.seconds), ".png");
             if (file.isEmpty() || !mediacache::readImage(file, d.image)) {
+                // Thumbnails need not be exact, and must not take the processors from playing: while the preview plays,
+                // at most one is decoded every kThumbPlayingGap; and each is the nearest frame at hand (the key frame a
+                // seek lands on when the one asked for is well past it: MediaReadHints::quick), not decoded on to.
+                if (previewPlaying()) {
+                    const double since = std::chrono::duration<double>(std::chrono::steady_clock::now() - lastDecode).count();
+                    if (since < kThumbPlayingGap) {
+                        std::unique_lock<std::mutex> lk(s->mutex);
+                        s->thumbs.push_front(std::move(job));
+                        s->cv.wait_for(lk, std::chrono::duration<double>(kThumbPlayingGap - since), [&] { return s->quit; });
+                        continue;
+                    }
+                }
+                lastDecode = std::chrono::steady_clock::now();
                 const uint64_t leftOut = nestedEffectsLeftOut();
+                MediaReadHintsScope quick(nullptr, true);
                 ImagePtr img = pool->videoFrame((uint64_t)job.key.media, job.media, job.seconds, job.w, job.h);
                 if (img && img->w > 0 && img->h > 0 && img->depth == PixelDepth::Byte) d.image = imageToQt(*img);
                 if (!file.isEmpty() && !d.image.isNull() && nestedEffectsLeftOut() == leftOut) mediacache::writeImage(file, d.image);

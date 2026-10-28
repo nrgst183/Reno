@@ -32,6 +32,8 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <AdditionalOptions>/utf-8 /bigobj %(AdditionalOptions)</AdditionalOptions>
+      <!-- clang-cl (the ClangCL toolset): no fused multiply-adds, as in the CMake build -->
+      <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCL'">/clang:-ffp-contract=off %(AdditionalOptions)</AdditionalOptions>
       <PreprocessorDefinitions>WIN32;_WINDOWS;_CRT_SECURE_NO_WARNINGS;NOMINMAX;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(RenoRoot)third_party\openfx;$(RenoRoot)third_party\vst2;$(RenoRoot)src\ofx;$(RenoFFmpegDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>

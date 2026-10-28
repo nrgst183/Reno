@@ -1,7 +1,9 @@
 @echo off
-rem Builds Reno with Visual Studio 2022 (its CMake and Ninja), Qt from C:\Qt\6.8.3\msvc2022_64 and FFmpeg from
-rem deps\ffmpeg (tools\get_ffmpeg.ps1) or else C:\vcpkg\installed\x64-windows. Output goes to build\:
-rem   build\msvc\   build files
+rem Builds Reno with Visual Studio 2022's clang-cl (its "C++ Clang tools for Windows" component), CMake and Ninja, Qt
+rem from C:\Qt\6.8.3\msvc2022_64 and FFmpeg from deps\ffmpeg (tools\get_ffmpeg.ps1) or else C:\vcpkg\installed\x64-windows.
+rem "build_msvc.bat msvc" builds with MSVC's own compiler instead (as does a Visual Studio without the Clang tools).
+rem Output goes to build\:
+rem   build\clang\  build files (build\msvc\ with MSVC)
 rem   build\out\    reno.exe, reno_cli.exe, reno_vst32.exe (32-bit VST2 host), mediatest.exe and their DLLs
 rem The log is also written to build_log.txt.
 setlocal
@@ -17,16 +19,34 @@ if not exist "%VSWHERE%" (echo vswhere.exe not found - is Visual Studio installe
 for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
 if not defined VSDIR (echo No Visual Studio with the C++ tools was found.& goto failed)
 call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul
+rem the compiler: clang-cl from Visual Studio (or another LLVM on the PATH), unless "msvc" was asked for
+set "COMPILER="
+set "BDIR=build\msvc"
+if /i "%~1"=="msvc" goto compilerchosen
+if exist "%VSDIR%\VC\Tools\Llvm\x64\bin\clang-cl.exe" set "COMPILER=%VSDIR%\VC\Tools\Llvm\x64\bin\clang-cl.exe"
+if not defined COMPILER for /f "delims=" %%c in ('where clang-cl 2^>nul') do if not defined COMPILER set "COMPILER=%%c"
+if defined COMPILER goto haveclang
+echo clang-cl was not found: add "C++ Clang tools for Windows" in the Visual Studio Installer to build with it.
+echo Building with MSVC instead.
+goto compilerchosen
+:haveclang
+set "BDIR=build\clang"
+:compilerchosen
+if defined COMPILER echo Compiler: clang-cl, %COMPILER%
+if not defined COMPILER echo Compiler: MSVC
+>> "%LOG%" echo Compiler: %COMPILER%
 if not exist "%QTDIR%\bin\Qt6Core.dll" (echo Qt 6.8.3 msvc2022_64 is not in %QTDIR% - install it there.& goto failed)
 if not exist "%FFDIR%\include\libavformat\avformat.h" (echo FFmpeg is not in %FFDIR%.& goto failed)
 
-cmake -S . -B build\msvc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QTDIR%" -DRENO_FFMPEG_DIR="%FFDIR%" >> "%LOG%" 2>&1
+set "CC_ARGS="
+if defined COMPILER set CC_ARGS=-DCMAKE_C_COMPILER="%COMPILER%" -DCMAKE_CXX_COMPILER="%COMPILER%"
+cmake -S . -B %BDIR% -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QTDIR%" -DRENO_FFMPEG_DIR="%FFDIR%" %CC_ARGS% >> "%LOG%" 2>&1
 if errorlevel 1 (type "%LOG%" & goto failed)
-cmake --build build\msvc >> "%LOG%" 2>&1
+cmake --build %BDIR% >> "%LOG%" 2>&1
 if errorlevel 1 (type "%LOG%" & goto failed)
 
 if not exist build\out mkdir build\out
-for %%f in (reno.exe reno_cli.exe reno_vst32.exe mediatest.exe) do copy /Y "build\msvc\bin\%%f" build\out\ >nul
+for %%f in (reno.exe reno_cli.exe reno_vst32.exe mediatest.exe) do copy /Y "%BDIR%\bin\%%f" build\out\ >nul
 rem Qt's DLLs and plug-ins (without Qt's FFmpeg backend; Reno's own FFmpeg is copied below)
 "%QTDIR%\bin\windeployqt.exe" --release --no-translations --no-compiler-runtime --exclude-plugins ffmpegmediaplugin build\out\reno.exe >> "%LOG%" 2>&1
 rem reno_cli.exe needs only Qt Core and Gui, which the reno.exe deployment already copied

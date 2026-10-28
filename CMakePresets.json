@@ -23,14 +23,21 @@
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "vendor": { "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "Windows" ] } }
     },
-    { "name": "windows-debug",   "displayName": "Windows x64 Debug (MSVC)",   "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
-    { "name": "windows-release", "displayName": "Windows x64 Release (MSVC)", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
     {
       "name": "windows-clangcl-release",
       "displayName": "Windows x64 Release (clang-cl)",
+      "description": "The default Windows build: Visual Studio 2022's clang-cl (\"C++ Clang tools for Windows\" in the Visual Studio Installer)",
       "inherits": "windows-base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_CXX_COMPILER": "clang-cl.exe" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_C_COMPILER": "clang-cl.exe", "CMAKE_CXX_COMPILER": "clang-cl.exe" }
     },
+    {
+      "name": "windows-clangcl-debug",
+      "displayName": "Windows x64 Debug (clang-cl)",
+      "inherits": "windows-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_C_COMPILER": "clang-cl.exe", "CMAKE_CXX_COMPILER": "clang-cl.exe" }
+    },
+    { "name": "windows-debug",   "displayName": "Windows x64 Debug (MSVC)",   "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
+    { "name": "windows-release", "displayName": "Windows x64 Release (MSVC)", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
 
     {
       "name": "linux-base",
@@ -76,9 +83,10 @@
     }
   ],
   "buildPresets": [
+    { "name": "windows-clangcl-release", "configurePreset": "windows-clangcl-release" },
+    { "name": "windows-clangcl-debug",   "configurePreset": "windows-clangcl-debug" },
     { "name": "windows-debug",           "configurePreset": "windows-debug" },
     { "name": "windows-release",         "configurePreset": "windows-release" },
-    { "name": "windows-clangcl-release", "configurePreset": "windows-clangcl-release" },
     { "name": "linux-debug",             "configurePreset": "linux-debug" },
     { "name": "linux-release",           "configurePreset": "linux-release" },
     { "name": "linux-clang-release",     "configurePreset": "linux-clang-release" },

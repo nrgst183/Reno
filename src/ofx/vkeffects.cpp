@@ -1518,8 +1518,12 @@ bool renderFrameCpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
     return true;
 }
 
+static thread_local std::string tGpuWhy;
+std::string lastGpuFailure() { return tGpuWhy; }
+
 bool renderFrameGpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra, const uint8_t* in, size_t inStride, uint8_t* out, size_t outStride, gpu::RunStats* stats, uint64_t inSerial, uint64_t outSerial)
 {
+    tGpuWhy = "not run (no GPU plan, Vulkan off, or an empty frame)";
     if (!d.gpu || !gpu::enabled() || w < 1 || h < 1) return false;
     c.frameW = w;
     c.frameH = h;
@@ -1529,7 +1533,10 @@ bool renderFrameGpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
     plan.begin((uint32_t)w, (uint32_t)h, d.id.c_str());
     bool ok = false;
     try { ok = d.gpu(c, plan); } catch (...) { ok = false; }
-    if (!ok || plan.passes.empty()) return false;
+    if (!ok || plan.passes.empty()) {
+        tGpuWhy = "declined";
+        return false;
+    }
     gpu::FrameIO io;
     io.w = (uint32_t)w;
     io.h = (uint32_t)h;
@@ -1542,7 +1549,12 @@ bool renderFrameGpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
     io.inSerial = inSerial;
     io.outSerial = outSerial;
     io.noInput = d.generator;
-    return gpu::run(plan, io, stats);
+    if (gpu::run(plan, io, stats)) {
+        tGpuWhy.clear();
+        return true;
+    }
+    tGpuWhy = "the GPU run failed: " + gpu::lastRunFailure();
+    return false;
 }
 
 }  // namespace builtin

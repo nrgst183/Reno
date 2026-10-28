@@ -86,6 +86,9 @@ static const double kAheadMost = 0.5;
 static const size_t kCacheFrames = 24;
 static const int kMaxVideoThreads = 8;
 static const double kAheadSeconds = 2.0;        // how far ahead of the position idle frame threads render into the RAM preview
+static const double kAheadMostSeconds = 20.0;   // (more where frames are slow: three times the slowest average ahead, at most this)
+static const size_t kRenderWindow = 16;         // frames in the overall average render time
+static const int kCutsAhead = 6;                // coming cuts looked at for starting their first frames early
 // tests and measurements: RENO_PREWARM=0 / RENO_PLAY_AHEAD=0 / RENO_SHARE_FRAMES=0 turn off decoding ahead /
 // rendering ahead / sharing frames
 static bool envOff(const char* name)
@@ -1222,14 +1225,80 @@ void Playback::newPlayGeneration()
     shownFrame_ = -1;
 }
 
-// How long frames take to render now, given one that took 'seconds': slower counts at once, quicker ones bring it
-// down over a few frames. Playing looks ahead by this much. A late frame that stopped soon after being told to
-// ('stoppedEarly') is not counted.
+// How long frames take to render now: the average of the last kRenderWindow frames (renderEst_). Playing looks ahead
+// by this much where it knows nothing better (estimateAt). A late frame that was stopped soon after being told to
+// ('stoppedEarly') did not get to finish: it counts as twice what it took, at least twice the average.
 void Playback::noteRenderTime(double seconds, bool lateCancelled, bool stoppedEarly)
 {
-    if (lateCancelled && stoppedEarly) renderEst_ = std::max(renderEst_ * 2.0, seconds * 2.0);
-    else renderEst_ = std::max(seconds, 0.5 * renderEst_ + 0.5 * seconds);
-    renderEst_ = std::min(renderEst_, 30.0);
+    if (lateCancelled && stoppedEarly) seconds = std::max(seconds * 2.0, renderEst_ * 2.0);
+    recentRender_.push_back(std::min(seconds, 30.0));
+    while (recentRender_.size() > kRenderWindow) recentRender_.pop_front();
+    double sum = 0;
+    for (double v : recentRender_) sum += v;
+    renderEst_ = std::min(30.0, sum / (double)recentRender_.size());
+}
+
+// ---- Look-ahead by segment
+// The times where what is on screen changes as a whole: each video event's start and end (and the project's start),
+// from the project as it is now. The averages learnt for the old cuts are forgotten when the project changes.
+void Playback::refreshCuts(const Project& p)
+{
+    const uint64_t stamp = frameStamp();
+    if (stamp == cutsStamp_) return;
+    cutsStamp_ = stamp;
+    cuts_.clear();
+    cuts_.push_back(0.0);
+    for (const Track& t : p.tracks) {
+        if (t.type != TrackType::Video || t.mute) continue;
+        for (const Event& e : t.events) {
+            if (e.mute) continue;
+            cuts_.push_back(std::max(0.0, e.start));
+            cuts_.push_back(std::max(0.0, e.start + e.length));
+        }
+    }
+    std::sort(cuts_.begin(), cuts_.end());
+    std::vector<double> u;
+    for (double c : cuts_)
+        if (u.empty() || c - u.back() > 1e-6) u.push_back(c);
+    cuts_.swap(u);
+    segStats_.clear();
+}
+
+// The cut at or before 't' (where t's segment begins)
+double Playback::segmentStart(double t) const
+{
+    auto it = std::upper_bound(cuts_.begin(), cuts_.end(), t + 1e-9);
+    return it == cuts_.begin() ? 0.0 : *(it - 1);
+}
+
+// The first cut after 't' in the playing direction 'dir' (for dir < 0: the start of t's segment, unless t is on it),
+// or a negative number if there is none.
+double Playback::nextCut(double t, int dir) const
+{
+    if (dir >= 0) {
+        auto it = std::upper_bound(cuts_.begin(), cuts_.end(), t + 1e-9);
+        return it == cuts_.end() ? -1.0 : *it;
+    }
+    auto it = std::lower_bound(cuts_.begin(), cuts_.end(), t - 1e-9);
+    return it == cuts_.begin() ? -1.0 : *(it - 1);
+}
+
+// How long a frame at 't' is expected to take: the average for its segment once a frame of it has been rendered, the
+// overall average until then.
+double Playback::estimateAt(double t) const
+{
+    auto it = segStats_.find((int64_t)std::llround(segmentStart(t) * 1000.0));
+    if (it != segStats_.end() && it->second.n > 0) return it->second.avg;
+    return renderEst_;
+}
+
+void Playback::noteSegmentTime(double t, double seconds)
+{
+    SegStat& st = segStats_[(int64_t)std::llround(segmentStart(t) * 1000.0)];
+    // a plain average of the first few, then a running one (the last ~8 frames count most)
+    st.n = std::min(st.n + 1, 1000);
+    const double w = st.n <= 8 ? 1.0 / st.n : 1.0 / 8.0;
+    st.avg += w * (std::min(seconds, 30.0) - st.avg);
 }
 
 // The next frame for frame thread 'index' to start, if any (videoMutex_ held): the frame the sound will be at once it
@@ -1252,11 +1321,44 @@ bool Playback::planPlayJob(int index, std::unique_lock<std::mutex>& lk, int64_t&
     abandonLateJobs(pos, lateTol);
     ramToReady();
     const int workers = std::max(1, workers_.load());
-    const double R = renderEst_;
+    std::shared_ptr<const Project> proj = app_.snapshot();
+    refreshCuts(*proj);
+    // the average render time where the frame aimed at lies: aimed at by the average here, then again by the average
+    // of the segment that lands in (a slow clip coming up pulls the aim further out)
+    double R = estimateAt(pos);
+    R = std::max(R, estimateAt(wrapTime(pos + dir * ar * (R + kRenderMargin))));
     const bool behind = R * ar > period * 0.8;
     const int using_ = behind ? workers : 1;
     size_t waiting = 0;
     for (const ReadyFrame& r : ready_) if (r.ms > 0) ++waiting;
+    // ---- The next clips: the first frame after each coming cut is started its own segment's average (plus the margin)
+    // before the cut, so it is there when the clip begins even when the clip renders slowly. Looked at: the cuts within
+    // the longest of those averages (a few at most).
+    {
+        double t = pos;
+        for (int k = 0; k < kCutsAhead; ++k) {
+            const double cut = nextCut(t, dir);
+            if (cut < 0 || (!c.loop && cut >= c.length) || (c.loop && (cut <= c.loopStart || cut >= c.loopEnd))) break;
+            const double until = aheadOf(pos, cut) / ar;          // seconds of playing until the cut
+            if (until <= 0) { t = cut; continue; }
+            const double e = estimateAt(dir > 0 ? cut : std::max(0.0, cut - 1e-6));
+            const double lead = e * using_ + kRenderMargin + period / ar;
+            if (until > std::max(lead, R * using_ + kRenderMargin) + kAheadSeconds) break;
+            if (until <= lead && (index == 0 || behind || workers > 1) && waiting <= (size_t)using_ + 1) {
+                int64_t g = (int64_t)std::floor((dir > 0 ? cut : cut - 1e-6) * fps + 1e-6);
+                if (step > 1) g = dir > 0 ? (g + step - 1) / step * step : g / step * step;
+                if (g >= 0 && !frameTaken(g) && aheadOf(pos, frameEnd(g)) > 0 && !ram_.has(frameStamp(), g, frameScale(*proj, dynScale_))) {
+                    frame = g;
+                    cancel = std::make_shared<std::atomic<bool>>(false);
+                    dyn = dynScale_;
+                    aheadJob = false;
+                    ++diag_.cutsAhead;
+                    return true;
+                }
+            }
+            t = cut;
+        }
+    }
     double u = wrapTime(pos + dir * ar * (R + kRenderMargin));
     int64_t f = (int64_t)std::floor(u * fps + 1e-6);
     if (step > 1) f = dir > 0 ? (f + step - 1) / step * step : f / step * step;
@@ -1279,26 +1381,63 @@ bool Playback::planPlayJob(int index, std::unique_lock<std::mutex>& lk, int64_t&
     // A thread with nothing to render for the next moments renders the frames after them into the RAM preview (up to
     // kAheadSeconds), so a slow stretch eats into frames already made instead of dropping frames.
     if (ram_.limit() == 0 || !aheadOn_) return false;
-    std::shared_ptr<const Project> sp = app_.snapshot();
+    const std::shared_ptr<const Project>& sp = proj;
     const double scale = frameScale(*sp, dynScale_);
     const size_t frameBytes = (size_t)std::max(1.0, sp->settings.width * scale) * (size_t)std::max(1.0, sp->settings.height * scale) * 4;
     const int64_t room = (int64_t)(ram_.limit() / 2 / std::max<size_t>(1, frameBytes));
-    const int64_t horizon = std::min<int64_t>(room, (int64_t)std::ceil(kAheadSeconds * ar * fps / step));
+    // how far ahead: kAheadSeconds, or longer where frames are slow (three times the slowest average coming up), as far
+    // as half the RAM preview holds
+    double slowest = R;
+    {
+        double t = pos;
+        for (int k = 0; k < kCutsAhead; ++k) {
+            const double cut = nextCut(t, dir);
+            if (cut < 0 || aheadOf(pos, cut) / ar > std::max(kAheadSeconds, 3.0 * slowest)) break;
+            slowest = std::max(slowest, estimateAt(dir > 0 ? cut : std::max(0.0, cut - 1e-6)));
+            t = cut;
+        }
+    }
+    const double aheadSeconds = std::min(kAheadMostSeconds, std::max(kAheadSeconds, 3.0 * slowest));
+    const int64_t horizon = std::min<int64_t>(room, (int64_t)std::ceil(aheadSeconds * ar * fps / step));
     if (horizon < 4) return false;
-    u = wrapTime(pos + dir * ar * (std::max(R, 0.0) + kRenderMargin));
-    int64_t g = (int64_t)std::floor(u * fps + 1e-6);
-    if (step > 1) g = dir > 0 ? (g + step - 1) / step * step : g / step * step;
     const uint64_t stamp = frameStamp();
-    for (int64_t k = 0; k < horizon; ++k, g = nextFrame(g)) {
-        if (g < 0 || (!c.loop && (double)g / fps >= c.length)) break;
-        if (aheadOf(pos, frameEnd(g)) <= 0 || frameTaken(g)) continue;
-        if (ram_.has(stamp, g, scale)) continue;
-        frame = g;
-        cancel = std::make_shared<std::atomic<bool>>(false);
-        dyn = dynScale_;
-        aheadJob = true;
-        waitFor = 0.0;
-        return true;
+    // Where to start: from the frame the average says (pos + R), and from each coming cut that is within reach, the
+    // stretch after it that its own average says it needs. The start point whose frames are due soonest after the time
+    // it takes to make them goes first.
+    struct StartPoint { double t; double slack; int64_t count; };
+    std::vector<StartPoint> starts;
+    starts.push_back({wrapTime(pos + dir * ar * (std::max(R, 0.0) + kRenderMargin)), 0.0, horizon});
+    {
+        double t = pos;
+        for (int k = 0; k < kCutsAhead; ++k) {
+            const double cut = nextCut(t, dir);
+            if (cut < 0 || (!c.loop && cut >= c.length)) break;
+            const double until = aheadOf(pos, cut) / ar;
+            if (until > aheadSeconds) break;
+            const double e = estimateAt(dir > 0 ? cut : std::max(0.0, cut - 1e-6));
+            if (until > 0)
+                starts.push_back({dir > 0 ? cut : cut - 1e-6, until - e, std::max<int64_t>(4, (int64_t)std::ceil((e + kRenderMargin) * ar * fps / step) + 1)});
+            t = cut;
+        }
+    }
+    std::stable_sort(starts.begin() + 1, starts.end(), [](const StartPoint& a, const StartPoint& b) { return a.slack < b.slack; });
+    // a coming clip whose frames take longer than the time left until it starts comes before the plain run ahead
+    std::stable_sort(starts.begin(), starts.end(), [](const StartPoint& a, const StartPoint& b) { return (a.slack < 0) > (b.slack < 0); });
+    for (const StartPoint& sp0 : starts) {
+        int64_t g = (int64_t)std::floor(sp0.t * fps + 1e-6);
+        if (step > 1) g = dir > 0 ? (g + step - 1) / step * step : g / step * step;
+        for (int64_t k = 0; k < std::min(horizon, sp0.count); ++k, g = nextFrame(g)) {
+            if (g < 0 || (!c.loop && (double)g / fps >= c.length)) break;
+            if (aheadOf(pos, frameStart(g)) / ar > aheadSeconds) break;
+            if (aheadOf(pos, frameEnd(g)) <= 0 || frameTaken(g)) continue;
+            if (ram_.has(stamp, g, scale)) continue;
+            frame = g;
+            cancel = std::make_shared<std::atomic<bool>>(false);
+            dyn = dynScale_;
+            aheadJob = true;
+            waitFor = 0.0;
+            return true;
+        }
     }
     waitFor = std::min(waitFor, 0.02);
     return false;
@@ -1831,11 +1970,13 @@ void Playback::prewarmLoop()
             }
         }
         std::shared_ptr<const Project> p = app_.snapshot();
-        double pos = 0, rate = 1;
+        double pos = 0, rate = 1, window = kPrewarmSeconds;
         {
             std::lock_guard<std::mutex> lk(videoMutex_);
             pos = clockPos();
             rate = clock_.rate;
+            // events are read ahead further when frames are slow: twice the average render time plus a second
+            window = std::max(kPrewarmSeconds, std::min(10.0, 2.0 * renderEst_ + 1.0));
         }
         const Event* pick = nullptr;
         // events playing a nested project now or soon: their own upcoming events are read ahead too (prewarmNested),
@@ -1855,14 +1996,14 @@ void Playback::prewarmLoop()
                     if (e.mute) continue;
                     const MediaItem* m = p->findMedia(e.mediaId);
                     if (m && isProjectFile(m->path)) {
-                        if (e.start + e.length > pos && (e.start - pos) / rate <= kPrewarmSeconds) {
+                        if (e.start + e.length > pos && (e.start - pos) / rate <= window) {
                             nested.push_back(&e);
                             nestedFirst = std::min(nestedFirst, std::max(e.start, pos));
                         }
                         continue;
                     }
                     const double ahead = (e.start - pos) / rate;
-                    if (ahead < 0.03 || ahead > kPrewarmSeconds || prewarmDone_.count(e.id)) continue;
+                    if (ahead < 0.03 || ahead > window || prewarmDone_.count(e.id)) continue;
                     if (!pick || e.start < pick->start) pick = &e;
                 }
             }
@@ -1879,7 +2020,7 @@ void Playback::prewarmLoop()
             int got = 0;
             for (const Event* e : nested) {
                 prewarmEnd_ = e->start + e->length;
-                got += video_.prewarmNested(*p, *e, pos, pos + kPrewarmSeconds * rate, fo, kPrewarmKeep, &prewarmStop_, [this](uint64_t key) {
+                got += video_.prewarmNested(*p, *e, pos, pos + window * rate, fo, kPrewarmKeep, &prewarmStop_, [this](uint64_t key) {
                     std::lock_guard<std::mutex> lk(prewarmMutex_);
                     return prewarmDone_.insert(key ^ 0x4e45535445440000ull).second;
                 });
@@ -2027,13 +2168,18 @@ void Playback::renderPlayingFrame(int index, std::unique_lock<std::mutex>& lk)
             break;
         }
     if (aheadJob) {
-        // Made for the RAM preview, which renderFrame put it in. Not a frame to show now, nor a measure of how long
-        // just-in-time frames take: those are made while the other threads are busy too.
+        // every frame made ahead teaches how long frames take in its segment (the stretch between two cuts)
+        if (rendered && !cancel->load() && gen == playGen_) noteSegmentTime(p->frameTime(frame), ms / 1000.0);
+        // Made for the RAM preview, which renderFrame put it in. Not a frame to show now, nor a measure for the overall
+        // average: those are made while the other threads are busy too.
         if (!image.isNull() && !cancel->load()) ++diag_.aheadDone;
         return;
     }
     if (rendered && (!cancel->load() || late)) {
-        noteRenderTime(ms / 1000.0, late, late && steadyNow() - lateAt < 0.05);
+        const bool stoppedEarly = late && steadyNow() - lateAt < 0.05;
+        noteRenderTime(ms / 1000.0, late, stoppedEarly);
+        // and its segment's average: a frame that came too late still says how long that clip's frames take
+        noteSegmentTime(p->frameTime(frame), ms / 1000.0);
         if (autoSize_ && !cancel->load()) adaptPreviewScale(ms);
     }
     if (gen != playGen_ || cancel->load() || image.isNull()) {

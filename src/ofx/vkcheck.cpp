@@ -80,6 +80,48 @@ Diff compare(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b, size_
     return d;
 }
 
+// Where a picture differs, so a report from another computer says what to look at: how the differing values lie
+// (the top and bottom rows, the left and right columns, inside; by channel), and the first few with the CPU's and
+// the GPU's values. Rows are counted from the top of the picture.
+void describeDifferences(Report& rep, const std::vector<uint8_t>& a, const std::vector<uint8_t>& b, int W, int H, bool isFloat, double floatTol)
+{
+    size_t top = 0, bottom = 0, left = 0, right = 0, inside = 0, chan[4] = {0, 0, 0, 0};
+    int minX = W, maxX = -1, minY = H, maxY = -1;
+    std::vector<std::string> first;
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            for (int ch = 0; ch < 4; ++ch) {
+                const size_t i = ((size_t)y * W + x) * 4 + ch;
+                double va, vb, tol;
+                if (isFloat) {
+                    float fa, fb;
+                    std::memcpy(&fa, a.data() + i * 4, 4);
+                    std::memcpy(&fb, b.data() + i * 4, 4);
+                    va = fa; vb = fb;
+                    tol = floatTol + 1e-5 * std::fabs(va);
+                } else {
+                    va = a[i]; vb = b[i];
+                    tol = 1.0;
+                }
+                if (!(std::fabs(va - vb) > tol)) continue;
+                const int row = H - 1 - y;                          // pictures are kept bottom row first
+                ++chan[ch];
+                if (row < 2) ++top; else if (row >= H - 2) ++bottom; else if (x < 2) ++left; else if (x >= W - 2) ++right; else ++inside;
+                minX = std::min(minX, x); maxX = std::max(maxX, x); minY = std::min(minY, row); maxY = std::max(maxY, row);
+                if (first.size() < 8) {
+                    char t[160];
+                    if (isFloat) std::snprintf(t, sizeof t, "(%d,%d) ch%d cpu %.7g gpu %.7g", x, row, ch, va, vb);
+                    else std::snprintf(t, sizeof t, "(%d,%d) ch%d cpu %d gpu %d", x, row, ch, (int)va, (int)vb);
+                    first.push_back(t);
+                }
+            }
+    rep.line("      where: top 2 rows %zu, bottom 2 rows %zu, left 2 columns %zu, right 2 columns %zu, inside %zu; channels %zu %zu %zu %zu; "
+             "box x %d-%d, rows %d-%d", top, bottom, left, right, inside, chan[0], chan[1], chan[2], chan[3], minX, maxX, minY, maxY);
+    std::string list;
+    for (const std::string& f : first) list += (list.empty() ? "" : "; ") + f;
+    rep.line("      first: %s", list.c_str());
+}
+
 bool parseSize(const std::string& t, int* w, int* h)
 {
     int a = 0, b = 0;
@@ -167,12 +209,15 @@ int runVkCheck(const std::vector<std::string>& args)
     rep.line("using %s", gpu::status().c_str());
     {
         const gpu::DeviceInfo cur = gpu::currentDevice();
-        rep.line("float controls in every kernel (RoundingModeRTE and DenormPreserve, 32-bit): %s", cur.floatControlsUsed ? "ON" : (cur.fcKnown ? "off (the driver lacks RTE or denorm preserve for 32-bit floats, or RENO_VK_NO_FLOAT_CONTROLS is set)" : "off (below Vulkan 1.2: the driver's default rounding and denormal handling apply)"));
+        if (cur.floatControlsUsed)
+            rep.line("float controls in every kernel (32-bit): RoundingModeRTE %s, DenormPreserve %s", cur.fcUseRte ? "ON" : "off (not offered)", cur.fcUseDenorm ? "ON" : "off (not offered)");
+        else
+            rep.line("float controls in every kernel (32-bit): %s", cur.fcKnown ? "off (the driver offers neither RTE nor denorm preserve for 32-bit floats, or RENO_VK_NO_FLOAT_CONTROLS is set)" : "off (below Vulkan 1.2: the driver's default rounding and denormal handling apply)");
     }
     rep.line("");
     rep.line("%-34s %-10s %-11s %8s %9s %7s %9s %9s %9s  %s", "effect / settings", "format", "", "max diff", "mean diff", "over", "CPU ms", "GPU ms", "kernel ms", "");
 
-    int total = 0, bad = 0;
+    int total = 0, bad = 0, declined = 0;
     double cpuSum = 0, gpuSum = 0;
     const int modes[2] = {0, 2};
     for (const std::string& id : gpuEffectIds()) {
@@ -207,7 +252,14 @@ int runVkCheck(const std::vector<std::string>& args)
                 if (!ok) { rep.line("%-34s %-10s CPU render failed", label, isFloat ? "float" : "8-bit"); ++bad; continue; }
                 gpu::RunStats st;
                 if (!renderFrameGpu(*d, c2, W, H, isFloat, bgra, in.data(), stride, b.data(), stride, &st)) {
-                    rep.line("%-34s %-10s GPU render failed: %s", label, isFloat ? "float" : "8-bit", gpu::status().c_str());
+                    const std::string why = lastGpuFailure();
+                    if (why == "declined") {
+                        // the effect's GPU plan leaves these settings to the CPU on purpose: not a failure
+                        rep.line("%-34s %-10s on the CPU (its GPU plan does not cover these settings)", label, isFloat ? "float" : "8-bit");
+                        ++declined;
+                        continue;
+                    }
+                    rep.line("%-34s %-10s GPU render failed: %s (%s)", label, isFloat ? "float" : "8-bit", why.c_str(), gpu::status().c_str());
                     ++bad;
                     continue;
                 }
@@ -227,6 +279,7 @@ int runVkCheck(const std::vector<std::string>& args)
                 gpuSum += gpuMs;
                 rep.line("%-34s %-10s %-11s %8.*f %9.*f %7zu %9.2f %9.2f %9.2f  %s", label, isFloat ? "float" : "8-bit", "", isFloat ? 6 : 0, df.maxd, isFloat ? 7 : 4, df.mean,
                          df.over, cpuMs, gpuMs, kMs, fine ? "ok" : "DIFFERS");
+                if (!fine) describeDifferences(rep, a, b, W, H, isFloat, gpuFloatTolerance(*d));
             }
         }
     }
@@ -298,7 +351,7 @@ int runVkCheck(const std::vector<std::string>& args)
     }
 
     rep.line("");
-    rep.line("%d comparisons, %d with a problem. Summed over the lines: CPU %.0f ms, GPU %.0f ms (GPU time includes copying the picture to the card and back).", total, bad, cpuSum, gpuSum);
+    rep.line("%d comparisons, %d with a problem, %d left to the CPU by design. Summed over the lines: CPU %.0f ms, GPU %.0f ms (GPU time includes copying the picture to the card and back).", total, bad, declined, cpuSum, gpuSum);
     rep.line("A line is DIFFERS when a value is more than 1 level (8-bit) or 1e-4 (float) away from the CPU's picture.");
     FILE* f = std::fopen(reportFile.c_str(), "wb");
     if (f) {

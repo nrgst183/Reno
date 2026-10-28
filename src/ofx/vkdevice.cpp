@@ -220,7 +220,11 @@ void describeDevices(VkApi& api, VkInstance inst, std::vector<VkPhysicalDevice>&
             d.fcRoundingIndependence = (int)fc.roundingModeIndependence;
             const char* off = std::getenv("RENO_VK_NO_FLOAT_CONTROLS");
             const char* force = std::getenv("RENO_VK_FORCE_FLOAT_CONTROLS");        // (for trying the fallback on a driver that does not have them)
-            d.floatControlsUsed = ((d.fcRteF32 && d.fcDenormPreserveF32) || (force && force[0] && force[0] != '0')) && !(off && off[0] && off[0] != '0');
+            // each control the driver has is used (RTE rounding, keeping denormals); forcing asks for both
+            const bool forced = force && force[0] && force[0] != '0';
+            d.fcUseRte = d.fcRteF32 || forced;
+            d.fcUseDenorm = d.fcDenormPreserveF32 || forced;
+            d.floatControlsUsed = (d.fcUseRte || d.fcUseDenorm) && !(off && off[0] && off[0] != '0');
         }
         d.maxStorageRange = pr.limits.maxStorageBufferRange;
         d.maxPushConstants = pr.limits.maxPushConstantsSize;
@@ -396,9 +400,9 @@ void giveBuffer(Core& c, Buffer& b)
 }
 
 // ---------------------------------------------------------------------------------------------------- pipelines
-// The kernel with the 32-bit float controls added: capabilities DenormPreserve and RoundingModeRTE (with the SPV_KHR_float_controls extension, which a SPIR-V 1.0 module needs)
+// The kernel with the 32-bit float controls the driver has added: capabilities DenormPreserve and/or RoundingModeRTE (with the SPV_KHR_float_controls extension, which a SPIR-V 1.0 module needs)
 // and, for every entry point, the execution modes DenormPreserve 32 and RoundingModeRTE 32.
-std::vector<uint32_t> withFloatControls(const uint32_t* w, size_t n)
+std::vector<uint32_t> withFloatControls(const uint32_t* w, size_t n, bool rte, bool denorm)
 {
     std::vector<uint32_t> out;
     if (n < 5) return out;
@@ -415,8 +419,8 @@ std::vector<uint32_t> withFloatControls(const uint32_t* w, size_t n)
     if (entries.empty() || modeEnd == 0) return std::vector<uint32_t>();
     out.reserve(n + 16 + entries.size() * 8);
     out.insert(out.end(), w, w + capEnd);
-    out.push_back((2u << 16) | 17u); out.push_back(4464u);              // DenormPreserve
-    out.push_back((2u << 16) | 17u); out.push_back(4467u);              // RoundingModeRTE
+    if (denorm) { out.push_back((2u << 16) | 17u); out.push_back(4464u); }      // DenormPreserve
+    if (rte) { out.push_back((2u << 16) | 17u); out.push_back(4467u); }         // RoundingModeRTE
     const char* ext = "SPV_KHR_float_controls";
     std::vector<uint32_t> str((std::strlen(ext) + 1 + 3) / 4, 0u);
     std::memcpy(str.data(), ext, std::strlen(ext));
@@ -424,8 +428,8 @@ std::vector<uint32_t> withFloatControls(const uint32_t* w, size_t n)
     out.insert(out.end(), str.begin(), str.end());
     out.insert(out.end(), w + capEnd, w + modeEnd);
     for (uint32_t id : entries) {
-        out.push_back((4u << 16) | 16u); out.push_back(id); out.push_back(4459u); out.push_back(32u);     // DenormPreserve 32
-        out.push_back((4u << 16) | 16u); out.push_back(id); out.push_back(4462u); out.push_back(32u);     // RoundingModeRTE 32
+        if (denorm) { out.push_back((4u << 16) | 16u); out.push_back(id); out.push_back(4459u); out.push_back(32u); }     // DenormPreserve 32
+        if (rte) { out.push_back((4u << 16) | 16u); out.push_back(id); out.push_back(4462u); out.push_back(32u); }        // RoundingModeRTE 32
     }
     out.insert(out.end(), w + modeEnd, w + n);
     return out;
@@ -450,7 +454,7 @@ VkPipeline pipelineFor(Core& c, const std::string& name, uint32_t& lx, uint32_t&
     bool triedFc = false;
     for (int attempt = 0; attempt < 2 && !pipe; ++attempt) {
         std::vector<uint32_t> fcWords;
-        if (attempt == 0 && c.info.floatControlsUsed) { fcWords = withFloatControls(blob->words, blob->count); triedFc = !fcWords.empty(); }
+        if (attempt == 0 && c.info.floatControlsUsed) { fcWords = withFloatControls(blob->words, blob->count, c.info.fcUseRte, c.info.fcUseDenorm); triedFc = !fcWords.empty(); }
         if (attempt == 1 && !triedFc) break;
         VkShaderModuleCreateInfo mi = {};
         mi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -855,6 +859,13 @@ void dropResident()
 namespace {
 std::atomic<uint64_t> gRuns(0), gStayed(0), gFailed(0);
 bool runInner(const Plan& plan, FrameIO& io, RunStats* stats);
+// Why the last run() on this thread failed (for reno_cli vkcheck): the check that stopped it.
+thread_local std::string tRunWhy;
+bool runFailed(const char* why)
+{
+    tRunWhy = why;
+    return false;
+}
 }
 
 Counters counters()
@@ -866,10 +877,13 @@ Counters counters()
     return c;
 }
 
+std::string lastRunFailure() { return tRunWhy; }
+
 bool run(const Plan& plan, FrameIO& io, RunStats* stats)
 {
     RunStats local;
     RunStats* st = stats ? stats : &local;
+    tRunWhy.clear();
     const bool ok = runInner(plan, io, st);
     if (ok) {
         gRuns++;
@@ -885,27 +899,27 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
 {
     const Clock::time_point t0 = Clock::now();
     std::shared_ptr<Core> cp = acquireCore(nullptr);
-    if (!cp) return false;
+    if (!cp) return runFailed("!cp");
     Core& c = *cp;
     const VkApi& a = c.api;
-    if (c.lost) return false;
-    if (plan.w != io.w || plan.h != io.h || io.w < 1 || io.h < 1 || (!io.in && !io.noInput) || !io.out || plan.bufs.size() < 2 || plan.passes.empty()) return false;
-    if (plan.bufs[0].w != io.w || plan.bufs[0].h != io.h || plan.bufs[0].comps != 4 || plan.bufs[1].w != io.w || plan.bufs[1].h != io.h || plan.bufs[1].comps != 4) return false;
+    if (c.lost) return runFailed("c.lost");
+    if (plan.w != io.w || plan.h != io.h || io.w < 1 || io.h < 1 || (!io.in && !io.noInput) || !io.out || plan.bufs.size() < 2 || plan.passes.empty()) return runFailed("plan.w != io.w || plan.h != io.h || io.w < 1 || io.h < 1 || (!io.in && !io.noInput) || !io.out || plan.bufs.si");
+    if (plan.bufs[0].w != io.w || plan.bufs[0].h != io.h || plan.bufs[0].comps != 4 || plan.bufs[1].w != io.w || plan.bufs[1].h != io.h || plan.bufs[1].comps != 4) return runFailed("plan.bufs[0].w != io.w || plan.bufs[0].h != io.h || plan.bufs[0].comps != 4 || plan.bufs[1].w != io.w || plan.");
     const size_t bpp = io.isFloat ? 16 : 4;
     const size_t rawBytes = (size_t)io.w * io.h * bpp;
-    if (rawBytes > c.info.maxStorageRange) return false;
-    for (const BufDesc& b : plan.bufs) if (b.w == 0 || b.h == 0 || b.comps == 0 || b.bytes() > c.info.maxStorageRange) return false;
+    if (rawBytes > c.info.maxStorageRange) return runFailed("rawBytes > c.info.maxStorageRange");
+    for (const BufDesc& b : plan.bufs) if (b.w == 0 || b.h == 0 || b.comps == 0 || b.bytes() > c.info.maxStorageRange) return runFailed("b.w == 0 || b.h == 0 || b.comps == 0 || b.bytes() > c.info.maxStorageRange");
     for (const Pass& p : plan.passes) {
-        if (p.pushSize > kMaxPush || p.pushSize > c.info.maxPushConstants) return false;
-        if (p.in0 >= (int)plan.bufs.size() || p.in1 >= (int)plan.bufs.size() || p.out < 0 || p.out >= (int)plan.bufs.size() || p.in0 < -1 || p.in1 < -1) return false;
-        if (p.table >= (int)plan.tables.size() || p.table < -1 || p.threadsX == 0 || p.threadsY == 0) return false;
-        if (!hasShader(p.shader)) return false;
+        if (p.pushSize > kMaxPush || p.pushSize > c.info.maxPushConstants) return runFailed("p.pushSize > kMaxPush || p.pushSize > c.info.maxPushConstants");
+        if (p.in0 >= (int)plan.bufs.size() || p.in1 >= (int)plan.bufs.size() || p.out < 0 || p.out >= (int)plan.bufs.size() || p.in0 < -1 || p.in1 < -1) return runFailed("p.in0 >= (int)plan.bufs.size() || p.in1 >= (int)plan.bufs.size() || p.out < 0 || p.out >= (int)plan.bufs.size(");
+        if (p.table >= (int)plan.tables.size() || p.table < -1 || p.threadsX == 0 || p.threadsY == 0) return runFailed("p.table >= (int)plan.tables.size() || p.table < -1 || p.threadsX == 0 || p.threadsY == 0");
+        if (!hasShader(p.shader)) return runFailed("!hasShader(p.shader)");
     }
-    if (!hasShader(io.isFloat ? "unpack_f32" : "unpack_u8") || !hasShader(io.isFloat ? "pack_f32" : "pack_u8")) return false;
-    if (plan.passes.size() + 2 > kMaxPasses) return false;
+    if (!hasShader(io.isFloat ? "unpack_f32" : "unpack_u8") || !hasShader(io.isFloat ? "pack_f32" : "pack_u8")) return runFailed("!hasShader(io.isFloat ? \"unpack_f32\" : \"unpack_u8\") || !hasShader(io.isFloat ? \"pack_f32\" : \"pack_u8\")");
+    if (plan.passes.size() + 2 > kMaxPasses) return runFailed("plan.passes.size() + 2 > kMaxPasses");
 
     ThreadState* ts = stateFor(c);
-    if (!ts) return false;
+    if (!ts) return runFailed("!ts");
 
     // ---- buffers
     std::vector<Buffer> held;
@@ -931,13 +945,13 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         rawIn = ts->resident.buf;
         rawInIsResident = true;
     } else {
-        if (!takeBuffer(c, rawBytes, Kind::Device, rawIn)) return false;
+        if (!takeBuffer(c, rawBytes, Kind::Device, rawIn)) return runFailed("!takeBuffer(c, rawBytes, Kind::Device, rawIn)");
         held.push_back(rawIn);
     }
     Buffer rawOut;
     if (!takeBuffer(c, rawBytes, Kind::Device, rawOut)) {
         if (rawInIsResident) { giveBuffer(c, ts->resident.buf); ts->resident = Resident(); }
-        return false;
+        return runFailed("line 940");
     }
     std::vector<Buffer> frameBufs(plan.bufs.size());
     bool okAlloc = true;
@@ -962,7 +976,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     if (!okAlloc) {
         giveBuffer(c, rawOut);
         if (rawInIsResident) { giveBuffer(c, ts->resident.buf); ts->resident = Resident(); }
-        return false;
+        return runFailed("line 965");
     }
     struct OutRelease { Core& c; Buffer& b; bool keep; ~OutRelease() { if (!keep) giveBuffer(c, b); } } outRelease{c, rawOut, false};
 
@@ -1031,7 +1045,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     std::vector<std::pair<uint32_t, uint32_t>> locals(bound.size());
     for (size_t k = 0; k < bound.size(); ++k) {
         pipes[k] = pipelineFor(c, bound[k].shader, locals[k].first, locals[k].second);
-        if (!pipes[k]) { if (c.lost) return false; return false; }
+        if (!pipes[k]) { if (c.lost) return runFailed("!pipes[k]) { if (c.lost"); return runFailed("!pipes[k]) { if (c.lost"); }
     }
 
     // ---- record
@@ -1040,7 +1054,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (a.vkBeginCommandBuffer(ts->cb, &bi) != VK_SUCCESS) return false;
+    if (a.vkBeginCommandBuffer(ts->cb, &bi) != VK_SUCCESS) return runFailed("a.vkBeginCommandBuffer(ts->cb, &bi) != VK_SUCCESS");
     VkCommandBuffer cb = ts->cb;
     const bool useTs = ts->queries != VK_NULL_HANDLE;
     if (useTs) a.vkCmdResetQueryPool(cb, ts->queries, 0, 2);
@@ -1088,7 +1102,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         a.vkCmdDispatch(cb, gx, gy, 1);
         barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     }
-    if (!recordOk) { a.vkEndCommandBuffer(cb); return false; }
+    if (!recordOk) { a.vkEndCommandBuffer(cb); return runFailed("!recordOk"); }
     if (useTs) a.vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, ts->queries, 1);
     barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     {
@@ -1096,7 +1110,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         a.vkCmdCopyBuffer(cb, rawOut.buf, stageDown.buf, 1, &cr);
     }
     barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
-    if (a.vkEndCommandBuffer(cb) != VK_SUCCESS) return false;
+    if (a.vkEndCommandBuffer(cb) != VK_SUCCESS) return runFailed("a.vkEndCommandBuffer(cb) != VK_SUCCESS");
 
     // ---- go
     a.vkResetFences(c.dev, 1, &ts->fence);
@@ -1111,14 +1125,14 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     }
     if (r != VK_SUCCESS) {
         if (r == VK_ERROR_DEVICE_LOST) c.lost = true;
-        return false;
+        return runFailed("line 1114");
     }
     r = a.vkWaitForFences(c.dev, 1, &ts->fence, VK_TRUE, (uint64_t)20 * 1000 * 1000 * 1000);
     if (r != VK_SUCCESS) {
         // device lost, or a pass that never ends: the card is not trusted any more
         if (!c.lost) logf("Vulkan: device did not finish (%d); built-in effects will render on the CPU", (int)r);
         c.lost = true;
-        return false;
+        return runFailed("line 1121");
     }
     if (!stageDown.coherent) {
         VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, nullptr, stageDown.mem, 0, VK_WHOLE_SIZE};

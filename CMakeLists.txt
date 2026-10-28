@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 project(Reno LANGUAGES CXX)
 
-# Reno builds on Windows (Visual Studio 2022 / MSVC, or clang-cl), Linux (GCC or Clang) and macOS (Apple Clang), and
+# Reno builds on Windows (Visual Studio 2022 with clang-cl - the default in build_msvc.bat and Reno.sln - or MSVC), Linux (GCC or Clang) and macOS (Apple Clang), and
 # cross-compiles for Windows from Linux with clang-cl (cmake/toolchains/windows-clangcl.cmake).
 # CMakePresets.json has a preset for each; Visual Studio opens this folder directly (File > Open > Folder).
 # Reno.sln is the same build as Visual Studio projects (vs\).
@@ -29,6 +29,10 @@ if(MSVC)
   add_compile_options(/W3 /utf-8 /bigobj)
   if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     add_compile_options(/MP)
+  else()
+    # clang-cl (the default on Windows: build_msvc.bat, Reno.sln's ClangCL toolset, CI): no fused multiply-adds, so
+    # floating-point results stay what the effects were checked with (VEGAS's own code does not fuse them either)
+    add_compile_options(/clang:-ffp-contract=off)
   endif()
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX UNICODE _UNICODE)
 else()
@@ -179,9 +183,13 @@ if(RENO_WITH_APP AND TARGET reno_media)
       if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
         set(_vst32_wrap ${CMAKE_COMMAND} -E env --unset=Platform --unset=VSCMD_ARG_TGT_ARCH)     # drop the x64 prompt's settings
       endif()
+      set(_vst32_toolset "")
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        set(_vst32_toolset -T ClangCL)      # the same compiler as the rest (Visual Studio's "C++ Clang tools" component)
+      endif()
       add_custom_target(reno_vst32 ALL
         COMMAND ${_vst32_wrap} ${CMAKE_COMMAND} -S ${CMAKE_CURRENT_SOURCE_DIR}/src/vst32 -B ${CMAKE_BINARY_DIR}/vst32
-                -G "${_vst32_gen}" -A Win32 -DRENO_VST32_OUT=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+                -G "${_vst32_gen}" -A Win32 ${_vst32_toolset} -DRENO_VST32_OUT=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
         COMMAND ${_vst32_wrap} ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/vst32 --config $<IF:$<CONFIG:Debug>,Debug,Release>
         COMMENT "Building reno_vst32.exe (32-bit, for 32-bit VST2 plug-ins)"
         VERBATIM)

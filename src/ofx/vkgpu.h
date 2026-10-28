@@ -24,6 +24,7 @@ struct DeviceInfo {
     uint32_t maxStorageRange = 0, maxPushConstants = 0, maxGroupInvocations = 0;
     bool timestamps = false;
     // Float controls (Vulkan 1.2 / VK_KHR_shader_float_controls), as the driver reports them: fcKnown is false when they could not be asked (a Vulkan 1.0/1.1 device).
+    bool fcUseRte = false, fcUseDenorm = false;      // the controls put into every kernel
     bool fcKnown = false, fcRteF32 = false, fcDenormPreserveF32 = false, fcDenormFlushF32 = false, fcRtzF32 = false, fcSignedZeroInfNanF32 = false;
     int fcDenormIndependence = -1, fcRoundingIndependence = -1;      // 0 = 32-bit only, 1 = all, 2 = none
     bool floatControlsUsed = false;     // every kernel is made with RoundingModeRTE and DenormPreserve for 32-bit floats
@@ -49,6 +50,8 @@ bool ready(std::string* why = nullptr);
 bool deviceLost();
 // "Vulkan: <device>" or the reason there is none.
 std::string status();
+// Why the last run() on this thread failed (the check that stopped it), or "".
+std::string lastRunFailure();
 DeviceInfo currentDevice();
 // Closes everything (the device is made again on the next use); the pipeline cache is written first.
 void shutdown();

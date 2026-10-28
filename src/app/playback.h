@@ -12,6 +12,7 @@
 #include <thread>
 #include <condition_variable>
 #include <deque>
+#include <vector>
 #include <map>
 #include <set>
 #include <mutex>
@@ -258,7 +259,7 @@ private:
     // Diagnostics for playback-log.txt beside reno.exe: a line a second while playing with what the frame threads, the
     // sound device and the UI did, for investigating a slow preview.
     struct Diag {
-        std::atomic<int> prewarmed{0}, aheadStarted{0}, aheadDone{0}, started{0}, rendered{0}, late{0}, ready{0}, ramHits{0}, pulls{0}, pullFrames{0}, silence{0}, mixed{0};
+        std::atomic<int> prewarmed{0}, cutsAhead{0}, aheadStarted{0}, aheadDone{0}, started{0}, rendered{0}, late{0}, ready{0}, ramHits{0}, pulls{0}, pullFrames{0}, silence{0}, mixed{0};
         std::atomic<double> renderMs{0}, maxPullGap{0}, mixMs{0};
         int ticks = 0, presents = 0, shown = 0, positions = 0;
         int64_t lastFrame = -1;
@@ -352,6 +353,21 @@ private:
     std::deque<ReadyFrame> ready_;
     int64_t shownFrame_ = -1;
     double renderEst_ = 0.0;
+    // Look-ahead by average render time: the average time a frame takes overall (renderEst_, from the last few frames)
+    // and for each stretch between cuts ("segment": from one video event's start or end to the next), learnt while
+    // playing and kept for the next play until the project changes. A frame is started that long before it is due, and
+    // the first frame of each coming segment is started its own average before the cut, so a slow clip's first frames
+    // are ready when it begins.
+    struct SegStat { double avg = 0; int n = 0; };
+    std::deque<double> recentRender_;
+    std::map<int64_t, SegStat> segStats_;           // by the segment's start in milliseconds
+    std::vector<double> cuts_;                      // sorted times where video events start or end (and 0)
+    uint64_t cutsStamp_ = ~0ull;
+    void refreshCuts(const Project& p);
+    double segmentStart(double t) const;
+    double nextCut(double t, int dir) const;
+    double estimateAt(double t) const;
+    void noteSegmentTime(double t, double seconds);
     uint64_t playShown_ = 0, dueFrames_ = 0;
     int64_t lastDueFrame_ = -1;
     void newPlayGeneration();

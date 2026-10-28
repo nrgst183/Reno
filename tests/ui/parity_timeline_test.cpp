@@ -18,6 +18,7 @@
 #include "../../src/app/editdialogs.h"
 #include "../../src/engine/timefmt.h"
 #include "uitestlib.h"
+#include "../../src/app/vprefs.h"
 #include <QAction>
 #include <QApplication>
 #include <QColorDialog>
@@ -556,7 +557,8 @@ int main(int argc, char** argv)
         app.undo();
         app.undo();
         check(app.project().tracks.size() == n0 && const_cast<Project&>(app.project()).findTrack(v), "Cut is one undo step");
-        // Delete: the selected tracks
+        // Delete: the selected tracks (without the "holds events, delete anyway?" question, a VEGAS preference that is on by default)
+        vprefs::set("prefs/warnDeleteTrack", false);
         headerMenu(0, m);
         if (QAction* d = itemOf(&m, "Delete")) d->trigger();
         check(app.project().tracks.size() == n0 - 1, "Delete deletes the track");

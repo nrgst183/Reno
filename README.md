@@ -47,7 +47,8 @@ version filled in. The macOS build is new and untested.
 
 ## Building on Windows
 
-You need Visual Studio 2022 (C++ workload) and Qt 6.8.3 for `msvc2022_64` with Multimedia. Get a full FFmpeg build
+You need Visual Studio 2022 with the C++ workload and its "C++ Clang tools for Windows" component (Reno is built
+with clang-cl; `build_msvc.bat msvc` uses MSVC instead), and Qt 6.8.3 for `msvc2022_64` with Multimedia. Get a full FFmpeg build
 (all codecs) into `deps\ffmpeg` with:
 
     powershell -ExecutionPolicy Bypass -File tools\get_ffmpeg.ps1

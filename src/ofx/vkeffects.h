@@ -62,6 +62,9 @@ std::map<std::string, std::vector<double>> defaultTestParams(const Def& d);
 // The effect on one frame, on the CPU (its render function, as render() in builtins.cpp loads, runs and stores) or on the GPU.
 // 'c' holds the settings (testParams); the frame is w x h, rows bottom first, 8-bit BGRA/RGBA or float RGBA.
 bool renderFrameCpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra, const uint8_t* in, size_t inStride, uint8_t* out, size_t outStride);
+// Why the last renderFrameGpu() on this thread returned false: "declined" (the effect's GPU plan does not cover these settings: the
+// CPU renders them, by design) or what stopped the GPU run.
+std::string lastGpuFailure();
 bool renderFrameGpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra, const uint8_t* in, size_t inStride, uint8_t* out, size_t outStride, gpu::RunStats* stats = nullptr, uint64_t inSerial = 0, uint64_t outSerial = 0);
 
 // How far a float value may be from the CPU's (8-bit pictures: 1 level for every effect): 1e-4 + 1e-5 |v|, 2e-3 for effects that work out positions
