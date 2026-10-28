@@ -132,67 +132,135 @@ static const char* kNames[6] = {"L", "R", "C", "LFE", "Ls", "Rs"};
 static void testLaw()
 {
     SurroundPan sp;
-    // constant power everywhere, for any centre level
+    // Constant Power: the same loudness everywhere in the room
     double worst = 0;
-    for (double c : {0.0, 0.3, 1.0})
+    for (const char* type : {"power", "film"})
         for (int i = -10; i <= 10; ++i)
             for (int j = -10; j <= 10; ++j) {
                 float g[6];
-                surroundGains(sp, i / 10.0, j / 10.0, c, g);
+                surroundGains(sp, type, i / 10.0, j / 10.0, 1.0, g);
                 double pw = 0;
                 for (int k = 0; k < 6; ++k)
                     if (k != ChLFE) pw += (double)g[k] * g[k];
                 worst = std::max(worst, std::fabs(pw - 1.0));
             }
-    check(worst < 1e-5, "law: constant power over the whole room", "worst error " + fmt(worst));
-    auto gains = [&](double x, double y, double c, const SurroundPan& s) { std::vector<float> v(6); surroundGains(s, x, y, c, v.data()); return v; };
+    check(worst < 1e-5, "law: Constant Power and Film keep the power over the whole room", "worst error " + fmt(worst));
+    auto gains = [&](const char* type, double x, double y, double c, const SurroundPan& s) {
+        std::vector<float> v(6);
+        surroundGains(s, type, x, y, c, v.data());
+        return v;
+    };
     auto only = [&](const std::vector<float>& g, int ch) {
         for (int k = 0; k < 6; ++k)
             if (std::fabs(g[k] - (k == ch ? 1.f : 0.f)) > 1e-5f) return false;
         return true;
     };
-    check(only(gains(-1, 1, 1, sp), ChL), "law: front left corner is L alone");
-    check(only(gains(1, 1, 0.5, sp), ChR), "law: front right corner is R alone (any centre)");
-    check(only(gains(-1, -1, 1, sp), ChLs), "law: rear left corner is Ls alone");
-    check(only(gains(1, -1, 1, sp), ChRs), "law: rear right corner is Rs alone");
-    check(only(gains(0, 1, 1, sp), ChC), "law: front centre with Center 0 dB is C alone");
-    std::vector<float> g = gains(0, 1, 0, sp);
-    check(std::fabs(g[ChL] - 0.70711f) < 1e-4f && std::fabs(g[ChR] - 0.70711f) < 1e-4f && g[ChC] < 1e-6f, "law: Center -inf gives a phantom centre at -3 dB",
+    for (const char* type : {"", "balance3", "add", "power"}) {
+        const std::string t = std::string("law (") + (*type ? type : "balance0") + "): ";
+        check(only(gains(type, -1, 1, 1, sp), ChL), t + "front left corner is L alone");
+        check(only(gains(type, 1, 1, 1, sp), ChR), t + "front right corner is R alone");
+        check(only(gains(type, -1, -1, 1, sp), ChLs), t + "rear left corner is Ls alone");
+        check(only(gains(type, 1, -1, 1, sp), ChRs), t + "rear right corner is Rs alone");
+        check(only(gains(type, 0, 1, 1, sp), ChC), t + "front centre with Center 0.0 dB is C alone");
+    }
+    // Center is a gain on the centre channel: 0.0 dB leaves it, a cut or a boost scales it (VEGAS: "boost or attenuate")
+    std::vector<float> g = gains("power", 0, 1, 0.5, sp);
+    std::vector<float> boost = gains("power", 0, 1, 2.0, sp);
+    check(std::fabs(g[ChC] - 0.5f) < 1e-6f && std::fabs(boost[ChC] - 2.0f) < 1e-6f && g[ChL] < 1e-6f, "law: Center is a gain on the centre channel", fmt(g[ChC]) + " " + fmt(boost[ChC]));
+    g = gains("power", -1, 1, 0.5, sp);
+    check(only(g, ChL), "law: Center leaves the other speakers alone");
+    // a muted centre speaker: a phantom centre between left and right, at -3 dB each
+    SurroundPan mutedC;
+    mutedC.speakerMutes = 1u << ChC;
+    g = gains("power", 0, 1, 1, mutedC);
+    check(std::fabs(g[ChL] - 0.70711f) < 1e-4f && std::fabs(g[ChR] - 0.70711f) < 1e-4f && g[ChC] == 0.f, "law: a muted centre speaker gives a phantom centre at -3 dB",
           fmt(g[ChL]) + " " + fmt(g[ChR]));
-    g = gains(0, 0, 0, sp);
+    g = gains("power", 0, 0, 1, mutedC);
     bool quarter = true;
     for (int k : {ChL, ChR, ChLs, ChRs}) quarter = quarter && std::fabs(g[k] - 0.5f) < 1e-5f;
-    check(quarter, "law: the middle of the room is all four corners at -6 dB");
-    // smoothness 0: sharper - the nearest speaker gets almost all of it
-    SurroundPan sharp;
-    sharp.smoothness = 0;
-    g = gains(-0.6, 0.6, 0, sharp);
-    std::vector<float> soft = gains(-0.6, 0.6, 0, sp);
-    check(g[ChL] > soft[ChL] && g[ChL] > 0.97f && g[ChRs] < 0.01f, "law: Smoothness 0 favours the nearest speaker",
-          "L " + fmt(g[ChL]) + " (smooth " + fmt(soft[ChL]) + ")");
-    double pw = 0;
-    for (int k = 0; k < 6; ++k) pw += (double)g[k] * g[k];
-    check(std::fabs(pw - 1.0) < 1e-5, "law: Smoothness keeps the power", fmt(pw));
+    check(quarter, "law: the middle of the room is all four corners at -6 dB (centre muted)");
+    // Add Channels is linear and adds to 1 between two speakers; Balance falls from the centre level to nothing and rises to 0 dB
+    g = gains("add", -0.5, -1, 1, sp);
+    check(std::fabs(g[ChLs] - 0.75f) < 1e-5f && std::fabs(g[ChRs] - 0.25f) < 1e-5f, "law: Add Channels pans linearly", fmt(g[ChLs]) + " " + fmt(g[ChRs]));
+    g = gains("balance3", 0, -1, 1, sp);
+    check(std::fabs(g[ChLs] - 0.70795f) < 1e-4f && std::fabs(g[ChRs] - 0.70795f) < 1e-4f, "law: Balance (-3 dB center) is 3 dB down in the middle of the rear");
+    g = gains("", -0.5, -1, 1, sp);
+    check(std::fabs(g[ChLs] - 1.0f) < 1e-5f && std::fabs(g[ChRs] - 0.5f) < 1e-5f, "law: Balance (0 dB center) keeps the side panned to at 0 dB and fades the other",
+          fmt(g[ChLs]) + " " + fmt(g[ChRs]));
+    g = gains("power", -0.5, -1, 1, sp);
+    check(std::fabs(g[ChLs] - std::cos(kPi / 8)) < 1e-5 && std::fabs(g[ChRs] - std::sin(kPi / 8)) < 1e-5, "law: Constant Power pans on a quarter circle");
+    // Film: pairs of adjacent speakers at the cinema's angles. Panned to the front left corner some of it is in Ls (the
+    // panner draws L at 45 degrees, it belongs at 30), fully to the centre speaker nothing is in the others, in the middle of the room all five play.
+    g = gains("film", -1, 1, 1, sp);
+    check(g[ChL] > 0.9f && g[ChLs] > 0.1f && g[ChLs] < 0.5f && g[ChR] < 1e-6f && g[ChC] < 1e-6f, "law: Film puts a little of the front left corner in the rear left",
+          "L " + fmt(g[ChL]) + " Ls " + fmt(g[ChLs]));
+    check(only(gains("film", 0, 1, 1, sp), ChC), "law: Film panned to the centre speaker plays from it alone");
+    g = gains("film", 0, 0, 1, sp);
+    bool even = true;
+    for (int k : {ChL, ChR, ChC, ChLs, ChRs}) even = even && std::fabs(g[k] - std::sqrt(0.2f)) < 1e-5f;
+    check(even, "law: Film in the middle of the room plays from all five speakers");
+    g = gains("film", 0, -1, 1, sp);
+    check(std::fabs(g[ChLs] - g[ChRs]) < 1e-5f && g[ChL] < 1e-6f && g[ChC] < 1e-6f, "law: Film straight behind is Ls and Rs alike");
     // speaker mutes and the LFE
     SurroundPan m;
     m.speakerMutes = 1u << ChC;
     m.lfe = true;
     m.lfeLevel = 0.5;
-    g = gains(0, 1, 1, m);
+    g = gains("power", 0, 1, 1, m);
     check(g[ChC] == 0.f && std::fabs(g[ChLFE] - 0.5f) < 1e-6f, "law: a muted speaker gets nothing; Enable LFE sends at its level");
-    // keyframes
+    // keyframes: held before the first, the curves between, Hold keys hold, the last after
     SurroundPan k;
-    k.keys = {{1.0, -1, 1, 1, 0}, {3.0, 1, -1, 0, 0}, {4.0, 0, 0, 1, 1}, {5.0, 1, 1, 1, 0}};
+    SurroundKey k1, k2, k3, k4;
+    k1.time = 1.0; k1.x = -1; k1.y = 1; k1.center = 1;
+    k2.time = 3.0; k2.x = 1; k2.y = -1; k2.center = 0.5;
+    k3.time = 4.0; k3.curve = KeyHold;
+    k4.time = 5.0; k4.x = 1; k4.y = 1;
+    k.keys = {k1, k2, k3, k4};
     double x, y, c;
     surroundPointAt(k, 0.5, x, y, c);
     bool ok = x == -1 && y == 1 && c == 1;
     surroundPointAt(k, 2.0, x, y, c);
-    ok = ok && std::fabs(x) < 1e-9 && std::fabs(y) < 1e-9 && std::fabs(c - 0.5) < 1e-9;
+    ok = ok && std::fabs(x) < 1e-9 && std::fabs(y) < 1e-9 && std::fabs(c - 0.75) < 1e-9;
     surroundPointAt(k, 4.5, x, y, c);
     ok = ok && x == 0 && y == 0;
     surroundPointAt(k, 9, x, y, c);
     ok = ok && x == 1 && y == 1;
     check(ok, "law: keyframes - held before the first, straight lines between, hold keys hold, the last after");
+    // the keyframe types shape the movement in time (the same shapes as every VEGAS keyframe)
+    SurroundPan shaped;
+    SurroundKey s1, s2;
+    s2.time = 1.0;
+    s2.x = 1;
+    shaped.keys = {s1, s2};
+    double halfLin, halfFast, halfSlow, halfSmooth, halfSharp, dummy;
+    for (int curve : {(int)KeyLinear, (int)KeyFast, (int)KeySlow, (int)KeySmooth, (int)KeySharp}) {
+        shaped.keys[0].curve = curve;
+        surroundPointAt(shaped, 0.25, x, dummy, dummy);
+        (curve == KeyLinear ? halfLin : curve == KeyFast ? halfFast : curve == KeySlow ? halfSlow : curve == KeySmooth ? halfSmooth : halfSharp) = x;
+    }
+    check(std::fabs(halfLin - 0.25) < 1e-9 && halfFast > halfLin && halfSlow < halfLin && halfSmooth < halfLin && halfSharp > halfLin,
+          "law: keyframe types Linear, Fast, Slow, Smooth and Sharp shape the move in time",
+          fmt(halfLin) + " " + fmt(halfFast) + " " + fmt(halfSlow) + " " + fmt(halfSmooth) + " " + fmt(halfSharp));
+    // Smoothness: 0 is a straight line between keys; more bends the path through the keys before and after
+    SurroundPan path;
+    SurroundKey p1, p2, p3;
+    p1.time = 0; p1.x = -1; p1.y = 1;
+    p2.time = 1; p2.x = 0; p2.y = 1;
+    p3.time = 2; p3.x = 0; p3.y = -1;
+    path.keys = {p1, p2, p3};
+    double sx, sy, bx, by;
+    surroundPointAt(path, 1.5, sx, sy, dummy);
+    path.smoothness = 1.0;
+    surroundPointAt(path, 1.5, bx, by, dummy);
+    check(std::fabs(sx) < 1e-9 && std::fabs(sy - 0.0) < 1e-9 && (std::fabs(bx - sx) > 0.01 || std::fabs(by - sy) > 0.01), "law: Smoothness 0 is a straight line, more bends the path",
+          "straight " + fmt(sx) + "," + fmt(sy) + " smooth " + fmt(bx) + "," + fmt(by));
+    path.smoothness = 0;
+    path.keys[1].smoothness = 1.0;
+    surroundPointAt(path, 1.5, bx, by, dummy);
+    check(std::fabs(bx - sx) > 0.01 || std::fabs(by - sy) > 0.01, "law: a keyframe's own Smoothness wins over the panner's");
+    path.smoothness = 1.0;
+    surroundPointAt(path, 1.0, bx, by, dummy);
+    check(std::fabs(bx) < 1e-9 && std::fabs(by - 1.0) < 1e-9, "law: a smooth path still passes through its keys");
 }
 
 // ------------------------------------------------------------------------------------------ the mixer in 5.1
@@ -214,7 +282,8 @@ static void testMixer()
     {
         Project p = surroundProject();
         Track& t = addTrack(p, addMedia(p, "tone:440"));
-        t.surround.center = 0;
+        t.panType = "power";
+        t.surround.speakerMutes = 1u << ChC;
         Six s = renderSix(p, 0, n);
         double pw = 0;
         for (int k = 0; k < 6; ++k) pw += rms(s.c[k]) * rms(s.c[k]);
@@ -225,8 +294,9 @@ static void testMixer()
     {
         Project p = surroundProject();
         Track& t = addTrack(p, addMedia(p, "lr:300:700"));
+        t.panType = "power";
         t.surround.y = 1;
-        t.surround.center = 0;
+        t.surround.speakerMutes = 1u << ChC;
         Six s = renderSix(p, 0, n);
         const double l300 = tone(s.ptr[ChL], n, 300, 48000), l700 = tone(s.ptr[ChL], n, 700, 48000);
         const double r700 = tone(s.ptr[ChR], n, 700, 48000), r300 = tone(s.ptr[ChR], n, 300, 48000);
@@ -345,7 +415,12 @@ static void testMixer()
     {
         Project p = surroundProject();
         Track& t = addTrack(p, addMedia(p, "tone:200"));
-        t.surround.keys = {{0.0, -1, 1, 1, 0}, {1.0, 1, 1, 1, 0}};
+        {
+            SurroundKey a, b;
+            a.x = -1; a.y = 1;
+            b.time = 1.0; b.x = 1; b.y = 1;
+            t.surround.keys = {a, b};
+        }
         Six s = renderSix(p, 0, n);
         const double first = rms(s.ptr[ChL], 2400), last = rms(s.ptr[ChL] + n - 2400, 2400);
         const double lastR = rms(s.ptr[ChR] + n - 2400, 2400);
@@ -390,10 +465,16 @@ static void testJson()
     t.surround.route = "rear";
     t.surround.motion = "x";
     t.surround.speakerMutes = 5;
-    t.surround.keys = {{1.5, 0.1, 0.2, 0.3, 2}};
+    {
+        SurroundKey k;
+        k.time = 1.5; k.x = 0.1; k.y = 0.2; k.center = 0.3; k.curve = KeySmooth; k.smoothness = 0.4;
+        t.surround.keys = {k};
+    }
+    t.panType = "film";
     Bus b;
     b.id = p.newId();
     b.surround.y = 1;
+    b.panType = "add";
     p.buses.push_back(b);
     Project q;
     std::string err;
@@ -401,7 +482,7 @@ static void testJson()
     const SurroundPan& s = q.tracks.empty() ? SurroundPan() : q.tracks[0].surround;
     check(ok && q.settings.audioChannels == 6 && q.settings.lfeCutoff == 90 && q.settings.lfeQuality == "good" && !q.settings.lfeLowpass &&
               s.x == 0.25 && s.y == -0.5 && s.center == 0.3 && s.smoothness == 0.6 && s.lfe && s.lfeLevel == 0.7 && s.route == "rear" &&
-              s.motion == "x" && s.speakerMutes == 5 && s.keys.size() == 1 && s.keys[0].curve == 2 && q.buses.size() == 1 && q.buses[0].surround.y == 1,
+              s.motion == "x" && s.speakerMutes == 5 && s.keys.size() == 1 && s.keys[0].curve == KeySmooth && s.keys[0].smoothness == 0.4 && q.tracks[0].panType == "film" && q.buses.size() == 1 && q.buses[0].surround.y == 1 && q.buses[0].panType == "add",
           "project file: the master bus mode, LFE filter and every surround pan setting are kept");
     Project st;
     Json j = st.toJson();

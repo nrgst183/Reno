@@ -218,11 +218,13 @@ int main(int argc, char** argv)
     k.w = 0.5;
     k.h = 0.5;
     ev().panCrop.assign(1, k);
-    // media fraction (0.6, 0.4): fitted at top-down (120, 90), canonical (120, 110); after the zoom: (140, 80)
+    // The effect works on the media at its own size and its canonical coordinates are the project's, so the point (120, 110)
+    // of the 200 x 200 frame is the media fraction (0.6, 0.45); after the 2x zoom on the middle: (140, 90) (the picture
+    // is the 200 x 100 band in the middle of the frame)
     setCenter(120, 110);
     expectAt(120, 110, X, Y);
-    check(std::fabs(X - 140.5) < 0.6 && std::fabs(Y - 79.5) < 1.1, "Pan/Crop moves and scales a pre-pan/crop effect's frame", strfmt("%.2f,%.2f", X, Y));
-    check(markAt(X, Y, kTR) && markAt(X + 7, Y, kTR) && !markAt(X + 12, Y, kTR), "and the mark is drawn there, twice its size", pxs(pixel(img, (int)X, (int)Y)));
+    check(std::fabs(X - 140.5) < 0.6 && std::fabs(Y - 89.5) < 1.1, "Pan/Crop moves and scales a pre-pan/crop effect's frame", strfmt("%.2f,%.2f", X, Y));
+    check(markAt(X, Y, kTR) && markAt(X + 3, Y, kTR) && !markAt(X + 7, Y, kTR), "and the mark is drawn there, at the media's own pixel size (zoomed 1:1 here)", pxs(pixel(img, (int)X, (int)Y)));
     // turned and moved off centre
     k.cx = 0.3;
     k.cy = 0.6;
@@ -242,7 +244,7 @@ int main(int argc, char** argv)
     ev().panCrop.assign(1, k);
     setCenter(120, 110);
     expectAt(120, 110, X, Y);
-    check(std::fabs(X - 170.25) < 0.8 && std::fabs(Y - 139.75) < 1.1 && markAt(X, Y, kTR), "Pan/Crop and Track Motion together", strfmt("%.2f,%.2f", X, Y));
+    check(std::fabs(X - 170.5) < 0.8 && std::fabs(Y - 144.75) < 1.1 && markAt(X, Y, kTR), "Pan/Crop and Track Motion together", strfmt("%.2f,%.2f", X, Y));
     p.tracks[0].motion.clear();
 
     // the video output's effects and unknown slots

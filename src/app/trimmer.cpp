@@ -584,6 +584,7 @@ struct TrimmerWindow::Impl {
                     std::fill(l, l + n, 0.f);
                     std::fill(r, r + n, 0.f);
                 }
+                previewBus().process(l, r, n);
                 audioNext += n;
                 handed += n;
             };

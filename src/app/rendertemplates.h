@@ -32,6 +32,7 @@ struct Tmpl {
     int kbps = 16000, maxKbps = 24000;
     int quality = 23;
     bool twoPass = false;
+    bool smartRender = false;       // copy stretches of a source video that need no changing (engine/smartplan.h)
     QString mode = "auto";              // auto, cpu, nvenc, qsv, amf, mf
     double keySeconds = 2.0;
     bool alpha = false;
@@ -72,6 +73,7 @@ struct Tmpl {
         o["maxKbps"] = maxKbps;
         o["quality"] = quality;
         o["twoPass"] = twoPass;
+        if (smartRender) o["smartRender"] = true;
         o["mode"] = mode;
         o["keySeconds"] = keySeconds;
         o["alpha"] = alpha;
@@ -110,6 +112,7 @@ struct Tmpl {
         t.maxKbps = std::max(0, std::min(2000000, o.value("maxKbps").toInt(base.maxKbps)));
         t.quality = std::max(0, std::min(51, o.value("quality").toInt(base.quality)));
         t.twoPass = o.value("twoPass").toBool(base.twoPass);
+        t.smartRender = o.value("smartRender").toBool(base.smartRender);
         t.mode = o.value("mode").toString(base.mode);
         t.keySeconds = std::max(0.0, std::min(600.0, o.value("keySeconds").toDouble(base.keySeconds)));
         t.alpha = o.value("alpha").toBool(base.alpha);

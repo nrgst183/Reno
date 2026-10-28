@@ -1531,6 +1531,7 @@ QString chainTitle(const FxTarget& t)
     case FxTarget::VideoOut: return "Video Output FX";
     case FxTarget::AudioOut: return "Master Bus FX";
     case FxTarget::Bus: return "Bus FX";
+    case FxTarget::InputBus: return "Input Bus FX";
     default: return "FX";
     }
 }

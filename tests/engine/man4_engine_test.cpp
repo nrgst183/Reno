@@ -737,6 +737,50 @@ static void testMpegRender(const std::string& out)
     }
 }
 
+// Render As > MPEG-1 (Video CD and plain MPEG-1): MPEG-1 video and Layer II sound in an MPEG-1 system stream (pack
+// headers 0x21..., not MPEG-2's 0x44...)
+static void testMpeg1Render(const std::string& out)
+{
+    const std::string clip = pathJoin(out, "tones.avi");
+    const std::string tone2 = pathJoin(out, "tone2.wav");
+    Project p;
+    p.settings.width = 352;
+    p.settings.height = 288;
+    MediaItem v = mediaOf(p, clip), a2 = mediaOf(p, tone2);
+    Track vt, at;
+    vt.id = p.newId();
+    vt.type = TrackType::Video;
+    vt.events.push_back(eventOf(p.newId(), v.id, 1.0));
+    at.id = p.newId();
+    at.type = TrackType::Audio;
+    at.events.push_back(eventOf(p.newId(), a2.id, 1.0));
+    p.tracks = {vt, at};
+    FxRuntime fx;
+    RenderSpec spec;
+    spec.enc.path = pathJoin(out, "vcd.mpg");
+    spec.enc.videoFamily = "mpeg1";
+    spec.enc.audioFamily = "mp2";
+    spec.enc.audioKbps = 224;
+    spec.enc.outSampleRate = 44100;
+    spec.enc.videoKbps = 1150;
+    spec.enc.maxKbps = 1150;
+    spec.enc.rateControl = "cbr";
+    spec.enc.fpsNum = 25;
+    spec.enc.fpsDen = 1;
+    spec.enc.width = 352;
+    spec.enc.height = 288;
+    std::string e;
+    const bool ok = renderProjectAs(p, fx, spec, 0, 1.0, nullptr, &e);
+    const std::string codecs = ok ? probeCodecs(spec.enc.path) : e;
+    check(ok && codecs.find("mpeg1video") != std::string::npos && codecs.find("mp2") != std::string::npos, "an MPEG-1 render has MPEG-1 video and Layer II sound", codecs);
+    unsigned char head[6] = {0};
+    if (FILE* f = std::fopen(spec.enc.path.c_str(), "rb")) {
+        if (std::fread(head, 1, 6, f) != 6) head[0] = 1;
+        std::fclose(f);
+    }
+    check(head[0] == 0 && head[1] == 0 && head[2] == 1 && head[3] == 0xBA && (head[4] & 0xF0) == 0x20, "it is an MPEG-1 system stream (pack header 0x21)");
+}
+
 int main(int argc, char** argv)
 {
     const std::string out = argc > 1 ? argv[1] : "man4out";
@@ -751,6 +795,7 @@ int main(int argc, char** argv)
     testDucking(out);
     testModernEq();
     testMpegRender(out);
+    testMpeg1Render(out);
     std::printf("SUMMARY: %d passed, %d failed\n", gPass, gFail);
     return gFail ? 1 : 0;
 }

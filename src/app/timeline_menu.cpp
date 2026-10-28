@@ -1,4 +1,5 @@
 // Right-click menus of the timeline.
+#include "recorder.h"
 #include "timeline_internal.h"
 
 namespace reno {
@@ -804,6 +805,13 @@ void TimelineWidget::Impl::trackMenu(QMenu& menu, const Hit& h, bool lane, doubl
     }
     if (!lane && !video && q->onArmTrack) {
         toggleItem(menu, "Arm for Record", app.armedTracks.count(id) != 0, [this, id] { if (q->onArmTrack) q->onArmTrack(id); });
+    }
+    if (!lane && !video) {
+        QMenu* ri = menu.addMenu("Record Input");
+        ri->setObjectName("recordInputMenu");
+        fillRecordInputMenu(ri, t->recordInput, true, [this, id](const RecordInput& r) {
+            app.edit("Record Input", [&](Project& p) { if (Track* o = p.findTrack(id)) o->recordInput = r; });
+        });
     }
     if (!lane && !video) panTypeMenu(*menu.addMenu("Pan Type"), id);
     if (!lane && !video) autoDuckingMenu(*menu.addMenu("Auto Ducking"), id);

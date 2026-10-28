@@ -907,6 +907,9 @@ struct Scene3d {
 struct Switches3d {
     bool rotation = true, lockAspect = true;
     bool noMove[3] = {false, false, false}, noScale[3] = {false, false, false};
+    // Enable Snapping (F8): the grid of the flat workspace (1/grid of the frame across and down, and the same step in depth)
+    bool snap = false;
+    int grid = 16;
 };
 
 class Pane3d : public QWidget {
@@ -914,6 +917,8 @@ public:
     int angle = CameraAngle;
     double zoom = 1.0;
     QPointF pan;
+    // The Perspective view's direction (degrees): turned with Alt+drag or the middle button (Restore View puts it back)
+    double yaw = 35, pitch = 25;
     std::function<Box()> current;
     std::function<Scene3d()> scene;
     std::function<Switches3d()> switches;
@@ -955,12 +960,14 @@ public:
     {
         zoom = 1.0;
         pan = QPointF();
+        yaw = 35;
+        pitch = 25;
         update();
     }
 
     bool project(const double w[3], QPointF& out) const
     {
-        const double Wd = sc_.W * sc_.par, D = trackMotion3dCamera(sc_.W, sc_.par);
+        const double Wd = sc_.W * sc_.par, D = trackMotion3dCamera(sc_.W, sc_.H, sc_.par);
         double a = 0, b = 0;
         const double x = w[0], y = w[1], z = w[2];
         switch (angle) {
@@ -978,7 +985,7 @@ public:
         case TopAngle: a = x; b = -z; break;
         case BottomAngle: a = x; b = z; break;
         default: {
-            const double yaw = 35 * kPi / 180, pitch = 25 * kPi / 180;
+            const double yaw = this->yaw * kPi / 180, pitch = this->pitch * kPi / 180;
             const double e[3] = {std::sin(yaw) * std::cos(pitch), -std::sin(pitch), -std::cos(yaw) * std::cos(pitch)};
             const double f[3] = {-e[0], -e[1], -e[2]};
             double r[3] = {1 * f[2] - 0 * f[1], 0 * f[0] - 0 * f[2], 0 * f[1] - 1 * f[0]};
@@ -1000,7 +1007,7 @@ public:
     }
     double scale() const
     {
-        const double Wd = std::max(1.0, sc_.W * sc_.par), H = std::max(1, sc_.H), D = trackMotion3dCamera(sc_.W, sc_.par);
+        const double Wd = std::max(1.0, sc_.W * sc_.par), H = std::max(1, sc_.H), D = trackMotion3dCamera(sc_.W, sc_.H, sc_.par);
         const double pw = std::max(40, width() - 16), ph = std::max(40, height() - 36);
         double s;
         if (angle == CameraAngle || angle == FrontAngle || angle == BackAngle) s = 0.8 * std::min(pw / Wd, ph / H);
@@ -1035,7 +1042,7 @@ public:
         return project(w, out);
     }
 protected:
-    enum Part { Nothing, Inside, Corner, Turn, Scroll };
+    enum Part { Nothing, Inside, Corner, Turn, Scroll, Orbit };
 
     void paintEvent(QPaintEvent*) override
     {
@@ -1050,7 +1057,7 @@ protected:
         const bool frameOk = corners(std::vector<MotionKey>(), fr);
         // looking straight at the frame from the front or back, the camera is in the middle of it: not drawn
         if (angle != CameraAngle && angle != FrontAngle && angle != BackAngle) {
-            double cam[3] = {0, 0, -trackMotion3dCamera(sc_.W, sc_.par)};
+            double cam[3] = {0, 0, -trackMotion3dCamera(sc_.W, sc_.H, sc_.par)};
             QPointF c;
             if (project(cam, c)) {
                 p.setPen(QPen(QColor(80, 130, 190, 160), 1));
@@ -1079,6 +1086,8 @@ protected:
             p.drawPolygon(g);
         }
         setProperty("angle", angle);
+        setProperty("yaw", yaw);
+        setProperty("pitch", pitch);
         if (!current) return;
         const Box b = current();
         QPointF q[4];
@@ -1180,6 +1189,15 @@ protected:
             if (onMenu) onMenu(this, e->globalPosition().toPoint());
             return;
         }
+        if (e->button() == Qt::MiddleButton || (e->button() == Qt::LeftButton && (e->modifiers() & Qt::AltModifier))) {
+            if (angle != PerspectiveAngle) return;
+            press_ = e->position();
+            part_ = Orbit;
+            yawStart_ = yaw;
+            pitchStart_ = pitch;
+            setCursor(Qt::ClosedHandCursor);
+            return;
+        }
         if (e->button() != Qt::LeftButton) return;
         press_ = e->position();
         corner_ = 0;
@@ -1191,7 +1209,7 @@ protected:
         }
         start_ = current();
         centreOf(start_, centre_);
-        if (part_ == Inside) {
+        if (part_ == Inside || part_ == Corner) {
             int a, b;
             moveAxes(a, b);
             const int ax[2] = {a, b};
@@ -1226,7 +1244,7 @@ protected:
     }
     void mouseMoveEvent(QMouseEvent* e) override
     {
-        if (!(e->buttons() & Qt::LeftButton) || part_ == Nothing) {
+        if (part_ != Orbit && (!(e->buttons() & Qt::LeftButton) || part_ == Nothing)) {
             int c = 0;
             switch (partAt(e->position(), &c)) {
             case Inside: setCursor(Qt::SizeAllCursor); break;
@@ -1234,6 +1252,13 @@ protected:
             case Turn: setCursor(Qt::OpenHandCursor); break;
             default: unsetCursor(); break;
             }
+            return;
+        }
+        if (part_ == Orbit) {
+            const QPointF d = e->position() - press_;
+            yaw = yawStart_ + d.x() * 0.5;
+            pitch = std::min(89.0, std::max(-89.0, pitchStart_ + d.y() * 0.5));
+            update();
             return;
         }
         if (part_ == Scroll) {
@@ -1245,6 +1270,11 @@ protected:
     }
     void mouseReleaseEvent(QMouseEvent* e) override
     {
+        if (part_ == Orbit) {
+            part_ = Nothing;
+            unsetCursor();
+            return;
+        }
         if (e->button() != Qt::LeftButton) return;
         const Part was = part_;
         part_ = Nothing;
@@ -1258,6 +1288,26 @@ protected:
     }
 
 private:
+    // A box with no turn of any kind: its edges are on the lines of its position and size
+    static bool unturned(const Box& b)
+    {
+        return b.rot == 0 && b.rx == 0 && b.ry == 0 && b.ox == 0 && b.oy == 0 && b.oz == 0;
+    }
+    // Enable Snapping while moving: the box's middle, or (unturned) its low or high edge, within 8 pixels of a grid line goes
+    // onto it. 'axis' is the field (0 x, 1 y, 2 z) and 'j' which of the pane's two move axes it is. The grid is 1/n of the frame.
+    void snapCentre(Box& b, int axis, int j, int grid) const
+    {
+        const double step = 1.0 / grid, px = std::hypot(jac_[j].x(), jac_[j].y());
+        if (!(px > 1e-9)) return;
+        double& c = posField(b, axis);
+        const double half = unturned(b) ? std::fabs(sizeOf(b, axis)) / 2 : 0.0;
+        double bestMove = 0, bestDist = 1e18;
+        for (double edge : {c - half, c, c + half}) {
+            const double g = std::floor(edge / step + 0.5) * step;
+            if (std::fabs(g - edge) < bestDist) { bestDist = std::fabs(g - edge); bestMove = g - edge; }
+        }
+        if (bestDist * px <= 8.0) c += bestMove;
+    }
     Box dragged(const QPointF& at, Qt::KeyboardModifiers mods) const
     {
         Box b = start_;
@@ -1282,6 +1332,10 @@ private:
             }
             posField(b, a0) += m0;
             posField(b, a1) += m1;
+            if (s.snap) {
+                if (f0) snapCentre(b, a0, 0, s.grid);
+                if (f1) snapCentre(b, a1, 1, s.grid);
+            }
             break;
         }
         case Corner: {
@@ -1298,6 +1352,28 @@ private:
             } else {
                 if (std::fabs(r0.x()) > 3 && !s.noScale[a0]) sizeField(b, a0) = sizeOf(start_, a0) * std::fabs(r1.x()) / std::fabs(r0.x());
                 if (std::fabs(r0.y()) > 3 && !s.noScale[a1]) sizeField(b, a1) = sizeOf(start_, a1) * std::fabs(r1.y()) / std::fabs(r0.y());
+            }
+            if (s.snap && unturned(start_)) {
+                // the box grows about its middle: the edge that moves goes onto a grid line
+                for (int j = 0; j < 2; ++j) {
+                    const int ax = j == 0 ? a0 : a1;
+                    if (s.noScale[ax] || ax == 2) continue;
+                    const double c = posField(b, ax), old = std::fabs(sizeOf(start_, ax));
+                    double half = std::fabs(sizeOf(b, ax)) / 2;
+                    const double step = 1.0 / s.grid, px = std::max(1e-9, std::hypot(jac_[j].x(), jac_[j].y()));
+                    const double edge = c + half, g = std::floor(edge / step + 0.5) * step;
+                    if (std::fabs(g - edge) * px > 8.0 || g - c < 1e-3) continue;
+                    const double want = 2 * (g - c), sign = sizeOf(b, ax) < 0 ? -1.0 : 1.0;
+                    if (lock && old > 1e-9) {
+                        const double f = want / std::fabs(sizeOf(b, ax));
+                        for (int k = 0; k < 3; ++k)
+                            if (!s.noScale[k]) sizeField(b, k) *= f;
+                    } else {
+                        sizeField(b, ax) = sign * want;
+                    }
+                    (void)half;
+                    break;
+                }
             }
             for (int k = 0; k < 3; ++k) {
                 double& v = sizeField(b, k);
@@ -1326,6 +1402,7 @@ private:
     QPointF press_, centre_, panStart_;
     QPointF jac_[2];
     double turnSign_ = 1.0;
+    double yawStart_ = 35, pitchStart_ = 25;
 };
 
 // The panes of the 3D workspace in a layout (VEGAS's Layout drop-down, keys 1 to 6): 1 one pane, 2 two side by side, 3
@@ -3492,8 +3569,27 @@ public:
             if (!t || modeOf(*t) == want) return;
             const uint64_t id = trackId_;
             const bool par = parent_;
-            app_.edit(par ? "Parent Composite Mode" : "Compositing Mode", [id, want, par](Project& p) {
-                if (Track* tr = p.findTrack(id)) (par ? tr->parentComposite : tr->composite) = want;
+            // VEGAS asks before changing between 2D and 3D track motion: going to 3D deletes the 2D Shadow and Glow
+            // keyframes (3D motion has none); going back to 2D loses the 3D values (dialogs 874 and 875)
+            const bool to3 = want == "3dsrcalpha", from3 = modeOf(*t) == "3dsrcalpha";
+            bool dropShadow = false, drop3d = false;
+            if (!par && to3 && !from3 && (!t->shadow2d.empty() || !t->glow2d.empty())) {
+                if (!confirmMotionConversion(true)) { pickData(mode_, qs(modeOf(*t))); return; }
+                dropShadow = true;
+            }
+            if (from3 && !to3) {
+                for (const MotionKey& k : motionOf(*t)) if (k.has3d()) drop3d = true;
+                if (drop3d && !confirmMotionConversion(false)) { pickData(mode_, qs(modeOf(*t))); return; }
+            }
+            app_.edit(par ? "Parent Composite Mode" : "Compositing Mode", [id, want, par, dropShadow, drop3d](Project& p) {
+                Track* tr = p.findTrack(id);
+                if (!tr) return;
+                (par ? tr->parentComposite : tr->composite) = want;
+                if (dropShadow) { tr->shadow2d.clear(); tr->glow2d.clear(); }
+                if (drop3d)
+                    for (MotionKey& k : par ? tr->parentMotion : tr->motion) {
+                        k.z = 0; k.d = 1.0; k.rotX = k.rotY = 0; k.oriX = k.oriY = k.oriZ = 0; k.offX = k.offY = k.offZ = 0;
+                    }
             });
         });
 
@@ -3661,6 +3757,39 @@ public:
     }
 
 private:
+    // VEGAS's two "converting between 2D and 3D track motion" questions (Yes / No, No the default, with "Don't show me this
+    // again", which then answers Yes). False: the change is not made.
+    bool confirmMotionConversion(bool to3d)
+    {
+        const char* key = to3d ? "dontShow/motion2dTo3d" : "dontShow/motion3dTo2d";
+        QSettings st;
+        if (st.value(key, false).toBool()) return true;
+        QDialog d(this);
+        d.setObjectName("motionConversionDialog");
+        d.setWindowTitle("Reno");
+        QVBoxLayout* v = new QVBoxLayout(&d);
+        QLabel* l = new QLabel(to3d ? "You are converting from 2D to 3D track motion. Shadow and Glow keyframe data will be deleted."
+                                    : "You are converting from 3D to 2D track motion. Some keyframe data will be lost.", &d);
+        l->setObjectName("conversionText");
+        l->setWordWrap(true);
+        v->addWidget(l);
+        v->addWidget(new QLabel("Are you sure you want to continue?", &d));
+        QCheckBox* again = new QCheckBox("&Don't show me this again", &d);
+        again->setObjectName("dontShowAgain");
+        v->addWidget(again);
+        QDialogButtonBox* bb = new QDialogButtonBox(&d);
+        QPushButton* yes = bb->addButton("Yes", QDialogButtonBox::AcceptRole);
+        QPushButton* no = bb->addButton("No", QDialogButtonBox::RejectRole);
+        yes->setObjectName("conversionYes");
+        no->setObjectName("conversionNo");
+        no->setDefault(true);
+        QObject::connect(yes, &QPushButton::clicked, &d, &QDialog::accept);
+        QObject::connect(no, &QPushButton::clicked, &d, &QDialog::reject);
+        v->addWidget(bb);
+        const bool ok = d.exec() == QDialog::Accepted;
+        if (ok && again->isChecked()) st.setValue(key, true);
+        return ok;
+    }
     const Track* track() const { return const_cast<Project&>(app_.project()).findTrack(trackId_); }
     bool exists() const override { return track() != nullptr; }
     const std::string& modeOf(const Track& t) const { return parent_ ? t.parentComposite : t.composite; }
@@ -3810,6 +3939,8 @@ private:
         s.noScale[0] = scaleXBtn_->isChecked();
         s.noScale[1] = scaleYBtn_->isChecked();
         s.noScale[2] = scaleZBtn_->isChecked();
+        s.snap = snapBtn_->isChecked();
+        s.grid = std::max(1, std::min(256, view_->gridDivisions));
         return s;
     }
     Scene3d scene3d() const
@@ -3910,7 +4041,6 @@ private:
             layoutBox_->setVisible(d3);
             moveZBtn_->setVisible(d3);
             scaleZBtn_->setVisible(d3);
-            snapBtn_->setEnabled(!d3);
             objectBtn_->setEnabled(!d3);
             centreBtn_->setEnabled(!d3);
             for (QWidget* w : rows3d_) if (w) w->setVisible(d3);

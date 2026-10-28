@@ -33,6 +33,34 @@ struct ScriptOfxDesc {
     std::vector<ScriptOfxParam> params;         // in the order the effect defines them
 };
 
+// An OpenFX effect preset as scripts see it: its name and the effect settings it holds (FxSlot::state's form).
+struct ScriptPreset {
+    std::string name;
+    Json state;
+};
+
+// Render As's formats and templates as scripts see them (VEGAS's Renderer and RenderTemplate).
+struct ScriptRenderTemplate {
+    std::string name, description, ext;     // ext: the file name extension where the template has its own ("" the format's)
+    bool video = true, audio = true;
+    int width = 0, height = 0;              // 0: the project's
+    int fpsNum = 0, fpsDen = 1;
+    int sampleRate = 0, channels = 2, bits = 16, videoKbps = 0, audioKbps = 0;
+    double par = 1.0;
+};
+struct ScriptRenderer {
+    std::string name, ext, description;
+    bool hasVideo = true, hasAudio = true;
+    std::vector<ScriptRenderTemplate> templates;
+};
+// One Vegas.Render call: format and template by their places in ScriptHost::renderers.
+struct ScriptRenderRequest {
+    int renderer = 0, tmpl = 0;
+    std::string output;
+    double from = 0, to = 0;               // seconds
+    bool markers = false, useRotation = false;
+};
+
 // What the session needs from the program running it. Everything has a usable default (tests set what they need).
 struct ScriptHost {
     std::string version = "Version 18.0 (Build 527) Reno";   // (VEGAS's form, which scripts parse)
@@ -57,6 +85,13 @@ struct ScriptHost {
     // OFXEffect.Parameters: the parameters of the OpenFX effect 'pluginId' in 'context' ("Filter", "Transition",
     // "Generator").
     std::function<bool(const std::string& pluginId, const std::string& context, ScriptOfxDesc* out, std::string* error)> describeOfx;
+    // Render As's formats (those the program can make). Default: none.
+    std::function<std::vector<ScriptRenderer>()> renderers;
+    // Vegas.Render: renders the project (as the script has it now) and returns VEGAS's RenderStatus (4 Complete, 5 Canceled,
+    // 6 Failed with *error saying why).
+    std::function<int(const Project& p, const ScriptRenderRequest& r, std::string* error)> render;
+    // The presets of an OpenFX plug-in in 'context' ("Filter", "Transition", "Generator"), in VEGAS's order.
+    std::function<std::vector<ScriptPreset>(const std::string& pluginId, const std::string& context)> presets;
 };
 
 class ScriptSession {
@@ -151,6 +186,26 @@ private:
     int markerKind(const Project::Marker& m) const;
     std::vector<Project::Marker*> markersOfKind(int kind);
     std::vector<uint64_t> groupIds() const;
+
+    // scriptsession_ext.cpp: the project's HDR and stereoscopic 3D settings, track groups and media bins. Each returns
+    // kNotMine when the object or property is not one of these, so the callers carry on.
+    static const int kNotMine = -1000;
+    int extGetI(const Desc& d, int prop, int64_t* out);
+    int extGetD(const Desc& d, int prop, double* out);
+    int extGetS(const Desc& d, int prop, std::string* out);
+    int extSetI(const Desc& d, int prop, int64_t v);
+    int extSetD(const Desc& d, int prop, double v);
+    int extSetS(const Desc& d, int prop, const std::string& v);
+    int extList(const Desc& d, int which, std::vector<uint64_t>* out);
+    int extCall(const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s, uint64_t* out, double* dout);
+    const std::vector<ScriptPreset>& presetsOf(size_t pluginIndex);
+    const std::vector<ScriptRenderer>& renderersOf();
+    std::vector<ScriptRenderer> renderers_;
+    bool renderersRead_ = false;
+    std::map<size_t, std::vector<ScriptPreset>> presets_;      // by plug-in (read once per run)
+    std::vector<uint64_t> trackGroupIds() const;
+    std::vector<std::string> binPaths() const;           // every bin's path (the ones kept, the ones media are in, their parents)
+    bool binExists(const std::string& path) const;
     void touch() { changed = true; }
 
     // OpenFX parameters (scriptsession.cpp, "OpenFX parameters")

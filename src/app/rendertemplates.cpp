@@ -355,6 +355,40 @@ std::vector<Format> builtInFormats()
         all.push_back(f);
     }
     {
+        // MPEG-1 (VEGAS Pro 23 renders it): the MPEG-1 system stream (.mpg) of mpeg1video pictures and MPEG-1 Layer II
+        // sound, which FFmpeg's "mpeg" muxer writes as MPEG-1 (not MPEG-2) program stream when the pictures are MPEG-1.
+        // MPEG-1 has no interlaced coding, so every template is progressive.
+        Format f;
+        f.key = "mpeg1";
+        f.name = "MPEG-1";
+        f.ext = "mpg";
+        f.blurb = "MPEG-1 system streams: Video CD and plain MPEG-1 files, progressive pictures and Layer II sound.";
+        f.videoFamily = "mpeg1";
+        f.audioFamily = "mp2";
+        struct Row { const char* name; int w, h, num, den, kbps, maxKbps; double par; bool audio; bool cbr; int rate; double key; const char* desc; };
+        const Row rows[] = {
+            {"Video CD NTSC", 352, 240, 30000, 1001, 1150, 1150, 0.9091, true, true, 44100, 0.5, "Video: 352x240, 29.97 fps, 1.15 Mbps constant. Audio: MPEG-1 Layer II, 224 Kbps, 44,100 Hz, Stereo."},
+            {"Video CD PAL", 352, 288, 25, 1, 1150, 1150, 1.0909, true, true, 44100, 0.48, "Video: 352x288, 25 fps, 1.15 Mbps constant. Audio: MPEG-1 Layer II, 224 Kbps, 44,100 Hz, Stereo."},
+            {"MPEG-1 NTSC Video Stream", 352, 240, 30000, 1001, 1500, 1856, 0.9091, false, false, 44100, 0.5, "Video: 352x240, 29.97 fps, up to 1.856 Mbps. Render the sound apart."},
+            {"MPEG-1 PAL Video Stream", 352, 288, 25, 1, 1500, 1856, 1.0909, false, false, 44100, 0.48, "Video: 352x288, 25 fps, up to 1.856 Mbps. Render the sound apart."},
+            {"MPEG-1 NTSC", 352, 240, 30000, 1001, 1500, 1856, 0.9091, true, false, 44100, 0.5, "Video: 352x240, 29.97 fps. Audio: MPEG-1 Layer II, 224 Kbps, 44,100 Hz, Stereo."},
+            {"MPEG-1 PAL", 352, 288, 25, 1, 1500, 1856, 1.0909, true, false, 44100, 0.48, "Video: 352x288, 25 fps. Audio: MPEG-1 Layer II, 224 Kbps, 44,100 Hz, Stereo."},
+            {"MPEG-1 640x480 29.97 fps", 640, 480, 30000, 1001, 3000, 4000, 1.0, true, false, 48000, 0.5, "Video: 640x480, 29.97 fps. Audio: MPEG-1 Layer II, 224 Kbps, 48,000 Hz, Stereo."},
+            {"MPEG-1 720x576 25 fps", 720, 576, 25, 1, 4000, 5000, 1.0667, true, false, 48000, 0.48, "Video: 720x576, 25 fps. Audio: MPEG-1 Layer II, 224 Kbps, 48,000 Hz, Stereo."}};
+        for (const Row& r : rows) {
+            Tmpl t = make(r.name, r.w, r.h, r.num, r.den, r.kbps, r.maxKbps, r.desc);
+            t.field = "none";
+            t.par = r.par;
+            t.audio = r.audio;
+            t.sampleRate = r.rate;
+            t.audioKbps = 224;
+            t.rc = r.cbr ? "cbr" : "vbr";
+            t.keySeconds = r.key;
+            f.templates.push_back(t);
+        }
+        all.push_back(f);
+    }
+    {
         Format f;
         f.key = "xavcs";
         f.name = "Sony XAVC S";
@@ -954,7 +988,7 @@ QString templateInfo(const Format& f, const Tmpl& t)
         const std::string af = audioFamilyOf(f, t);
         const QString codec = af == "aac" ? "AAC" : af == "mp3" ? "MP3" : af == "pcm" ? "PCM" : af == "flac" ? "FLAC" :
                               af == "vorbis" ? "Vorbis" : af == "opus" ? "Opus" : af == "wma" ? "WMA" :
-                              af == "ac3" ? "Dolby Digital AC-3" : af == "alac" ? "ALAC" : "";
+                              af == "ac3" ? "Dolby Digital AC-3" : af == "alac" ? "ALAC" : af == "mp2" ? "MPEG-1 Layer II" : "";
         if (!codec.isEmpty()) a += ", " + codec;
         lines << "Audio: " + a;
     }
@@ -971,6 +1005,7 @@ QString templateInfo(const Format& f, const Tmpl& t)
             else if (t.rc == "cbr") v += QString(", %1 CBR").arg(rateText(t.kbps));
             else v += QString(", %1%2").arg(rateText(t.kbps)).arg(t.maxKbps > t.kbps ? QString(" (%1 peak)").arg(rateText(t.maxKbps)) : QString());
             if (t.twoPass) v += ", two-pass";
+            if (t.smartRender) v += ", smart render";
         }
         if (t.alpha) v += ", with alpha";
         if (t.mode != "auto" && !t.mode.isEmpty()) v += QString(", %1").arg(t.mode == "cpu" ? "CPU only" : modeLabel(t.mode));
@@ -1057,6 +1092,7 @@ bool makeRenderSpec(const Format& f, const Tmpl& t, const RenderChoices& c, cons
     spec.useRotation = c.useRotation;
     spec.markers = c.markers;
     spec.twoPass = t.twoPass && f.bitRate && t.rc == "vbr";
+    spec.smartRender = t.smartRender && f.bitRate;
     spec.transparent = t.alpha;
     spec.loudnessLog = c.loudnessLog;
     spec.loudnessAtsc = c.loudnessAtsc;

@@ -22,6 +22,10 @@ public:
     std::function<const SurroundPan*()> get;
     std::function<void(Project&, const SurroundPan&)> set;
     std::function<void()> onOpenWindow;
+    // the pan type (VEGAS's Pan Type) of the track or bus shown, and a way to change it (inside an AppState edit): the
+    // shortcut menu of the panner offers them
+    std::function<std::string()> panType;
+    std::function<void(const std::string&)> setPanType;
     std::string undoName = "Surround Pan Position";
     QPointF point() const;
     QRectF speakerRect(int ch) const;
@@ -38,6 +42,7 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
+    void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
     QRectF room() const;
@@ -71,6 +76,11 @@ private:
 
 SurroundPan* surroundPanOf(Project& p, uint64_t id);
 const SurroundPan* surroundPanOf(const Project& p, uint64_t id);
+// The pan type (Track::panType, Bus::panType) of the track or bus whose panner this is; "" when there is none.
+std::string surroundPanTypeOf(const Project& p, uint64_t id);
+void setSurroundPanType(Project& p, uint64_t id, const std::string& type);
+// The pan types VEGAS offers, as (key, name).
+const std::vector<std::pair<std::string, std::string>>& surroundPanTypes();
 
 }  // namespace app
 }  // namespace reno

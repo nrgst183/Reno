@@ -51,8 +51,9 @@ static std::unique_ptr<MediaReader> quadOpen(const std::string& path, std::strin
     std::unique_ptr<QuadReader> r(new QuadReader());
     r->mi.path = path;
     r->mi.hasVideo = true;
-    r->mi.width = 400;
-    r->mi.height = 200;
+    const bool square = path.rfind("sq:", 0) == 0;          // "sq:" 300 x 300, the same four quarters
+    r->mi.width = square ? 300 : 400;
+    r->mi.height = square ? 300 : 200;
     r->mi.fps = 30;
     r->mi.duration = 10;
     return std::unique_ptr<MediaReader>(r.release());
@@ -130,9 +131,9 @@ int main(int argc, char** argv)
     // before pan/crop: it works on the whole media picture, then the quarter it is in is zoomed in 2x with it
     p.tracks[0].events[0].fx[0].beforePanCrop = true;
     img = video.render(p, 0, fo);
-    check(is(pixel(img, 60, 58), invTL) && is(pixel(img, 60 + 7, 58 + 7), invTL) && is(pixel(img, 30, 29), kTL) && is(pixel(img, 100, 50), kTL),
+    check(is(pixel(img, 60, 58), invTL) && is(pixel(img, 63, 62), invTL) && is(pixel(img, 30, 29), kTL) && is(pixel(img, 100, 50), kTL),
           "an effect before pan/crop works on the whole media, and is zoomed in with it",
-          pxs(pixel(img, 60, 58)) + " / " + pxs(pixel(img, 67, 65)) + " / " + pxs(pixel(img, 30, 29)));
+          pxs(pixel(img, 60, 58)) + " / " + pxs(pixel(img, 63, 62)) + " / " + pxs(pixel(img, 30, 29)));
 
     // with no pan/crop at all it still works (on the whole media, fitted to the frame)
     p.tracks[0].events[0].panCrop.clear();
@@ -140,6 +141,32 @@ int main(int argc, char** argv)
     const int invBL[3] = {255 - kBL[0], 255 - kBL[1], 255 - kBL[2]};
     check(is(pixel(img, 30, 29), invTL) && is(pixel(img, 30, 80), kBL) && !is(pixel(img, 30, 80), invBL),
           "an effect before pan/crop with no pan/crop: the whole picture", pxs(pixel(img, 30, 29)));
+
+    // the effect gets the media at its own size, not fitted into the frame: a square 300 x 300 picture in the 200 x 100 frame is
+    // 300 x 300 for the effect (it is told the project is that size, so the Center (30, 70) of 200 x 100 becomes (45, 210)
+    // in it: 0.15 across and 0.3 down), and the frame shows the effect's picture fitted afterwards (100 x 100 in the middle)
+    {
+        Project q = p;
+        MediaItem sm;
+        sm.id = q.newId();
+        sm.path = sm.name = "sq:";
+        sm.info = quadOpen("sq:", nullptr)->info();
+        q.media.push_back(sm);
+        q.tracks[0].events[0].mediaId = sm.id;
+        q.tracks[0].events[0].panCrop.clear();
+        q.tracks[0].events[0].fx.resize(1);
+        q.tracks[0].events[0].fx[0].beforePanCrop = true;
+        fx.prepare(q);
+        ImagePtr r = video.render(q, 0, fo);
+        // fitted: x 50..150; the square (9 of 300 across) is at 0.15 across and 0.3 down of it: frame (65, 30)
+        check(is(pixel(r, 65, 30), invTL) && is(pixel(r, 72, 30), kTL) && is(pixel(r, 65, 65), kBL) && is(pixel(r, 80, 25), kTL) && is(pixel(r, 120, 25), kTR) && pixel(r, 30, 50).r == 0,
+              "a pre-pan/crop effect works on the media at its own size (300 x 300), then it is fitted into the frame", pxs(pixel(r, 65, 30)));
+        // and the effect's overlay placement follows: the effect's canonical point (30, 70) (what its Center says) lands at the frame pixel (65, 30) from the top
+        double pm[6];
+        check(effectPlacement(q, q.tracks[0].events[0].fx[0].id, 0, pm), "the placement of such an effect is known");
+        const double fx0 = pm[0] * 30 + pm[1] * 70 + pm[2], fy0 = pm[3] * 30 + pm[4] * 70 + pm[5];
+        check(std::fabs(fx0 - 65) < 1.5 && std::fabs(fy0 - (100 - 30)) < 1.5, "and its overlay is placed where the effect draws", strfmt("%.2f %.2f", fx0, fy0));
+    }
 
     // two effects: one before and one after; switching the one before off leaves the one after
     FxSlot s2 = s;

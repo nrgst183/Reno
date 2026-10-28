@@ -101,7 +101,8 @@ struct Preferences {
 struct FxTarget {
     enum Kind { None, Event, Track, VideoOut, AudioOut, Bus,
                 Transition,     // the transition where event 'id' overlaps the one before it
-                Generator };    // generator of media item 'id'
+                Generator,      // generator of media item 'id'
+                InputBus };     // input bus 'id'
     Kind kind = None;
     uint64_t id = 0;        // event, track, bus or media id
     bool operator==(const FxTarget& o) const { return kind == o.kind && id == o.id; }

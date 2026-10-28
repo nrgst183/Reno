@@ -176,7 +176,7 @@ std::string codecName(const std::string& family)
     static const std::map<std::string, std::string> m = {
         {"h264", "h264"}, {"hevc", "hevc"}, {"vp8", "vp8"}, {"vp9", "vp9"}, {"av1", "av1"}, {"theora", "theora"}, {"gif", "gif"},
         {"apng", "apng"}, {"qtrle", "qtrle"}, {"ffv1", "ffv1"}, {"prores", "prores"}, {"png", "png"}, {"mjpeg", "mjpeg"}, {"tiff", "tiff"},
-        {"bmp", "bmp"}, {"exr", "exr"}, {"tga", "targa"}, {"webp", "webp"}, {"wmv", "wmv"}, {"dnxhd", "dnxhd"}, {"mpeg2", "mpeg2video"},
+        {"bmp", "bmp"}, {"exr", "exr"}, {"tga", "targa"}, {"webp", "webp"}, {"wmv", "wmv"}, {"dnxhd", "dnxhd"}, {"mpeg1", "mpeg1video"}, {"mp2", "mp2"}, {"mpeg2", "mpeg2video"},
         {"dv", "dvvideo"}, {"rawvideo", "rawvideo"}, {"utvideo", "utvideo"}, {"aac", "aac"}, {"mp3", "mp3"}, {"flac", "flac"},
         {"vorbis", "vorbis"}, {"opus", "opus"}, {"wma", "wma"}, {"ac3", "ac3"}, {"alac", "alac"}, {"pcm", "pcm_"}};
     auto it = m.find(family);
@@ -196,7 +196,8 @@ void renderOne(const Project& p, const rt::Format& f, const rt::Tmpl& t, const s
     if (!check(rt::makeRenderSpec(f, t, c, p.settings, &spec, &why), name + ": makes a render spec " + why.toStdString())) return;
     // at the project's size, so its pictures can be read, and the template's own frame rate; not the constant bit rate templates,
     // whose encoders can't keep to 8 or 50 Mbps with pictures that small
-    const bool ownSize = t.rc == "cbr" && t.width > 0;
+    // (MPEG-1 too: its pixel shape is fixed by the template, and its frames are small enough to read)
+    const bool ownSize = (t.rc == "cbr" || f.key == "mpeg1") && t.width > 0;
     if (!ownSize) spec.width = spec.height = 0;
     FxRuntime fx;
     std::string err;
@@ -225,7 +226,9 @@ void renderOne(const Project& p, const rt::Format& f, const rt::Tmpl& t, const s
             check(in.width == ww && in.height == wh, name + strfmt(": %dx%d", in.width, in.height));
         }
         if (!f.sequence) check(std::fabs(in.fps - fps) < 0.02, name + strfmt(": %.3f fps (%.3f)", fps, in.fps));
-        check(std::fabs(in.duration - 1.0) < 0.12, name + strfmt(": lasts 1 s (%.3f)", in.duration));
+        // (an MPEG-1 system stream with pictures alone has no length but FFmpeg's estimate from the bit rate, short for a
+        // second of pictures - ffmpeg -i says the same; its frames are checked below instead)
+        if (!(f.key == "mpeg1" && !wantAudio)) check(std::fabs(in.duration - 1.0) < 0.12, name + strfmt(": lasts 1 s (%.3f)", in.duration));
         // pictures: the frame number at three times
         int wrong = 0;
         std::string got;
@@ -287,7 +290,7 @@ int main(int argc, char** argv)
                  "FFV1/FLAC lossless, project size and rate"}},
         {"mov", {"H.264 720p (MOV)", "Animation (QTRLE, with alpha)"}},
         {"images", {"OpenEXR (with alpha)", "Targa (with alpha)", "WebP"}},
-        {"mxf_p2", {"*"}}, {"ffmpeg", {"*"}}, {"ogv", {"*"}}, {"opus", {"*"}}, {"gif", {"*"}}, {"apng", {"*"}}, {"aiff", {"*"}}, {"alac", {"*"}}};
+        {"mxf_p2", {"*"}}, {"ffmpeg", {"*"}}, {"ogv", {"*"}}, {"opus", {"*"}}, {"gif", {"*"}}, {"apng", {"*"}}, {"aiff", {"*"}}, {"alac", {"*"}}, {"mpeg1", {"*"}}};
     const std::vector<rt::Format> all = rt::builtInFormats();
     std::set<std::string> offered;
     for (const rt::Format& f : all) offered.insert(f.key.toStdString());

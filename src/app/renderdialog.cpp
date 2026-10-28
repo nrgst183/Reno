@@ -285,6 +285,7 @@ public:
                 t.maxKbps = maxKbps_->value();
                 t.quality = qualityValue_->value();
                 t.twoPass = twoPass_->isChecked() && vbr_->isChecked();
+                t.smartRender = smart_->isChecked();
             }
             if (mode_) t.mode = mode_->currentData().toString();
             t.keySeconds = key_->value();
@@ -380,6 +381,9 @@ private:
             twoPass_ = new QCheckBox("Two-pass", box);
             twoPass_->setObjectName("twoPass");
             twoPass_->setToolTip("Look at the whole render once before encoding it, to share the bits out better (x264 and x265; NVENC does it in one go)");
+            smart_ = new QCheckBox("Smart render", box);
+            smart_->setObjectName("smartRender");
+            smart_->setToolTip("Copy stretches of a source video file as they are instead of compressing them again, when the file is the same codec and picture and the stretch is shown untouched (whole groups of pictures only; one pass)");
             maxKbps_ = new QSpinBox(box);
             maxKbps_->setObjectName("maxKbps");
             maxKbps_->setRange(0, 800000);
@@ -404,6 +408,7 @@ private:
             g->addWidget(avgKbps_, 3, 1);
             g->addWidget(quality_, 4, 0);
             g->addWidget(qualityValue_, 4, 1);
+            g->addWidget(smart_, 5, 0, 1, 2);
             form->addRow(box);
             for (QRadioButton* b : {cbr_, vbr_, quality_}) QObject::connect(b, &QRadioButton::toggled, this, [this](bool) { syncRate(); });
         }
@@ -573,6 +578,7 @@ private:
                 maxKbps_->setValue(t.maxKbps);
                 qualityValue_->setValue(t.quality);
                 twoPass_->setChecked(t.twoPass);
+                smart_->setChecked(t.smartRender);
                 syncRate();
             }
             if (mode_) pick(mode_, t.mode);
@@ -667,7 +673,7 @@ private:
     QComboBox* name_ = nullptr;
     QLineEdit* description_ = nullptr;
     QTabWidget* tabs_ = nullptr;
-    QCheckBox *includeVideo_ = nullptr, *includeAudio_ = nullptr, *twoPass_ = nullptr, *alpha_ = nullptr;
+    QCheckBox *includeVideo_ = nullptr, *includeAudio_ = nullptr, *twoPass_ = nullptr, *smart_ = nullptr, *alpha_ = nullptr;
     QLineEdit* ffOptions_ = nullptr;
     QComboBox *size_ = nullptr, *profile_ = nullptr, *level_ = nullptr, *rate_ = nullptr, *field_ = nullptr, *par_ = nullptr, *mode_ = nullptr;
     QSpinBox *width_ = nullptr, *height_ = nullptr, *cbrKbps_ = nullptr, *maxKbps_ = nullptr, *avgKbps_ = nullptr, *qualityValue_ = nullptr;

@@ -194,6 +194,9 @@ struct RenderOptions {
     // scale 1, and canonical coordinates (X / Y / XY double settings) are scaled to it as they read them, as VEGAS does in smaller previews.
     // A final render leaves it off.
     bool previewSizeForAll = false;
+    // The frames are width x height whatever the project's size, for any effect: a clip's own size (a pre-pan/crop effect works on the media
+    // as it is). The effect is told the project is that size at render scale 1, with canonical coordinates scaled to it as for a preview.
+    bool mediaSize = false;
 };
 
 class Instance : public EffectBase {

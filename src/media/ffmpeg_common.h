@@ -120,4 +120,9 @@ inline bool isJpegRangeFormat(int pixFmt)
 bool isAnimatedWebp(const std::string& path, std::string* bytes);
 std::unique_ptr<MediaReader> openAnimatedWebp(const std::string& path, const std::string& bytes, std::string* error);
 
+// HEIC / HEIF / AVIF stills, grids and alpha included (heif.cpp). isHeifStill reads the file into *bytes when it has a
+// HEIF brand; openHeifStill returns null (and leaves *error empty) when the file is not one it can handle.
+bool isHeifStill(const std::string& path, std::string* bytes);
+std::unique_ptr<MediaReader> openHeifStill(const std::string& path, const std::string& bytes, std::string* error);
+
 }  // namespace reno

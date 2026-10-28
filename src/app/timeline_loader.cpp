@@ -329,11 +329,12 @@ bool Loader::loadPeakFile(Wave& w)
 }
 
 // Whether the waveform is made VEGAS's way (sound read at the file's own rate, VEGAS's peaks made from it, the waveform
-// from those): for files of one or two channels at an ordinary rate.
+// from those): for files of up to eight channels at an ordinary rate. Files of more than two channels keep the result in
+// Reno's own cache, not in a .sfk (see keepNative).
 void Loader::chooseNative(Wave& w)
 {
     const MediaInfo& mi = w.media.info;
-    if (!cacheable(w.media) || mi.channels < 1 || mi.channels > 2 || mi.sampleRate < 4000 || mi.sampleRate > 384000 || !(mi.duration > 0)) return;
+    if (!cacheable(w.media) || mi.channels < 1 || mi.channels > 8 || mi.sampleRate < 4000 || mi.sampleRate > 384000 || !(mi.duration > 0)) return;
     const double exact = mi.duration * mi.sampleRate;
     const int64_t frames = isProjectFile(w.media.path) ? (int64_t)std::floor(exact + 1e-6) : (int64_t)std::llround(exact);
     if (frames <= 0) return;
@@ -347,15 +348,28 @@ bool Loader::nativeStep(Wave& w, MediaPool& pool, std::vector<float>& l, std::ve
     vegasfiles::PeakBuilder& b = *w.builder;
     const int64_t frames = b.peaks().frames, at = b.given();
     const int n = (int)std::min<int64_t>(frames - at, (int64_t)w.rate * 2);
+    const int channels = b.peaks().channels;
     bool ok = n > 0;
-    if (ok) {
+    // more than two channels: the file's own channels, two at a time (the stereo mix would hide them)
+    std::vector<std::vector<float>> extra;
+    if (ok && channels > 2) {
+        extra.assign((size_t)channels, std::vector<float>((size_t)n, 0.f));
+        std::vector<float> pairRight((size_t)n, 0.f);
+        for (int c = 0; c < channels && ok; c += 2) {
+            const int count = c + 1 < channels ? 2 : 1;
+            ok = pool.audio(w.user, w.media, at, n, w.rate, extra[(size_t)c].data(), count == 2 ? extra[(size_t)c + 1].data() : pairRight.data(), c, count);
+        }
+        if (!ok) w.failed = true;
+    } else if (ok) {
         l.assign((size_t)n, 0.f);
         r.assign((size_t)n, 0.f);
         ok = pool.audio(w.user, w.media, at, n, w.rate, l.data(), r.data());
         if (!ok) w.failed = true;
     }
     if (ok) {
-        const float* ch[2] = {l.data(), r.data()};
+        const float* ch[8] = {l.data(), r.data()};
+        if (channels > 2)
+            for (int c = 0; c < channels; ++c) ch[c] = extra[(size_t)c].data();
         b.add(ch, n);
         if (b.given() < frames) {
             fillFromPeakFile(w, b.peaks(), b.blocksDone(), false);
@@ -370,7 +384,9 @@ bool Loader::nativeStep(Wave& w, MediaPool& pool, std::vector<float>& l, std::ve
 void Loader::keepNative(const Wave& w)
 {
     bool kept = false;
-    if (mediacache::vegasPeakFiles().load()) {
+    // Only files of one or two channels go into a .sfk: no .sfk of more channels made by VEGAS has been seen, so how
+    // VEGAS lays them out is not confirmed, and a file it might misread is not written.
+    if (w.builder->peaks().channels <= 2 && mediacache::vegasPeakFiles().load()) {
         const vegasfiles::PeakFile pf = w.builder->finish(vegasfiles::fileTime(w.media.path));
         kept = vegasfiles::writePeakFile(vegasfiles::peakFilePath(w.media.path), pf);
     }

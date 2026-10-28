@@ -227,8 +227,10 @@ private:
 // ---------------------------------------------------------------- 5.1 surround (see SurroundPan in project.h)
 // The master's channels in a 5.1 project, in this order (FFmpeg's and WAVE's 5.1 order).
 enum SurroundChannel { ChL = 0, ChR = 1, ChC = 2, ChLFE = 3, ChLs = 4, ChRs = 5 };
-// The gains (L R C LFE Ls Rs) of a surround panner for a sound at pan point (x, y) with this centre level, using the
-// smoothness, speaker mutes and LFE setting of 'sp'. 'route' is ignored.
+// The gains (L R C LFE Ls Rs) of a surround panner for a sound at pan point (x, y) with this centre gain (1 = 0 dB), by
+// pan type 'panType' (Track::panType; without one Balance 0 dB), using the speaker mutes and LFE setting of 'sp'.
+// 'route' is ignored.
+void surroundGains(const SurroundPan& sp, const std::string& panType, double x, double y, double center, float g[6]);
 void surroundGains(const SurroundPan& sp, double x, double y, double center, float g[6]);
 // The pan point and centre of 'sp' at timeline time t (from its keyframes, if it has any).
 void surroundPointAt(const SurroundPan& sp, double t, double& x, double& y, double& center);
@@ -292,6 +294,15 @@ public:
     // Render As's multichannel mapping: if set, receives each bus's output in every render (after its effects, fader and
     // stereo pan, before it reaches the master or its parent bus): 'frames' samples of left and right, silence if muted.
     std::function<void(uint64_t busId, const float* left, const float* right, int frames)> busTap;
+    // VEGAS Pro 23's input busses (Project::inputBuses): if set, every render of a playing mix asks it for the sound the bus takes
+    // from the sound card ('frames' samples into left and right; a mono input on both sides); false is silence. Not set
+    // for a normal render, which leaves input busses out (Real-Time Render sets it).
+    std::function<bool(const InputBus& bus, float* left, float* right, int frames)> liveInput;
+    // Receives each input bus's sound after its insert effects and before its fader and pan, for tracks that record from it.
+    std::function<void(uint64_t inputBusId, const float* left, const float* right, int frames)> inputTap;
+    // Input Monitoring (a track's Record Input): if set, every track is asked for live sound to hear through its
+    // effects and fader, besides its events: fill 'frames' samples at timeline sample 'start' and return true, or return false.
+    std::function<bool(const Track& track, int64_t start, float* left, float* right, int frames)> monitorInput;
 
 private:
     friend struct AudioBlockMixer;
@@ -305,8 +316,8 @@ private:
     // The mix: the master into left/right or, for a 5.1 project ('six' set), into the six channels.
     void mix(const Project& p, int64_t start, int frames, float* left, float* right, float* const* six, bool playing);
     // 5.1: places a track's or bus's stereo sound (after its fader; per-sample gains in 'gain' or the constant 'level') into six channels.
-    void panSurround(const SurroundPan& sp, int64_t start, int rate, int frames, const float* l, const float* r, const float* gain, float level,
-                     float* const* six);
+    void panSurround(const SurroundPan& sp, const std::string& panType, int64_t start, int rate, int frames, const float* l, const float* r,
+                     const float* gain, float level, float* const* six);
     // 5.1: the LFE low-pass filter (Project Properties) applied to x, the block of 'frames' samples at 'start'.
     void lowpassLfe(const Project& p, float* x, int64_t start, int frames);
     void publishPeaks(); // peaks_ is complete: hands it to other threads (stripPeaks)
@@ -355,7 +366,8 @@ bool effectPlacement(const Project& p, uint64_t slotId, double t, double m[6]);
 // 3D Track Motion's space (3D Source Alpha, see engine_video.cpp), so the Track Motion window can draw what the
 // compositor does.
 void trackMotion3dPoint(const std::vector<MotionKey>& moves, double u, double v, int W, int H, double par, double out[3]);
-double trackMotion3dCamera(int W, double par);
+// The camera's distance from the frame plane in frame pixels (VEGAS's: 50 degrees vertical field of view, so 0.5 H / tan(25 degrees)).
+double trackMotion3dCamera(int W, int H, double par);
 // A Track Motion (or Parent Motion) key's place at time t as the compositor interpolates it between keyframes (the
 // default place, filling the frame, if there are no keys).
 MotionKey motionKeyAt(const std::vector<MotionKey>& keys, double t);

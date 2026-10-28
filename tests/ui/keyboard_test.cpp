@@ -234,12 +234,12 @@ int main(int argc, char** argv)
         ctx->setCurrentIndex(0);
         uitest::settle(20);
 
-        // Split gets Ctrl+K as well as S
+        // Split gets Ctrl+Alt+J as well as S
         selectCommand(d, "split");
         check(currentId(d) == "split" && d->findChild<QKeySequenceEdit*>("shortcutKeys")->keySequence() == QKeySequence("S"),
               "choosing a command shows its key");
-        setKey(d, "Ctrl+K");
-        check(d->findChild<QTreeWidget*>("assignedTo")->topLevelItemCount() == 0, "Ctrl+K is free");
+        setKey(d, "Ctrl+Alt+J");
+        check(d->findChild<QTreeWidget*>("assignedTo")->topLevelItemCount() == 0, "Ctrl+Alt+J is free");
         click(d, "addKey");
         KeyMap now = windowKeyMap(w);
         check(questions.isEmpty(), "a free key is added without a question");
@@ -263,7 +263,7 @@ int main(int argc, char** argv)
         answer = true;
         click(d, "addKey");
         setKey(d, "S");
-        click(d, "removeKey");  // Split keeps Ctrl+K and Ctrl+S
+        click(d, "removeKey");  // Split keeps Ctrl+Alt+J and Ctrl+S
         // a key the timeline acts on: I (Set In while the timeline has the keyboard)
         selectCommand(d, "render");
         setKey(d, "I");
@@ -311,7 +311,7 @@ int main(int argc, char** argv)
         emit maps->activated(maps->currentIndex());
         uitest::settle(20);
         selectCommand(d, "split");
-        check(d->findChild<QTreeWidget*>("commands")->currentItem()->text(1) == "Ctrl+K or Ctrl+S", "choosing My keys loads it",
+        check(d->findChild<QTreeWidget*>("commands")->currentItem()->text(1) == "Ctrl+Alt+J or Ctrl+S", "choosing My keys loads it",
               d->findChild<QTreeWidget*>("commands")->currentItem()->text(1).toStdString());
 
         // ---- Export, delete, Import
@@ -333,7 +333,7 @@ int main(int argc, char** argv)
         click(d, "importMap");
         selectCommand(d, "split");
         check(maps->currentText() == "My keys" && QFileInfo::exists(keyMapPath("My keys")) &&
-                  d->findChild<QTreeWidget*>("commands")->currentItem()->text(1) == "Ctrl+K or Ctrl+S",
+                  d->findChild<QTreeWidget*>("commands")->currentItem()->text(1) == "Ctrl+Alt+J or Ctrl+S",
               "Import copies the map in, under its own name, and chooses it", maps->currentText().toStdString());
         uitest::shot(d, out + "/customize_keyboard_imported.png");
 
@@ -345,17 +345,17 @@ int main(int argc, char** argv)
         bb->button(QDialogButtonBox::Ok)->click();
         uitest::settle(50);
         check(d->result() == QDialog::Accepted, "OK closes the dialog");
-        check(windowAction(w, "split")->shortcuts() == QList<QKeySequence>() << QKeySequence("Ctrl+K") << QKeySequence("Ctrl+S") &&
+        check(windowAction(w, "split")->shortcuts() == QList<QKeySequence>() << QKeySequence("Ctrl+Alt+J") << QKeySequence("Ctrl+S") &&
                   windowAction(w, "save")->shortcuts().isEmpty(),
               "OK gives the window's commands the new keys", keysStr(windowAction(w, "split")->shortcuts()).toStdString());
         check(currentKeyMapName() == "My keys", "the map in use is remembered");
         w->activateWindow();
         w->timeline()->setFocus();
         uitest::settle(50);
-        press(w->timeline(), Qt::Key_K, Qt::ControlModifier);
+        press(w->timeline(), Qt::Key_J, Qt::ControlModifier | Qt::AltModifier);
         press(w->timeline(), Qt::Key_S, Qt::ControlModifier);
         press(w->timeline(), Qt::Key_S);
-        check(splits == 2 && saves == 0, "Ctrl+K and Ctrl+S now split; S no longer does; Save has no key",
+        check(splits == 2 && saves == 0, "Ctrl+Alt+J and Ctrl+S now split; S no longer does; Save has no key",
               QString("splits %1 saves %2").arg(splits).arg(saves).toStdString());
         delete d;
     }
@@ -367,7 +367,7 @@ int main(int argc, char** argv)
         MainWindow w2;
         w2.show();
         uitest::settle(200);
-        check(windowAction(&w2, "split")->shortcuts() == QList<QKeySequence>() << QKeySequence("Ctrl+K") << QKeySequence("Ctrl+S") &&
+        check(windowAction(&w2, "split")->shortcuts() == QList<QKeySequence>() << QKeySequence("Ctrl+Alt+J") << QKeySequence("Ctrl+S") &&
                   windowAction(&w2, "save")->shortcuts().isEmpty(),
               "the next run starts with the keys chosen", keysStr(windowAction(&w2, "split")->shortcuts()).toStdString());
         const KeyMap m = windowKeyMap(&w2);
@@ -407,7 +407,7 @@ int main(int argc, char** argv)
         check(importPreferences(&w2, out + "/not a map.ini", &err) < 0 && !err.isEmpty(), "Import Preferences refuses a file that is not one");
         const int read = importPreferences(&w2, prefsFile, &err);
         check(read == written && AppState::get().prefs.undoLevels == 77 &&
-                  windowAction(&w2, "split")->shortcuts() == QList<QKeySequence>() << QKeySequence("Ctrl+K") << QKeySequence("Ctrl+S") &&
+                  windowAction(&w2, "split")->shortcuts() == QList<QKeySequence>() << QKeySequence("Ctrl+Alt+J") << QKeySequence("Ctrl+S") &&
                   currentKeyMapName() == "My keys",
               "Import Preferences puts the preferences and the keys back at once", std::to_string(read));
     }

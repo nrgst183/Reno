@@ -40,7 +40,12 @@ enum RenoScriptKind {
     RK_BUS = 14,        /* an audio bus (VEGAS's AudioBusTrack) */
     RK_MOTION = 15,     /* a key of a video track's track motion (VEGAS's TrackMotionKeyframe) */
     RK_OFXPARAM = 16,   /* a parameter of an OpenFX effect (VEGAS's OFXParameter) */
-    RK_OFXKEY = 17      /* a keyframe of one (VEGAS's OFXKeyframe) */
+    RK_OFXKEY = 17,     /* a keyframe of one (VEGAS's OFXKeyframe) */
+    RK_TRACKGROUP = 18, /* a group of tracks (VEGAS's TrackGroup; Track::trackGroup) */
+    RK_BIN = 19,        /* a media bin (VEGAS's MediaBin); the root is the Project Media folder */
+    RK_PRESET = 20,     /* an OpenFX effect preset (VEGAS's EffectPreset) of a plug-in */
+    RK_RENDERER = 21,   /* a Render As format (VEGAS's Renderer) */
+    RK_RTEMPLATE = 22   /* one of its templates (VEGAS's RenderTemplate) */
 };
 
 /* Properties. Types: I integer, D number, S string, H handle (as an integer). Which kinds have which is in scriptsession.cpp. */
@@ -205,6 +210,18 @@ enum RenoScriptProp {
     RP_KEY_ROTATION = 205,      /* D degrees, clockwise (Reno's) */
     RP_KEY_TYPE = 206,          /* I VEGAS's VideoKeyframeType */
     RP_KEY_SMOOTHNESS = 207,    /* D */
+    /* 3D track motion (RK_MOTION; used where the track's compositing mode is 3D Source Alpha); distances are fractions of
+     * the frame's width, angles degrees (Reno's MotionKey::z, d, rotX, rotY, offX/Y/Z, oriX/Y/Z) */
+    RP_KEY_Z = 210,             /* D */
+    RP_KEY_DEPTH = 211,         /* D */
+    RP_KEY_ROT_X = 212,         /* D */
+    RP_KEY_ROT_Y = 213,         /* D */
+    RP_KEY_OFF_X = 214,         /* D rotation offset */
+    RP_KEY_OFF_Y = 215,         /* D */
+    RP_KEY_OFF_Z = 216,         /* D */
+    RP_KEY_ORI_X = 217,         /* D orientation */
+    RP_KEY_ORI_Y = 218,         /* D */
+    RP_KEY_ORI_Z = 219,         /* D */
 
     /* OpenFX parameters (RK_OFXPARAM) and keyframes (RK_OFXKEY); values go through RO_OFX_GET/SET. */
     RP_OFX_TYPE = 220,          /* I VEGAS's OFXParameterType */
@@ -226,7 +243,30 @@ enum RenoScriptProp {
     RP_OFX_PLUGIN_PATH = 236,   /* S */
     RP_OFX_CURRENT_TIME = 237,  /* D effect: VEGAS's OFXEffect.CurrentTime (what a Value set on an animated parameter changes) */
     RP_FADE_IN_RECIP_CURVE = 238,   /* I event: VEGAS's FadeIn.ReciprocalCurve (the earlier event's side of a cross-fade) */
-    RP_OUTPUT_360 = 400             /* I project: VEGAS's T360Output (0 On, 1 Off): Project Properties' 360° output */
+    RP_OUTPUT_360 = 400,            /* I project: VEGAS's T360Output (0 On, 1 Off): Project Properties' 360° output */
+    RP_HDR_MODE = 401,              /* I project: VEGAS's HDRMode (0 HDR10, 1 HLG, 2 Off) */
+    RP_STEREO_MODE = 402,           /* I project: VEGAS's Stereo3DOutputMode (14, LeftAndRight, is not offered by Reno) */
+    RP_STEREO_SWAP = 403,           /* I project: swap left and right (of the current mode) */
+    RP_STEREO_CROSSTALK = 404,      /* D project: crosstalk cancelation, 0..1 (of the current mode) */
+    RP_STEREO_CROSSTALK_RENDER = 405, /* I project: crosstalk cancelation is included in renders */
+    RP_TRACK_GROUP = 410,           /* H track: its track group (0: none) */
+    RP_PARENT = 411,                /* H bin: the bin it is in (0: the root has none) */
+    RP_MEDIA_BIN = 412,             /* H media: the bin it is in (the root bin if none) */
+    /* Render As formats (RK_RENDERER; RP_NAME is the format's name) and templates (RK_RTEMPLATE) */
+    RP_FILE_EXT = 420,              /* S renderer, template: the file name extension, without the dot */
+    RP_DESCRIPTION = 421,           /* S renderer (its blurb), template */
+    RP_RT_HAS_VIDEO = 422,          /* I renderer, template */
+    RP_RT_HAS_AUDIO = 423,          /* I */
+    RP_RT_WIDTH = 424,              /* I template: 0 is the project's */
+    RP_RT_HEIGHT = 425,             /* I */
+    RP_RT_FPS = 426,                /* D */
+    RP_RT_SAMPLE_RATE = 427,        /* I */
+    RP_RT_CHANNELS = 428,           /* I */
+    RP_RT_BITS = 429,               /* I */
+    RP_RT_VIDEO_KBPS = 430,         /* I */
+    RP_RT_AUDIO_KBPS = 431,         /* I */
+    RP_RT_RENDERER = 432,           /* H template: its format */
+    RP_RT_PAR = 433                 /* D template: pixel aspect ratio (0: the project's) */
 };
 
 /* Lists ('list'). */
@@ -257,7 +297,14 @@ enum RenoScriptList {
     RL_SELECTED_MEDIA = 30,     /* app */
     RL_SPECIAL_BUSES = 31,      /* app: the master bus and the video output (RK_BUS) */
     RL_OFX_PARAMS = 32,         /* effect: its OpenFX parameters (fails for an effect whose plug-in cannot be loaded) */
-    RL_OFX_KEYS = 33            /* OpenFX parameter: its keyframes, by time */
+    RL_OFX_KEYS = 33,           /* OpenFX parameter: its keyframes, by time */
+    RL_TRACK_GROUPS = 44,       /* app */
+    RL_GROUP_TRACKS = 45,       /* track group: its tracks */
+    RL_BIN_BINS = 46,           /* bin: the bins in it */
+    RL_BIN_MEDIA = 47,          /* bin: the media in it */
+    RL_PRESETS = 48,            /* plug-in or effect: its presets (OpenFX effects; none for audio effects), in VEGAS's order */
+    RL_RENDERERS = 49,          /* app: Render As's formats */
+    RL_RENDER_TEMPLATES = 50    /* renderer: its templates */
 };
 
 /* Operations ('call'): arguments are ia (integers), da (numbers), s (string); results are out (handle) and dout (number). */
@@ -318,7 +365,16 @@ enum RenoScriptOp {
     RO_OFX_SET = 91,            /* parameter: da[0..n-1] the numbers (an animated one: its value at the effect's current time);
                                  * keyframe: its numbers */
     RO_OFX_SET_AT = 92,         /* parameter: da[0] seconds, da[1..] the numbers (or s, text) -> the keyframe there (made if none) */
-    RO_OFX_REMOVE_KEY = 93      /* parameter: ia[0] keyframe */
+    RO_OFX_REMOVE_KEY = 93,     /* parameter: ia[0] keyframe */
+
+    RO_GROUP_SELECTED_TRACKS = 100, /* app: the selected tracks (two or more) into a new track group -> group */
+    RO_TRACKGROUP_ADD = 101,    /* track group: ia[0] track (taken out of its other group) */
+    RO_ROOT_BIN = 102,          /* app -> the Project Media root bin */
+    RO_NEW_BIN = 103,           /* bin: s name -> the new bin inside it (the one there if the name is taken) */
+    RO_BIN_ADD_MEDIA = 104,     /* bin: ia[0] media (moved into it) */
+    RO_RENDER = 106,            /* app: renders the project with the template ia[0] to the file s; ia[1] save markers in the file, ia[2] use the
+                                 * project's output rotation; da[0] start, da[1] length (negative: to the end) -> dout[0] VEGAS's RenderStatus */
+    RO_APPLY_PRESET = 105       /* effect: ia[0] preset, or s the preset's name (the settings it holds are set; the rest stay) */
 };
 
 /* The functions Reno gives the script's side. 'ctx' is passed back to every one. */

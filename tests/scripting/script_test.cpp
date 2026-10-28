@@ -289,6 +289,23 @@ static void ofxTest(const std::string& b)
     CHECK(!ps.has("Page"), "a page has no value");
 }
 
+// HDR and stereoscopic 3D settings, track groups and media bins (groupsbins_test.cs).
+static void groupsBinsTest(const std::string& b)
+{
+    ScriptHost h = makeHost(b + "/scripts/groupsbins_test.dll");
+    Project p = makeProject(h);
+    ScriptSession s(p, h);
+    const bool ok = run(s, "groupsbins_test");
+    CHECK(ok, "groupsbins_test.cs ran");
+    if (!ok) return;
+    const ProjectSettings& st = s.project.settings;
+    CHECK(st.hdrMode == "hlg" && st.stereoMode == "sbsfull" && st.stereoSwap && std::fabs(st.crosstalk - 0.5) < 1e-6, "the project's HDR and 3D settings");
+    CHECK(s.project.tracks[0].trackGroup != 0 && s.project.tracks[0].trackGroup == s.project.tracks[2].trackGroup &&
+              s.project.tracks[1].trackGroup == s.project.tracks[0].trackGroup && s.project.tracks[0].mute, "the three tracks are in one muted group");
+    CHECK(s.project.mediaBins.size() == 2 && s.project.mediaBins[0] == "Raw" && s.project.mediaBins[1] == "Raw/Day 1", "the bins");
+    CHECK(s.project.media[0].bin == "Raw/Day 1", "the clip is in the inner bin");
+}
+
 // Every member a script can reach (members_test.cs): reading works or is a named NotSupportedException.
 static void membersTest(const std::string& b)
 {
@@ -428,6 +445,7 @@ int main(int argc, char** argv)
     if (!startClr(pwsh, b)) return 1;
     apiTest(b);
     ofxTest(b);
+    groupsBinsTest(b);
     membersTest(b);
     failureTests(b);
     vegasGroupTest(b);

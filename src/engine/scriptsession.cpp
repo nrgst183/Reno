@@ -458,6 +458,7 @@ int ScriptSession::getI(uint64_t h, int prop, int64_t* out)
     if (!dp) return fail("no such object");
     const Desc d = *dp;
     if ((d.kind == RK_OFXPARAM || d.kind == RK_OFXKEY) && prop != RP_IS_VALID) return ofxGetI(d, prop, out);
+    { const int r = extGetI(d, prop, out); if (r != kNotMine) return r; }
     if (prop == RP_IS_VALID) {
         error_.clear();
         switch (d.kind) {
@@ -987,6 +988,7 @@ int ScriptSession::getD(uint64_t h, int prop, double* out)
     if (!dp) return fail("no such object");
     const Desc d = *dp;
     if (d.kind == RK_OFXPARAM || d.kind == RK_OFXKEY) return ofxGetD(d, prop, out);
+    { const int r = extGetD(d, prop, out); if (r != kNotMine) return r; }
     if (d.kind == RK_FX && prop == RP_OFX_CURRENT_TIME) {
         if (!fx(d)) return RS_FAILED;
         *out = ofxTime_[d.a];
@@ -1140,6 +1142,7 @@ int ScriptSession::getS(uint64_t h, int prop, std::string* out)
     if (!dp) return fail("no such object");
     const Desc d = *dp;
     if (d.kind == RK_OFXPARAM || d.kind == RK_OFXKEY) return ofxGetS(d, prop, out);
+    { const int r = extGetS(d, prop, out); if (r != kNotMine) return r; }
     if (d.kind == RK_FX && (prop == RP_OFX_PLUGIN_LABEL || prop == RP_OFX_PLUGIN_GROUP || prop == RP_OFX_PLUGIN_PATH)) {
         FxSlot* s = fx(d);
         if (!s) return RS_FAILED;
@@ -1267,6 +1270,7 @@ int ScriptSession::setI(uint64_t h, int prop, int64_t v)
     if (!dp) return fail("no such object");
     const Desc d = *dp;
     if (d.kind == RK_OFXPARAM || d.kind == RK_OFXKEY) return ofxSetI(d, prop, v);
+    { const int r = extSetI(d, prop, v); if (r != kNotMine) return r; }
     switch (d.kind) {
     case RK_APP: {
         ProjectSettings& st = project.settings;
@@ -1404,6 +1408,7 @@ int ScriptSession::setD(uint64_t h, int prop, double v)
     const Desc d = *dp;
     if (!std::isfinite(v)) return fail("not a number");
     if (d.kind == RK_OFXPARAM || d.kind == RK_OFXKEY) return ofxSetD(d, prop, v);
+    { const int r = extSetD(d, prop, v); if (r != kNotMine) return r; }
     if (d.kind == RK_FX && prop == RP_OFX_CURRENT_TIME) {
         if (!fx(d)) return RS_FAILED;
         ofxTime_[d.a] = std::max(0.0, v);
@@ -1554,6 +1559,7 @@ int ScriptSession::setS(uint64_t h, int prop, const std::string& v)
     if (!dp) return fail("no such object");
     const Desc d = *dp;
     if (d.kind == RK_OFXPARAM || d.kind == RK_OFXKEY) return ofxSetS(d, prop, v);
+    { const int r = extSetS(d, prop, v); if (r != kNotMine) return r; }
     switch (d.kind) {
     case RK_APP: {
         if (prop == RP_UNDO_LABEL) {
@@ -1621,6 +1627,7 @@ int ScriptSession::list(uint64_t h, int which, std::vector<uint64_t>* out)
     if (!dp) return fail("no such object");
     const Desc d = *dp;
     if (which == RL_OFX_PARAMS || which == RL_OFX_KEYS) return ofxList(d, which, out);
+    { const int r = extList(d, which, out); if (r != kNotMine) return r; }
     switch (which) {
     case RL_TRACKS:
         if (d.kind != RK_APP) return unsupported();
@@ -1769,6 +1776,7 @@ int ScriptSession::call(uint64_t h, int op, const std::vector<int64_t>& ia, cons
     if (!dp) return fail("no such object");
     const Desc d = *dp;
     if (d.kind == RK_OFXPARAM || d.kind == RK_OFXKEY) return ofxCall(d, op, ia, da, s, out, dout);
+    { const int r = extCall(d, op, ia, da, s, out, dout); if (r != kNotMine) return r; }
     auto I = [&](size_t k, int64_t def = 0) { return k < ia.size() ? ia[k] : def; };
     auto D = [&](size_t k, double def = 0) { return k < da.size() && std::isfinite(da[k]) ? da[k] : def; };
     auto pluginArg = [&](int64_t hh) -> int {

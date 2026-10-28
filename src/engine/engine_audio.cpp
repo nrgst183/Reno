@@ -727,46 +727,107 @@ bool AudioEngine::eventSoundRaw(const Project& p, const Event& e, const MediaIte
 }
 
 // ====================================================================== 5.1 surround
-// The panning law (Reno's own: VEGAS does not publish its own).
-void surroundGains(const SurroundPan& sp, double x, double y, double center, float g[6])
+namespace {
+
+enum SurroundLaw { LawBalance, LawAdd, LawPower, LawFilm };
+
+// The pan type's law and, for Balance, the level at the centre (VEGAS's Pan Type: "" or balance0 Balance (0 dB center),
+// balance3, balance6, add Add Channels, power Constant Power, film Film).
+SurroundLaw lawOf(const std::string& panType, double& centreLevel)
+{
+    centreLevel = 1.0;
+    if (panType == "add") return LawAdd;
+    if (panType == "power") return LawPower;
+    if (panType == "film") return LawFilm;
+    if (panType == "balance3") centreLevel = 0.70794578438413791;
+    if (panType == "balance6") centreLevel = 0.50118723362727224;
+    return LawBalance;
+}
+
+// How a sound is shared between two neighbours as it moves from the first (u = 0) to the second (u = 1), in amplitude:
+// Add Channels is linear and adds up to 1; Balance falls linearly from the centre level to nothing on the side panned
+// away from and rises to 0 dB on the side panned to; Constant Power is a quarter circle.
+void split2(SurroundLaw law, double centreLevel, double u, double& first, double& second)
+{
+    u = std::min(1.0, std::max(0.0, u));
+    if (law == LawAdd) {
+        first = 1.0 - u;
+        second = u;
+    } else if (law == LawBalance) {
+        const double p = 2.0 * u - 1.0, ap = std::fabs(p);
+        const double toward = centreLevel + (1.0 - centreLevel) * ap, away = centreLevel * (1.0 - ap);
+        first = p > 0 ? away : p < 0 ? toward : centreLevel;
+        second = p < 0 ? away : p > 0 ? toward : centreLevel;
+    } else {
+        first = std::cos(u * kPi / 2.0);
+        second = std::sin(u * kPi / 2.0);
+    }
+}
+
+// Film: pairs of adjacent speakers at the angles a cinema (and ITU-R BS.775) puts them, which is not where the panner draws
+// them (front speakers at 30 degrees, the panner at 45): a constant power pan between the two speakers the pan point's
+// direction falls between; the nearer the point is to the middle of the room the more the sound spreads to all five.
+void filmGains(double x, double y, double g[6])
+{
+    for (int c = 0; c < 6; ++c) g[c] = 0;
+    const double r = std::min(1.0, std::sqrt(x * x + y * y));
+    double deg = std::atan2(x, y) * 180.0 / kPi;
+    if (deg < 0) deg += 360.0;
+    // clockwise from straight ahead: C 0, R 30, Rs 110, Ls 250, L 330, C 360
+    static const int order[5] = {ChC, ChR, ChRs, ChLs, ChL};
+    static const double at[6] = {0.0, 30.0, 110.0, 250.0, 330.0, 360.0};
+    int seg = 0;
+    while (seg < 4 && deg >= at[seg + 1]) ++seg;
+    const double u = (deg - at[seg]) / (at[seg + 1] - at[seg]);
+    double pair[6] = {0, 0, 0, 0, 0, 0};
+    pair[order[seg]] = std::cos(u * kPi / 2.0);
+    pair[order[(seg + 1) % 5]] = std::sin(u * kPi / 2.0);
+    for (int c = 0; c < 6; ++c) {
+        const double spread = c == ChLFE ? 0.0 : 0.2;
+        g[c] = std::sqrt(r * pair[c] * pair[c] + (1.0 - r) * spread);
+    }
+}
+
+}  // namespace
+
+// The panning law: where VEGAS's manual describes the 5.1 pan types (Audio panning modes) they are followed; the grid
+// of VEGAS's panner (its speaker positions, the ratios between the lines) is not published, so the panner's square is
+// split front/back and left/centre/right by the pan type's two-way law.
+void surroundGains(const SurroundPan& sp, const std::string& panType, double x, double y, double center, float g[6])
 {
     x = std::min(1.0, std::max(-1.0, std::isfinite(x) ? x : 0.0));
     y = std::min(1.0, std::max(-1.0, std::isfinite(y) ? y : 0.0));
-    center = std::min(1.0, std::max(0.0, std::isfinite(center) ? center : 1.0));
-    const double a = (x + 1.0) * kPi / 4.0, b = (y + 1.0) * kPi / 4.0;
-    const double gl = std::cos(a), gr = std::sin(a), gf = std::sin(b), gb = std::cos(b);
-    double l3 = 0, c3 = 0, r3 = 0;
-    if (x <= 0) {
-        const double f = (x + 1.0) * kPi / 2.0;
-        l3 = std::cos(f);
-        c3 = std::sin(f);
+    center = std::min(8.0, std::max(0.0, std::isfinite(center) ? center : 1.0));
+    double cb = 1.0;
+    const SurroundLaw law = lawOf(panType, cb);
+    double w[6] = {0, 0, 0, 0, 0, 0};
+    if (law == LawFilm) {
+        filmGains(x, y, w);
     } else {
-        const double f = x * kPi / 2.0;
-        c3 = std::cos(f);
-        r3 = std::sin(f);
+        double gb, gf, gl, gr, l3 = 0, c3 = 0, r3 = 0;
+        split2(law, cb, (y + 1.0) / 2.0, gb, gf);
+        split2(law, cb, (x + 1.0) / 2.0, gl, gr);
+        if (x <= 0) split2(law, cb, x + 1.0, l3, c3);
+        else split2(law, cb, x, c3, r3);
+        w[ChL] = gf * l3;
+        w[ChR] = gf * r3;
+        w[ChC] = gf * c3;
+        w[ChLs] = gb * gl;
+        w[ChRs] = gb * gr;
     }
-    double pw[6];
-    pw[ChL] = gf * gf * ((1.0 - center) * gl * gl + center * l3 * l3);
-    pw[ChR] = gf * gf * ((1.0 - center) * gr * gr + center * r3 * r3);
-    pw[ChC] = gf * gf * center * c3 * c3;
-    pw[ChLFE] = 0;
-    pw[ChLs] = gb * gb * gl * gl;
-    pw[ChRs] = gb * gb * gr * gr;
-    const double s = std::min(1.0, std::max(0.0, sp.smoothness));
-    if (s < 1.0) {
-        const double k = 1.0 + 7.0 * (1.0 - s);
-        double before = 0, after = 0;
-        for (int c = 0; c < 6; ++c) {
-            before += pw[c];
-            pw[c] = std::pow(pw[c], k);
-            after += pw[c];
-        }
-        if (after > 1e-30)
-            for (int c = 0; c < 6; ++c) pw[c] *= before / after;
+    // A muted centre speaker: the sound that would go there makes a phantom centre between the left and right ones.
+    if (sp.speakerMutes & (1u << ChC)) {
+        const double ph = w[ChC] * 0.70710678118654757;
+        w[ChL] = std::sqrt(w[ChL] * w[ChL] + ph * ph);
+        w[ChR] = std::sqrt(w[ChR] * w[ChR] + ph * ph);
+        w[ChC] = 0;
     }
-    for (int c = 0; c < 6; ++c) g[c] = (sp.speakerMutes & (1u << c)) ? 0.f : (float)std::sqrt(std::max(0.0, pw[c]));
+    w[ChC] *= center;
+    for (int c = 0; c < 6; ++c) g[c] = (sp.speakerMutes & (1u << c)) ? 0.f : (float)w[c];
     g[ChLFE] = (sp.lfe && !(sp.speakerMutes & (1u << ChLFE))) ? (float)std::max(0.0, sp.lfeLevel) : 0.f;
 }
+
+void surroundGains(const SurroundPan& sp, double x, double y, double center, float g[6]) { surroundGains(sp, std::string(), x, y, center, g); }
 
 void surroundPointAt(const SurroundPan& sp, double t, double& x, double& y, double& center)
 {
@@ -778,7 +839,7 @@ void surroundPointAt(const SurroundPan& sp, double t, double& x, double& y, doub
     size_t i = 0;
     while (i + 1 < k.size() && k[i + 1].time <= t) ++i;
     const SurroundKey& a = k[i];
-    if (t <= k.front().time || i + 1 >= k.size() || a.curve == 1) {
+    if (t <= k.front().time || i + 1 >= k.size() || a.curve == KeyHold) {
         const SurroundKey& h = t <= k.front().time ? k.front() : a;
         x = h.x;
         y = h.y;
@@ -786,11 +847,16 @@ void surroundPointAt(const SurroundPan& sp, double t, double& x, double& y, doub
         return;
     }
     const SurroundKey& b = k[i + 1];
-    double f = b.time > a.time ? (t - a.time) / (b.time - a.time) : 1.0;
-    if (a.curve == 2) f = f * f * (3.0 - 2.0 * f);
-    x = a.x + (b.x - a.x) * f;
-    y = a.y + (b.y - a.y) * f;
+    const double tn = b.time > a.time ? (t - a.time) / (b.time - a.time) : 1.0;
+    const double f = keyCurveShape(a.curve, tn);       // how far along the path, in time
     center = a.center + (b.center - a.center) * f;
+    // Smoothness: from a straight line (0) to a curve through the keys before and after (1), as for Pan/Crop and Track Motion
+    const double s = std::min(1.0, std::max(0.0, a.smoothness >= 0 ? a.smoothness : sp.smoothness));
+    const SurroundKey& before = i > 0 ? k[i - 1] : a;
+    const SurroundKey& after = i + 2 < k.size() ? k[i + 2] : b;
+    smoothPath(s * 100.0, before.x, before.y, a.x, a.y, b.x, b.y, after.x, after.y, f, x, y);
+    x = std::min(1.0, std::max(-1.0, x));
+    y = std::min(1.0, std::max(-1.0, y));
 }
 
 void surroundPlacePoint(SurroundPan& sp, double x, double y, double cursor, double frame)
@@ -834,9 +900,11 @@ void surroundDownmix(const float* const six[6], int frames, float* left, float* 
 }
 
 // A stereo sound into the six channels.
-void AudioEngine::panSurround(const SurroundPan& sp, int64_t start, int rate, int frames, const float* l, const float* r, const float* gain,
-                              float level, float* const* six)
+void AudioEngine::panSurround(const SurroundPan& sp, const std::string& panType, int64_t start, int rate, int frames, const float* l, const float* r,
+                              const float* gain, float level, float* const* six)
 {
+    double cb = 1.0;
+    const SurroundLaw law = lawOf(panType, cb);
     float g0[6], g1[6];
     double x0, y0, c0, x1, y1, c1;
     surroundPointAt(sp, (double)start / rate, x0, y0, c0);
@@ -852,8 +920,8 @@ void AudioEngine::panSurround(const SurroundPan& sp, int64_t start, int rate, in
             if (sp.speakerMutes & (1u << c)) g0[c] = 0.f;
         for (int c = 0; c < 6; ++c) g1[c] = g0[c];
     } else {
-        surroundGains(sp, x0, y0, c0, g0);
-        surroundGains(sp, x1, y1, c1, g1);
+        surroundGains(sp, panType, x0, y0, c0, g0);
+        surroundGains(sp, panType, x1, y1, c1, g1);
     }
     const bool fixed = sp.route != "surround";
     const bool moving = std::memcmp(g0, g1, sizeof(g0)) != 0 || fold0 != fold1;
@@ -868,8 +936,17 @@ void AudioEngine::panSurround(const SurroundPan& sp, int64_t start, int rate, in
             // folding: the far side's sound joins the near side as the point moves out to it
             const float fold = (float)(fold0 + (fold1 - fold0) * f);
             const bool leftSide = (x0 + x1) <= 0;
-            if (leftSide) L = (a + fold * b) / (1.f + fold);
-            else R = (b + fold * a) / (1.f + fold);
+            // Add Channels adds the other side's sound on (both at full level at the edge); Balance leaves the sides
+            // as they are; Constant Power and Film keep the loudness
+            if (law == LawBalance) {
+            } else if (law == LawAdd) {
+                if (leftSide) L = a + fold * b;
+                else R = b + fold * a;
+            } else if (leftSide) {
+                L = (a + fold * b) / (1.f + fold);
+            } else {
+                R = (b + fold * a) / (1.f + fold);
+            }
         } else if (sp.route == "front" || sp.route == "rear") {
             L = a;
             R = b;
@@ -895,7 +972,7 @@ namespace {
 // Scratch space for the envelopes' per-sample values (per thread: several engines may render at once).
 struct EnvScratch {
     std::vector<double> a, b, c;
-    std::vector<float> gl, gr;
+    std::vector<float> gl, gr, a_f;
     void size(int n)
     {
         if ((int)a.size() < n) {
@@ -1152,6 +1229,7 @@ struct AudioBlockMixer {
         threads = eng.parallelMix ? (eng.mixThreads > 0 ? eng.mixThreads : processorCount()) : 1;
         threads = std::min(threads, MixPool::get().helpers() + 1);
         mixTracks();
+        mixInputBuses();
         mixBuses();
         eng.lastMixWidth = width;
         if (six) mixMaster51();
@@ -1340,6 +1418,8 @@ struct AudioBlockMixer {
             }
             if (p.buses[(size_t)i].solo) anySolo = true;
         }
+        for (const auto& ib : p.inputBuses)
+            if (ib.solo) anySolo = true;
         eng.busOrder_.clear();
         for (int i = 0; i < nb; ++i) eng.busOrder_.push_back(i);
         std::stable_sort(eng.busOrder_.begin(), eng.busOrder_.end(), [&](int a, int b) { return buses[(size_t)a]->depth > buses[(size_t)b]->depth; });
@@ -1662,7 +1742,19 @@ struct AudioBlockMixer {
         if (!direct && !anySend) return;
         std::memset(w.tl.data(), 0, (size_t)frames * sizeof(float));
         std::memset(w.trb.data(), 0, (size_t)frames * sizeof(float));
-        const bool any = sumTrackEvents(tr, w, scratch);
+        bool any = sumTrackEvents(tr, w, scratch);
+        if (eng.monitorInput && !primed && tr.recordInput.monitor != "off") {
+            // Input Monitoring: the live sound is heard through the track's effects and fader, as an event's sound is
+            std::memset(w.el.data(), 0, (size_t)frames * sizeof(float));
+            std::memset(w.er.data(), 0, (size_t)frames * sizeof(float));
+            if (eng.monitorInput(tr, start, w.el.data(), w.er.data(), frames)) {
+                for (int k = 0; k < frames; ++k) {
+                    w.tl[(size_t)k] += w.el[(size_t)k];
+                    w.trb[(size_t)k] += w.er[(size_t)k];
+                }
+                any = true;
+            }
+        }
         if (!any && tr.fx.empty()) return;
         // the track's Invert Phase switch: its sound upside down, before its effects and fader
         if (tr.invertPhase)
@@ -1739,7 +1831,7 @@ struct AudioBlockMixer {
     void commitTrack(AudioEngine::Work& w)
     {
         addContribs(w, false);
-        if (w.surroundDirect) eng.panSurround(w.track->surround, start, rate, frames, w.tl.data(), w.trb.data(), w.hasSg ? w.sg.data() : nullptr, w.level, six);
+        if (w.surroundDirect) eng.panSurround(w.track->surround, w.track->panType, start, rate, frames, w.tl.data(), w.trb.data(), w.hasSg ? w.sg.data() : nullptr, w.level, six);
         eng.peaks_.push_back(w.peak);
     }
 
@@ -1786,6 +1878,68 @@ struct AudioBlockMixer {
                 for (int j = 0; j < n; ++j) doTrack(p.tracks[(size_t)audioTracks[(size_t)(b0 + j)]], *eng.work_[(size_t)j]);
             }
             for (int j = 0; j < n; ++j) commitTrack(*eng.work_[(size_t)j]);
+        }
+    }
+
+    // ---- input busses
+
+    // Each input bus: the sound card's input through its insert effects (always before the fader), its sends, fader
+    // and pan, into the bus or master it is routed to. Only when the engine is given a live input (not a normal render).
+    void mixInputBuses()
+    {
+        if (!eng.liveInput || p.inputBuses.empty() || primed) return;
+        ensureWork(1);
+        AudioEngine::Work& w = *eng.work_[0];
+        for (const InputBus& ib : p.inputBuses) {
+            w.begin(frames, ib.id);
+            std::memset(w.tl.data(), 0, (size_t)frames * sizeof(float));
+            std::memset(w.trb.data(), 0, (size_t)frames * sizeof(float));
+            if (!eng.liveInput(ib, w.tl.data(), w.trb.data(), frames)) continue;
+            static const Envelopes noEnvelopes;
+            runChain(ib.fx, &noEnvelopes, w.tl.data(), w.trb.data());
+            if (eng.inputTap) eng.inputTap(ib.id, w.tl.data(), w.trb.data(), frames);
+            const int outBus = ib.outputOff ? -2 : busIndex(ib.output);
+            const bool heardOnMaster = !ib.mute && (!anySolo || ib.solo);
+            // sends (post-fader by default: after the level and pan, as a track's)
+            const float gl = panLeft(ib.level, ib.pan), gr = panRight(ib.level, ib.pan);
+            for (const auto& sd : ib.sends) {
+                const int bi = busIndex(sd.bus);
+                if (bi < 0 || sd.level <= 0 || ib.mute) continue;
+                if (anySolo && !ib.solo && !eng.buses_[(size_t)bi]->leadsToSolo) continue;
+                AudioEngine::BusMix& b = *eng.buses_[(size_t)bi];
+                const float sl = (float)sd.level * (sd.preFader ? 1.f : gl), sr = (float)sd.level * (sd.preFader ? 1.f : gr);
+                for (int k = 0; k < frames; ++k) {
+                    b.l[(size_t)k] += w.tl[(size_t)k] * sl;
+                    b.r[(size_t)k] += w.trb[(size_t)k] * sr;
+                }
+            }
+            float pl = 0, pr = 0;
+            const bool audible = heardOnMaster || (outBus >= 0 && !ib.mute && eng.buses_[(size_t)outBus]->leadsToSolo);
+            if (!audible || outBus == -2) {
+                for (int k = 0; k < frames; ++k) {
+                    pl = std::max(pl, std::fabs(w.tl[(size_t)k] * gl));
+                    pr = std::max(pr, std::fabs(w.trb[(size_t)k] * gr));
+                }
+            } else if (six && outBus < 0) {
+                eng.panSurround(ib.surround, ib.panType, start, rate, frames, w.tl.data(), w.trb.data(), nullptr, (float)ib.level, six);
+                for (int k = 0; k < frames; ++k) {
+                    pl = std::max(pl, std::fabs(w.tl[(size_t)k] * (float)ib.level));
+                    pr = std::max(pr, std::fabs(w.trb[(size_t)k] * (float)ib.level));
+                }
+            } else {
+                float* dl = outBus >= 0 ? eng.buses_[(size_t)outBus]->l.data() : left;
+                float* dr = outBus >= 0 ? eng.buses_[(size_t)outBus]->r.data() : right;
+                for (int k = 0; k < frames; ++k) {
+                    const float a = w.tl[(size_t)k] * gl, b = w.trb[(size_t)k] * gr;
+                    dl[k] += a;
+                    dr[k] += b;
+                    pl = std::max(pl, std::fabs(a));
+                    pr = std::max(pr, std::fabs(b));
+                }
+            }
+            w.peak.left = pl;
+            w.peak.right = pr;
+            eng.peaks_.push_back(w.peak);
         }
     }
 
@@ -1891,7 +2045,7 @@ struct AudioBlockMixer {
             }
         } else if (w.busMode == AudioEngine::Work::BusSurround) {
             if (eng.busTap) eng.busTap(bus.id, w.tapL.data(), w.tapR.data(), frames);
-            eng.panSurround(bus.surround, start, rate, frames, b.l.data(), b.r.data(), w.hasSg ? w.sg.data() : nullptr, w.level, six);
+            eng.panSurround(bus.surround, bus.panType, start, rate, frames, b.l.data(), b.r.data(), w.hasSg ? w.sg.data() : nullptr, w.level, six);
         } else {
             addContribs(w, true);
             if (eng.busTap) eng.busTap(bus.id, w.tapL.data(), w.tapR.data(), frames);
@@ -1988,8 +2142,9 @@ struct AudioBlockMixer {
         for (int c = 0; c < 6; ++c) {
             float* x = six[c];
             float pk = 0;
+            const float trim = (float)p.masterTrim[c];
             for (int k = 0; k < frames; ++k) {
-                x[k] *= masterEnv ? gainL[(size_t)k] : mg;
+                x[k] *= (masterEnv ? gainL[(size_t)k] : mg) * trim;
                 if (!std::isfinite(x[k])) x[k] = 0;
                 pk = std::max(pk, std::fabs(x[k]));
             }
@@ -2007,13 +2162,20 @@ struct AudioBlockMixer {
         // VEGAS's master Pre FX / Post FX: by default the effects come before the master's volume
         if (!p.masterFxPostFader) runChainAt(p.audioOut, &p.masterEnvelopes, left, right, start - masterIn, frames);
         const float ml = p.masterMute ? 0.f : panLeft(p.masterVolume, p.masterPan);
-        const float mr = p.masterMute ? 0.f : panRight(p.masterVolume, p.masterPan);
+        const float mr = p.masterMute ? 0.f : panRight(p.masterRightVolume(), p.masterPan);
         const Envelope* mvol = activeEnvelope(p.masterEnvelopes, "volume");
         const Envelope* mmute = activeEnvelope(p.masterEnvelopes, "mute");
         const bool masterEnv = !p.masterMute && (mvol || mmute);
         if (masterEnv)
             faderGains(mvol, nullptr, mmute, p.masterVolume, p.masterPan, start - masterIn - (p.masterFxPostFader ? 0 : masterLat), rate, frames, es,
                        gainL.data(), gainR.data());
+        if (masterEnv && p.masterVolumeR >= 0) {
+            // the right fader on its own: the same envelopes at the right thumb's level
+            std::vector<float>& tmp = es.a_f;
+            if ((int)tmp.size() < frames) tmp.resize((size_t)frames);
+            faderGains(mvol, nullptr, mmute, p.masterRightVolume(), p.masterPan, start - masterIn - (p.masterFxPostFader ? 0 : masterLat), rate, frames, es,
+                       tmp.data(), gainR.data());
+        }
         float pl = 0, pr = 0;
         if (p.masterFxPostFader) {
             for (int k = 0; k < frames; ++k) {

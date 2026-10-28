@@ -575,7 +575,7 @@ void Playback::tick()
         stop();
         return;
     }
-    if (rate_ > 0 && reachedEnd_.load() && pos >= end - 0.02 && !loop) {
+    if (rate_ > 0 && reachedEnd_.load() && pos >= end - 0.02 && !loop && !playPastEnd_.load()) {
         pause();
         app_.setCursor(end);
         return;
@@ -1400,6 +1400,7 @@ bool Playback::planPlayJob(int index, std::unique_lock<std::mutex>& lk, int64_t&
         for (int k = 0; k < kCutsAhead; ++k) {
             const double cut = nextCut(t, dir);
             if (cut < 0 || aheadOf(pos, cut) / ar > std::max(kAheadSeconds, 3.0 * slowest)) break;
+            if (c.loop && (cut <= c.loopStart || cut >= c.loopEnd)) break;
             slowest = std::max(slowest, estimateAt(dir > 0 ? cut : std::max(0.0, cut - 1e-6)));
             t = cut;
         }
@@ -1419,6 +1420,7 @@ bool Playback::planPlayJob(int index, std::unique_lock<std::mutex>& lk, int64_t&
         for (int k = 0; k < kCutsAhead; ++k) {
             const double cut = nextCut(t, dir);
             if (cut < 0 || (!c.loop && cut >= c.length)) break;
+            if (c.loop && (cut <= c.loopStart || cut >= c.loopEnd)) break;     // (looping: only cuts inside the loop come up)
             const double until = aheadOf(pos, cut) / ar;
             if (until > aheadSeconds) break;
             const double e = estimateAt(dir > 0 ? cut : std::max(0.0, cut - 1e-6));

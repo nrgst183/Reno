@@ -936,7 +936,11 @@ ImagePtr Instance::render(double time, const RenderOptions& opt, std::string* er
     int w = setup.width, h = setup.height;
     bool shrunk = false;
     if (opt.width > 0 && opt.height > 0 && (opt.width != w || opt.height != h)) {
-        if (scalable()) {
+        if (opt.mediaSize) {
+            w = opt.width;
+            h = opt.height;
+            shrunk = true;
+        } else if (scalable()) {
             w = opt.width;
             h = opt.height;
         } else if (opt.previewSizeForAll && opt.width < w && opt.height < h) {

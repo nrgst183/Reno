@@ -2479,13 +2479,21 @@ std::string mediaProjectReference(const std::string& path)
 
 std::unique_ptr<MediaReader> openMedia(const std::string& path, std::string* error)
 {
+    std::string heifError;
     {
         std::string bytes;
         if (isAnimatedWebp(path, &bytes)) return openAnimatedWebp(path, bytes, error);
+        std::string heifBytes;
+        if (isHeifStill(path, &heifBytes)) {
+            // Reno reads HEIC/AVIF stills itself (FFmpeg 7.0 cannot; 7.1+ cannot put a grid together); what it does not
+            // understand (an image sequence, an overlay) goes on to FFmpeg
+            if (std::unique_ptr<MediaReader> h = openHeifStill(path, heifBytes, &heifError)) return h;
+        }
     }
     std::unique_ptr<FFReader> r(new FFReader());
     std::string e;
     if (!r->open(path, &e)) {
+        if (!heifError.empty()) e = heifError;      // the more telling of the two
         if (e.empty()) e = "Cannot read " + pathFileName(path) + ".";
         if (error) *error = e;
         return nullptr;

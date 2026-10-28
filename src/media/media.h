@@ -1,6 +1,7 @@
 // Reading and writing media files. The engine only sees these interfaces; the FFmpeg code behind them
 // is in ffmpeg_reader.cpp and ffmpeg_writer.cpp.
 #pragma once
+#include "smartrender.h"
 #include "../core/base.h"
 #include <atomic>
 #include <functional>
@@ -168,13 +169,13 @@ struct EncodeSettings {
     std::string audioCodec;             // likewise
 
     // ---- what a Render As template sets (File > Render As). The defaults give what the fields above alone give.
-    // The kind of frame compression, when videoCodec is empty: "h264", "hevc", "prores", "dnxhd", "mpeg2", "dv",
+    // The kind of frame compression, when videoCodec is empty: "h264", "hevc", "prores", "dnxhd", "mpeg1", "mpeg2", "dv",
     // "mpeg4", "mjpeg", "wmv", "vp9", "rawvideo", "utvideo", "png", "jpeg", "tiff", "bmp" ("" = the container's usual one).
     std::string videoFamily;
     // Which encoder makes it: "auto" (the usual order), "cpu" (software only), "nvenc" (NVIDIA), "qsv" (Intel Quick
     // Sync), "amf" (AMD), "mf" (Windows Media Foundation).
     std::string encodeMode = "auto";
-    // The kind of sound compression, when audioCodec is empty: "aac", "mp3", "pcm", "flac", "vorbis", "opus", "wma", "ac3".
+    // The kind of sound compression, when audioCodec is empty: "aac", "mp3", "pcm", "flac", "vorbis", "opus", "wma", "ac3", "mp2".
     std::string audioFamily;
     int outSampleRate = 0;              // the file's sample rate (0: sampleRate, which is the rate of the sound given)
     int audioChannels = 2;              // 1 (mixed to mono), 2 or 6 (5.1: L R C LFE Ls Rs, given with writeAudioChannels); with PCM any
@@ -241,6 +242,21 @@ public:
     virtual bool finish(std::string* error = nullptr) = 0;
     // What was chosen, for the log: e.g. "mp4: h264_mf 1920x1080 30 fps, aac 48000 Hz".
     virtual std::string describe() const = 0;
+
+    // ---- smart rendering (smartrender.h): stretches of a source's video copied as they are instead of encoded again.
+    // Whether packets of 'src' can go into this file's video stream as they are: the same codec, size, picture format and
+    // frame rate, the same codec header, and a container that takes them. False with *why otherwise (and by default).
+    virtual bool smartCompatible(const SmartSource& src, std::string* why) { if (why) *why = "this writer cannot copy frames"; return false; }
+    // Called once, before the first frame, when frames are going to be copied: 'copyDelay' is the largest SmartGop::delay of
+    // the groups that will be. From then on the video packets get time stamps worked out here.
+    virtual void beginSmart(int copyDelay) { (void)copyDelay; }
+    // Writes the groups [firstGop, firstGop + gopCount) of 'src' in place of as many frames (the file's next ones).
+    virtual bool writeVideoCopy(const SmartSource& src, int firstGop, int gopCount, std::string* error)
+    {
+        (void)src; (void)firstGop; (void)gopCount;
+        if (error) *error = "this writer cannot copy frames";
+        return false;
+    }
 };
 
 // Null with *error set if the file cannot be created or no usable encoder exists.

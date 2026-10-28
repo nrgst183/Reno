@@ -16,7 +16,10 @@
 #include "uitestlib.h"
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QPushButton>
+#include <QTimer>
 #include <QDir>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
@@ -109,6 +112,17 @@ double meanDiff(const QImage& a0, const QImage& b0)
             sum += std::abs(qRed(p) - qRed(q)) + std::abs(qGreen(p) - qGreen(q)) + std::abs(qBlue(p) - qBlue(q));
         }
     return sum / (3.0 * a.width() * a.height());
+}
+
+// Answers the 2D / 3D conversion question when it comes up (the dialog is modal: its loop runs the timer).
+void answerConversion(const char* button, bool dontShowAgain = false)
+{
+    QTimer::singleShot(150, [button, dontShowAgain] {
+        QWidget* d = topLevel("motionConversionDialog");
+        if (!d) return;
+        if (dontShowAgain) child<QCheckBox>(d, "dontShowAgain")->setChecked(true);
+        if (QPushButton* b = child<QPushButton>(d, button)) b->click();
+    });
 }
 
 uint64_t clip = 0, V1 = 0, V2 = 0, V3 = 0;
@@ -258,6 +272,81 @@ int main(int argc, char** argv)
             check(std::fabs(t->motion[0].rotY) > 10 && near(t->motion[0].rotation, 0) && near(t->motion[0].rotX, 0), "turning in the Top pane turns it about the up-down axis",
                   num(t->motion[0].rotY));
         }
+        // ---- Enable Snapping (F8) works in the 3D panes: the box's middle (or an unturned box's edge) goes onto the grid
+        if (panes.size() == 2) {
+            QToolButton* snapBtn = child<QToolButton>(tm, "enableSnapping");
+            check(snapBtn && snapBtn->isEnabled(), "Enable Snapping is available in the 3D window");
+            st().edit("Plain box", [](Project& p) {
+                MotionKey k;
+                k.x = 0.5; k.y = 0.5; k.w = 0.4; k.h = 0.4;
+                if (Track* t = p.findTrack(V2)) t->motion = {k};
+            });
+            uitest::settle(40);
+            if (QDoubleSpinBox* g = child<QDoubleSpinBox>(tm, "gridSpacing")) g->setValue(4);
+            uitest::key(tm, Qt::Key_F8);
+            uitest::settle(20);
+            check(snapBtn && snapBtn->isChecked(), "F8 switches snapping on in 3D");
+            QWidget* cam = panes[0];
+            const double pxPerX = QLineF(cornerIn(cam, 0), cornerIn(cam, 1)).length() / 0.4;
+            QPointF c = centreIn(cam);
+            drag(cam, c, c + QPointF((0.26 * pxPerX), 0));
+            check(near(track(V2)->motion[0].x, 0.75, 1e-6) && near(track(V2)->motion[0].y, 0.5, 0.01),
+                  "a drag that ends near a grid line puts the box's middle on it", num(track(V2)->motion[0].x));
+            // not near one (grid 16 now: lines every 0.0625; 8 pixels is far less than half of that here): left as dragged
+            uitest::key(tm, Qt::Key_F8);
+            c = centreIn(cam);
+            drag(cam, c, c + QPointF(0.03 * pxPerX, 0));
+            const double freeX = track(V2)->motion[0].x;
+            check(freeX > 0.75 && !near(freeX, 0.75, 1e-6), "with snapping off the same kind of drag lands where it was dragged", num(freeX));
+            uitest::key(tm, Qt::Key_F8);
+            // sizing: the edge that moves goes onto a grid line
+            st().edit("Plain box", [](Project& p) {
+                MotionKey k;
+                k.x = 0.5; k.y = 0.5; k.w = 0.4; k.h = 0.4;
+                if (Track* t = p.findTrack(V2)) t->motion = {k};
+            });
+            uitest::settle(40);
+            const QPointF k2 = cornerIn(cam, 2), cc = centreIn(cam);
+            const QPointF dir = (k2 - cc) / std::hypot((k2 - cc).x(), (k2 - cc).y());
+            // 0.4 -> about 0.52 wide: the right edge (0.5 + 0.26) is near the line at 0.75
+            drag(cam, k2, k2 + dir * (0.2 * pxPerX * 0.35));
+            const double nw = track(V2)->motion[0].w;
+            check(near(0.5 + nw / 2, 0.75, 1e-3) || near(0.5 + nw / 2, 0.8125, 1e-3), "sizing snaps the moving edge to the grid", num(nw));
+            uitest::key(tm, Qt::Key_F8);
+        }
+        // ---- the Perspective view can be turned (Alt+drag or the middle button), and Restore View puts it back
+        if (panes.size() == 2) {
+            if (QComboBox* angle = child<QComboBox>(panes[1], "paneAngle")) pick(angle, QString::number(7));
+            QWidget* per = panes[1];
+            per->grab();
+            const double yaw0 = per->property("yaw").toDouble(), pitch0 = per->property("pitch").toDouble();
+            check(near(yaw0, 35) && near(pitch0, 25), "the Perspective view starts looking from the front right and above");
+            const QPoint a(8, per->height() - 8);
+            uitest::mousePress(per, a, Qt::LeftButton, Qt::AltModifier);
+            uitest::mouseMove(per, a + QPoint(40, 0), Qt::LeftButton, Qt::AltModifier);
+            uitest::mouseMove(per, a + QPoint(80, -20), Qt::LeftButton, Qt::AltModifier);
+            uitest::mouseRelease(per, a + QPoint(80, -20), Qt::LeftButton, Qt::AltModifier);
+            per->grab();
+            check(near(per->property("yaw").toDouble(), 35 + 40, 1e-6) && near(per->property("pitch").toDouble(), 25 - 10, 1e-6),
+                  "Alt+drag turns the Perspective view", strfmt("%.1f %.1f", per->property("yaw").toDouble(), per->property("pitch").toDouble()));
+            uitest::mousePress(per, a, Qt::MiddleButton);
+            uitest::mouseMove(per, a + QPoint(-20, 0), Qt::MiddleButton);
+            uitest::mouseRelease(per, a + QPoint(-20, 0), Qt::MiddleButton);
+            per->grab();
+            check(near(per->property("yaw").toDouble(), 35 + 30, 1e-6) && near(per->property("pitch").toDouble(), 15, 1e-6),
+                  "so does dragging with the middle button", strfmt("%.1f", per->property("yaw").toDouble()));
+            // the box is drawn from the new direction: its corners moved
+            const QPointF before = cornerIn(per, 0);
+            uitest::mousePress(per, a, Qt::MiddleButton);
+            uitest::mouseMove(per, a + QPoint(60, 0), Qt::MiddleButton);
+            uitest::mouseRelease(per, a + QPoint(60, 0), Qt::MiddleButton);
+            check(QLineF(before, cornerIn(per, 0)).length() > 5, "and the box is drawn from there");
+            // a plain drag in the Camera pane (not Perspective) ignores Alt: nothing is turned there
+            if (QComboBox* angle = child<QComboBox>(per, "paneAngle")) { pick(angle, QString::number(0)); pick(angle, QString::number(7)); }
+            per->grab();
+            check(near(per->property("yaw").toDouble(), 35) && near(per->property("pitch").toDouble(), 25), "choosing the view again (Restore View) puts the direction back");
+            if (QComboBox* angle = child<QComboBox>(per, "paneAngle")) pick(angle, QString::number(5));
+        }
         // ---- the panel's 3D values
         if (QDoubleSpinBox* rx = child<QDoubleSpinBox>(tm, "boxRotX")) {
             rx->setValue(30);
@@ -284,11 +373,37 @@ int main(int argc, char** argv)
             if (angle) pick(angle, QString::number(7));
         }
         uitest::shot(tm, gOut + "/trackmotion3d_perspective.png");
-        // back to Source Alpha: the 2D window again, the 3D values kept in the keys
+        // back to Source Alpha: VEGAS asks first (the 3D values are lost); No leaves it as it was
+        st().edit("3D values", [](Project& p) { if (Track* t = p.findTrack(V2)) t->motion[0].rotX = 30; });
+        QSettings().remove("dontShow/motion3dTo2d");
+        answerConversion("conversionNo");
         pick(mode, "srcalpha");
-        check(!tm->property("mode3d").toBool() && child<QWidget>(tm, "boxView")->isVisible() && child<QWidget>(tm, "rowShadow")->isVisible() &&
-                  near(track(V2)->motion[0].rotX, 30),
-              "back in Source Alpha the window is 2D again (the 3D values stay in the keys)");
+        check(track(V2)->composite == "3dsrcalpha" && near(track(V2)->motion[0].rotX, 30) && mode->currentData().toString() == "3dsrcalpha",
+              "going back to 2D asks about the lost 3D values; No keeps the track in 3D");
+        answerConversion("conversionYes", true);
+        pick(mode, "srcalpha");
+        check(track(V2)->composite == "srcalpha" && near(track(V2)->motion[0].rotX, 0) && near(track(V2)->motion[0].z, 0) && near(track(V2)->motion[0].oriZ, 0) &&
+                  !tm->property("mode3d").toBool() && child<QWidget>(tm, "boxView")->isVisible() && child<QWidget>(tm, "rowShadow")->isVisible(),
+              "Yes makes it 2D: the window is the 2D one and the 3D values are gone");
+        // to 3D: the 2D Shadow and Glow keyframes are deleted (3D has none)
+        st().edit("Shadow and Glow", [](Project& p) {
+            Track* t = p.findTrack(V2);
+            GlowKey g;
+            t->shadow2d = {g};
+            t->glow2d = {g};
+        });
+        answerConversion("conversionNo");
+        pick(mode, "3dsrcalpha");
+        check(track(V2)->composite == "srcalpha" && !track(V2)->shadow2d.empty() && !track(V2)->glow2d.empty(),
+              "going to 3D asks about the 2D Shadow and Glow keyframes that will be deleted; No keeps them");
+        answerConversion("conversionYes");
+        pick(mode, "3dsrcalpha");
+        check(track(V2)->composite == "3dsrcalpha" && track(V2)->shadow2d.empty() && track(V2)->glow2d.empty() && !child<QWidget>(tm, "rowShadow")->isVisible(),
+              "Yes deletes them: 3D track motion has no Shadow or Glow (as in VEGAS)");
+        // "Don't show me this again" was ticked for 3D -> 2D: that question is not asked again
+        st().edit("3D values", [](Project& p) { if (Track* t = p.findTrack(V2)) t->motion[0].rotX = 20; });
+        pick(mode, "srcalpha");
+        check(track(V2)->composite == "srcalpha", "with \"Don't show me this again\" ticked the question is not asked again");
         pick(mode, "3dsrcalpha");
         tm->close();
         uitest::settle(50);

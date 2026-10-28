@@ -20,6 +20,8 @@
 #include <cctype>
 #include <QIcon>
 #include "appstate.h"
+#include "fxlibrary.h"
+#include "rendertemplates.h"
 #include "keyboard.h"
 #include "../engine/catalog.h"
 #include "../engine/fxnames.h"
@@ -466,6 +468,94 @@ ScriptHost makeHost(AppState& app, QWidget* parent, const std::string& script, c
     const ProjectSettings st = app.project().settings;
     h.describeOfx = [st](const std::string& id, const std::string& context, ScriptOfxDesc* d, std::string* error) {
         return describeOfx(id, context, st, d, error);
+    };
+    // Vegas.Renderers and Vegas.Render: Render As's formats with the templates this FFmpeg can make
+    auto formats = std::make_shared<std::vector<rt::Format>>();
+    {
+        for (rt::Format f : rt::loadFormats()) {
+            if (!f.unavailable.isEmpty()) continue;
+            std::vector<rt::Tmpl> ok;
+            for (const rt::Tmpl& t : f.templates)
+                if (rt::templateAvailable(f, t)) ok.push_back(t);
+            if (ok.empty()) continue;
+            f.templates = ok;
+            formats->push_back(f);
+        }
+    }
+    h.renderers = [formats]() {
+        std::vector<ScriptRenderer> out;
+        for (const rt::Format& f : *formats) {
+            ScriptRenderer r;
+            r.name = f.name.toStdString();
+            r.ext = f.ext.toStdString();
+            r.description = f.blurb.toStdString();
+            r.hasVideo = f.hasVideo;
+            r.hasAudio = f.hasAudio;
+            for (const rt::Tmpl& t : f.templates) {
+                ScriptRenderTemplate st;
+                st.name = t.name.toStdString();
+                st.description = t.description.toStdString();
+                st.ext = t.ext.toStdString();
+                st.video = f.hasVideo && t.video;
+                st.audio = f.hasAudio && t.audio;
+                st.width = t.width;
+                st.height = t.height;
+                st.fpsNum = t.fpsNum;
+                st.fpsDen = t.fpsDen;
+                st.sampleRate = t.sampleRate;
+                st.channels = t.channels;
+                st.bits = t.bits;
+                st.videoKbps = st.video ? t.kbps : 0;
+                st.audioKbps = st.audio ? t.audioKbps : 0;
+                st.par = t.par;
+                r.templates.push_back(st);
+            }
+            out.push_back(r);
+        }
+        return out;
+    };
+    h.render = [formats, &app](const Project& p, const ScriptRenderRequest& r, std::string* error) -> int {
+        if (r.renderer < 0 || r.renderer >= (int)formats->size() || r.tmpl < 0 || r.tmpl >= (int)(*formats)[(size_t)r.renderer].templates.size()) {
+            *error = "no such render template";
+            return 6;
+        }
+        const rt::Format& fmt = (*formats)[(size_t)r.renderer];
+        const rt::Tmpl& t = fmt.templates[(size_t)r.tmpl];
+        if (fmt.sequence) {
+            *error = "rendering an image sequence from a script is not supported by Reno";
+            return 6;
+        }
+        rt::RenderChoices choices;
+        choices.writerPath = r.output;
+        choices.useRotation = r.useRotation;
+        choices.markers = r.markers;
+        RenderSpec spec;
+        QString specError;
+        if (!rt::makeRenderSpec(fmt, t, choices, p.settings, &spec, &specError)) {
+            *error = specError.toStdString();
+            return 6;
+        }
+        if (QFileInfo::exists(qs(r.output))) QFile::remove(qs(r.output));
+        std::string e, description;
+        bool ok = false;
+        try {
+            ok = renderProjectAs(p, app.fx, spec, r.from, r.to, [](const ExportProgress&) { return true; }, &e, app.mediaOpener, &description);
+        } catch (const std::exception& x) {
+            e = x.what();
+        }
+        if (ok) return 4;
+        *error = e;
+        return e == "stopped" ? 5 : 6;
+    };
+    h.presets = [](const std::string& id, const std::string& context) {
+        std::vector<ScriptPreset> out;
+        for (const OfxPreset& p : presetsFor(id, context)) {
+            ScriptPreset sp;
+            sp.name = p.name;
+            sp.state = presetToState(p);
+            out.push_back(sp);
+        }
+        return out;
     };
 #ifdef _WIN32
     h.mainWindow = parent ? (int64_t)parent->window()->winId() : 0;

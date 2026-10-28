@@ -8,6 +8,7 @@
  * tracks, takes and envelopes. Also writes manifest.txt and api_properties.txt.
  * Then run vegmatrix_diff <folder> (tests/vegas/vegmatrix_diff.cpp) to list the bytes each file changed.
  * The open project is replaced by the test projects (it will not start if it has unsaved changes) and reopened at the end.
+ * AddGapVariants makes the files for the .veg parts Reno does not write yet (transitions, track motion, bus settings, ...).
  * Takes a few minutes. C# 5.
  **/
 using System;
@@ -252,6 +253,7 @@ public class EntryPoint
         AddProjectSweeps(list);
         AddTrackSweeps(list);
         AddStructural(list);
+        AddGapVariants(list);
         AddCoverage();
         // the bus sweeps start from the second base
         vegas.OpenProject(Path.Combine(outDir, BaseBusFile));
@@ -630,6 +632,429 @@ public class EntryPoint
                 Call(Resolve(x, "Project"), "GroupSelectedTracks");
                 return "";
             });
+    }
+
+
+    // ------------------------------------------------------------------------------------------ what Reno cannot write yet
+    // Files for the .veg parts Reno does not write because no sample shows where VEGAS keeps them (docs/NOTES.md, "VEGAS
+    // projects"): transitions, track motion, bus sends and bus settings, the parent/child setting, track groups, effects and
+    // envelopes on the video output and the master, VST3 plug-ins, the event undersample rate, surround pans, multichannel
+    // sources, Trimmer markers and OpenFX keyframe interpolation. Each file changes one thing, so vegmatrix_diff shows
+    // which bytes it is. (Red Eye Reduction areas and the sends' own level and pre/post switch have no scripting API:
+    // see the list in the manifest.)
+    void AddGapVariants(List<Variant> list)
+    {
+        Note("gap variants: files for the parts of a .veg Reno does not write yet");
+        Note("MANUAL (no scripting API; make by hand in VEGAS, one change per file, from 00_base.veg): red_eye (Tools > Video > Red Eye Reduction on the picture event, one area); send_level (Mixing Console: turn the Assignable FX send knob of the audio track to Bus A to -6 dB; then again with Pre-Fader set); bus_pan (Mixing Console: pan the added bus to the left); multichannel_choice (an event of a 6 channel file: Properties > Media > channel choice); tracks_group_collapse and track-group colour");
+        // --- transitions
+        PlugInNode tx = null;
+        try { tx = FindPlug(vegas.Transitions, new string[] { "Cross", "Dissolve", "Wipe", "Fade" }, true, false); } catch (Exception) { }
+        PlugInNode tx2 = null;
+        try { tx2 = FindPlug(vegas.Transitions, new string[] { "Wipe", "Iris", "Slide", "Page" }, true, false); } catch (Exception) { }
+        Change overlap = delegate(Vegas x)
+        {
+            // video track 1: its event split at 2 s, the second part moved 0.5 s back so the two overlap
+            object ev = Resolve(x, "Project.Tracks[0].Events[0]");
+            object second = Call(ev, "Split", Timecode.FromMilliseconds(2000));
+            if (second == null) second = Resolve(x, "Project.Tracks[0].Events[1]");
+            Set(second, "Start", Timecode.FromMilliseconds(1500));
+            Set(Get(second, "FadeIn"), "Length", Timecode.FromMilliseconds(500));
+            return "";
+        };
+        AddCustom(list, BaseFile, "tx_overlap_only", "event A split at 2 s, the second part starts at 1.5 s (a cross-fade, no transition plug-in)",
+            delegate(Vegas x) { return overlap(x); });
+        if (tx != null)
+        {
+            PlugInNode p = tx;
+            AddCustom(list, BaseFile, "tx_" + FileSafe(p.Name), "as tx_overlap_only with the transition '" + p.Name + "' on the second event's FadeIn",
+                delegate(Vegas x)
+                {
+                    overlap(x);
+                    Set(Get(Resolve(x, "Project.Tracks[0].Events[1]"), "FadeIn"), "Transition", new Effect(p));
+                    return "";
+                });
+            AddCustom(list, BaseFile, "tx_progress_envelope", "as above, plus a TransitionProgress envelope with a point at 0.25 s (value 0.5) on the second event",
+                delegate(Vegas x)
+                {
+                    overlap(x);
+                    object ev = Resolve(x, "Project.Tracks[0].Events[1]");
+                    Set(Get(ev, "FadeIn"), "Transition", new Effect(p));
+                    object env = New("Envelope", ParseEnum("EnvelopeType", "TransitionProgress"));
+                    Call(Get(ev, "Envelopes"), "Add", env);
+                    Call(Get(env, "Points"), "Add", New("EnvelopePoint", Timecode.FromMilliseconds(250), 0.5));
+                    return "";
+                });
+            AddCustom(list, BaseFile, "tx_remove", "as tx_" + FileSafe(p.Name) + " and RemoveTransition() afterwards (what is left behind)",
+                delegate(Vegas x)
+                {
+                    overlap(x);
+                    object fade = Get(Resolve(x, "Project.Tracks[0].Events[1]"), "FadeIn");
+                    Set(fade, "Transition", new Effect(p));
+                    Call(fade, "RemoveTransition");
+                    return "";
+                });
+        }
+        if (tx != null && tx2 != null && tx2.Name != tx.Name)
+        {
+            PlugInNode p = tx, q = tx2;
+            AddCustom(list, BaseFile, "tx_second_kind_" + FileSafe(q.Name), "as the first transition file but the transition is '" + q.Name + "'",
+                delegate(Vegas x)
+                {
+                    overlap(x);
+                    Set(Get(Resolve(x, "Project.Tracks[0].Events[1]"), "FadeIn"), "Transition", new Effect(q));
+                    return "";
+                });
+        }
+
+        // --- track motion: one property of the first keyframe at a time (motion, shadow, glow, and the parent's)
+        string[][] motion = new string[][] {
+            new string[] { "PositionX", "0.25" }, new string[] { "PositionY", "0.125" }, new string[] { "PositionZ", "0.5" },
+            new string[] { "Width", "2.5" }, new string[] { "Height", "1.5" }, new string[] { "Depth", "0.5" },
+            new string[] { "RotationX", "20" }, new string[] { "RotationY", "30" }, new string[] { "RotationZ", "40" },
+            new string[] { "RotationOffsetX", "0.1" }, new string[] { "RotationOffsetY", "0.2" }, new string[] { "RotationOffsetZ", "0.3" },
+            new string[] { "OrientationX", "10" }, new string[] { "OrientationY", "15" }, new string[] { "OrientationZ", "25" },
+            new string[] { "Smoothness", "0.5" }, new string[] { "Type", "Hold" }, new string[] { "Type", "Slow" }, new string[] { "Type", "Fast" },
+            new string[] { "Type", "Smooth" }, new string[] { "Type", "Sharp" },
+        };
+        foreach (string[] m in motion)
+            AddMotionKey(list, "motion", "Project.Tracks[0].TrackMotion", "InsertMotionKeyframe", m[0], m[1]);
+        string[][] shadowGlow = new string[][] {
+            new string[] { "PositionX", "0.25" }, new string[] { "PositionY", "0.125" }, new string[] { "Width", "2.5" }, new string[] { "Height", "1.5" },
+            new string[] { "RotationZ", "40" }, new string[] { "Blur", "0.4" }, new string[] { "Intensity", "0.6" }, new string[] { "Smoothness", "0.5" },
+            new string[] { "Type", "Hold" }, new string[] { "Type", "Smooth" },
+        };
+        foreach (string[] m in shadowGlow)
+        {
+            AddMotionKey(list, "shadow", "Project.Tracks[0].TrackMotion", "InsertShadowKeyframe", m[0], m[1]);
+            AddMotionKey(list, "glow", "Project.Tracks[0].TrackMotion", "InsertGlowKeyframe", m[0], m[1]);
+        }
+        AddCustom(list, BaseFile, "motion_shadow_enabled", "track 1's ShadowEnabled = true after a shadow keyframe",
+            delegate(Vegas x) { object tm = Resolve(x, "Project.Tracks[0].TrackMotion"); Call(tm, "InsertShadowKeyframe", Timecode.FromMilliseconds(1000)); Set(tm, "ShadowEnabled", true); return ""; });
+        AddCustom(list, BaseFile, "motion_glow_enabled", "track 1's GlowEnabled = true after a glow keyframe",
+            delegate(Vegas x) { object tm = Resolve(x, "Project.Tracks[0].TrackMotion"); Call(tm, "InsertGlowKeyframe", Timecode.FromMilliseconds(1000)); Set(tm, "GlowEnabled", true); return ""; });
+        AddCustom(list, BaseFile, "motion_two_keys", "two motion keyframes (0.5 s and 3 s) with different positions",
+            delegate(Vegas x)
+            {
+                object tm = Resolve(x, "Project.Tracks[0].TrackMotion");
+                object a = Call(tm, "InsertMotionKeyframe", Timecode.FromMilliseconds(500));
+                object b = Call(tm, "InsertMotionKeyframe", Timecode.FromMilliseconds(3000));
+                Set(a, "PositionX", 0.1); Set(b, "PositionX", 0.4);
+                return "";
+            });
+        AddCustom(list, BaseFile, "motion_key_at_zero", "one motion keyframe at 0 s with PositionX 0.3",
+            delegate(Vegas x) { object a = Call(Resolve(x, "Project.Tracks[0].TrackMotion"), "InsertMotionKeyframe", Timecode.FromMilliseconds(0)); Set(a, "PositionX", 0.3); return ""; });
+        AddCustom(list, BaseFile, "motion_other_track", "a motion keyframe on video track 2 (position 0.2)",
+            delegate(Vegas x) { object a = Call(Resolve(x, "Project.Tracks[1].TrackMotion"), "InsertMotionKeyframe", Timecode.FromMilliseconds(1000)); Set(a, "PositionX", 0.2); return ""; });
+        string[][] parentMotion = new string[][] { new string[] { "PositionX", "0.25" }, new string[] { "Width", "2.5" }, new string[] { "RotationZ", "40" } };
+        foreach (string[] m in parentMotion)
+            AddMotionKey(list, "parent_motion", "Project.Tracks[0].ParentTrackMotion", "InsertMotionKeyframe", m[0], m[1]);
+
+        // --- the parent/child setting
+        AddCustom(list, BaseFile, "child_track_V2_level1", "video track 2 made a child of track 1 (CompositeNestingLevel = 1)",
+            delegate(Vegas x) { Set(Resolve(x, "Project.Tracks[1]"), "CompositeNestingLevel", 1); return ""; });
+        AddCustom(list, BaseFile, "child_track_V2_parent_mode", "as child_track_V2_level1 and track 1's ParentCompositeMode = Add",
+            delegate(Vegas x)
+            {
+                Set(Resolve(x, "Project.Tracks[1]"), "CompositeNestingLevel", 1);
+                Set(Resolve(x, "Project.Tracks[0]"), "ParentCompositeMode", ParseEnum("CompositeMode", "Add"));
+                return "";
+            });
+
+        // --- track groups
+        Change makeGroup = delegate(Vegas x)
+        {
+            Set(Resolve(x, "Project.Tracks[0]"), "Selected", true);
+            Set(Resolve(x, "Project.Tracks[1]"), "Selected", true);
+            Call(Resolve(x, "Project"), "GroupSelectedTracks");
+            return "";
+        };
+        AddCustom(list, BaseFile, "trackgroup_name", "the two video tracks grouped, group named 'Matrix group'",
+            delegate(Vegas x) { makeGroup(x); Set(Resolve(x, "Project.TrackGroups[0]"), "Name", "Matrix group"); return ""; });
+        AddCustom(list, BaseFile, "trackgroup_mute", "grouped, group Mute = true",
+            delegate(Vegas x) { makeGroup(x); Set(Resolve(x, "Project.TrackGroups[0]"), "Mute", true); return ""; });
+        AddCustom(list, BaseFile, "trackgroup_solo", "grouped, group Solo = true",
+            delegate(Vegas x) { makeGroup(x); Set(Resolve(x, "Project.TrackGroups[0]"), "Solo", true); return ""; });
+        AddCustom(list, BaseFile, "trackgroup_collapsed", "grouped, group collapsed",
+            delegate(Vegas x) { makeGroup(x); Call(Resolve(x, "Project.TrackGroups[0]"), "CollapseTrackGroup"); return ""; });
+        AddCustom(list, BaseFile, "trackgroup_video_and_audio", "video track 1 and the audio track grouped",
+            delegate(Vegas x)
+            {
+                Set(Resolve(x, "Project.Tracks[0]"), "Selected", true);
+                Set(Resolve(x, "Project.Tracks[2]"), "Selected", true);
+                Call(Resolve(x, "Project"), "GroupSelectedTracks");
+                return "";
+            });
+
+        // --- buses: sends (envelopes), settings, envelopes on buses, the master and the video output
+        AddCustom(list, BaseBusFile, "send_envelope_to_bus_A", "the audio track gets a BusA (send) envelope with a point at 1 s (0.5)",
+            delegate(Vegas x)
+            {
+                object env = New("Envelope", ParseEnum("EnvelopeType", "BusA"));
+                Call(Get(Resolve(x, "Project.Tracks[2]"), "Envelopes"), "Add", env);
+                Call(Get(env, "Points"), "Add", New("EnvelopePoint", Timecode.FromMilliseconds(1000), 0.5));
+                return "";
+            });
+        AddCustom(list, BaseBusFile, "send_envelope_and_routed", "as above and the track's BusTrack is the added bus",
+            delegate(Vegas x)
+            {
+                object env = New("Envelope", ParseEnum("EnvelopeType", "BusA"));
+                Call(Get(Resolve(x, "Project.Tracks[2]"), "Envelopes"), "Add", env);
+                Call(Get(env, "Points"), "Add", New("EnvelopePoint", Timecode.FromMilliseconds(1000), 0.5));
+                Set(Resolve(x, "Project.Tracks[2]"), "BusTrack", Resolve(x, "Project.BusTracks[0]"));
+                return "";
+            });
+        foreach (string kind in new string[] { "Volume", "Pan", "Mute" })
+        {
+            string k = kind;
+            AddCustom(list, BaseBusFile, "bus_envelope_" + k, "a " + k + " envelope with a point at 1 s on the added bus",
+                delegate(Vegas x) { return AddEnvelopeTo(Resolve(x, "Project.BusTracks[0]"), k); });
+            AddCustom(list, BaseFile, "master_envelope_" + k, "a " + k + " envelope with a point at 1 s on the master bus",
+                delegate(Vegas x) { return AddEnvelopeTo(Resolve(x, "Project.MasterBus"), k); });
+        }
+        foreach (string kind in new string[] { "FadeToColor", "Mute", "MotionBlurLength", "VideoSupersampling" })
+        {
+            string k = kind;
+            AddCustom(list, BaseFile, "videobus_envelope_" + k, "a " + k + " envelope with a point at 1 s on the video output (VideoBus)",
+                delegate(Vegas x) { return AddEnvelopeTo(Resolve(x, "Project.VideoBus"), k); });
+        }
+        AddCustom(list, BaseBusFile, "bus_mute_and_solo", "the added bus muted and soloed together",
+            delegate(Vegas x) { object b = Resolve(x, "Project.BusTracks[0]"); Set(b, "Mute", true); Set(b, "Solo", true); return ""; });
+        AddCustom(list, BaseFile, "master_mute", "the master bus Mute = true",
+            delegate(Vegas x) { Set(Resolve(x, "Project.MasterBus"), "Mute", true); return ""; });
+        AddCustom(list, BaseFile, "master_solo", "the master bus Solo = true",
+            delegate(Vegas x) { Set(Resolve(x, "Project.MasterBus"), "Solo", true); return ""; });
+        AddCustom(list, BaseFile, "video_bus_two_fx", "two OpenFX effects on the video output (order and count)",
+            delegate(Vegas x)
+            {
+                PlugInNode a = FindPlug(x.VideoFX, new string[] { "Invert", "Gaussian Blur", "Mirror" }, true, false);
+                PlugInNode b = FindPlug(x.VideoFX, new string[] { "Mirror", "Gaussian Blur", "Black and White" }, true, false);
+                Call(Resolve(x, "Project.VideoBus.Effects"), "Add", new Effect(a));
+                Call(Resolve(x, "Project.VideoBus.Effects"), "Add", new Effect(b));
+                return "";
+            });
+        AddCustom(list, BaseFile, "video_bus_fx_keyframed", "an OpenFX effect on the video output with a keyed double parameter (keys at 0 and 2 s)",
+            delegate(Vegas x)
+            {
+                PlugInNode a = FindPlug(x.VideoFX, new string[] { "Brightness and Contrast", "Gaussian Blur", "Invert" }, true, false);
+                Effect fx = new Effect(a);
+                Call(Resolve(x, "Project.VideoBus.Effects"), "Add", fx);
+                return KeyFirstDouble(fx, "Linear", "Linear");
+            });
+        AddCustom(list, BaseFile, "master_bus_two_fx", "two audio effects on the master bus",
+            delegate(Vegas x)
+            {
+                PlugInNode a = FindPlug(x.AudioFX, new string[] { "Reverb", "Chorus", "Delay" }, false, false);
+                PlugInNode b = FindPlug(x.AudioFX, new string[] { "Chorus", "Delay", "Distortion" }, false, false);
+                Call(Resolve(x, "Project.MasterBus.Effects"), "Add", new Effect(a));
+                Call(Resolve(x, "Project.MasterBus.Effects"), "Add", new Effect(b));
+                return "";
+            });
+
+        // --- VST3 plug-ins (named VST3 in the plug-in list, or with a VST3 unique id)
+        List<PlugInNode> audio = new List<PlugInNode>();
+        try { Collect(vegas.AudioFX, audio, 0); } catch (Exception) { }
+        List<PlugInNode> vst3 = new List<PlugInNode>();
+        foreach (PlugInNode n in audio)
+        {
+            string id = "", info = "";
+            try { id = n.UniqueID; } catch (Exception) { }
+            try { info = n.Info; } catch (Exception) { }
+            string all = (n.Name + " " + n.Group + " " + id + " " + info);
+            if (all.IndexOf("VST3", StringComparison.OrdinalIgnoreCase) >= 0 || all.IndexOf("vst 3", StringComparison.OrdinalIgnoreCase) >= 0) vst3.Add(n);
+        }
+        Note("VST3 plug-ins found in VEGAS's audio plug-in list: " + vst3.Count + (vst3.Count == 0 ? " (install one and run again; the VST3 files are skipped)" : ""));
+        for (int i = 0; i < vst3.Count && i < 2; ++i)
+        {
+            PlugInNode p = vst3[i];
+            string tag = FileSafe(p.Name);
+            AddCustom(list, BaseFile, "vst3_on_event_" + tag, "Tracks[2].Events[0].Effects.Add(" + p.Name + ")",
+                delegate(Vegas x) { Call(Resolve(x, "Project.Tracks[2].Events[0].Effects"), "Add", new Effect(p)); return ""; });
+            AddCustom(list, BaseFile, "vst3_on_track_" + tag, "Tracks[2].Effects.Add(" + p.Name + ")",
+                delegate(Vegas x) { Call(Resolve(x, "Project.Tracks[2].Effects"), "Add", new Effect(p)); return ""; });
+            AddCustom(list, BaseFile, "vst3_on_master_" + tag, "MasterBus.Effects.Add(" + p.Name + ")",
+                delegate(Vegas x) { Call(Resolve(x, "Project.MasterBus.Effects"), "Add", new Effect(p)); return ""; });
+            AddCustom(list, BaseBusFile, "vst3_on_bus_" + tag, "BusTracks[0].Effects.Add(" + p.Name + ")",
+                delegate(Vegas x) { Call(Resolve(x, "Project.BusTracks[0].Effects"), "Add", new Effect(p)); return ""; });
+        }
+
+        // --- the video event's undersample rate, and the playback rate beside it
+        foreach (double u in new double[] { 0.5, 0.25, 2.0 })
+        {
+            double uu = u;
+            AddCustom(list, BaseFile, "undersample_A_" + uu.ToString(CultureInfo.InvariantCulture), "Tracks[0].Events[0].UnderSampleRate = " + uu.ToString(CultureInfo.InvariantCulture),
+                delegate(Vegas x) { Set(Resolve(x, "Project.Tracks[0].Events[0]"), "UnderSampleRate", uu); return ""; });
+        }
+        AddCustom(list, BaseFile, "undersample_B_0.5_and_rate_2", "Tracks[1].Events[0].UnderSampleRate = 0.5 and PlaybackRate = 2",
+            delegate(Vegas x) { object e = Resolve(x, "Project.Tracks[1].Events[0]"); Set(e, "UnderSampleRate", 0.5); Set(e, "PlaybackRate", 2.0); return ""; });
+
+        // --- surround: the master in 5.1 and the audio track's surround pan
+        Change surround = delegate(Vegas x) { Set(Resolve(x, "Project.Audio"), "MasterBusMode", ParseEnum("AudioBusMode", "Surround")); return ""; };
+        AddCustom(list, BaseFile, "surround_mode_only", "Project.Audio.MasterBusMode = Surround, nothing else",
+            delegate(Vegas x) { return surround(x); });
+        foreach (string[] sp in new string[][] { new string[] { "PanX", "0.5" }, new string[] { "PanY", "-0.5" }, new string[] { "PanCenter", "0.25" } })
+        {
+            string[] spp = sp;
+            AddCustom(list, BaseFile, "surround_track_" + spp[0] + "=" + spp[1], "master in 5.1 and Tracks[2]." + spp[0] + " = " + spp[1],
+                delegate(Vegas x) { surround(x); Set(Resolve(x, "Project.Tracks[2]"), spp[0], Convert.ToSingle(spp[1], CultureInfo.InvariantCulture)); return ""; });
+        }
+        AddCustom(list, BaseBusFile, "surround_bus_added", "master in 5.1 with the added bus",
+            delegate(Vegas x) { return surround(x); });
+        foreach (string pt in new string[] { "Constant Power", "Balance (0 dB center)", "Film" })
+        {
+            string ptt = pt;
+            AddCustom(list, BaseBusFile, "bus_pantype_" + FileSafe(ptt), "the added bus's PanType = " + ptt,
+                delegate(Vegas x) { Set(Resolve(x, "Project.BusTracks[0]"), "PanType", ParsePanType(ptt)); return ""; });
+        }
+
+        // --- a source with more than two channels
+        AddCustom(list, BaseFile, "multichannel_6ch_event", "an audio event of a 6 channel wave file on the audio track (made here)",
+            delegate(Vegas x)
+            {
+                string w = Path.Combine(outDir, "six_channels.wav");
+                if (!File.Exists(w)) WriteWave(w, 6);
+                object media = Call(Get(x.Project, "MediaPool"), "AddMedia", w);
+                object tr = Resolve(x, "Project.Tracks[2]");
+                object ev = Call(tr, "AddAudioEvent", Timecode.FromMilliseconds(6000), Timecode.FromMilliseconds(2000));
+                Call(ev, "AddTake", Call(media, "GetAudioStreamByIndex", 0));
+                return "";
+            });
+        AddCustom(list, BaseFile, "multichannel_6ch_event_remap", "as above with the event's Channels = Swapped",
+            delegate(Vegas x)
+            {
+                string w = Path.Combine(outDir, "six_channels.wav");
+                if (!File.Exists(w)) WriteWave(w, 6);
+                object media = Call(Get(x.Project, "MediaPool"), "AddMedia", w);
+                object tr = Resolve(x, "Project.Tracks[2]");
+                object ev = Call(tr, "AddAudioEvent", Timecode.FromMilliseconds(6000), Timecode.FromMilliseconds(2000));
+                Call(ev, "AddTake", Call(media, "GetAudioStreamByIndex", 0));
+                Set(ev, "Channels", ParseEnum("ChannelRemapping", "Swap"));
+                return "";
+            });
+
+        // --- Trimmer markers: markers, regions and command markers of the media itself
+        AddCustom(list, BaseFile, "media_marker", "a media marker at 1 s on the audio track's media",
+            delegate(Vegas x) { return AddMediaMark(MediaOf(x, "Project.Tracks[2].Events[0]"), "Markers", "MediaMarker", 0); });
+        AddCustom(list, BaseFile, "media_region", "a media region 1 s to 2 s on the audio track's media",
+            delegate(Vegas x) { return AddMediaMark(MediaOf(x, "Project.Tracks[2].Events[0]"), "Regions", "MediaRegion", 1000); });
+        AddCustom(list, BaseFile, "media_command_marker", "a media command marker at 1 s on the audio track's media",
+            delegate(Vegas x) { return AddMediaMark(MediaOf(x, "Project.Tracks[2].Events[0]"), "CommandMarkers", "MediaCommandMarker", 0); });
+
+        // --- OpenFX keyframe interpolation of a keyed double parameter, one kind per file, on event A's first OpenFX effect
+        PlugInNode kfx = FindPlug(vegas.VideoFX, new string[] { "Brightness and Contrast", "Gaussian Blur", "Invert", "Mirror" }, true, false);
+        if (kfx != null)
+        {
+            PlugInNode kp = kfx;
+            foreach (string it in new string[] { "Linear", "Fast", "Slow", "Smooth", "Sharp", "Hold", "Manual", "Split" })
+            {
+                string kind = it;
+                AddCustom(list, BaseFile, "ofx_key_interp_" + kind, "an OpenFX effect on event A with a double parameter keyed at 0 s and 2 s; both keys " + kind,
+                    delegate(Vegas x)
+                    {
+                        Effect fx = new Effect(kp);
+                        Call(Resolve(x, "Project.Tracks[0].Events[0].Effects"), "Add", fx);
+                        return KeyFirstDouble(fx, kind, kind);
+                    });
+            }
+            AddCustom(list, BaseFile, "ofx_key_interp_mixed", "as above, the first key Smooth and the second Hold",
+                delegate(Vegas x)
+                {
+                    Effect fx = new Effect(kp);
+                    Call(Resolve(x, "Project.Tracks[0].Events[0].Effects"), "Add", fx);
+                    return KeyFirstDouble(fx, "Smooth", "Hold");
+                });
+        }
+    }
+
+    // a point at 1 s on a new envelope of the given EnvelopeType on 'owner' (a bus track)
+    static string AddEnvelopeTo(object owner, string kind)
+    {
+        object env = New("Envelope", ParseEnum("EnvelopeType", kind));
+        Call(Get(owner, "Envelopes"), "Add", env);
+        Call(Get(env, "Points"), "Add", New("EnvelopePoint", Timecode.FromMilliseconds(1000), kind == "Mute" ? 1.0 : 0.5));
+        return "";
+    }
+
+    static string AddMediaMark(object media, string list, string type, int lengthMs)
+    {
+        object m = New(type);
+        Set(m, "Position", Timecode.FromMilliseconds(1000));
+        Set(m, "Label", "mark1");
+        if (lengthMs > 0) Set(m, "Length", Timecode.FromMilliseconds(lengthMs));
+        Call(Get(media, list), "Add", m);
+        return "";
+    }
+
+    static object MediaOf(Vegas x, string eventPath)
+    {
+        object ev = Resolve(x, eventPath);
+        object take = Get(ev, "ActiveTake");
+        return Get(take, "Media");
+    }
+
+    static object ParsePanType(string name)
+    {
+        Type t = typeof(Vegas).Assembly.GetType("ScriptPortal.Vegas.PanType");
+        foreach (string n in Enum.GetNames(t))
+            if (n.Replace(" ", "").Replace("(", "").Replace(")", "").Replace("-", "").Replace(",", "").IndexOf(name.Replace(" ", "").Replace("(", "").Replace(")", "").Replace("-", ""), StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.Replace(" ", "").Replace("(", "").Replace(")", "").Replace("-", "").IndexOf(n, StringComparison.OrdinalIgnoreCase) >= 0)
+                return Enum.Parse(t, n);
+        return Enum.Parse(t, Enum.GetNames(t)[0]);
+    }
+
+    // inserts a track motion keyframe of 'inserter' at 1 s on 'tmPath' and sets one property of it
+    void AddMotionKey(List<Variant> list, string what, string tmPath, string inserter, string prop, string value)
+    {
+        string p = tmPath, ins = inserter, pr = prop, val = value;
+        AddCustom(list, BaseFile, what + "_key_" + prop + "=" + value, what + ": a keyframe at 1 s with " + prop + " = " + value + " (track motion of " + tmPath + ")",
+            delegate(Vegas x)
+            {
+                object kf = Call(Resolve(x, p), ins, Timecode.FromMilliseconds(1000));
+                if (kf == null) throw new Exception("no keyframe made");
+                PropertyInfo pi = FindProp(kf, pr);
+                if (pi == null) throw new Exception("no property " + pr + " on " + kf.GetType().Name);
+                object v = pi.PropertyType.IsEnum ? Enum.Parse(pi.PropertyType, val) : ConvertTo(pi.PropertyType, val);
+                pi.SetValue(kf, v, null);
+                return "";
+            });
+    }
+
+    // makes the first double parameter of an OpenFX effect animated with keys at 0 s and 2 s, and sets their interpolation
+    static string KeyFirstDouble(Effect fx, string first, string second)
+    {
+        object ofx = Get(fx, "OFXEffect");
+        foreach (object prm in (IEnumerable)Get(ofx, "Parameters"))
+        {
+            if (prm.GetType().Name != "OFXDoubleParameter") continue;
+            Set(prm, "IsAnimated", true);
+            double v = Convert.ToDouble(Get(prm, "Value"), CultureInfo.InvariantCulture);
+            double lo = Convert.ToDouble(Get(prm, "Min"), CultureInfo.InvariantCulture), hi = Convert.ToDouble(Get(prm, "Max"), CultureInfo.InvariantCulture);
+            double alt = v + (hi - lo) * 0.25 <= hi ? v + (hi - lo) * 0.25 : v - (hi - lo) * 0.25;
+            Call(prm, "SetValueAtTime", Timecode.FromMilliseconds(0), v);
+            Call(prm, "SetValueAtTime", Timecode.FromMilliseconds(2000), alt);
+            object keys = Get(prm, "Keyframes");
+            object k0 = ((IList)keys)[0], k1 = ((IList)keys)[((IList)keys).Count - 1];
+            Set(k0, "Interpolation", ParseEnum("OFXInterpolationType", first));
+            Set(k1, "Interpolation", ParseEnum("OFXInterpolationType", second));
+            return "parameter " + Get(prm, "Name");
+        }
+        throw new Exception("the effect has no double parameter");
+    }
+
+    // a PCM wave file of silence-like tone with 'channels' channels (16 bit, 48 kHz, 3 s), a different tone per channel
+    void WriteWave(string path, int channels)
+    {
+        int rate = 48000, frames = rate * 3;
+        using (FileStream fs = new FileStream(path, FileMode.Create))
+        using (BinaryWriter w = new BinaryWriter(fs))
+        {
+            int bytes = frames * channels * 2;
+            w.Write(Encoding.ASCII.GetBytes("RIFF")); w.Write(36 + bytes); w.Write(Encoding.ASCII.GetBytes("WAVEfmt "));
+            w.Write(16); w.Write((short)1); w.Write((short)channels); w.Write(rate); w.Write(rate * channels * 2); w.Write((short)(channels * 2)); w.Write((short)16);
+            w.Write(Encoding.ASCII.GetBytes("data")); w.Write(bytes);
+            for (int i = 0; i < frames; ++i)
+                for (int c = 0; c < channels; ++c)
+                    w.Write((short)(Math.Sin(2 * Math.PI * (220 * (c + 1)) * i / rate) * 8000));
+        }
     }
 
     // ------------------------------------------------------------------------------------------ the sweep

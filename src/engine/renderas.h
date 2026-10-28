@@ -36,6 +36,9 @@ struct RenderSpec {
     // ("<name> Left.wav", "<name> Right.wav", "<name> Center.wav", "<name> LFE.wav", "<name> Left Surround.wav",
     // "<name> Right Surround.wav"; a stereo project: Left and Right).
     bool multipleMono = false;
+    // Smart rendering: stretches of a source video file that are shown as they are, and whose codec and picture match the
+    // file's, are copied instead of compressed again (smartplan.h; docs/NOTES.md says exactly when). Single pass only.
+    bool smartRender = false;
 };
 
 // The files a multiple-mono render of 'path' makes, for a project of 'channels' channels (2 or 6).

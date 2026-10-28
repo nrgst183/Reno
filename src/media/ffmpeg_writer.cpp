@@ -243,6 +243,7 @@ const char* const kH264Cpu[] = {"libx264", "libopenh264", nullptr};
 const char* const kHevcCpu[] = {"libx265", nullptr};
 const char* const kProres[] = {"prores_ks", "prores", nullptr};
 const char* const kDnxhd[] = {"dnxhd", nullptr};
+const char* const kMpeg1[] = {"mpeg1video", nullptr};
 const char* const kMpeg2[] = {"mpeg2video", nullptr};
 const char* const kDv[] = {"dvvideo", nullptr};
 const char* const kMpeg4[] = {"mpeg4", nullptr};
@@ -269,6 +270,7 @@ const FamilyEncoders kFamilies[] = {
     {"hevc", kHevcCpu, "hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf"},
     {"prores", kProres, nullptr, nullptr, nullptr, nullptr},
     {"dnxhd", kDnxhd, nullptr, nullptr, nullptr, nullptr},
+    {"mpeg1", kMpeg1, nullptr, nullptr, nullptr, nullptr},
     {"mpeg2", kMpeg2, nullptr, "mpeg2_qsv", nullptr, nullptr},
     {"dv", kDv, nullptr, nullptr, nullptr, nullptr},
     {"mpeg4", kMpeg4, nullptr, nullptr, nullptr, nullptr},
@@ -391,6 +393,7 @@ std::vector<Candidate> audioCandidates(const std::string& ext, const AVOutputFor
     static const char* const caf[] = {"alac", "pcm_s16le", nullptr};
     static const char* const wma[] = {"wmav2", "wmav1", nullptr};
     static const char* const ac3[] = {"ac3", nullptr};
+    static const char* const mp2[] = {"mp2", "libtwolame", nullptr};
     static const char* const other[] = {"aac", "aac_mf", "libmp3lame", nullptr};
     static const char* const mp4Exts[] = {"mp4", "m4v", "m4a", "3gp", nullptr};
     static const char* const mkvExts[] = {"mkv", "mka", nullptr};
@@ -413,6 +416,7 @@ std::vector<Candidate> audioCandidates(const std::string& ext, const AVOutputFor
     else if (fam == "opus") addByName(v, opus, format, false);
     else if (fam == "wma") addByName(v, wma, format, false);
     else if (fam == "ac3") addByName(v, ac3, format, false);
+    else if (fam == "mp2") addByName(v, mp2, format, false);
     else if (fam == "alac") addByName(v, alac, format, false);
     else if (oneOf(ext, mp4Exts)) addByName(v, mp4, format, false);
     else if (ext == "mov") addByName(v, mov, format, false);
@@ -446,8 +450,12 @@ public:
     int inChannels_ = 2;            // what the caller gives: 2, or 6 (5.1)
     bool finish(std::string* error) override;
     std::string describe() const override { return description_; }
+    bool smartCompatible(const SmartSource& src, std::string* why) override;
+    void beginSmart(int copyDelay) override;
+    bool writeVideoCopy(const SmartSource& src, int firstGop, int gopCount, std::string* error) override;
 
 private:
+    bool restartVideoEncoder();
     bool fail(const std::string& what, int err = 0);
     bool openVideoEncoder(const AVCodec* codec, std::string& why);
     bool openAudioEncoder(const AVCodec* codec, std::string& why);
@@ -483,6 +491,14 @@ private:
     FramePtr src_;                  // the caller's frame
     FramePtr vframe_;
     int64_t videoFrames_ = 0;
+    // smart rendering: packets copied from a source in between the encoder's (see beginSmart)
+    const AVCodec* vcodec_ = nullptr;       // the video encoder in use
+    int smartDelay_ = -1;                   // >= 0: video packets get time stamps worked out here (frames of delay)
+    int64_t videoPackets_ = 0;              // packets written (smart rendering)
+    bool encoderUsed_ = false;              // frames were given to the current encoder
+    bool needRestart_ = false;              // the encoder was flushed: the next frame needs a new one
+    std::map<std::string, InputPtr> copySources_;
+    std::map<std::string, int> copyNext_;           // the group each source's reading is expected to stand at
 
     // sound
     CodecPtr aenc_;
@@ -711,6 +727,7 @@ bool FFWriter::openVideoEncoder(const AVCodec* codec, std::string& why)
         return false;
     }
     venc_ = std::move(ctx);
+    vcodec_ = codec;
     encW_ = w;
     encH_ = h;
     return true;
@@ -1028,6 +1045,14 @@ bool FFWriter::drain(AVCodecContext* enc, AVStream* st)
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) return true;      // it wants more input / it has given everything
         if (r < 0) return fail(std::string("The ") + enc->codec->name + " encoder failed", r);
         if (enc->codec_type == AVMEDIA_TYPE_VIDEO && pkt->duration <= 0) pkt->duration = 1;     // one frame, in the encoder's units
+        if (enc->codec_type == AVMEDIA_TYPE_VIDEO && smartDelay_ >= 0) {
+            // smart rendering: one packet per frame, decoding order = writing order, so the decoding time is the count
+            pkt->dts = videoPackets_++ - smartDelay_;
+            if (pkt->pts == AV_NOPTS_VALUE || pkt->pts < pkt->dts) {
+                av_packet_unref(pkt);
+                return fail("A video packet came out of the encoder earlier than it is shown (smart rendering)");
+            }
+        }
         if (enc->codec_type == AVMEDIA_TYPE_AUDIO && aStartAtZero_) {
             // An AAC or MP3 encoder's first packet is stamped before zero (its lead-in).
             if (aFirstPacket_) {
@@ -1117,6 +1142,7 @@ bool FFWriter::writeVideo(const Image& frame)
 {
     if (finished_ || failed_) return false;
     if (!venc_) return true;                // this file has no frames: nothing to do
+    if (needRestart_ && !restartVideoEncoder()) return false;
     if (frame.depth != PixelDepth::Byte || frame.w != inW_ || frame.h != inH_ || !frame.data || frame.rowBytes < (size_t)frame.w * 4)
         return fail(strfmt("Frame size %d x %d does not match the output size %d x %d.", frame.w, frame.h, inW_, inH_));
 
@@ -1173,9 +1199,182 @@ bool FFWriter::writeVideo(const Image& frame)
             }
     }
     if (interlaced_) f->flags |= AV_FRAME_FLAG_INTERLACED | (topFirst_ ? AV_FRAME_FLAG_TOP_FIELD_FIRST : 0);
+    encoderUsed_ = true;
     const bool ok = encode(venc_.get(), vst_, f);
     av_frame_unref(f);
     return ok;
+}
+
+// ---------------------------------------------------------------- smart rendering
+// A new encoder in place of the one that was flushed, for the frames after copied ones. It starts with a key frame, so the
+// packets before it need nothing of it and it nothing of them.
+bool FFWriter::restartVideoEncoder()
+{
+    needRestart_ = false;
+    encoderUsed_ = false;
+    std::string why;
+    if (!vcodec_ || !openVideoEncoder(vcodec_, why)) return fail("Cannot start the video encoder again after copied frames: " + why);
+    return true;
+}
+
+bool FFWriter::smartCompatible(const SmartSource& src, std::string* why)
+{
+    auto no = [&](const std::string& m) {
+        if (why) *why = m;
+        return false;
+    };
+    if (!venc_ || !vst_ || failed_ || finished_) return no("the file has no video");
+    if (s_.pass != 0) return no("a two-pass render encodes every frame");
+    if (alpha_ || scaling_) return no("the frames are scaled or carry transparency");
+    if (s_.mastering || !s_.hdrTransfer.empty()) return no("an HDR render");
+    if ((int)venc_->codec_id != src.codecId) return no(std::string("the file's video is ") + venc_->codec->name + " but the source's is " + src.codecName);
+    if (src.rotated) return no("the source asks players to turn its picture");
+    if (encW_ != src.width || encH_ != src.height || s_.width != encW_ || s_.height != encH_) return no(strfmt("the source is %d x %d but the file is %d x %d", src.width, src.height, encW_, encH_));
+    if ((int)venc_->pix_fmt != src.pixFmt) return no("the source's picture format differs from the encoder's");
+    if (venc_->framerate.num * (int64_t)src.fpsDen != (int64_t)src.fpsNum * venc_->framerate.den) return no("the source's frame rate differs from the file's");
+    const AVRational sar = venc_->sample_aspect_ratio.num > 0 ? venc_->sample_aspect_ratio : av_make_q(1, 1);
+    if (sar.num * (int64_t)src.sarDen != (int64_t)src.sarNum * sar.den) return no("the source's pixel shape differs from the file's");
+    const AVCodecParameters* par = vst_->codecpar;
+    const bool interlaced = s_.fieldOrder == "upper" || s_.fieldOrder == "lower";
+    const bool srcInterlaced = src.fieldOrder != AV_FIELD_PROGRESSIVE && src.fieldOrder != AV_FIELD_UNKNOWN;
+    if (interlaced != srcInterlaced || (interlaced && src.fieldOrder != (int)par->field_order && !(s_.fieldOrder == "upper" ? src.fieldOrder == AV_FIELD_TT || src.fieldOrder == AV_FIELD_TB
+                                                                                                                               : src.fieldOrder == AV_FIELD_BB || src.fieldOrder == AV_FIELD_BT)))
+        return no("the source's field order differs from the file's");
+    // H.264 and HEVC keep their colour description in the codec header, compared below. For the others it is the container's
+    // note: what the source leaves unspecified, and the two 601 matrices (625 and 525 lines have the same coefficients), count as the same.
+    const bool headerHasColour = src.codecId == AV_CODEC_ID_H264 || src.codecId == AV_CODEC_ID_HEVC;
+    auto sameTag = [](int a, int b, int unspecified) { return a == b || a == unspecified; };
+    if (!headerHasColour &&
+        (!sameTag(src.colorRange, (int)venc_->color_range, 0) ||
+         !(sameTag(src.colorSpace, (int)venc_->colorspace, 2) || (src.colorSpace == 5 && (int)venc_->colorspace == 6)) ||
+         !sameTag(src.colorPrimaries, (int)venc_->color_primaries, 2) || !sameTag(src.colorTrc, (int)venc_->color_trc, 2)))
+        return no(strfmt("the source's colour description differs from the file's (%d/%d/%d/%d, the encoder: %d/%d/%d/%d)", src.colorRange, src.colorSpace, src.colorPrimaries, src.colorTrc, (int)venc_->color_range, (int)venc_->colorspace, (int)venc_->color_primaries, (int)venc_->color_trc));
+    if (par->profile != src.profile && src.profile != -99 && par->profile != -99) return no("the source's profile differs from the file's");
+    // the codec's header (H.264/HEVC parameter sets): the file keeps one for all its pictures, so the source's must be it
+    // (the encoder's own extradata when the container has not changed the stream's)
+    const uint8_t* ours = par->extradata_size > 0 ? par->extradata : venc_->extradata;
+    const int oursSize = par->extradata_size > 0 ? par->extradata_size : venc_->extradata_size;
+    if (smartHeaderSets(src.codecId, ours, oursSize) != smartHeaderSets(src.codecId, src.extradata.data(), (int)src.extradata.size()))
+        return no("the source's codec header (parameter sets) is not the one this render's encoder writes");
+    // H.264/HEVC: a container that carries the parameter sets once (MP4, MOV, Matroska) is fine because they are equal; one that
+    // wants them in the stream before every key frame (MPEG-TS and the like) would need them put in front of the copied key
+    // frames, which is not done: those files are encoded in full.
+    if ((src.codecId == AV_CODEC_ID_H264 || src.codecId == AV_CODEC_ID_HEVC) && !(oc_->oformat->flags & AVFMT_GLOBALHEADER))
+        return no("the container does not keep the parameter sets apart from the pictures");
+    if (avformat_query_codec(oc_->oformat, venc_->codec_id, FF_COMPLIANCE_NORMAL) != 1) return no("the container does not take this video as it is");
+    return true;
+}
+
+void FFWriter::beginSmart(int copyDelay)
+{
+    if (!venc_ || smartDelay_ >= 0) return;
+    // How far behind its decoding time a picture can be shown: the encoder's own reordering (with a frame to spare for
+    // B-pyramids) or the copied groups', whichever is more. More than needed only starts the time stamps earlier.
+    int enc = std::max(venc_->has_b_frames, venc_->max_b_frames > 0 ? venc_->max_b_frames + 1 : 0);
+    smartDelay_ = std::max(copyDelay, enc) + 1;
+}
+
+bool FFWriter::writeVideoCopy(const SmartSource& src, int firstGop, int gopCount, std::string* error)
+{
+    auto bad = [&](const std::string& m) {
+        fail(m);
+        if (error) *error = firstError_;
+        return false;
+    };
+    if (finished_ || failed_) return false;
+    if (!venc_ || !vst_ || smartDelay_ < 0) return bad("Smart rendering was not started");
+    if (firstGop < 0 || gopCount < 1 || (size_t)(firstGop + gopCount) > src.gops.size()) return bad("A smart rendering copy lies outside its source");
+    // what the encoder holds goes out first; the frames after the copy need a new one
+    if (encoderUsed_ && !encode(venc_.get(), vst_, nullptr)) return bad(firstError_);
+    needRestart_ = true;
+
+    InputPtr& in = copySources_[src.path];
+    if (!in) {
+        AVFormatContext* raw = nullptr;
+        const int r = avformat_open_input(&raw, src.path.c_str(), nullptr, nullptr);
+        if (r < 0 || !raw) return bad("Cannot open " + pathFileName(src.path) + " to copy its frames: " + errText(r));
+        in.reset(raw);
+        if (avformat_find_stream_info(in.get(), nullptr) < 0) return bad("Cannot read " + pathFileName(src.path) + " to copy its frames");
+        copyNext_[src.path] = -1;
+    }
+    AVFormatContext* fc = in.get();
+    if (src.streamIndex < 0 || src.streamIndex >= (int)fc->nb_streams) return bad(pathFileName(src.path) + " has changed since it was looked at");
+    const AVRational srcTb = av_make_q(src.tbNum, src.tbDen);
+    const AVRational frameTb = venc_->time_base;
+    PacketPtr pkt(av_packet_alloc());
+    if (!pkt) return bad("Out of memory");
+
+    for (int g = firstGop; g < firstGop + gopCount; ++g) {
+        const SmartGop& gop = src.gops[(size_t)g];
+        // find the group's first packet: the reading already stands there when the previous group of the source was just copied
+        auto isKey = [&](const AVPacket* p) {
+            return p->stream_index == src.streamIndex && p->size == gop.keySize && (p->flags & AV_PKT_FLAG_KEY) &&
+                   p->pts == gop.keyPts && p->dts == gop.keyDts;
+        };
+        bool have = false;
+        for (int tries = 0; tries < 3 && !have; ++tries) {
+            // 0: where the reading stands if the previous group was copied just before this one, else a seek by decoding time;
+            // 1: a seek by presentation time (Matroska and others index by it); 2: from the start of the file
+            if (tries == 0 && copyNext_[src.path] == g) {
+                // nothing to do
+            } else if (tries <= 1) {
+                const int64_t ts = tries == 0 && gop.keyDts != AV_NOPTS_VALUE ? gop.keyDts : gop.keyPts;
+                if (av_seek_frame(fc, src.streamIndex, ts, AVSEEK_FLAG_BACKWARD) < 0) av_seek_frame(fc, -1, 0, AVSEEK_FLAG_BACKWARD);
+            } else {
+                av_seek_frame(fc, -1, 0, AVSEEK_FLAG_BACKWARD);
+            }
+            for (int n = 0; n < 500000; ++n) {
+                const int r = av_read_frame(fc, pkt.get());
+                if (r < 0) break;
+                if (isKey(pkt.get())) { have = true; break; }
+                const bool past = pkt->stream_index == src.streamIndex && pkt->dts != AV_NOPTS_VALUE && gop.keyDts != AV_NOPTS_VALUE && pkt->dts > gop.keyDts;
+                av_packet_unref(pkt.get());
+                if (past) break;
+            }
+        }
+        if (!have) return bad("Cannot find the frames to copy in " + pathFileName(src.path));
+
+        const int64_t outStart = videoFrames_;
+        for (int i = 0; i < gop.frames; ++i) {
+            if (i > 0) {
+                for (;;) {
+                    const int r = av_read_frame(fc, pkt.get());
+                    if (r < 0) return bad("The end of " + pathFileName(src.path) + " came before the frames to copy");
+                    if (pkt->stream_index == src.streamIndex) break;
+                    av_packet_unref(pkt.get());
+                }
+            }
+            // times in the file's frame units: shown at its place among the frames written, decoded in writing order
+            const int64_t shown = outStart + av_rescale_q(pkt->pts - gop.minPts, srcTb, frameTb);
+            const int64_t decoded = videoPackets_++ - smartDelay_;
+            if (shown < decoded) return bad("A copied video packet is shown earlier than it is decoded");
+            std::vector<uint8_t> annexB;
+            if (!smartPacketToAnnexB(src.codecId, src.extradata, pkt->data, pkt->size, &annexB)) {
+                av_packet_unref(pkt.get());
+                return bad("A video packet of " + pathFileName(src.path) + " is not made as its header says");
+            }
+            if (!annexB.empty()) {
+                PacketPtr np(av_packet_alloc());
+                if (!np || av_new_packet(np.get(), (int)annexB.size()) < 0) return bad("Out of memory");
+                std::memcpy(np->data, annexB.data(), annexB.size());
+                av_packet_copy_props(np.get(), pkt.get());
+                av_packet_unref(pkt.get());
+                av_packet_move_ref(pkt.get(), np.get());
+            }
+            pkt->pts = shown;
+            pkt->dts = decoded;
+            pkt->duration = 1;
+            pkt->pos = -1;
+            av_packet_rescale_ts(pkt.get(), frameTb, vst_->time_base);
+            pkt->stream_index = vst_->index;
+            const int r = av_interleaved_write_frame(oc_.get(), pkt.get());
+            av_packet_unref(pkt.get());
+            if (r < 0) return bad("Writing to " + pathFileName(s_.path) + " failed: " + errText(r));
+        }
+        videoFrames_ += gop.frames;
+        copyNext_[src.path] = g + 1;                // the reading stands at the next packet: the next group's if it follows at once
+    }
+    return true;
 }
 
 // GIF's frames: at most 256 colours each, chosen for each frame.
@@ -1546,7 +1745,7 @@ bool audioFamilyAvailable(const std::string& family)
     static const std::map<std::string, std::vector<const char*>> encoders = {
         {"aac", {"aac", "aac_mf"}}, {"mp3", {"libmp3lame", "mp3_mf"}}, {"pcm", {"pcm_s16le"}}, {"flac", {"flac"}},
         {"vorbis", {"libvorbis", "vorbis"}}, {"opus", {"libopus", "opus"}}, {"wma", {"wmav2", "wmav1"}}, {"ac3", {"ac3", "ac3_mf"}},
-        {"alac", {"alac"}}};
+        {"alac", {"alac"}}, {"mp2", {"mp2", "libtwolame"}}};
     auto it = encoders.find(family);
     if (it == encoders.end()) return false;
     for (const char* n : it->second)

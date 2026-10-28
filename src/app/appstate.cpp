@@ -1015,6 +1015,7 @@ FxChain* AppState::chainOf(Project& p, const FxTarget& t) const
     case FxTarget::VideoOut: return &p.videoOut;
     case FxTarget::AudioOut: return &p.audioOut;
     case FxTarget::Bus: { reno::Bus* b = p.findBus(t.id); return b ? &b->fx : nullptr; }
+    case FxTarget::InputBus: { reno::InputBus* b = p.findInputBus(t.id); return b ? &b->fx : nullptr; }
     default: return nullptr;
     }
 }
@@ -1058,6 +1059,10 @@ std::string AppState::targetName(const FxTarget& t) const
     case FxTarget::Bus: {
         const reno::Bus* b = project_.findBus(t.id);
         return b ? "Bus: " + b->name : std::string("Bus");
+    }
+    case FxTarget::InputBus: {
+        const reno::InputBus* b = project_.findInputBus(t.id);
+        return b ? "Input Bus: " + b->name : std::string("Input Bus");
     }
     default: return std::string();
     }

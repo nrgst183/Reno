@@ -5,7 +5,9 @@
 #include <QComboBox>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QContextMenuEvent>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
@@ -30,9 +32,41 @@ SurroundPan* surroundPanOf(Project& p, uint64_t id)
         if (t.id == id) return t.type == TrackType::Audio ? &t.surround : nullptr;
     for (auto& b : p.buses)
         if (b.id == id) return &b.surround;
+    for (auto& b : p.inputBuses)
+        if (b.id == id) return &b.surround;
     return nullptr;
 }
 const SurroundPan* surroundPanOf(const Project& p, uint64_t id) { return surroundPanOf(const_cast<Project&>(p), id); }
+
+std::string surroundPanTypeOf(const Project& p, uint64_t id)
+{
+    for (const auto& t : p.tracks)
+        if (t.id == id) return t.panType;
+    for (const auto& b : p.buses)
+        if (b.id == id) return b.panType;
+    for (const auto& b : p.inputBuses)
+        if (b.id == id) return b.panType;
+    return std::string();
+}
+
+void setSurroundPanType(Project& p, uint64_t id, const std::string& type)
+{
+    const std::string v = type == "balance0" ? std::string() : type;
+    for (auto& t : p.tracks)
+        if (t.id == id) t.panType = v;
+    for (auto& b : p.buses)
+        if (b.id == id) b.panType = v;
+    for (auto& b : p.inputBuses)
+        if (b.id == id) b.panType = v;
+}
+
+const std::vector<std::pair<std::string, std::string>>& surroundPanTypes()
+{
+    static const std::vector<std::pair<std::string, std::string>> types = {
+        {"add", "Add Channels"},          {"balance0", "Balance (0 dB center)"}, {"balance3", "Balance (-3 dB center)"},
+        {"balance6", "Balance (-6 dB center)"}, {"power", "Constant Power"},     {"film", "Film"}};
+    return types;
+}
 
 namespace {
 
@@ -133,7 +167,7 @@ void SurroundField::paintEvent(QPaintEvent*)
     surroundPointAt(*sp, AppState::get().cursor(), x, y, c);
     float g[6] = {0, 0, 0, 0, 0, 0};
     const bool panned = sp->route == "surround";
-    if (panned) surroundGains(*sp, x, y, c, g);
+    if (panned) surroundGains(*sp, panType ? panType() : std::string(), x, y, c, g);
     else {
         if (sp->route == "front") g[ChL] = g[ChR] = 1;
         else if (sp->route == "rear") g[ChLs] = g[ChRs] = 1;
@@ -356,7 +390,26 @@ void SurroundField::keyPressEvent(QKeyEvent* e)
     QWidget::keyPressEvent(e);
 }
 
+void SurroundField::contextMenuEvent(QContextMenuEvent* e)
+{
+    if (!get || !get() || !panType || !setPanType) return;
+    QMenu menu(this);
+    QMenu* types = menu.addMenu("Pan Type");
+    const std::string now = panType().empty() ? std::string("balance0") : panType();
+    for (const auto& t : surroundPanTypes()) {
+        QAction* a = types->addAction(qs(t.second));
+        a->setCheckable(true);
+        a->setChecked(t.first == now);
+        const std::string key = t.first;
+        QObject::connect(a, &QAction::triggered, this, [this, key] { setPanType(key); });
+    }
+    menu.exec(e->globalPos());
+}
+
 namespace {
+
+// The Center fader goes from -60 dB (and -Inf at its bottom) to +12 dB, with 0.0 dB (no gain) in between.
+const double kCenterTopDb = 12.0;
 
 struct LabeledSlider {
     QSlider* slider = nullptr;
@@ -379,6 +432,7 @@ double sliderToGain(int v, double topDb)
 {
     if (v <= 0) return 0.0;
     const double db = -60.0 + (topDb + 60.0) * (v - 1) / 999.0;
+    if (std::fabs(db) < 0.04) return 1.0;      // the slider's step next to 0.0 dB is 0.0 dB
     return std::pow(10.0, db / 20.0);
 }
 
@@ -390,6 +444,7 @@ struct SurroundPannerWindow::Impl {
     bool stale = false;
     QComboBox* target = nullptr;
     QComboBox* route = nullptr;
+    QComboBox* panTypeBox = nullptr;
     QComboBox* motion = nullptr;
     QLabel* message = nullptr;
     SurroundField* field = nullptr;
@@ -445,15 +500,22 @@ struct SurroundPannerWindow::Impl {
         field->setVisible(surround && sp);
         controls->setEnabled(surround && sp);
         if (sp) {
-            const QSignalBlocker b1(route), b2(motion), b3(center.slider), b4(smooth.slider), b5(lfe.slider), b6(lfeOn);
+            const QSignalBlocker b1(route), b2(motion), b3(center.slider), b4(smooth.slider), b5(lfe.slider), b6(lfeOn), b7(panTypeBox);
+            {
+                const std::string type = surroundPanTypeOf(p, shown());
+                panTypeBox->setCurrentIndex(std::max(0, panTypeBox->findData(qs(type.empty() ? std::string("balance0") : type))));
+            }
             route->setCurrentIndex(std::max(0, route->findData(qs(sp->route))));
             motion->setCurrentIndex(std::max(0, motion->findData(qs(sp->motion))));
             double x, y, c;
             surroundPointAt(*sp, AppState::get().cursor(), x, y, c);
-            center.slider->setValue(gainToSlider(c, 0.0));
+            center.slider->setValue(gainToSlider(c, kCenterTopDb));
             center.value->setText(dbText(c));
-            smooth.slider->setValue((int)std::lround(sp->smoothness * 100));
-            smooth.value->setText(QString("%1 %").arg((int)std::lround(sp->smoothness * 100)));
+            double smoothNow = sp->smoothness;
+            for (const auto& k : sp->keys)
+                if (std::fabs(k.time - AppState::get().cursor()) <= 0.5 / std::max(1.0, p.settings.fps()) && k.smoothness >= 0) smoothNow = k.smoothness;
+            smooth.slider->setValue((int)std::lround(smoothNow * 100));
+            smooth.value->setText(QString("%1 %").arg((int)std::lround(smoothNow * 100)));
             lfeOn->setChecked(sp->lfe);
             lfe.slider->setValue(gainToSlider(sp->lfeLevel, 12.0));
             lfe.value->setText(dbText(sp->lfeLevel));
@@ -491,6 +553,11 @@ SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d
         d->route->addItem(r.first, QString(r.second));
     d->route->setToolTip("Where the sound goes: panned by the point, or straight to the front pair, the centre, the LFE or the rear pair");
     top->addWidget(d->route);
+    d->panTypeBox = new QComboBox(this);
+    d->panTypeBox->setObjectName("surroundPanType");
+    for (const auto& t : surroundPanTypes()) d->panTypeBox->addItem(qs(t.second), qs(t.first));
+    d->panTypeBox->setToolTip("Pan Type: the panning law of this track or bus (also on the shortcut menu of the panner)");
+    top->addWidget(d->panTypeBox);
     v->addLayout(top);
 
     d->message = new QLabel(this);
@@ -500,6 +567,11 @@ SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d
     v->addWidget(d->message, 1);
     d->field = new SurroundField(false, this);
     d->field->get = [this]() { return d->pan(); };
+    d->field->panType = [this]() { return surroundPanTypeOf(AppState::get().project(), d->shown()); };
+    d->field->setPanType = [this](const std::string& type) {
+        const uint64_t id = d->shown();
+        AppState::get().edit("Pan Type", [&](Project& p) { setSurroundPanType(p, id, type); });
+    };
     d->field->set = [this](Project& p, const SurroundPan& sp) {
         if (SurroundPan* to = surroundPanOf(p, d->shown())) *to = sp;
     };
@@ -522,7 +594,7 @@ SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d
         s.value->setMinimumWidth(56);
         g->addWidget(s.value, row, 2);
     };
-    slider(d->center, "Center:", "surroundCenter", 0, 1000, 0);
+    slider(d->center, "Center:", "surroundCenter", 0, 1000, 0);   // 0.0 dB (no gain) is where the fader sits by default
     slider(d->smooth, "Smoothness:", "surroundSmoothness", 0, 100, 1);
     d->lfeOn = new QCheckBox("Enable &LFE", d->controls);
     d->lfeOn->setObjectName("surroundLfe");
@@ -562,6 +634,12 @@ SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d
         const std::string r = ss(d->route->currentData().toString());
         d->change("Surround Pan", [&](SurroundPan& sp) { sp.route = r; });
     });
+    QObject::connect(d->panTypeBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        const std::string type = ss(d->panTypeBox->currentData().toString());
+        const uint64_t id = d->shown();
+        if (!id) return;
+        AppState::get().edit("Pan Type", [&](Project& p) { setSurroundPanType(p, id, type); });
+    });
     QObject::connect(d->motion, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         const std::string m = ss(d->motion->currentData().toString());
         d->change("Surround Pan Motion", [&](SurroundPan& sp) { sp.motion = m; });
@@ -579,7 +657,7 @@ SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d
         });
     };
     dragSlider(d->center.slider, "Surround Pan Center", [](SurroundPan& sp, int v) {
-        const double c = sliderToGain(v, 0.0);
+        const double c = sliderToGain(v, kCenterTopDb);
         if (sp.keys.empty()) sp.center = c;
         else {
             const double t = AppState::get().cursor();
@@ -593,7 +671,17 @@ SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d
                 if (std::fabs(k.time - t) <= 0.5 / std::max(1.0, AppState::get().project().settings.fps())) k.center = c;
         }
     });
-    dragSlider(d->smooth.slider, "Surround Pan Smoothness", [](SurroundPan& sp, int v) { sp.smoothness = v / 100.0; });
+    dragSlider(d->smooth.slider, "Surround Pan Smoothness", [](SurroundPan& sp, int v) {
+        // with keyframes the key at the cursor gets its own (the curve of the path to the next key), else the panner
+        const double t = AppState::get().cursor();
+        const double half = 0.5 / std::max(1.0, AppState::get().project().settings.fps());
+        for (auto& k : sp.keys)
+            if (std::fabs(k.time - t) <= half) {
+                k.smoothness = v / 100.0;
+                return;
+            }
+        sp.smoothness = v / 100.0;
+    });
     dragSlider(d->lfe.slider, "Surround Pan LFE", [](SurroundPan& sp, int v) { sp.lfeLevel = sliderToGain(v, 12.0); });
     QObject::connect(d->lfeOn, &QCheckBox::toggled, this, [this](bool on) { d->change("Enable LFE", [&](SurroundPan& sp) { sp.lfe = on; }); });
     QObject::connect(d->addKey, &QPushButton::clicked, this, [this] {

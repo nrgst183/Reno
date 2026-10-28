@@ -504,7 +504,7 @@ int main(int argc, char** argv)
             if (list->item(i)->checkState() == Qt::Unchecked) ++unticked;
             if (list->item(i)->data(Qt::UserRole).toString() == QString("strip:track:%1").arg(t2)) item2 = list->item(i);
         }
-        check(list && list->count() == 6 && unticked == 2, "the Channel List lists every channel, the hidden ones unticked", list ? strfmt("%d / %d", list->count(), unticked) : std::string());
+        check(list && list->count() == 7 && unticked == 2, "the Channel List lists every channel (the Preview bus too), the hidden ones unticked", list ? strfmt("%d / %d", list->count(), unticked) : std::string());
         if (item2) item2->setCheckState(Qt::Checked);
         uitest::settle(30);
         check(trackStrip(&mixer, t2)->isVisibleTo(&mixer), "ticking one shows it again");

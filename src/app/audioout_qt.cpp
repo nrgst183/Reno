@@ -177,34 +177,58 @@ std::unique_ptr<AudioOutput> createAudioOutput() { return std::unique_ptr<AudioO
 
 // ---- sound in (recording)
 namespace {
-// Records from the input chosen in Preferences (else the system default) through a QAudioSource, read on the thread that
-// started it and handed on as two float sides.
+QAudioDevice chosenInput(const std::string& id)
+{
+    QAudioDevice dev = QMediaDevices::defaultAudioInput();
+    // an empty id is the input chosen in Preferences, else the system's
+    const QByteArray want = QByteArray::fromStdString(id.empty() ? AppState::get().prefs.audioInputDevice : id);
+    if (!want.isEmpty())
+        for (const QAudioDevice& d : QMediaDevices::audioInputs())
+            if (d.id() == want) { dev = d; break; }
+    return dev;
+}
+
+// Records from a sound card input (the one named, else the one chosen in Preferences, else the system default) through a
+// QAudioSource, as many channels as asked for (the card's own number if it has fewer), handed on as interleaved floats.
 class QtInput : public AudioInput {
 public:
     ~QtInput() override { stop(); }
     bool start(int sampleRate, Push push, std::string* error) override
     {
+        // stereo from the input chosen in Preferences, as two float sides
+        return startDevice(std::string(), 2, sampleRate, [push, this](const float* x, int channels, int frames) {
+            l_.resize((size_t)frames);
+            r_.resize((size_t)frames);
+            for (int k = 0; k < frames; ++k) {
+                l_[(size_t)k] = x[(size_t)k * channels];
+                r_[(size_t)k] = channels > 1 ? x[(size_t)k * channels + 1] : l_[(size_t)k];
+            }
+            push(l_.data(), r_.data(), frames);
+        }, error);
+    }
+    bool startDevice(const std::string& id, int channels, int sampleRate, PushN push, std::string* error) override
+    {
         stop();
-        QAudioDevice dev = QMediaDevices::defaultAudioInput();
-        const QByteArray want = QByteArray::fromStdString(AppState::get().prefs.audioInputDevice);
-        if (!want.isEmpty())
-            for (const QAudioDevice& d : QMediaDevices::audioInputs())
-                if (d.id() == want) { dev = d; break; }
+        QAudioDevice dev = chosenInput(id);
         if (dev.isNull()) {
             if (error) *error = "there is no sound input device";
             return false;
         }
+        int want = std::max(1, std::min(channels, std::max(1, dev.maximumChannelCount())));
         QAudioFormat f;
-        f.setSampleRate(sampleRate);
-        f.setChannelCount(2);
-        f.setSampleFormat(QAudioFormat::Float);
-        if (!dev.isFormatSupported(f)) f.setSampleFormat(QAudioFormat::Int16);
-        if (!dev.isFormatSupported(f)) {
-            f.setChannelCount(1);
+        bool ok = false;
+        for (; want >= 1 && !ok; --want) {
+            f.setSampleRate(sampleRate);
+            f.setChannelCount(want);
             f.setSampleFormat(QAudioFormat::Float);
-            if (!dev.isFormatSupported(f)) f.setSampleFormat(QAudioFormat::Int16);
+            ok = dev.isFormatSupported(f);
+            if (!ok) {
+                f.setSampleFormat(QAudioFormat::Int16);
+                ok = dev.isFormatSupported(f);
+            }
+            if (ok) break;
         }
-        if (!dev.isFormatSupported(f)) {
+        if (!ok) {
             if (error) *error = dev.description().toStdString() + " cannot record at " + std::to_string(sampleRate) + " Hz";
             return false;
         }
@@ -232,6 +256,7 @@ public:
         io_ = nullptr;
     }
     std::string name() const override { return name_; }
+    int channelCount() const override { return format_.channelCount(); }
 
 private:
     void read()
@@ -242,30 +267,20 @@ private:
         if (bpf <= 0) return;
         const int frames = (int)(data.size() / bpf);
         if (frames <= 0) return;
-        l_.resize((size_t)frames);
-        r_.resize((size_t)frames);
         const int ch = format_.channelCount();
-        for (int k = 0; k < frames; ++k) {
-            const char* p = data.constData() + (size_t)k * bpf;
-            float a, b;
-            if (format_.sampleFormat() == QAudioFormat::Float) {
-                a = reinterpret_cast<const float*>(p)[0];
-                b = ch > 1 ? reinterpret_cast<const float*>(p)[1] : a;
-            } else {
-                a = reinterpret_cast<const qint16*>(p)[0] / 32768.f;
-                b = ch > 1 ? reinterpret_cast<const qint16*>(p)[1] / 32768.f : a;
-            }
-            l_[(size_t)k] = a;
-            r_[(size_t)k] = b;
+        x_.resize((size_t)frames * (size_t)ch);
+        for (int k = 0; k < frames * ch; ++k) {
+            const char* p = data.constData() + (size_t)k * (bpf / ch);
+            x_[(size_t)k] = format_.sampleFormat() == QAudioFormat::Float ? reinterpret_cast<const float*>(p)[0] : reinterpret_cast<const qint16*>(p)[0] / 32768.f;
         }
-        if (push_) push_(l_.data(), r_.data(), frames);
+        if (push_) push_(x_.data(), ch, frames);
     }
     QAudioFormat format_;
-    Push push_;
+    PushN push_;
     QAudioSource* source_ = nullptr;
     QIODevice* io_ = nullptr;
     std::string name_;
-    std::vector<float> l_, r_;
+    std::vector<float> x_, l_, r_;
 };
 }  // namespace
 
@@ -276,6 +291,12 @@ std::vector<std::pair<std::string, std::string>> audioInputDevices()
     std::vector<std::pair<std::string, std::string>> out;
     for (const QAudioDevice& d : QMediaDevices::audioInputs()) out.push_back(std::make_pair(d.id().toStdString(), d.description().toStdString()));
     return out;
+}
+
+int audioInputChannels(const std::string& id)
+{
+    const QAudioDevice dev = chosenInput(id);
+    return dev.isNull() ? 0 : dev.maximumChannelCount();
 }
 
 }  // namespace app
@@ -290,6 +311,7 @@ void setOutputGain(float gain) { gGainNoSound = gain; }
 float outputGain() { return gGainNoSound; }
 std::unique_ptr<AudioInput> createAudioInput() { return nullptr; }
 std::vector<std::pair<std::string, std::string>> audioInputDevices() { return {}; }
+int audioInputChannels(const std::string&) { return 0; }
 }
 }
 #endif

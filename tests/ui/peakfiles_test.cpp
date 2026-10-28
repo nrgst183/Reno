@@ -89,6 +89,26 @@ int main(int argc, char** argv)
     w.resize(1400, 900);
     w.show();
     uitest::settle(300);
+    // ---------------------------------------------------------------- a 5.1 file: no .sfk is written (made here)
+    {
+        const std::string dir = pathJoin(out, "multi");
+        QDir().mkpath(QString::fromStdString(dir));
+        const std::string wav = pathJoin(dir, "six.wav"), sfk = pathJoin(dir, "six.sfk");
+        const int rate = 48000, frames = rate * 2, ch = 6;
+        std::string d;
+        auto p32 = [&](uint32_t v) { for (int k = 0; k < 4; ++k) d += (char)((v >> (8 * k)) & 255); };
+        auto p16 = [&](uint32_t v) { d += (char)(v & 255); d += (char)((v >> 8) & 255); };
+        d += "RIFF"; p32((uint32_t)(36 + frames * ch * 2)); d += "WAVEfmt "; p32(16); p16(1); p16(ch); p32(rate); p32(rate * ch * 2); p16(ch * 2); p16(16);
+        d += "data"; p32((uint32_t)(frames * ch * 2));
+        for (int i = 0; i < frames; ++i)
+            for (int c = 0; c < ch; ++c) p16((uint32_t)(uint16_t)(int16_t)(2000 * (c + 1) * ((i / 100) % 2 ? 1 : -1)));
+        writeFile(wav, d);
+        showFile(w, wav);
+        // no .sfk of more than two channels made by VEGAS has been seen, so none is written for VEGAS to misread
+        uitest::settle(4000);
+        check(!fileExists(sfk), "a 6-channel file gets no .sfk beside it (its waveform is cached by Reno)");
+    }
+
     const std::string fx = fixtures();
     if (testDataMissing(pathJoin(fx, "peaks_b.sfk"))) return uitest::summary();
 

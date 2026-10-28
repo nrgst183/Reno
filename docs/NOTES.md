@@ -102,8 +102,9 @@ changed, which VEGAS does not notice. Tools > Rebuild Offline Nested Audio build
 proxies. Preference: Audio > Create audio proxy files for nested projects.
 
 **Peak files** (`<media>.sfk`) hold a file's waveform. A current `.sfk` beside a file gives its waveform at once.
-Reno writes them with VEGAS's numbers, which VEGAS then uses. Where the folder cannot be written, and for files with
-more than two channels, waveforms are cached in Reno's own folder. Rebuild Audio Peaks is Shift+F5.
+Reno writes them with VEGAS's numbers, which VEGAS then uses. Where the folder cannot be written, and for
+files with more than two channels, waveforms are cached in Reno's own folder (the channels of up to eight are each
+drawn from the file's own channel pairs, not a stereo mix). Rebuild Audio Peaks is Shift+F5.
 
 Formats:
 
@@ -141,6 +142,16 @@ effects delay everything it outputs; where paths meet (a bus, the master) the fa
 (`AudioEngine::pdc_`) for the slowest. The whole mix runs "lambda" samples ahead (the longest total path), and after
 a seek or loop lambda samples are mixed and discarded first. Left out: 5.1 projects, the bus tap, and plug-ins whose
 latency changes while playing (those are primed again). Test: `tests/engine/pdc_test.cpp`.
+
+**Recording and input busses** (`recording.cpp`, `recorder.cpp`, `engine_audio.cpp` `mixInputBuses`). Each armed track has a
+`RecordInput` (device, first channel, mono/stereo, or an input bus, and Input Monitoring). `planRecordSources` groups
+tracks on the same input into one source; `InputHub` keeps each open card's sound (a ring for readers that take blocks,
+listeners for the ones that take it as it comes); `RecordRouter` splits a card's interleaved channels to each source's
+mono/stereo file. `planRecordSpan`/`commitRecording` decide where it lands: new events cut back what is under them;
+with selected events (or a time selection, punch-in) the recording is a take of the event, one per loop pass. Input
+busses (`Project::inputBuses`) are mixed before the buses: live sound (`AudioEngine::liveInput`) through insert FX, sends,
+fader and pan to the master, a bus, the 5.1 panner or nowhere. Tests: `recording_test`, `console_test`,
+`audio_gaps_ui_test`.
 
 **Multithreading and VEGAS's own effects.** VEGAS runs its own effects' work on one thread: its OpenFX
 multithread suite does the work in a single call and reports no processors. Splitting the work among processors made
@@ -202,8 +213,12 @@ members of VEGAS Pro 18's. The first run compiles it with the .NET Framework 4 t
 (`csc.exe`), keeps the result in Reno's data folder, starts the .NET Framework inside Reno as VEGAS does, and
 compiles and runs the script. Calls edit a copy of the project, which becomes the project when the script ends.
 Members Reno cannot support exist so scripts compile, but throw `NotSupportedException` naming the member
-(`ScriptPortal.Vegas.Unsupported.cs`): rendering, effect presets, dockable extensions, media bins, track groups, 3D
-track motion, 360/HDR/stereo 3D settings. Deleting the `scripting` folder in Reno's data folder forces a recompile.
+(`ScriptPortal.Vegas.Unsupported.cs`): dockable extensions, rendering image sequences and the rest of `RenderArgs`, presets of audio effects, a track
+group's name and collapsed state, and the stereo 3D settings of track motion (lens separation, depth adjust, scale factors).
+A track motion key's 3D members (PositionZ, Depth, RotationX/Y, RotationOffsetZ, OrientationX/Y) are fractions of the frame's width
+and degrees in Reno, given to scripts in pixels and radians; VEGAS's own signs for the X and Y rotations are not confirmed. Reno gives scripts the project's 360/HDR/stereo 3D settings
+(stereo swap and crosstalk only for the project's current mode), track groups (grouping, muting and soloing together),
+media bins, `Vegas.Render` and `Project.Render` (Render As's formats and templates, `RenderArgs` with a file, template, range, selection, markers and rotation; the call returns when the file is done) and the presets of OpenFX effects (`Effect.Preset`, `CurrentPreset`, `Presets`). Deleting the `scripting` folder in Reno's data folder forces a recompile.
 
 The C++ side is `src/engine/scriptapi.h` and `scriptsession.*`; the menu is `src/app/scripting.*`.
 
@@ -221,7 +236,45 @@ Anything FFmpeg can read imports, whatever it is called. The extension lists are
   (except rotated or deinterlaced video). HDR10 and HLG are converted to SDR.
 - Many-channel sound is mixed down to stereo, except 5.1 and the multichannel import.
 - Animated WebP is decoded by Reno (`src/media/webpanim.cpp`) because FFmpeg 7.0 cannot.
-- Not readable: MIDI, HEIC/HEIF with FFmpeg 7.0, and AV1/AVIF without dav1d or libaom.
+- HEIC/HEIF/AVIF stills are read by Reno (`src/media/heif.cpp`) with FFmpeg's HEVC and AV1 decoders: single pictures,
+  grids (iPhone photos), an alpha picture, rotation, mirror and crop. Image sequences and overlays go to FFmpeg
+  (7.1 and later read the former). AV1/AVIF needs dav1d or libaom (the downloaded FFmpeg 8.1 has both).
+- Not readable: MIDI (there is no synthesizer or sound bank in Reno to make sound from notes).
+
+## Smart rendering
+
+Render As > "Smart render" (`RenderSpec::smartRender`, `reno_cli --smart-render`) copies stretches of a source video file
+into the render without decoding or compressing them (`src/engine/smartplan.*` plans, `src/media/smartrender.*` reads the
+source's groups of pictures, `FFWriter::writeVideoCopy` writes them). The rest of the file is encoded as usual; the
+encoder is flushed before each copy and started again after it, so every copy begins with a key frame of the source and
+the encoded frames after it begin with the encoder's own. The render's description says "(smart render: N of M frames
+copied)" or why nothing was.
+
+It applies to a single-pass render of video only (not two-pass, not alpha, not scaled, not HDR, not an audio-only file or
+multiple mono). A frame is copied when all of this holds:
+- The file's codec is the source's: H.264, HEVC, MPEG-1/2 or an intra-only codec (MJPEG, ProRes, DNxHD, ...), the container
+  accepts it as it is, and the picture size, pixel format, frame rate, pixel shape, field order and (for the codecs that
+  keep colour tags outside the stream) colour description are the same. For H.264/HEVC the source's parameter sets (SPS, PPS,
+  VPS) must equal those this render's encoder writes, so the render's profile, level and encoder settings have to match
+  the source's; the encoder's own SEI note is not compared. The frame rate of the file is the project's exactly.
+- The frame is shown by exactly one plain video event: unmuted track at 100%, "srcalpha", with no effects, track motion,
+  envelopes, shadow/glow, compositing group, adjustment track or solo; the event with no fade, transition, opacity, pan/crop,
+  mask, envelopes, speed change, reversing, undersampling, resampling or flicker reduction; no other event on the same
+  frames (a lower track cannot show through). The project is 8-bit, progressive, not colour managed, with no output
+  rotation, video-out effects or envelopes, and the same size as the file and the source.
+- The event's media is a plain video file (not a nested project, image sequence, subclip, generated or offline media, nor one
+  with red-eye, alpha, colour space, stereo 3D, pixel shape, rotation or field order overrides) and the event sits on the
+  file's frames (within 1/20 of a frame), with the render starting on a project frame.
+- Only whole closed groups of the source inside that stretch are copied. A group is closed when it starts with an IDR (H.264,
+  HEVC: an open-GOP encoder such as x265 by default leaves none), an MPEG-1/2 group header with closed_gop set, or is one
+  intra frame. A group that cuts across the event's edge is encoded again.
+- H.264/HEVC are copied only into containers that keep the parameter sets once (MP4, MOV, Matroska; global header); for MPEG-TS and
+  the like the file is encoded in full. Whatever stops a check, that file is simply encoded in full.
+- Sound is not affected: it is mixed and written as always. The test decodes the outputs with every error fatal, checks the times
+  at the cuts (rising decoding times, no gap or repeat in shown times), the pictures beside each cut against an ordinary render
+  (30 dB or better) and the sound's start and end against an ordinary render's.
+Not done: copying across a cut between two events of one file, copying an event with the sound of its own file, VC-1/WMV,
+VP9/AV1, and audio streams.
 
 ## Command line: reno_cli
 
@@ -243,7 +296,7 @@ may be a short name (avc, hevc, wmv, avi, mov, mxf, xavcs, wav, w64, mp3, flac, 
 webm, ogv, opus, gif, apng, aiff, alac) and the template alone is enough if only one format has it.
 
 Template overrides: `--size WxH` (or `--width`/`--height`), `--fps`, `--video-codec`, `--video-bitrate`,
-`--max-bitrate`, `--cbr`, `--crf`, `--two-pass`, `--encode-mode` (cpu, nvenc, qsv, amf, mf), `--profile`, `--level`,
+`--max-bitrate`, `--cbr`, `--crf`, `--two-pass`, `--smart-render`, `--encode-mode` (cpu, nvenc, qsv, amf, mf), `--profile`, `--level`,
 `--audio-codec`, `--audio-bitrate`, `--sample-rate`, `--channels`, `--audio-bits`, `--quality` (draft, preview, good,
 best), `--audio-only`, `--video-only`.
 
@@ -340,25 +393,48 @@ Scratch files go to the system temp folder.
   Pan/Crop (for pre-pan/crop effects), Track Motion and Parent Motion.
 - VEGAS's OpenCL suite is not provided, so effects that have an OpenCL path render on the CPU.
 - `OfxPropVegasTimeCode` is the frame's timeline time for effects on the timeline; elsewhere (thumbnails, the
-  generator preview) it is the effect's own time.
+  generator preview) it is the effect's own time. In VEGAS it is a separate, unrounded field of the render request
+  (timeline ticks / 10^7 x frame rate) while `OfxPropTime` is rounded to half frames; what the request holds outside
+  the timeline could not be read from VEGAS's code, so that case is a guess.
 - Compositing plug-ins cannot be hosted. The Custom compositing mode is kept in a `.veg` but shown as Source Alpha.
 - VST3 effects are not saved into `.veg` files. 32-bit DirectX plug-ins cannot be loaded by a 64-bit program.
 - Nested projects' sound: the proxies Reno renders differ from VEGAS's (Reno's AAC sound starts 2112 samples later;
   time-stretched events do not sound alike; VEGAS's DirectX effects exist only on Windows).
-- Peak files are written in 16 bits and not for files with more than two channels. The `.sfk1`/`.sfap1` files of
-  second and later streams are not used.
+- Peak files are written in 16 bits: VEGAS's own code accepts only 8 and 16 bits, so there is no 24/32-bit form to
+  write. The `.sfk1`/`.sfap1` files of second and later audio streams are not used: Reno plays one audio stream per
+  file, and no sample shows how VEGAS names them.
+  Files of more than two channels get no `.sfk`: no multichannel `.sfk` made by VEGAS has been seen, so its layout there
+  is unconfirmed (the code reads and writes the channels interleaved block by block, as for two).
 - élastique is zplane's. Reno's stand-ins keep pitch and length as exactly but do not sound identical; their
   pitch-shifted sound lines up with VEGAS's only up to about +-4 semitones (Efficient), +-2 (Soloist) and +-8 (Pro).
-- 5.1: buses stay stereo; only the master's plug-ins take six channels. Playback sends six channels to one sound
-  card. The panning law, Center and Smoothness are Reno's own. No real multichannel plug-in, card or 5.1 file has
-  been tried; the tests use stand-ins.
-- 3D track motion: VEGAS's camera is not published; Reno's looks at the frame from a frame's width away. There is no
-  3D Shadow or Glow, the Perspective pane's view cannot be turned, and there is no 3D snapping.
-- Pre-pan/crop effects get the media fitted into the project's frame, not at its own size.
-- Mixing Console: no assignable FX chains, input buses or preview bus; faders are not split left/right.
-- Recording records every armed track from one input device in stereo. Text to Speech and MIDI timecode/clock need
-  Windows (SAPI 5, winmm).
-- Not done from VEGAS Pro 23's additions: input busses, punch-in/take recording, MPEG-1, smart rendering, CD
-  extraction.
+- 5.1: buses stay stereo (the manual says only the Surround Master takes six channels: a bus's own pan puts its
+  stereo sound into the master through the surround panner); only the master's plug-ins take six channels. Playback
+  sends six channels to one sound card. The pan types (Add Channels, Balance, Constant Power, Film), Center (a gain
+  on the centre channel, -Inf to +12 dB) and Smoothness (the path's curve; a key's own, the keyframe type) follow
+  the manual's description, not VEGAS's code: the default pan type in 5.1 is Balance (0 dB), Film's speaker angles
+  (C 0, R 30, Rs 110, Ls 250, L 330 degrees) are a guess. No real multichannel plug-in, card or 5.1 file has been
+  tried; the tests use stand-ins.
+- 3D track motion: the camera is VEGAS's (read from its `tCAMERASETTINGS::Init` and the hidden `dDefaultFieldOfView`
+  setting: a 50 degree vertical field of view, so 1.0723 frame heights away), but what the compositor does with the
+  card beyond that (clipping planes, filtering) is Reno's. VEGAS has no 3D Shadow or Glow (converting to 3D asks, then
+  deletes the 2D Shadow and Glow keyframes; Reno does the same). The Perspective pane is turned with Alt+drag or the
+  middle button (not found in VEGAS's manual: Reno's own way); snapping (F8) goes to the same grid as the flat window.
+  Edit in Object Space and Scale About Center are still 2D only.
+- Pre-pan/crop effects get the media at its own size, told the project is that size (X/Y settings scaled to it as in a
+  smaller preview); whether VEGAS tells them the media's or the project's size is not known.
+- Mixing Console: the master's faders split into left and right (the L/R button; the Surround Master's per-channel
+  trims are in the project and the mix but have no console faders). Input bus strips have no send rows (the sends
+  are in the model and the mix), and the Preview bus strip has a fader, mute and meters but no effects. Input busses
+  sound in playback and Real-Time Render, not in a normal render. Live sound is read from the sound card in blocks
+  the mix takes ahead of the sound, so monitoring and input busses are heard late (about the mix-ahead time) and
+  can drop out; a lower mix-ahead time is not tried. No hardware outputs for busses.
+- Recording: each armed track records from its own Record Input (a sound card input and mono channel or stereo
+  pair, or an input bus's sound, taken before its fader); tracks on the same input share a file. A card is opened
+  with the channels it has and the interface Qt reports; no interface with more than two channels has been tried
+  (the tests use a stand-in card). Text to Speech and MIDI timecode/clock need Windows (SAPI 5, winmm).
+- MPEG-1 (Render As > MPEG-1: Video CD NTSC/PAL, 352x240/288 and larger templates, Layer II sound) is Reno's own list of
+  templates built on FFmpeg's mpeg1video and mp2 encoders; VEGAS Pro 23's exact template list is not known here.
+- Not done from VEGAS Pro 23's additions: CD extraction. (Input busses, punch-in and take recording, MPEG-1 and smart
+  rendering are done: see Recording, the Mixing Console and Smart rendering.)
 - Windows-only code (DirectX hosting, the .NET scripting host, SAPI, MIDI timecode, the 32-bit bridge's real use) is
   built but can only be exercised on Windows.

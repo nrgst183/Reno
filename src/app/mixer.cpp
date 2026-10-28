@@ -7,6 +7,7 @@
 // AppState (a drag is one undo step). Meters read Playback's published levels about 30 times a second, hold their peaks
 // for a moment, fall back slowly and clear when playback stops.
 #include "mixer.h"
+#include "recorder.h"
 #include "theme.h"
 #include "playback.h"
 #include "surroundpanner.h"
@@ -62,9 +63,11 @@ const QColor kTick(105, 105, 110);
 const QColor kAccent(0, 122, 204);
 const QColor kBusColor(92, 120, 150);
 const QColor kFxSendColor(122, 96, 150);
+const QColor kInputColor(70, 120, 90);
 const QColor kMasterColor(150, 112, 60);
 
 const int kSendH = 18;
+const uint64_t kOutputOff = ~(uint64_t)0;     // the output choice 'Off' of an input bus
 
 QColor trackColor(const Track& t, int index)
 {
@@ -238,6 +241,12 @@ public:
 
     std::function<double()> value;
     std::function<void(Project&, double)> apply;
+    // A second fader beside the first (the master's right channel, VEGAS's split master faders); shown while splitOn.
+    std::function<double()> value2;
+    std::function<void(Project&, double)> apply2;
+    bool splitOn = false;
+    // A fader that is not part of the project (the Preview bus's): moves go here and make no undo step.
+    std::function<void(double)> direct;
     std::string undoName = "Volume";
     MeterState meter;
     // What is shown (control regions and options): fader, meter, fader dB scale (Show Fader Ticks), meter scale (left
@@ -271,7 +280,8 @@ public:
         setProperty("holdRight", 0.f);
         update();
     }
-    QRect capRect() const { return capAt(value ? gainToPos(value()) : 0.0); }
+    bool split() const { return splitOn && value2 && apply2; }
+    QRect capRect(int which = 0) const { return which ? capAt(value2 ? gainToPos(value2()) : 0.0, geo().grooveX2) : capAt(value ? gainToPos(value()) : 0.0, geo().grooveX); }
     int faderY(double gain) const { return yAt(gainToPos(gain)); }
 
 protected:
@@ -284,6 +294,8 @@ protected:
         const Geo g = geo();
         setProperty("cap", capRect());
         setProperty("readout", readoutRect());
+        setProperty("split", split());
+        if (split()) setProperty("cap2", capRect(1));
         setProperty("faderTop", g.top);
         setProperty("faderBottom", g.bottom);
         QFont small = font();
@@ -305,13 +317,15 @@ protected:
                 p.drawText(QRect(g.x0, y - fm.height() / 2, g.grooveX - 10 - g.x0, fm.height()), Qt::AlignRight | Qt::AlignVCenter,
                            db > 0 ? QString("+%1").arg(db) : QString::number(db));
             }
-            const QRect groove(g.grooveX - 2, g.top - 3, 4, g.bottom - g.top + 6);
+          for (int f = 0; f < (split() ? 2 : 1); ++f) {
+            const int gx = f ? g.grooveX2 : g.grooveX;
+            const QRect groove(gx - 2, g.top - 3, 4, g.bottom - g.top + 6);
             p.fillRect(groove, kGroove);
             p.setPen(QColor(70, 70, 74));
             p.drawLine(groove.right() + 1, groove.top(), groove.right() + 1, groove.bottom());
-            const QRect cap = capRect();
+            const QRect cap = capRect(f);
             QLinearGradient cg(cap.topLeft(), cap.bottomLeft());
-            const bool hot = drag_.active || hover_;
+            const bool hot = (drag_.active && dragging_ == f) || hoverCap_ == f;
             cg.setColorAt(0.0, hot ? QColor(236, 236, 240) : QColor(214, 214, 218));
             cg.setColorAt(0.45, hot ? QColor(190, 190, 196) : QColor(168, 168, 174));
             cg.setColorAt(0.55, hot ? QColor(150, 150, 156) : QColor(132, 132, 138));
@@ -331,8 +345,10 @@ protected:
             QFont vf = small;
             vf.setPointSizeF(big_ ? 8.0 : 7.2);
             p.setFont(vf);
-            p.drawText(QRect(0, g.bottom + 6, g.meterX - 2, height() - g.bottom - 6), Qt::AlignHCenter | Qt::AlignVCenter, dbText(value()));
+            if (split()) p.drawText(QRect(gx - 20, g.bottom + 6, 40, height() - g.bottom - 6), Qt::AlignHCenter | Qt::AlignVCenter, dbText(f ? value2() : value()));
+            else p.drawText(QRect(0, g.bottom + 6, g.meterX - 2, height() - g.bottom - 6), Qt::AlignHCenter | Qt::AlignVCenter, dbText(value()));
             p.setFont(small);
+          }
         }
         if (!showMeter) return;
 
@@ -421,12 +437,20 @@ protected:
         }
         if (!value || !apply || !showFader) return;
         const Geo g = geo();
-        const QRect cap = capRect();
-        if (cap.adjusted(-2, -2, 2, 2).contains(pos)) {
-            drag_.press(gainToPos(value()), -pos.y());
-        } else if (std::abs(pos.x() - g.grooveX) <= 12 && pos.y() >= g.top - 8 && pos.y() <= g.bottom + 8) {
+        for (int f = 0; f < (split() ? 2 : 1); ++f) {
+            const QRect cap = capRect(f);
+            if (cap.adjusted(-2, -2, 2, 2).contains(pos)) {
+                dragging_ = f;
+                drag_.press(gainToPos(f ? value2() : value()), -pos.y());
+                update();
+                return;
+            }
+        }
+        const int pf = pickAt(pos.x());
+        if (std::abs(pos.x() - (pf ? g.grooveX2 : g.grooveX)) <= 12 && pos.y() >= g.top - 8 && pos.y() <= g.bottom + 8) {
             const double v = std::clamp((double)(g.bottom - pos.y()) / std::max(1, g.bottom - g.top), 0.0, 1.0);
-            AppState::get().beginDrag();
+            dragging_ = pf;
+            if (!direct) AppState::get().beginDrag();
             set(v, false);
             drag_.press(v, -pos.y());
             drag_.started = true;
@@ -436,16 +460,18 @@ protected:
     void mouseMoveEvent(QMouseEvent* e) override
     {
         const QPoint pos = e->position().toPoint();
-        const bool h = capRect().adjusted(-2, -2, 2, 2).contains(pos);
-        if (h != hover_) {
-            hover_ = h;
+        int h = -1;
+        for (int f = 0; f < (split() ? 2 : 1); ++f)
+            if (capRect(f).adjusted(-2, -2, 2, 2).contains(pos)) h = f;
+        if (h != hoverCap_) {
+            hoverCap_ = h;
             update();
         }
         if (!drag_.active || !value) return;
         const Geo g = geo();
         const bool ctrl = (e->modifiers() & Qt::ControlModifier) != 0;
         double v;
-        if (drag_.move(-pos.y(), g.bottom - g.top, ctrl, gainToPos(value()), v)) set(v, ctrl);
+        if (drag_.move(-pos.y(), g.bottom - g.top, ctrl, gainToPos(dragging_ ? value2() : value()), v)) set(v, ctrl);
     }
     void mouseReleaseEvent(QMouseEvent*) override
     {
@@ -458,19 +484,25 @@ protected:
         if (!value || !apply || !showFader) return;
         const Geo g = geo();
         const QPoint pos = e->position().toPoint();
-        if (std::abs(pos.x() - g.grooveX) > 12) return;
-        std::function<void(Project&, double)> fn = apply;
+        const int f = pickAt(pos.x());
+        if (std::abs(pos.x() - (f ? g.grooveX2 : g.grooveX)) > 12) return;
+        if (direct) {
+            direct(1.0);
+            update();
+            return;
+        }
+        std::function<void(Project&, double)> fn = f ? apply2 : apply;
         AppState::get().edit(undoName, [&](Project& p) { fn(p, 1.0); });
     }
     void leaveEvent(QEvent*) override
     {
-        hover_ = false;
+        hoverCap_ = -1;
         update();
     }
 
 private:
     struct Geo {
-        int x0, grooveX, meterX, meterW, meterGap, scaleX, top, bottom;
+        int x0, grooveX, grooveX2, meterX, meterW, meterGap, scaleX, top, bottom;
     };
     Geo geo() const
     {
@@ -479,10 +511,11 @@ private:
         g.meterW = n == 6 ? (big_ ? 9 : 3) : (big_ ? 20 : 7);
         g.meterGap = n == 6 ? 1 : (big_ ? 4 : 2);
         const int labels = ticks && meterScale ? (big_ ? 22 : 19) : 4, fader = 24, gap = big_ ? 10 : 5, scale = meterScale ? (big_ ? 24 : 21) : 0;
-        const int faderW = value && showFader ? labels + fader + gap : 0;
+        const int faderW = value && showFader ? labels + fader + gap + (split() ? 26 : 0) : 0;
         const int total = faderW + (showMeter ? n * g.meterW + (n - 1) * g.meterGap + 3 + scale : 0);
         g.x0 = std::max(0, (width() - total) / 2);
         g.grooveX = g.x0 + labels + fader / 2;
+        g.grooveX2 = g.grooveX + 26;
         g.meterX = g.x0 + faderW;
         g.scaleX = g.meterX + n * g.meterW + (n - 1) * g.meterGap + 3;
         g.top = big_ ? 30 : 26;
@@ -499,11 +532,15 @@ private:
         const Geo g = geo();
         return g.bottom - (int)std::lround(meterFrac(db) * (g.bottom - g.top));
     }
-    QRect capAt(double pos) const
+    QRect capAt(double pos, int grooveX) const
+    {
+        const int w = 22, h = big_ ? 13 : 12;
+        return QRect(grooveX - w / 2, yAt(pos) - h / 2, w, h);
+    }
+    int pickAt(int x) const
     {
         const Geo g = geo();
-        const int w = 22, h = big_ ? 13 : 12;
-        return QRect(g.grooveX - w / 2, yAt(pos) - h / 2, w, h);
+        return split() && std::abs(x - g.grooveX2) < std::abs(x - g.grooveX) ? 1 : 0;
     }
     QRect readoutRect() const
     {
@@ -517,13 +554,20 @@ private:
     {
         double gain = posToGain(v);
         if (!ctrl && std::fabs(v - gainToPos(1.0)) < 0.012) gain = 1.0;
-        std::function<void(Project&, double)> fn = apply;
+        if (direct) {
+            direct(gain);
+            update();
+            AppState::get().status(undoName + ": " + dbText(gain, true).toStdString());
+            return;
+        }
+        std::function<void(Project&, double)> fn = dragging_ ? apply2 : apply;
         AppState::get().dragUpdate([&](Project& p) { fn(p, gain); });
         AppState::get().status(undoName + ": " + dbText(gain, true).toStdString());
     }
 
     bool big_;
-    bool hover_ = false;
+    int hoverCap_ = -1;
+    int dragging_ = 0;
     DragValue drag_;
 };
 
@@ -1195,17 +1239,19 @@ public:
 // ------------------------------------------------------------------------------------------ a strip
 class Strip : public QWidget {
 public:
-    enum Kind { TrackStrip, BusStrip, MasterStrip };
+    enum Kind { TrackStrip, BusStrip, MasterStrip, InputStrip, PreviewStrip };
 
     Strip(Kind kind, uint64_t id, Playback* pb, QWidget* parent) : QWidget(parent), kind_(kind), id_(id), pb_(pb)
     {
-        setObjectName(kind == TrackStrip ? QString("strip:track:%1").arg(id) : kind == BusStrip ? QString("strip:bus:%1").arg(id) : QString("strip:master"));
+        setObjectName(kind == TrackStrip ? QString("strip:track:%1").arg(id) : kind == BusStrip ? QString("strip:bus:%1").arg(id)
+                      : kind == InputStrip ? QString("strip:input:%1").arg(id) : kind == PreviewStrip ? QString("strip:preview") : QString("strip:master"));
         setFixedWidth(ConsoleView().stripWidth());
         setAttribute(Qt::WA_StyledBackground, false);
         auto* v = new QVBoxLayout(this);
         v->setContentsMargins(4, 4, 5, 4);
         v->setSpacing(3);
         header = new StripHeader(this);
+        header->setObjectName("header");
         v->addWidget(header);
 
         QFont small = font();
@@ -1232,8 +1278,8 @@ public:
 
         fxBox = region("fx", "Insert FX");
         fxSlots = new FxSlots(fxBox);
-        fxSlots->target.kind = kind == TrackStrip ? FxTarget::Track : kind == BusStrip ? FxTarget::Bus : FxTarget::AudioOut;
-        fxSlots->target.id = kind == MasterStrip ? 0 : id;
+        fxSlots->target.kind = kind == TrackStrip ? FxTarget::Track : kind == BusStrip ? FxTarget::Bus : kind == InputStrip ? FxTarget::InputBus : FxTarget::AudioOut;
+        fxSlots->target.id = kind == MasterStrip || kind == PreviewStrip ? 0 : id;
         fxBox->layout()->addWidget(fxSlots);
         fx = new QToolButton(fxBox);
         fx->setObjectName("fx");
@@ -1262,6 +1308,19 @@ public:
             device->setToolTip(QString("The master goes to: %1").arg(dev.isEmpty() ? QString("the sound device") : dev));
             ioBox->layout()->addWidget(device);
         } else {
+            if (kind == InputStrip || kind == TrackStrip) {
+                // where the sound comes from: an input bus's sound card input, or what a track records (VEGAS's Record Input)
+                source = new QToolButton(ioBox);
+                source->setObjectName("inputSource");
+                source->setFont(small);
+                source->setFixedHeight(20);
+                source->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+                source->setPopupMode(QToolButton::InstantPopup);
+                source->setToolTip(kind == InputStrip ? "Input: the sound card input this input bus takes its sound from"
+                                                       : "Record Input: the sound card input this track records from");
+                source->setMenu(new QMenu(source));
+                ioBox->layout()->addWidget(source);
+            }
             output = new QComboBox(ioBox);
             output->setObjectName("output");
             output->setFont(small);
@@ -1310,13 +1369,22 @@ public:
             phase->setCheckable(true);
             phase->setToolTip("Invert Track Phase (also applies to the selected channels)");
             row.push_back(phase);
-        } else {
+        } else if (kind != InputStrip && kind != PreviewStrip) {
             // VEGAS's Pre/Post Fader Insert FX: the bus's (master's) effects before or after its fader
             postFx = new QToolButton(faderBox);
             postFx->setObjectName("prePostFx");
             postFx->setCheckable(true);
             postFx->setToolTip("Pre/Post Fader Insert FX: effects before the fader (Pre) or after it (Post)");
             row.push_back(postFx);
+        }
+        if (kind == MasterStrip) {
+            // the master's left and right faders: linked (one fader) or split
+            link = new QToolButton(faderBox);
+            link->setObjectName("masterSplit");
+            link->setCheckable(true);
+            link->setText("L/R");
+            link->setToolTip("Split the master fader into a left and a right fader");
+            row.push_back(link);
         }
         for (QToolButton* b : row) {
             QFont bf = font();
@@ -1328,7 +1396,7 @@ public:
             b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
             ms->addWidget(b);
         }
-        if (kind == MasterStrip) {
+        if (kind == MasterStrip || kind == PreviewStrip) {
             // the master has no solo; the space is kept so the faders line up
             QSizePolicy sp = solo->sizePolicy();
             sp.setRetainSizeWhenHidden(true);
@@ -1336,7 +1404,7 @@ public:
             solo->hide();
         }
         static_cast<QVBoxLayout*>(faderBox->layout())->addLayout(ms);
-        if (kind != MasterStrip) {
+        if (kind != MasterStrip && kind != InputStrip && kind != PreviewStrip) {
             // Automation Settings and the automation mode (Off, Read, Write (Touch), Write (Latch)), as the track header's button
             auto* am = new QHBoxLayout();
             am->setSpacing(3);
@@ -1374,6 +1442,7 @@ public:
     StripHeader* header = nullptr;
     FxSlots* fxSlots = nullptr;
     QToolButton *fx = nullptr, *mute = nullptr, *solo = nullptr, *arm = nullptr, *automation = nullptr, *phase = nullptr, *postFx = nullptr;
+    QToolButton *source = nullptr, *link = nullptr;
     QComboBox* output = nullptr;
     QLabel* device = nullptr;
     QWidget *fxBox = nullptr, *sendBox = nullptr, *ioBox = nullptr, *faderBox = nullptr, *filler = nullptr, *vuBox = nullptr;
@@ -1422,6 +1491,13 @@ public:
             const QString dev = pb_ ? qs(pb_->audioDeviceName()) : QString();
             device->setText(QFontMetrics(device->font()).elidedText(dev.isEmpty() ? QString("Output") : dev, Qt::ElideRight, w - 14));
         }
+        if (kind_ == PreviewStrip) {
+            // the Preview bus has no effects, sends or outputs: it is only a fader and meters
+            fxBox->hide();
+            sendBox->hide();
+            ioBox->hide();
+            for (QLabel* l : {labels[0], labels[1], labels[2]}) l->hide();
+        }
         fader->update();
     }
 
@@ -1451,6 +1527,11 @@ public:
             const reno::Bus* b = p.findBus(id_);
             return b ? qs(b->name) : QString();
         }
+        if (kind_ == InputStrip) {
+            const reno::InputBus* b = p.findInputBus(id_);
+            return b ? qs(b->name) : QString();
+        }
+        if (kind_ == PreviewStrip) return "Preview";
         return "Master";
     }
 
@@ -1469,10 +1550,33 @@ public:
             muted = t->mute;
             soloed = t->solo;
             fillOutputs(p, t->output, 0);
+            source->setText(QFontMetrics(source->font()).elidedText(recordInputText(p, t->recordInput), Qt::ElideRight, width() - 18));
+            source->setToolTip("Record Input: " + recordInputText(p, t->recordInput) + (t->recordInput.monitor != "off" ? QString(" (monitoring %1)").arg(qs(t->recordInput.monitor)) : QString()));
             if (phase) {
                 const QSignalBlocker pb(phase);
                 phase->setChecked(t->invertPhase);
             }
+        } else if (kind_ == PreviewStrip) {
+            static const FxChain none;
+            header->number.clear();
+            header->color = kMasterColor;
+            chain = &none;
+            muted = previewBus().mute.load();
+        } else if (kind_ == InputStrip) {
+            const reno::InputBus* b = p.findInputBus(id_);
+            if (!b) return;
+            header->number = "IN";
+            header->color = kInputColor;
+            chain = &b->fx;
+            muted = b->mute;
+            soloed = b->solo;
+            fillOutputs(p, b->output, 0, b->outputOff);
+            RecordInput ri;
+            ri.device = b->device;
+            ri.first = b->first;
+            ri.channels = b->channels;
+            source->setText(QFontMetrics(source->font()).elidedText(recordInputText(p, ri), Qt::ElideRight, width() - 18));
+            source->setToolTip("Input: " + recordInputText(p, ri));
         } else if (kind_ == BusStrip) {
             const reno::Bus* b = p.findBus(id_);
             if (!b) return;
@@ -1492,6 +1596,12 @@ public:
             header->color = kMasterColor;
             chain = &p.audioOut;
             muted = p.masterMute;
+            if (link) {
+                const QSignalBlocker lb(link);
+                link->setChecked(p.masterVolumeR >= 0);
+                fader->splitOn = p.masterVolumeR >= 0;
+                fader->update();
+            }
             if (postFx) {
                 const QSignalBlocker pb(postFx);
                 postFx->setChecked(p.masterFxPostFader);
@@ -1507,18 +1617,20 @@ public:
                     if (t.id == id_) out = t.output;
             } else if (kind_ == BusStrip) {
                 if (const reno::Bus* b = p.findBus(id_)) out = b->output;
+            } else if (kind_ == InputStrip) {
+                if (const reno::InputBus* b = p.findInputBus(id_)) out = b->outputOff ? 1 : b->output;
             }
             const bool sur = p.settings.surround();
-            surround->setVisible(sur && kind_ != MasterStrip && out == 0);
-            pan->setVisible(!sur || (kind_ != MasterStrip && out != 0));
+            surround->setVisible(sur && kind_ != MasterStrip && kind_ != PreviewStrip && out == 0);
+            pan->setVisible(kind_ != PreviewStrip && (!sur || (kind_ != MasterStrip && out != 0)));
             surround->update();
         }
         header->name = name(p);
         header->setToolTip(header->name);
         header->update();
         fx->setText(QFontMetrics(fx->font()).elidedText(chainText(*chain), Qt::ElideRight, width() - 18));
-        fx->setToolTip(chainTip(*chain, kind_ == MasterStrip ? QString("Master Bus FX") : kind_ == BusStrip ? QString(assignable(p) ? "Assignable FX" : "Bus FX") : QString("Track FX")) +
-                       "\n(right-click: Enable All, Bypass All, Delete All" + (kind_ == TrackStrip ? QString(")") : QString(", Post Volume)")));
+        fx->setToolTip(chainTip(*chain, kind_ == MasterStrip ? QString("Master Bus FX") : kind_ == BusStrip ? QString(assignable(p) ? "Assignable FX" : "Bus FX") : kind_ == InputStrip ? QString("Input Bus FX") : QString("Track FX")) +
+                       "\n(right-click: Enable All, Bypass All, Delete All" + (kind_ == TrackStrip || kind_ == InputStrip ? QString(")") : QString(", Post Volume)")));
         setActive(fx, !chain->empty());
         fxSlots->update();
         {
@@ -1551,7 +1663,7 @@ protected:
     }
 
 private:
-    void fillOutputs(const Project& p, uint64_t current, uint64_t self)
+    void fillOutputs(const Project& p, uint64_t current, uint64_t self, bool off = false)
     {
         if (!output) return;
         const QSignalBlocker block(output);
@@ -1562,6 +1674,7 @@ private:
             if (b.assignable) continue;
             items.push_back(std::make_pair(qs(b.name), b.id));
         }
+        if (kind_ == InputStrip) items.push_back(std::make_pair(QString("Off"), kOutputOff));
         // refilled only when the choices change, so an open menu is not disturbed by a fader moving elsewhere
         bool same = output->count() == (int)items.size();
         for (int i = 0; same && i < output->count(); ++i)
@@ -1572,7 +1685,7 @@ private:
         }
         int at = 0;
         for (int i = 0; i < output->count(); ++i)
-            if (output->itemData(i).toULongLong() == current) at = i;
+            if (output->itemData(i).toULongLong() == (off ? kOutputOff : current)) at = i;
         output->setCurrentIndex(at);
     }
 
@@ -1590,7 +1703,7 @@ private:
             QMenu m(this);
             m.setObjectName("fxButtonMenu");
             fillChainMenu(&m, fxSlots->target);
-            if (kind != TrackStrip) {
+            if (kind != TrackStrip && kind != InputStrip) {
                 m.addSeparator();
                 QAction* post = m.addAction("Post Volume");
                 post->setObjectName("postVolume");
@@ -1624,16 +1737,27 @@ private:
         if (output)
             QObject::connect(output, QOverload<int>::of(&QComboBox::activated), [this, id, kind](int index) {
                 const uint64_t to = output->itemData(index).toULongLong();
-                AppState::get().edit(kind == TrackStrip ? "Track Output" : "Bus Output", [&](Project& p) {
+                AppState::get().edit(kind == TrackStrip ? "Track Output" : kind == InputStrip ? "Input Bus Output" : "Bus Output", [&](Project& p) {
                     if (kind == TrackStrip) {
                         if (Track* t = p.findTrack(id)) t->output = to;
+                    } else if (kind == InputStrip) {
+                        if (reno::InputBus* b = p.findInputBus(id)) {
+                            b->outputOff = to == kOutputOff;
+                            if (!b->outputOff) b->output = to;
+                        }
                     } else if (reno::Bus* b = p.findBus(id)) {
                         b->output = to;
                     }
                 });
             });
-        QObject::connect(mute, &QToolButton::clicked, [id, kind] {
-            AppState::get().edit(kind == TrackStrip ? "Mute Track" : kind == BusStrip ? "Mute Bus" : "Mute Master", [&](Project& p) {
+        QObject::connect(mute, &QToolButton::clicked, [this, id, kind] {
+            if (kind == PreviewStrip) {
+                previewBus().mute.store(!previewBus().mute.load());
+                const QSignalBlocker b(mute);
+                mute->setChecked(previewBus().mute.load());
+                return;
+            }
+            AppState::get().edit(kind == TrackStrip ? "Mute Track" : kind == BusStrip ? "Mute Bus" : kind == InputStrip ? "Mute Input Bus" : "Mute Master", [&](Project& p) {
                 if (kind == TrackStrip) {
                     const EnvelopeOwner o{EnvelopeOwner::Track, id};
                     if (Track* t = p.findTrack(id)) {
@@ -1642,6 +1766,8 @@ private:
                     }
                 } else if (kind == BusStrip) {
                     if (reno::Bus* b = p.findBus(id)) b->mute = !b->mute;
+                } else if (kind == InputStrip) {
+                    if (reno::InputBus* b = p.findInputBus(id)) b->mute = !b->mute;
                 } else {
                     p.masterMute = !p.masterMute;
                 }
@@ -1670,9 +1796,11 @@ private:
             });
         }
         QObject::connect(solo, &QToolButton::clicked, [id, kind] {
-            AppState::get().edit(kind == TrackStrip ? "Solo Track" : "Solo Bus", [&](Project& p) {
+            AppState::get().edit(kind == TrackStrip ? "Solo Track" : kind == InputStrip ? "Solo Input Bus" : "Solo Bus", [&](Project& p) {
                 if (kind == TrackStrip) {
                     if (Track* t = p.findTrack(id)) t->solo = !t->solo;
+                } else if (kind == InputStrip) {
+                    if (reno::InputBus* b = p.findInputBus(id)) b->solo = !b->solo;
                 } else if (reno::Bus* b = p.findBus(id)) {
                     b->solo = !b->solo;
                 }
@@ -1687,8 +1815,25 @@ private:
             surround->onOpenWindow = [this, id] {
                 if (onOpenSurround) onOpenSurround(id);
             };
+            surround->panType = [id]() { return surroundPanTypeOf(AppState::get().project(), id); };
+            surround->setPanType = [id](const std::string& type) {
+                AppState::get().edit("Pan Type", [&](Project& p) { setSurroundPanType(p, id, type); });
+            };
         }
         if (kind == TrackStrip) {
+            QObject::connect(source->menu(), &QMenu::aboutToShow, [this, id] {
+                QMenu* m = source->menu();
+                m->clear();
+                const Track* t = nullptr;
+                for (const auto& x : AppState::get().project().tracks)
+                    if (x.id == id) t = &x;
+                if (!t) return;
+                fillRecordInputMenu(m, t->recordInput, true, [id](const RecordInput& r) {
+                    AppState::get().edit("Record Input", [&](Project& p) {
+                        if (Track* x = p.findTrack(id)) x->recordInput = r;
+                    });
+                });
+            });
             pan->value = [id] {
                 for (const auto& t : AppState::get().project().tracks)
                     if (t.id == id) return controlShown(AppState::get().project(), EnvelopeOwner{EnvelopeOwner::Track, id}, "pan", 0, t.pan, automationNow());
@@ -1724,6 +1869,49 @@ private:
                 if (reno::Bus* b = p.findBus(id)) if (!controlMoved(p, EnvelopeOwner{EnvelopeOwner::Bus, id}, "volume", 0, v)) b->level = v;
             };
             fader->undoName = "Bus Level";
+        } else if (kind == PreviewStrip) {
+            pan->value = [] { return 0.0; };
+            pan->apply = [](Project&, double) {};
+            fader->value = [] { return (double)previewBus().gain.load(); };
+            fader->apply = [](Project&, double) {};
+            fader->direct = [](double v) { previewBus().gain.store((float)v); };
+            fader->undoName = "Preview Volume";
+        } else if (kind == InputStrip) {
+            pan->value = [id] {
+                const reno::InputBus* b = AppState::get().project().findInputBus(id);
+                return b ? b->pan : 0.0;
+            };
+            pan->apply = [id](Project& p, double v) {
+                if (reno::InputBus* b = p.findInputBus(id)) b->pan = v;
+            };
+            pan->undoName = "Input Bus Pan";
+            fader->value = [id] {
+                const reno::InputBus* b = AppState::get().project().findInputBus(id);
+                return b ? b->level : 0.0;
+            };
+            fader->apply = [id](Project& p, double v) {
+                if (reno::InputBus* b = p.findInputBus(id)) b->level = v;
+            };
+            fader->undoName = "Input Bus Level";
+            QObject::connect(source->menu(), &QMenu::aboutToShow, [this, id] {
+                QMenu* m = source->menu();
+                m->clear();
+                const reno::InputBus* b = AppState::get().project().findInputBus(id);
+                if (!b) return;
+                RecordInput cur;
+                cur.device = b->device;
+                cur.first = b->first;
+                cur.channels = b->channels;
+                fillRecordInputMenu(m, cur, false, [id](const RecordInput& r) {
+                    AppState::get().edit("Input Bus Input", [&](Project& p) {
+                        if (reno::InputBus* x = p.findInputBus(id)) {
+                            x->device = r.device;
+                            x->first = r.first;
+                            x->channels = r.channels;
+                        }
+                    });
+                });
+            });
         } else {
             pan->value = [] { return AppState::get().project().masterPan; };
             pan->apply = [](Project& p, double v) { p.masterPan = v; };
@@ -1731,6 +1919,14 @@ private:
             fader->value = [] { return AppState::get().project().masterVolume; };
             fader->apply = [](Project& p, double v) { p.masterVolume = v; };
             fader->undoName = "Master Volume";
+            // the right fader of a split master (masterVolumeR below 0: the left fader's value for both)
+            fader->value2 = [] { return AppState::get().project().masterRightVolume(); };
+            fader->apply2 = [](Project& p, double v) { p.masterVolumeR = v; };
+            QObject::connect(link, &QToolButton::clicked, [](bool on) {
+                AppState::get().edit(on ? "Split Master Fader" : "Link Master Faders", [&](Project& p) {
+                    p.masterVolumeR = on ? p.masterVolume : -1.0;
+                });
+            });
         }
     }
 
@@ -1787,9 +1983,10 @@ struct MixerWindow::Impl {
     Playback* pb = nullptr;
     QToolButton *insertBus = nullptr, *deleteBus = nullptr, *insertTrack = nullptr, *dimBtn = nullptr;
     QToolButton *insertAssignable = nullptr, *insertInput = nullptr, *downmixBtn = nullptr;
-    QToolButton *showAll = nullptr, *showTracks = nullptr, *showBuses = nullptr, *showMaster = nullptr, *showAssign = nullptr;
+    QToolButton *showInputs = nullptr, *showPreview = nullptr, *showAll = nullptr, *showTracks = nullptr, *showBuses = nullptr, *showMaster = nullptr, *showAssign = nullptr;
     QToolButton *regionFx = nullptr, *regionSends = nullptr, *regionIO = nullptr, *regionMeters = nullptr, *regionFaders = nullptr, *regionVu = nullptr;
-    QElapsedTimer vuClock;
+    QElapsedTimer vuClock, previewClock;
+    double previewLast = 0;
     QSlider* widthSlider = nullptr;
     QWidget *side = nullptr, *channelPane = nullptr, *viewPane = nullptr;
     QListWidget* channelList = nullptr;
@@ -1799,6 +1996,7 @@ struct MixerWindow::Impl {
     QWidget* masterBox = nullptr;
     std::vector<Strip*> strips;
     Strip* master = nullptr;
+    Strip* preview = nullptr;
     QLabel* empty = nullptr;
     uint64_t selectedBus = 0;
     std::set<QString> selected;
@@ -1818,6 +2016,8 @@ struct MixerWindow::Impl {
     static std::vector<uint64_t> shapeOf(const Project& p)
     {
         std::vector<uint64_t> s;
+        for (const auto& b : p.inputBuses) s.push_back(b.id);
+        s.push_back(0);
         for (const auto& t : p.tracks)
             if (t.type == TrackType::Audio) s.push_back(t.id);
         s.push_back(0);
@@ -1829,6 +2029,7 @@ struct MixerWindow::Impl {
     {
         std::vector<Strip*> v = strips;
         v.push_back(master);
+        v.push_back(preview);
         return v;
     }
 
@@ -1848,6 +2049,12 @@ struct MixerWindow::Impl {
         }
         strips.clear();
         int at = 0;
+        for (const auto& b : p.inputBuses) {
+            Strip* s = new Strip(Strip::InputStrip, b.id, pb, row);
+            setup(s, p);
+            rowLayout->insertWidget(at++, s);
+            strips.push_back(s);
+        }
         for (const auto& t : p.tracks) {
             if (t.type != TrackType::Audio) continue;
             Strip* s = new Strip(Strip::TrackStrip, t.id, pb, row);
@@ -1863,7 +2070,7 @@ struct MixerWindow::Impl {
         }
         master->makeSends(p);
         shape = shapeOf(p);
-        if (selectedBus && !p.findBus(selectedBus)) selectedBus = 0;
+        if (selectedBus && !p.findBus(selectedBus) && !p.findInputBus(selectedBus)) selectedBus = 0;
         std::set<QString> keys;
         for (Strip* s : all()) keys.insert(s->key());
         for (auto* set : {&selected, &hidden})
@@ -1929,7 +2136,7 @@ struct MixerWindow::Impl {
             selected.insert(k);
         }
         lastClicked = k;
-        if (st->kind() == Strip::BusStrip) selectedBus = st->id();
+        if (st->kind() == Strip::BusStrip || st->kind() == Strip::InputStrip) selectedBus = st->id();
         else if (!(m & Qt::ControlModifier)) selectedBus = 0;
         owner->setFocus(Qt::MouseFocusReason);
         refresh();
@@ -1937,7 +2144,7 @@ struct MixerWindow::Impl {
 
     void rename(Strip* st)
     {
-        if (!st || st->kind() == Strip::MasterStrip) return;
+        if (!st || st->kind() == Strip::MasterStrip || st->kind() == Strip::PreviewStrip) return;
         QLineEdit* ed = new QLineEdit(st->header);
         ed->setObjectName("renameEdit");
         ed->setGeometry(st->header->rect().adjusted(2, 2, -2, -14));
@@ -1964,10 +2171,12 @@ struct MixerWindow::Impl {
             guard->hide();
             QTimer::singleShot(0, guard.data(), [guard] { if (guard) guard->deleteLater(); });
             owner->setFocus();
-            if (kind == Strip::BusStrip && name.empty()) return;
-            AppState::get().edit(kind == Strip::TrackStrip ? "Rename Track" : "Rename Bus", [&](Project& pr) {
+            if ((kind == Strip::BusStrip || kind == Strip::InputStrip) && name.empty()) return;
+            AppState::get().edit(kind == Strip::TrackStrip ? "Rename Track" : kind == Strip::InputStrip ? "Rename Input Bus" : "Rename Bus", [&](Project& pr) {
                 if (kind == Strip::TrackStrip) {
                     if (Track* t = pr.findTrack(id)) t->name = name;
+                } else if (kind == Strip::InputStrip) {
+                    if (reno::InputBus* b = pr.findInputBus(id)) b->name = name;
                 } else if (reno::Bus* b = pr.findBus(id)) {
                     b->name = name;
                 }
@@ -1980,6 +2189,8 @@ struct MixerWindow::Impl {
     bool shownByKind(const Strip* s) const
     {
         if (s->kind() == Strip::TrackStrip) return showTracks->isChecked();
+        if (s->kind() == Strip::InputStrip) return showInputs->isChecked();
+        if (s->kind() == Strip::PreviewStrip) return showPreview->isChecked();
         if (s->kind() == Strip::BusStrip) return s->assignable(AppState::get().project()) ? showAssign->isChecked() : showBuses->isChecked();
         return showMaster->isChecked();
     }
@@ -1994,7 +2205,14 @@ struct MixerWindow::Impl {
             if (on) ++shown;
         }
         master->applyView(view);
-        masterBox->setVisible(shownByKind(master) && !hidden.count(master->key()));
+        preview->applyView(view);
+        {
+            const bool ms = shownByKind(master) && !hidden.count(master->key());
+            const bool ps = shownByKind(preview) && !hidden.count(preview->key());
+            master->setVisible(ms);
+            preview->setVisible(ps);
+            masterBox->setVisible(ms || ps);
+        }
         empty->setVisible(shown == 0);
         empty->setText(strips.empty() ? QString("No audio tracks or buses.\nAdd an audio track, or Insert Bus.") : QString("All strips are hidden."));
         {
@@ -2049,6 +2267,8 @@ struct MixerWindow::Impl {
         }
         master->header->selected = selected.count(master->key()) != 0;
         master->refresh(p, 0);
+        preview->header->selected = selected.count(preview->key()) != 0;
+        preview->refresh(p, 0);
         if (channelList)
             for (int i = 0; i < channelList->count(); ++i) {
                 QListWidgetItem* it = channelList->item(i);
@@ -2059,9 +2279,10 @@ struct MixerWindow::Impl {
                         filling = false;
                     }
             }
-        deleteBus->setEnabled(!p.buses.empty());
+        deleteBus->setEnabled(!p.buses.empty() || p.findInputBus(selectedBus));
         const reno::Bus* sel = p.findBus(selectedBus);
-        deleteBus->setToolTip(p.buses.empty() ? QString("Delete Bus") : QString("Delete %1 (sound routed to it goes to the master)").arg(qs(sel ? sel->name : p.buses.back().name)));
+        if (const reno::InputBus* ib = p.findInputBus(selectedBus)) deleteBus->setToolTip(QString("Delete %1 (tracks recording from it record from the default input)").arg(qs(ib->name)));
+        else deleteBus->setToolTip(p.buses.empty() ? QString("Delete Bus") : QString("Delete %1 (sound routed to it goes to the master)").arg(qs(sel ? sel->name : p.buses.back().name)));
         QStringList keys;
         for (const QString& k : selected) keys << k;
         owner->setProperty("selectedStrips", keys);
@@ -2075,6 +2296,15 @@ struct MixerWindow::Impl {
             if (s->isVisible()) meters.push_back(std::make_pair(s->id(), s->fader));
         meters.push_back(std::make_pair((uint64_t)0, master->fader));
         feed.tick(pb, meters);
+        {
+            // the Preview bus's meter: the loudest sound since the last look, playing or not
+            const double now = previewClock.isValid() ? previewClock.elapsed() / 1000.0 : 0.0;
+            if (!previewClock.isValid()) previewClock.start();
+            const double dt = std::min(0.2, std::max(0.0, now - previewLast));
+            previewLast = now;
+            PreviewBus& pv = previewBus();
+            preview->fader->feed(pv.peakL.exchange(0.f), pv.peakR.exchange(0.f), now, dt);
+        }
         if (view.vu) {
             const double dt = vuClock.isValid() ? std::min(0.25, vuClock.restart() / 1000.0) : 0.033;
             if (!vuClock.isValid()) vuClock.start();
@@ -2104,7 +2334,7 @@ struct MixerWindow::Impl {
         s.setValue("mixer/meterRange", kMeterLo);
         s.setValue("mixer/channelList", !channelPane->isHidden());
         s.setValue("mixer/viewControls", !viewPane->isHidden());
-        s.setValue("mixer/show", QString("%1%2%3%4").arg(showTracks->isChecked()).arg(showBuses->isChecked()).arg(showMaster->isChecked()).arg(showAssign->isChecked()));
+        s.setValue("mixer/show", QString("%1%2%3%4%5%6").arg(showTracks->isChecked()).arg(showBuses->isChecked()).arg(showMaster->isChecked()).arg(showAssign->isChecked()).arg(showInputs->isChecked()).arg(showPreview->isChecked()));
     }
     void load()
     {
@@ -2132,7 +2362,9 @@ struct MixerWindow::Impl {
         side->setVisible(!channelPane->isHidden() || !viewPane->isHidden());
         const QString sh = s.value("mixer/show", "1111").toString();
         if (sh.size() >= 3) {
-            const QSignalBlocker b1(showTracks), b2(showBuses), b3(showMaster), b4(showAssign);
+            const QSignalBlocker b1(showTracks), b2(showBuses), b3(showMaster), b4(showAssign), b5(showInputs), b6(showPreview);
+            showInputs->setChecked(sh.size() < 5 || sh[4] == '1');
+            showPreview->setChecked(sh.size() >= 6 && sh[5] == '1');
             showTracks->setChecked(sh[0] == '1');
             showBuses->setChecked(sh[1] == '1');
             showMaster->setChecked(sh[2] == '1');
@@ -2169,9 +2401,11 @@ struct MixerWindow::Impl {
             return g <= 0.001 ? 0.0 : g / step;
         };
         bool track = false, bus = false, mst = false;
+        for (Strip* s : sel)
+            if (s->kind() == Strip::PreviewStrip) previewBus().gain.store((float)bump(previewBus().gain.load()));
         for (Strip* s : sel) {
             track = track || s->kind() == Strip::TrackStrip;
-            bus = bus || s->kind() == Strip::BusStrip;
+            bus = bus || s->kind() == Strip::BusStrip || s->kind() == Strip::InputStrip;
             mst = mst || s->kind() == Strip::MasterStrip;
         }
         const char* what = (int)track + (int)bus + (int)mst > 1 ? "Channel Volume" : track ? "Track Volume" : bus ? "Bus Level" : "Master Volume";
@@ -2179,9 +2413,11 @@ struct MixerWindow::Impl {
             for (Strip* s : sel) {
                 if (s->kind() == Strip::TrackStrip) {
                     if (Track* t = p.findTrack(s->id())) t->level = bump(t->level);
+                } else if (s->kind() == Strip::InputStrip) {
+                    if (reno::InputBus* b = p.findInputBus(s->id())) b->level = bump(b->level);
                 } else if (s->kind() == Strip::BusStrip) {
                     if (reno::Bus* b = p.findBus(s->id())) b->level = bump(b->level);
-                } else {
+                } else if (s->kind() == Strip::MasterStrip) {
                     p.masterVolume = bump(p.masterVolume);
                 }
             }
@@ -2191,7 +2427,9 @@ struct MixerWindow::Impl {
     void showAllChannels()
     {
         hidden.clear();
-        const QSignalBlocker b1(showTracks), b2(showBuses), b3(showMaster), b4(showAssign);
+        const QSignalBlocker b1(showTracks), b2(showBuses), b3(showMaster), b4(showAssign), b5(showInputs), b6(showPreview);
+        showPreview->setChecked(true);
+        showInputs->setChecked(true);
         showTracks->setChecked(true);
         showBuses->setChecked(true);
         showMaster->setChecked(true);
@@ -2220,10 +2458,10 @@ struct MixerWindow::Impl {
         QMenu* chans = m->addMenu("Show Channels");
         item(chans, "Show All Channels", "Q", false, false, [this] { owner->handleKey(Qt::Key_Q, Qt::NoModifier); });
         chans->addSeparator();
-        item(chans, "Preview Bus", "P", false, false, [] {}, false);
+        item(chans, "Preview Bus", "P", true, showPreview->isChecked(), [this] { owner->handleKey(Qt::Key_P, Qt::NoModifier); });
         item(chans, "Master Bus", "T", true, showMaster->isChecked(), [this] { owner->handleKey(Qt::Key_T, Qt::NoModifier); });
         item(chans, "Assignable FX Busses", "E", true, showAssign->isChecked(), [this] { owner->handleKey(Qt::Key_E, Qt::NoModifier); });
-        item(chans, "Input Busses", "", false, false, [] {}, false);
+        item(chans, "Input Busses", "", true, showInputs->isChecked(), [this] { showInputs->setChecked(!showInputs->isChecked()); });
         item(chans, "Audio Busses", "U", true, showBuses->isChecked(), [this] { owner->handleKey(Qt::Key_U, Qt::NoModifier); });
         item(chans, "Audio Tracks", "A", true, showTracks->isChecked(), [this] { owner->handleKey(Qt::Key_A, Qt::NoModifier); });
         QMenu* regs = m->addMenu("Show Control Regions");
@@ -2395,8 +2633,7 @@ MixerWindow::MixerWindow(Playback* playback, QWidget* parent) : QWidget(parent),
     d->insertTrack = tool(bar, tb, "insertAudioTrack", "Insert Audio Track", "Add an audio track (Ctrl+Q)", false);
     d->insertAssignable = tool(bar, tb, "insertAssignableFx", "Insert Assignable FX", "Add an assignable effects chain for tracks to send to (Insert > Audio Assignable FX)", false);
     d->insertBus = tool(bar, tb, "insertBus", "Insert Bus", "Add a bus (Bus A, Bus B ...)", false);
-    d->insertInput = tool(bar, tb, "insertInputBus", "Insert Input Bus", "Input buses: not available. Reno records from the input chosen in Preferences", false);
-    d->insertInput->setEnabled(false);
+    d->insertInput = tool(bar, tb, "insertInputBus", "Insert Input Bus", "Add an input bus: sound from a sound card input, mixed with the project (VEGAS Pro 23)", false);
     d->deleteBus = tool(bar, tb, "deleteBus", "Delete Bus", "Delete Bus", false);
     tb->addStretch(1);
     root->addWidget(bar);
@@ -2453,13 +2690,11 @@ MixerWindow::MixerWindow(Playback* playback, QWidget* parent) : QWidget(parent),
     d->showTracks = viewTool("showTracks", "Tracks", "Show the audio tracks' strips (A)", 1, 1, false);
     d->showBuses = viewTool("showBuses", "Buses", "Show the buses' strips (U)", 2, 0, false);
     d->showMaster = viewTool("showMaster", "Master", "Show the master strip (T)", 2, 1, false);
-    QToolButton* inputs = viewTool("showInputBuses", "Inputs", "Input buses: not available. Reno records from the device chosen in Preferences", 3, 0, false);
+    d->showInputs = viewTool("showInputBuses", "Inputs", "Show the input buses' strips", 3, 0, false);
+    d->showInputs->setChecked(true);
     d->showAssign = viewTool("showAssignable", "Assign. FX", "Show the assignable FX chains' strips (E)", 3, 1, false);
-    QToolButton* preview = viewTool("showPreview", "Preview", "The Preview bus: Reno previews through the master (P)", 4, 0, false);
-    for (QToolButton* b : {inputs, preview}) {
-        b->setChecked(false);
-        b->setEnabled(false);
-    }
+    d->showPreview = viewTool("showPreview", "Preview", "Show the Preview bus (P): what the Trimmer and Start Preview play goes through it", 4, 0, false);
+    d->showPreview->setChecked(false);
     QFrame* line = new QFrame(d->viewPane);
     line->setFrameShape(QFrame::HLine);
     line->setStyleSheet("color: #5a5a60;");
@@ -2517,6 +2752,11 @@ MixerWindow::MixerWindow(Playback* playback, QWidget* parent) : QWidget(parent),
     d->master = new Strip(Strip::MasterStrip, 0, playback, d->masterBox);
     d->master->onFx = [this](const FxTarget& t, uint64_t slot) { d->openFx(t, slot); };
     d->master->onSelect = [this](Strip* st, Qt::KeyboardModifiers m) { d->select(st, m); };
+    d->preview = new Strip(Strip::PreviewStrip, 0, playback, d->masterBox);
+    d->preview->onSelect = [this](Strip* st, Qt::KeyboardModifiers m) { d->select(st, m); };
+    d->preview->fader->onMeterMenu = [this](const QPoint& at) { if (d->meterMenuFn) d->meterMenuFn(at); };
+    d->wireVu(d->preview);
+    mb->addWidget(d->preview);
     mb->addWidget(d->master);
     body->addWidget(d->masterBox);
     root->addLayout(body, 1);
@@ -2563,8 +2803,19 @@ MixerWindow::MixerWindow(Playback* playback, QWidget* parent) : QWidget(parent),
             p.buses.push_back(b);
         });
     });
+    QObject::connect(d->insertInput, &QToolButton::clicked, [] { reno::app::insertInputBus(); });
     QObject::connect(d->deleteBus, &QToolButton::clicked, [this] {
         const Project& pr = AppState::get().project();
+        if (pr.findInputBus(d->selectedBus)) {
+            const uint64_t id = d->selectedBus;
+            AppState::get().edit("Delete Input Bus", [&](Project& p) {
+                for (auto& t : p.tracks)
+                    if (t.recordInput.inputBus == id) t.recordInput.inputBus = 0;
+                p.inputBuses.erase(std::remove_if(p.inputBuses.begin(), p.inputBuses.end(), [&](const InputBus& b) { return b.id == id; }), p.inputBuses.end());
+            });
+            d->selectedBus = 0;
+            return;
+        }
         if (pr.buses.empty()) return;
         const uint64_t id = pr.findBus(d->selectedBus) ? d->selectedBus : pr.buses.back().id;
         AppState::get().edit("Delete Bus", [&](Project& p) {
@@ -2574,11 +2825,15 @@ MixerWindow::MixerWindow(Playback* playback, QWidget* parent) : QWidget(parent),
             }
             for (auto& b : p.buses)
                 if (b.output == id) b.output = 0;
+            for (auto& b : p.inputBuses) {
+                if (b.output == id) b.output = 0;
+                b.sends.erase(std::remove_if(b.sends.begin(), b.sends.end(), [&](const Send& x) { return x.bus == id; }), b.sends.end());
+            }
             p.buses.erase(std::remove_if(p.buses.begin(), p.buses.end(), [&](const Bus& b) { return b.id == id; }), p.buses.end());
         });
         d->selectedBus = 0;
     });
-    for (QToolButton* b : {d->showTracks, d->showBuses, d->showMaster, d->showAssign})
+    for (QToolButton* b : {d->showTracks, d->showBuses, d->showMaster, d->showAssign, d->showInputs, d->showPreview})
         QObject::connect(b, &QToolButton::toggled, [this](bool) { d->viewChanged(); });
     // Insert Assignable FX: a new chain (FX 1, FX 2 ...), then its effects chosen (as an empty FX button does)
     QObject::connect(d->insertAssignable, &QToolButton::clicked, this, [this] {
@@ -2659,7 +2914,7 @@ bool MixerWindow::handleKey(int key, Qt::KeyboardModifiers mods)
     switch (key) {
     case Qt::Key_F2: {
         for (Strip* s : d->all())
-            if (d->selected.count(s->key()) && s->kind() != Strip::MasterStrip) {
+            if (d->selected.count(s->key()) && s->kind() != Strip::MasterStrip && s->kind() != Strip::PreviewStrip) {
                 d->rename(s);
                 break;
             }
@@ -2676,7 +2931,7 @@ bool MixerWindow::handleKey(int key, Qt::KeyboardModifiers mods)
         else toggle(d->showMaster);
         break;
     case Qt::Key_E: toggle(d->showAssign); break;
-    case Qt::Key_P: AppState::get().status("Reno has no Preview bus: the Trimmer and previews play through the master"); break;
+    case Qt::Key_P: toggle(d->showPreview); break;
     case Qt::Key_F: v.faders = !v.faders; d->viewChanged(); break;
     case Qt::Key_I: v.fx = !v.fx; d->viewChanged(); break;
     case Qt::Key_M: v.meters = !v.meters; d->viewChanged(); break;
@@ -3314,6 +3569,24 @@ uint64_t insertAssignableFx()
             if (!used) b.name = name;
         }
         p.buses.push_back(b);
+    });
+    return id;
+}
+
+uint64_t insertInputBus()
+{
+    uint64_t id = 0;
+    AppState::get().edit("Insert Input Bus", [&](Project& p) {
+        if (p.inputBuses.size() >= 26) return;
+        InputBus b;
+        b.id = id = p.newId();
+        for (int k = 0; k < 26 && b.name.empty(); ++k) {
+            const std::string name = strfmt("Input Bus %c", 'A' + k);
+            bool used = false;
+            for (const auto& o : p.inputBuses) used = used || o.name == name;
+            if (!used) b.name = name;
+        }
+        p.inputBuses.push_back(b);
     });
     return id;
 }

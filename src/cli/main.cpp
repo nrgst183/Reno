@@ -100,7 +100,7 @@ const char* kHelp =
     "  --size WxH | project     frame size (e.g. 1280x720)\n"
     "  --width W, --height H    frame width or height (given alone, the other keeps the aspect ratio)\n"
     "  --fps N | N/D | project  frame rate (29.97 means 30000/1001; 23.976 and 59.94 likewise)\n"
-    "  --video-codec C          h264, hevc, prores, dnxhd, mpeg2, mpeg4, mjpeg, vp9, vp8, av1, theora, gif, apng,\n"
+    "  --video-codec C          h264, hevc, prores, dnxhd, mpeg1, mpeg2, mpeg4, mjpeg, vp9, vp8, av1, theora, gif, apng,\n"
     "                           qtrle, ffv1, utvideo, rawvideo, png, exr ... or an FFmpeg encoder name (libx264,\n"
     "                           h264_nvenc ...)\n"
     "  --video-bitrate R        average video bit rate: 8000, 8000k or 8M (Kbps unless k/M is given)\n"
@@ -108,6 +108,7 @@ const char* kHelp =
     "  --cbr                    constant bit rate\n"
     "  --crf Q                  constant quality, 0 (best) to 51, instead of a bit rate\n"
     "  --two-pass               two passes (x264 / x265)\n"
+    "  --smart-render           copy stretches of a source video that need no changing (same codec and picture, whole groups)\n"
     "  --encode-mode M          auto, cpu, nvenc, qsv, amf, mf (falls back if the encoder is not available)\n"
     "  --profile P, --level L   H.264 / HEVC profile and level (high, main, main10, 4.1 ...)\n"
     "  --audio-codec C          aac, mp3, pcm, flac, vorbis, opus, wma, ac3, alac or an FFmpeg encoder name\n"
@@ -553,7 +554,7 @@ struct Options {
     bool sizeProject = false, fpsProject = false, rateProject = false;
     int width = 0, height = 0, onlyWidth = 0, onlyHeight = 0, fpsNum = 0, fpsDen = 0, sampleRate = 0, channels = 0, bits = 0;
     int kbps = 0, maxKbps = 0, audioKbps = 0, crf = -1;
-    bool cbr = false, twoPass = false;
+    bool cbr = false, twoPass = false, smartRender = false;
     std::string videoCodec, audioCodec, encodeMode, profile, level, renderQuality;
     // range
     std::string start, end, length, region, loopRegion;
@@ -579,10 +580,10 @@ struct Options {
     std::vector<std::string> pluginPaths;   // --plugin-path
 };
 
-const std::set<std::string> kVideoFamilies = {"h264", "hevc", "prores", "dnxhd", "mpeg2", "dv", "mpeg4", "mjpeg", "wmv", "vp9",
+const std::set<std::string> kVideoFamilies = {"h264", "hevc", "prores", "dnxhd", "mpeg1", "mpeg2", "dv", "mpeg4", "mjpeg", "wmv", "vp9",
                                               "rawvideo", "utvideo", "png", "jpeg", "tiff", "bmp",
                                               "vp8", "av1", "theora", "gif", "apng", "qtrle", "ffv1", "exr", "tga", "webp"};
-const std::set<std::string> kAudioFamilies = {"aac", "mp3", "pcm", "flac", "vorbis", "opus", "wma", "ac3", "alac"};
+const std::set<std::string> kAudioFamilies = {"aac", "mp3", "pcm", "flac", "vorbis", "opus", "wma", "ac3", "alac", "mp2"};
 
 // True if a --profile value is a project (otherwise it is an H.264 profile such as high or main).
 static bool looksLikeProject(const std::string& v)
@@ -685,6 +686,7 @@ bool parseArgs(const std::vector<std::string>& args, Options& o, std::string* pr
         }
         else if (a == "--cbr") o.cbr = true;
         else if (a == "--two-pass") o.twoPass = true;
+        else if (a == "--smart-render") o.smartRender = true;
         else if (a == "--video-codec" || a == "--vcodec") { if (!need(k, a, &o.videoCodec)) return false; }
         else if (a == "--audio-codec" || a == "--acodec") { if (!need(k, a, &o.audioCodec)) return false; }
         else if (a == "--encode-mode") {
@@ -1760,6 +1762,7 @@ int applyTemplateOptions(const Options& o, const ProjectSettings& ps, Job& job)
     if (o.cbr) t.rc = "cbr";
     if (o.crf >= 0) { t.rc = "quality"; t.quality = o.crf; }
     if (o.twoPass) t.twoPass = true;
+    if (o.smartRender) t.smartRender = true;
     if (o.audioKbps > 0) t.audioKbps = o.audioKbps;
     if (!o.encodeMode.empty()) t.mode = q(o.encodeMode);
     if (!o.profile.empty()) t.profile = q(o.profile);

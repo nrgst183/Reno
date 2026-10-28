@@ -203,7 +203,9 @@ int main(int argc, char** argv)
         center->setValue(0);
         check(panOf(t1).center == 0, "Center to the bottom: -Inf (a phantom centre)");
         center->setValue(1000);
-        check(near(panOf(t1).center, 1.0, 1e-9), "Center to the top: 0 dB");
+        check(near(panOf(t1).center, std::pow(10.0, 12.0 / 20.0), 1e-6), "Center to the top: +12 dB");
+        center->setValue((int)std::lround((60.0 / 72.0) * 999.0) + 1);
+        check(near(panOf(t1).center, 1.0, 1e-9), "Center at 0 dB snaps to no gain");
         smooth->setValue(40);
         check(near(panOf(t1).smoothness, 0.4, 1e-9), "Smoothness");
         lfe->setChecked(true);

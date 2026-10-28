@@ -375,7 +375,8 @@ int main(int argc, char** argv)
             st().setLoop(1.0, 2.0);
             press("Shift+B");
             uitest::settle(100);
-            check(pb->ramPreviewFrames() == 30 && pb->playing() && st().loopOn, "Shift+B renders the time selection's 30 frames into memory and plays it round",
+            // (at least the selection's 30: frames played earlier stay in the RAM preview too, as many as the earlier playing made)
+            check(pb->ramPreviewFrames() >= 30 && pb->playing() && st().loopOn, "Shift+B renders the time selection's 30 frames into memory and plays it round",
                   strfmt("%d frames", (int)pb->ramPreviewFrames()));
             press("Esc");
             st().loopOn = false;

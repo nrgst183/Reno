@@ -239,13 +239,14 @@ struct GlowKey {
 struct SurroundKey {                    // VEGAS's Surround Pan Keyframes: the pan point (and centre) at a moment
     double time = 0;                    // seconds on the timeline
     double x = 0, y = 0, center = 1.0;
-    int curve = 0;                      // to the next key: 0 linear, 1 hold, 2 smooth
+    int curve = 0;                      // how the pan moves in time to the next key: a KeyCurve (VEGAS's keyframe types)
+    double smoothness = -1;             // this key's Smoothness (the curve of the path to the next key); below 0: the panner's own
 };
 struct SurroundPan {
     double x = 0, y = 0;                // the pan point: x -1 left .. 1 right, y -1 rear .. 1 front; (0, 0) is the middle of the room
-    double center = 1.0;                // VEGAS's Center: how much of the front the centre speaker takes, a gain 0..1 (shown in dB;
-                                        // 0: none, the front is a phantom centre between left and right)
-    double smoothness = 1.0;            // VEGAS's Smoothness 0..1: 1 spreads the sound between neighbouring speakers, 0 uses only the nearest
+    double center = 1.0;                // VEGAS's Center fader: a gain on the centre channel (shown in dB; 1 = 0.0 dB, no gain; boosts and cuts)
+    double smoothness = 0.0;            // VEGAS's Smoothness 0..1: how curved the path is between keyframes (0: a straight line, the
+                                        // pan point moves at constant speed; more: a smooth curve through the keys)
     bool lfe = false;                   // VEGAS's Enable LFE: both sides mixed are also sent to the LFE channel at lfeLevel
     double lfeLevel = 1.0;
     std::string route = "surround";     // VEGAS's Surround Pan menu: "surround" (panned), "front", "center", "lfe", "rear" (only)
@@ -254,7 +255,7 @@ struct SurroundPan {
     std::vector<SurroundKey> keys;      // empty: the point above, all the time; else the keys (x, y, center) win
     bool isDefault() const
     {
-        return x == 0 && y == 0 && center == 1.0 && smoothness == 1.0 && !lfe && lfeLevel == 1.0 && route == "surround" && motion == "free" &&
+        return x == 0 && y == 0 && center == 1.0 && smoothness == 0.0 && !lfe && lfeLevel == 1.0 && route == "surround" && motion == "free" &&
                speakerMutes == 0 && keys.empty();
     }
 };
@@ -269,6 +270,7 @@ struct Bus {
     double level = 1.0, pan = 0;
     bool mute = false, solo = false;
     uint64_t output = 0;        // where the bus goes: 0 the master, else another bus
+    std::string panType;        // as Track::panType (the bus's pan law; in a 5.1 project also its surround panner's)
     FxChain fx;
     Envelopes envelopes;        // volume, pan, mute, fx (on its bus track)
     VegOriginPtr veg;
@@ -289,6 +291,44 @@ struct Send {
     uint64_t bus = 0;
     double level = 0;           // 0..
     bool preFader = false;      // taken before the track's volume and pan (true) or after (false)
+};
+
+// Where an audio track records from (VEGAS's Record Input button in the track header): a sound card input of one or
+// two channels, or an input bus. The default records from the input chosen in Preferences, channels 1 and 2.
+struct RecordInput {
+    std::string device;         // the sound card input (Qt Multimedia's id); empty: the one chosen in Preferences
+    int first = 0;              // its first channel, from 0
+    int channels = 2;           // 1 records mono, 2 stereo (this and the next channel)
+    uint64_t inputBus = 0;      // else record the sound of this input bus (after its effects), whatever the three above say
+    // VEGAS's Input Monitoring: "off", "on" (hear the input through the track's effects and fader during recording) or
+    // "auto" (the same, but only where the track would record into events when recording into selected events)
+    std::string monitor = "off";
+    bool isDefault() const { return device.empty() && first == 0 && channels == 2 && inputBus == 0 && monitor == "off"; }
+    bool sameSource(const RecordInput& o) const
+    {
+        return inputBus ? inputBus == o.inputBus : (!o.inputBus && device == o.device && first == o.first && channels == o.channels);
+    }
+};
+Json recordInputToJson(const RecordInput& r);
+RecordInput recordInputFromJson(const Json& j);
+
+// VEGAS Pro 23's input bus: sound from the sound card's inputs that is processed (insert effects, always before its
+// fader) and mixed with the project, sent on to a bus or the master or to nowhere, or recorded by tracks (their Record
+// Input). It sounds in playback and in Real-Time Render, not in a normal render.
+struct InputBus {
+    uint64_t id = 0;
+    std::string name;           // empty: Input Bus A, B ...
+    std::string device;         // the sound card input (Qt Multimedia's id); empty: the one chosen in Preferences
+    int first = 0;              // its first channel, from 0
+    int channels = 2;           // 1 or 2
+    double level = 1.0, pan = 0;
+    bool mute = false, solo = false;
+    uint64_t output = 0;        // 0 the master, else a bus
+    bool outputOff = false;     // VEGAS's Output Off: the bus is not heard (a track can still record or monitor it)
+    FxChain fx;
+    std::vector<Send> sends;    // to buses and assignable effects chains
+    std::string panType;        // as Track::panType
+    SurroundPan surround;       // its place in a 5.1 project's master
 };
 
 // Another take of an event (VEGAS's takes): media it can show instead of its own. T / Shift+T switch takes.
@@ -386,6 +426,7 @@ struct Track {
     // Channels, "power" Constant Power, "film" Film (in stereo the same as Constant Power).
     std::string panType;
     FxChain fx;
+    RecordInput recordInput;    // audio: where it records from when armed
     // kept in order of start time. Copies of a track share the events until one changes them (CowVec: the editor copies
     // the project for every edit and undo step); read through a const reference where nothing is changed.
     CowVec<Event> events;
@@ -521,10 +562,17 @@ struct Project {
     FxChain videoOut;           // effects on the whole frame
     FxChain audioOut;           // effects on the whole mix (the master bus)
     double masterVolume = 1.0;
+    // VEGAS's Master Bus output fader has a thumb for each side: masterVolume is the left one and this the right one;
+    // below 0 the right one is the same (the faders are locked together, as they are by default).
+    double masterVolumeR = -1;
+    double masterRightVolume() const { return masterVolumeR >= 0 ? masterVolumeR : masterVolume; }
+    // 5.1: the Surround Master's own fader for each channel (L R C LFE Ls Rs) besides the master volume; not automated
+    double masterTrim[6] = {1, 1, 1, 1, 1, 1};
     double masterPan = 0;
     bool masterMute = false;
     bool masterFxPostFader = false;     // the master's effects after its volume (VEGAS's Post FX / Post Volume)
     std::vector<Bus> buses;
+    std::vector<InputBus> inputBuses;   // VEGAS Pro 23's input busses (at most 26)
     Envelopes masterEnvelopes;          // the master audio bus track: volume, mute, fx
     Envelopes videoEnvelopes;           // the video bus track: fadecolor, mute, motionblur, supersample, fx
     uint32_t videoFadeTop = 0xFFFFFFFF, videoFadeBottom = 0xFF000000;
@@ -556,6 +604,8 @@ struct Project {
     Track* findTrack(uint64_t id);
     Bus* findBus(uint64_t id);
     const Bus* findBus(uint64_t id) const;
+    InputBus* findInputBus(uint64_t id);
+    const InputBus* findInputBus(uint64_t id) const;
     // The event with this id, and the track it is on..
     Event* findEvent(uint64_t id, Track** track = nullptr);
     const Event* findEvent(uint64_t id, const Track** track = nullptr) const;

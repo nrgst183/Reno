@@ -763,8 +763,12 @@ static void warp(const Image& src, Image& dst, const Affine& toLocal, const Affi
 
 // ---------------------------------------------------------------------- 3D track motion
 // VEGAS's 3D Source Alpha: a track's frame is a flat card placed in 3D space by its 3D Track Motion and seen through
-// the project's camera.
-static const double kCameraDistance = 1.0;
+// the project's camera. VEGAS's camera (vegas180k.dll's tCAMERASETTINGS::Init): it looks along +z from z = -cot(fov / 2), in
+// units where the frame at z = 0 is 2 high (-1 to 1), through a vertical field of view of "Default Field of View" (a
+// hidden setting, dDefaultFieldOfView, default 0.8726646 radians = 50 degrees). So the camera sees the unmoved frame
+// exactly filling the view, and it is cot(25 degrees) / 2 = 1.0723 frame heights away.
+static const double kCameraFov = 0.8726646259971648;       // radians, vertical
+static double cameraDistance(int H) { return 0.5 * H / std::tan(kCameraFov * 0.5); }
 
 struct Vec3 {
     double x = 0, y = 0, z = 0;
@@ -845,7 +849,7 @@ static void warp3d(const Image& src, const Card3d& card, double par, Image& dst,
     depth.assign((size_t)dst.w * dst.h, std::numeric_limits<float>::infinity());
     if (src.w < 1 || src.h < 1 || src.depth != dst.depth) return;
     const double W = dst.w, H = dst.h, Wd = W * par;
-    const double D = kCameraDistance * Wd;
+    const double D = cameraDistance(dst.h);
     Vec3 O, A, B;
     cardPlace(card, Wd, H, O, A, B);
     const Vec3 n = cross(A, B);
@@ -1010,7 +1014,12 @@ void trackMotion3dPoint(const std::vector<MotionKey>& moves, double u, double v,
     out[2] = p.z;
 }
 
-double trackMotion3dCamera(int W, double par) { return kCameraDistance * W * par; }
+double trackMotion3dCamera(int W, int H, double par)
+{
+    (void)W;
+    (void)par;
+    return cameraDistance(H);
+}
 
 MotionKey motionKeyAt(const std::vector<MotionKey>& keys, double t) { return motionAt(keys, t); }
 
@@ -1563,17 +1572,26 @@ bool effectPlacement(const Project& p, uint64_t slotId, double t, double out[6])
                 if (s.id != slotId) continue;
                 found = true;
                 if (!s.beforePanCrop) continue;
-                // a pre-pan/crop effect: its frame holds the media fitted into it; Pan/Crop shows a box of that
+                // a pre-pan/crop effect: its frame is the media at its own size; Pan/Crop shows a box of that
                 const MediaItem* mi = p.findMedia(e.mediaId);
                 double mw = 0, mh = 0;
                 if (mi) mi->shownSize(mw, mh);
                 if (!mi || mi->generated || !(mw > 0 && mh > 0)) { mw = W; mh = H; }
-                if (e.panCrop.empty() && e.keepAspect && std::fabs(par - 1.0) < 1e-9) continue;
                 const FitRect r = fittedMediaRect(mw, mh, W, H);
-                // effect pixel -> media fraction
+                // effect pixel -> media fraction. The effect's canonical coordinates stay the project's (the overlay and its X / Y
+                // settings use them); on the media's own frame they are scaled by media size / project size, so a fraction of the
+                // project's frame is the same fraction of the media.
                 Affine toFrac;
-                toFrac.m[0] = 1.0 / r.w; toFrac.m[2] = -r.x / r.w;
-                toFrac.m[4] = 1.0 / r.h; toFrac.m[5] = -r.y / r.h;
+                toFrac.m[0] = 1.0 / W;
+                toFrac.m[4] = 1.0 / H;
+                if (e.panCrop.empty() && e.keepAspect && std::fabs(par - 1.0) < 1e-9) {
+                    // no Pan/Crop: the media is fitted into the frame
+                    Affine fit;
+                    fit.m[0] = r.w; fit.m[2] = r.x;
+                    fit.m[4] = r.h; fit.m[5] = r.y;
+                    m = fit.after(toFrac);
+                    continue;
+                }
                 // the box's square -> media fraction (as Pass::panCrop's toSource, divided by the frame's size)
                 const BoxPlacement bp = placeBoxOf(e, t, mw, mh, W, H, par);
                 const PanCropKey& b = bp.box;
@@ -1888,6 +1906,46 @@ struct VideoEngine::Pass {
         return inDepth(toFrameSize(out));
     }
 
+    // One effect on a frame of its own size (a pre-pan/crop effect's: the media as it is). The effect is told the project is
+    // that size, at render scale 1, as for a smaller preview; its input comes in that size too.
+    ImagePtr runFxOwnSize(const FxSlot& slot, double frame, const std::function<ImagePtr(double)>& source)
+    {
+        if (isBuiltinVideo(slot)) return runFx(slot, frame, source);
+        ofx::Instance* inst = (slot.bypass || opt.skipEffects) ? nullptr : eng.fx_.video(slot.id);
+        if (!inst || cancelled()) return source(frame);
+        ImagePtr probe = source(frame);
+        if (!probe) return probe;
+        const int w = probe->w, h = probe->h;
+        auto src = [&](double f) -> ImagePtr {
+            ImagePtr img = source(f);
+            if (!img) {
+                img = Image::make(w, h, pd, true);
+                return img;
+            }
+            return (img->w == w && img->h == h) ? img : stretchImage(*img, w, h);
+        };
+        ofx::RenderGate::Hold own(eng.fx_.renderLock(inst));
+        if (!own.ok()) return probe;
+        const std::vector<std::string> inputs = inst->inputClipNames();
+        std::string main = inputs.empty() ? std::string() : inputs[0];
+        for (const auto& n : inputs) if (n == kOfxImageEffectSimpleSourceClipName) main = n;
+        if (!main.empty()) inst->setClipSource(main, src);
+        ofx::RenderOptions ro = fxOptions(inst);
+        ro.width = w;
+        ro.height = h;
+        ro.mediaSize = true;
+        ro.previewSizeForAll = false;
+        std::string err;
+        ImagePtr out = inst->render(frame, ro, &err);
+        if (!main.empty()) inst->setClipSource(main, [](double) { return ImagePtr(); });
+        if (!out) {
+            if (!cancelled()) eng.fx_.setError(slot.id, err);
+            return probe;
+        }
+        if (!eng.fx_.error(slot.id).empty()) eng.fx_.setError(slot.id, std::string());
+        return inDepth(out);
+    }
+
     // VEGAS's undersample rate: an event with a rate below 1 only gets a new frame every 1 / (rate x fps)
     // seconds (counted from its start); in between it holds the last one.
     double undersampled(const Event& e, double t) const
@@ -1970,8 +2028,9 @@ struct VideoEngine::Pass {
         return out;
     }
 
-    // The event's media fitted into the frame (see fittedMediaRect), before any effect.
-    ImagePtr fittedMedia(const Event& e, double t)
+    // The event's media as it is, at its own size (a generator's at the frame's), before any effect: what pre-pan/crop
+    // effects work on, as in VEGAS. A smaller frame (preview) takes the same share of it.
+    ImagePtr ownMedia(const Event& e, double t)
     {
         const auto key = std::make_tuple(9, e.id, 0, tick(t));
         ImagePtr hit;
@@ -1987,8 +2046,21 @@ struct VideoEngine::Pass {
                     if (!out && !cancelled()) eng.fx_.setError(m->generator.id, err);
                 }
             } else if (m->info.hasVideo && !m->offline) {
-                ImagePtr f = eventFrame(e, *m, mt, W, H);
-                if (f) out = (f->w == W && f->h == H) ? f : fitImage(*f, W, H);
+                double mw = 0, mh = 0;
+                m->shownSize(mw, mh);
+                int ow = W, oh = H;
+                if (mw > 0 && mh > 0) {
+                    const double k = (PW > 0 && W < PW) ? (double)W / PW : 1.0;
+                    ow = std::max(1, (int)std::lround(mw * k));
+                    oh = std::max(1, (int)std::lround(mh * k));
+                    const int most = 8192;
+                    if (ow > most || oh > most) {
+                        const double f = std::min((double)most / ow, (double)most / oh);
+                        ow = std::max(1, (int)(ow * f));
+                        oh = std::max(1, (int)(oh * f));
+                    }
+                }
+                out = eventFrame(e, *m, mt, ow, oh);
             }
         }
         out = inDepth(out);
@@ -1996,15 +2068,15 @@ struct VideoEngine::Pass {
         return out;
     }
 
-    // The fitted media with the first 'k' of the event's pre-pan/crop effects applied.
+    // The media at its own size with the first 'k' of the event's pre-pan/crop effects applied.
     ImagePtr preStage(const Event& e, const std::vector<size_t>& pre, size_t k, double t)
     {
-        if (k == 0) return fittedMedia(e, t);
+        if (k == 0) return ownMedia(e, t);
         const auto key = std::make_tuple(8, e.id, (int)k, tick(t));
         ImagePtr hit;
         if (memoGet(key, hit)) return hit;
         const FxSlot& slot = e.fx[pre[k - 1]];
-        ImagePtr out = runFx(slot, frameNumber(t - e.start, fps), [&](double f) { return preStage(e, pre, k - 1, e.start + f / fps); });
+        ImagePtr out = runFxOwnSize(slot, frameNumber(t - e.start, fps), [&](double f) { return preStage(e, pre, k - 1, e.start + f / fps); });
         memoPut(key, out);
         return out;
     }
@@ -2021,22 +2093,13 @@ struct VideoEngine::Pass {
         if (m && !pre.empty()) {
             ImagePtr img = preStage(e, pre, pre.size(), t);
             const bool plain = e.panCrop.empty() && e.keepAspect && std::fabs(par - 1.0) < 1e-9;
-            if (img && plain) out = img;
+            if (img && plain) out = (img->w == W && img->h == H) ? img : fitImage(*img, W, H);
             else if (img) {
-                // Pan/Crop of the part of the frame the media fills
+                // Pan/Crop of what the effects made (the media's own shape; a generator's is the frame's)
                 double mw = 0, mh = 0;
                 m->shownSize(mw, mh);
                 if (m->generated || !(mw > 0 && mh > 0)) { mw = W; mh = H; }
-                const FitRect r = fittedMediaRect(mw, mh, W, H);
-                const int x0 = std::max(0, (int)std::lround(r.x)), y0 = std::max(0, (int)std::lround(r.y));
-                const int x1 = std::min(W, (int)std::lround(r.x + r.w)), y1 = std::min(H, (int)std::lround(r.y + r.h));
-                ImagePtr sub = (x1 > x0 && y1 > y0) ? Image::make(x1 - x0, y1 - y0, img->depth, false) : nullptr;
-                if (sub) {
-                    const size_t px = img->pixelBytes();
-                    for (int y = 0; y < sub->h; ++y)
-                        std::memcpy(sub->row(sub->h - 1 - y), img->row(H - 1 - (y0 + y)) + (size_t)x0 * px, (size_t)sub->w * px);
-                    out = panCrop(e, t, *sub, mw, mh);
-                }
+                out = panCrop(e, t, *img, mw, mh);
             }
             if (out && e.reduceFlicker) out = reduceFlicker(*out);
             out = intoLight(m, inDepth(out));

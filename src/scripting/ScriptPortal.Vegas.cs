@@ -33,7 +33,7 @@ namespace ScriptPortal.Vegas
         // kinds
         public const int RK_NONE = 0, RK_APP = 1, RK_TRACK = 2, RK_EVENT = 3, RK_TAKE = 4, RK_MEDIA = 5, RK_STREAM = 6, RK_MARKER = 7,
             RK_FX = 8, RK_PLUGIN = 9, RK_ENVELOPE = 10, RK_ENVPOINT = 11, RK_GROUP = 12, RK_PANCROP = 13, RK_BUS = 14, RK_MOTION = 15,
-            RK_OFXPARAM = 16, RK_OFXKEY = 17;
+            RK_OFXPARAM = 16, RK_OFXKEY = 17, RK_TRACKGROUP = 18, RK_BIN = 19, RK_PRESET = 20, RK_RENDERER = 21, RK_RTEMPLATE = 22;
         // properties
         public const int RP_VERSION = 1, RP_APP_NAME = 2, RP_INSTALL_DIR = 3, RP_APPDATA_DIR = 4, RP_TEMP_DIR = 5, RP_SCRIPT_FILE = 6,
             RP_SCRIPT_ARGS = 7, RP_PROJECT_PATH = 8, RP_CURSOR = 9, RP_SEL_START = 10, RP_SEL_LENGTH = 11, RP_LOOP_MODE = 12,
@@ -41,7 +41,11 @@ namespace ScriptPortal.Vegas
             RP_PIXEL_ASPECT = 19, RP_PIXEL_FORMAT = 20, RP_RENDER_QUALITY = 21, RP_MOTION_BLUR = 22, RP_DEINTERLACE = 23,
             RP_OUTPUT_ROTATION = 24, RP_SAMPLE_RATE = 25, RP_BIT_DEPTH = 26, RP_BUS_MODE = 27, RP_RULER_FORMAT = 28, RP_RULER_START = 29,
             RP_TEMPO = 30, RP_BEATS_PER_MEASURE = 31, RP_TITLE = 32, RP_ARTIST = 33, RP_ENGINEER = 34, RP_COPYRIGHT = 35, RP_COMMENTS = 36,
-            RP_OUTPUT_360 = 400,
+            RP_OUTPUT_360 = 400, RP_HDR_MODE = 401, RP_STEREO_MODE = 402, RP_STEREO_SWAP = 403, RP_STEREO_CROSSTALK = 404,
+            RP_STEREO_CROSSTALK_RENDER = 405, RP_KEY_Z = 210, RP_KEY_DEPTH = 211, RP_KEY_ROT_X = 212, RP_KEY_ROT_Y = 213, RP_KEY_OFF_X = 214, RP_KEY_OFF_Y = 215,
+            RP_KEY_OFF_Z = 216, RP_KEY_ORI_X = 217, RP_KEY_ORI_Y = 218, RP_KEY_ORI_Z = 219, RP_TRACK_GROUP = 410, RP_PARENT = 411, RP_MEDIA_BIN = 412, RP_FILE_EXT = 420, RP_DESCRIPTION = 421, RP_RT_HAS_VIDEO = 422, RP_RT_HAS_AUDIO = 423, RP_RT_WIDTH = 424,
+            RP_RT_HEIGHT = 425, RP_RT_FPS = 426, RP_RT_SAMPLE_RATE = 427, RP_RT_CHANNELS = 428, RP_RT_BITS = 429, RP_RT_VIDEO_KBPS = 430,
+            RP_RT_AUDIO_KBPS = 431, RP_RT_RENDERER = 432, RP_RT_PAR = 433,
             RP_BYPASS_FX = 37, RP_IS_PLAYING = 38, RP_UNDO_LABEL = 39, RP_UNDO_CANCEL = 40, RP_MAIN_WINDOW = 41,
             RP_NAME = 50, RP_INDEX = 51, RP_MEDIA_TYPE = 52, RP_MUTE = 53, RP_SOLO = 54, RP_SELECTED = 55, RP_START = 56, RP_LENGTH = 57,
             RP_LEVEL = 58, RP_PAN = 59, RP_MEDIA = 60, RP_PATH = 61, RP_COMMENT = 62, RP_IS_VALID = 63,
@@ -72,7 +76,7 @@ namespace ScriptPortal.Vegas
             RL_CD_INDICES = 7, RL_GROUPS = 8, RL_VIDEO_FX = 9, RL_AUDIO_FX = 10, RL_TRANSITIONS = 11, RL_GENERATORS = 12, RL_BUSES = 13,
             RL_EVENTS = 20, RL_EFFECTS = 21, RL_ENVELOPES = 22, RL_TAKES = 23, RL_STREAMS = 24, RL_POINTS = 25, RL_PANCROP = 26,
             RL_MOTION = 27, RL_MASTER_EFFECTS = 28, RL_MASTER_ENVELOPES = 29, RL_SELECTED_MEDIA = 30, RL_SPECIAL_BUSES = 31,
-            RL_OFX_PARAMS = 32, RL_OFX_KEYS = 33;
+            RL_OFX_PARAMS = 32, RL_OFX_KEYS = 33, RL_TRACK_GROUPS = 44, RL_GROUP_TRACKS = 45, RL_BIN_BINS = 46, RL_BIN_MEDIA = 47, RL_PRESETS = 48, RL_RENDERERS = 49, RL_RENDER_TEMPLATES = 50;
         // operations
         public const int RO_ADD_TRACK = 1, RO_REMOVE_TRACK = 2, RO_IMPORT_MEDIA = 3, RO_FIND_MEDIA = 4, RO_REMOVE_MEDIA = 5,
             RO_ADD_SUBCLIP = 6, RO_ADD_MARKER = 7, RO_REMOVE_MARKER = 8, RO_NEW_GROUP = 9, RO_REMOVE_GROUP = 10, RO_NEW_PROJECT = 11,
@@ -84,7 +88,8 @@ namespace ScriptPortal.Vegas
             RO_ADD_PANCROP_KEY = 56, RO_REMOVE_PANCROP_KEY = 57, RO_SET_TRANSITION = 58, RO_CLEAR_TAKES = 59, RO_CLEAR_PANCROP = 60,
             RO_GROUP_ADD = 70, RO_GROUP_REMOVE = 71,
             RO_ADD_POINT = 80, RO_REMOVE_POINT = 81, RO_CLEAR_POINTS = 82, RO_VALUE_AT = 83,
-            RO_OFX_GET = 90, RO_OFX_SET = 91, RO_OFX_SET_AT = 92, RO_OFX_REMOVE_KEY = 93;
+            RO_OFX_GET = 90, RO_OFX_SET = 91, RO_OFX_SET_AT = 92, RO_OFX_REMOVE_KEY = 93,
+            RO_GROUP_SELECTED_TRACKS = 100, RO_TRACKGROUP_ADD = 101, RO_ROOT_BIN = 102, RO_NEW_BIN = 103, RO_BIN_ADD_MEDIA = 104, RO_APPLY_PRESET = 105, RO_RENDER = 106;
     }
 
     // The connection to Reno for one script run, and the objects handed to the script (one C# object per Reno object,
@@ -249,6 +254,11 @@ namespace ScriptPortal.Vegas
             case Abi.RK_MOTION: o = new TrackMotionKeyframe(h); break;
             case Abi.RK_OFXPARAM: o = OFXParameter.Make(h); break;
             case Abi.RK_OFXKEY: o = OFXParameter.MakeKey(h); break;
+            case Abi.RK_TRACKGROUP: o = new TrackGroup(h); break;
+            case Abi.RK_BIN: o = new MediaBin(h); break;
+            case Abi.RK_PRESET: o = new EffectPreset(h); break;
+            case Abi.RK_RENDERER: o = new Renderer(h); break;
+            case Abi.RK_RTEMPLATE: o = new RenderTemplate(h); break;
             case Abi.RK_BUS: o = GI(h, Abi.RP_MEDIA_TYPE, "BusTrack.MediaType") == 3 ? (object)new VideoBusTrack(h) : new AudioBusTrack(h); break;
             default: throw new InvalidOperationException("Reno gave an object of an unknown kind");
             }
@@ -714,8 +724,41 @@ namespace ScriptPortal.Vegas
         public void InvokeCommand(string section, string name) { throw NotSupported("InvokeCommand"); }
         public void RunScriptFile(string scriptFile) { throw NotSupported("RunScriptFile"); }
         public void RunScriptFile(string scriptFile, string scriptArgs) { throw NotSupported("RunScriptFile"); }
-        public RenderStatus Render(string outputFile, RenderTemplate renderTemplate) { throw NotSupported("Render"); }
-        public RenderStatus Render(string outputFile, RenderTemplate renderTemplate, Timecode start, Timecode length) { throw NotSupported("Render"); }
+        // (renders the project as the script has it now; the call returns when the file is done)
+        public RenderStatus Render(string outputFile, RenderTemplate renderTemplate)
+        {
+            RenderArgs a = new RenderArgs();
+            a.OutputFile = outputFile;
+            a.RenderTemplate = renderTemplate;
+            return Render(a);
+        }
+        public RenderStatus Render(string outputFile, RenderTemplate renderTemplate, Timecode start, Timecode length)
+        {
+            RenderArgs a = new RenderArgs();
+            a.OutputFile = outputFile;
+            a.RenderTemplate = renderTemplate;
+            a.Start = start;
+            a.Length = length;
+            return Render(a);
+        }
+        public RenderStatus Render(RenderArgs args)
+        {
+            if (args == null) throw new ArgumentNullException("args");
+            if (args.RenderTemplate == null) throw new ArgumentException("RenderArgs.RenderTemplate is not set");
+            if (string.IsNullOrEmpty(args.OutputFile)) throw new ArgumentException("RenderArgs.OutputFile is not set");
+            double start = args.Start.ToSeconds(), length = args.Length.ToSeconds();
+            if (args.UseSelection)
+            {
+                start = Reno.App.SelectionStart.ToSeconds();
+                length = Reno.App.SelectionLength.ToSeconds();
+                if (length <= 0) length = -1;       // no selection: the whole project
+            }
+            else if (!args.LengthSet) length = -1;
+            double status;
+            Reno.Call(1, Abi.RO_RENDER, new long[] { (long)args.RenderTemplate.H, args.IncludeMarkers ? 1 : 0, args.UseProjectRotation ? 1 : 0 },
+                new double[] { start, length }, args.OutputFile, "Vegas.Render", out status);
+            return (RenderStatus)(int)status;
+        }
         public RenderStatus SaveSnapshot(string outputFile, ImageFileFormat format) { throw NotSupported("SaveSnapshot"); }
         public RenderStatus SaveSnapshot(string outputFile, ImageFileFormat format, Timecode seekTime) { throw NotSupported("SaveSnapshot"); }
         public Renderers Renderers { get { return new Renderers(); } }
@@ -877,6 +920,16 @@ namespace ScriptPortal.Vegas
         public bool IsUntitled { get { return string.IsNullOrEmpty(FilePath); } }
         public string FilePath { get { string p = GS(Abi.RP_PROJECT_PATH); return p.Length == 0 ? null : p; } }
         public TrackGroups TrackGroups { get { return new TrackGroups(); } }
+        public RenderStatus Render(RenderArgs args) { return Reno.App.Render(args); }
+        public RenderStatus Render(string outputFile, RenderTemplate renderTemplate) { return Reno.App.Render(outputFile, renderTemplate); }
+        public RenderStatus Render(string outputFile, RenderTemplate renderTemplate, Timecode start, Timecode length) { return Reno.App.Render(outputFile, renderTemplate, start, length); }
+        public TrackGroup GroupSelectedTracks() { return Reno.W<TrackGroup>(Reno.Call(1, Abi.RO_GROUP_SELECTED_TRACKS, null, null, null, "Project.GroupSelectedTracks")); }
+        public TrackGroup GetTrackGroupOfTrack(int indexOfTrack)
+        {
+            List<Track> tracks = Reno.WrapAll<Track>(Reno.List(1, Abi.RL_TRACKS, "Project.GetTrackGroupOfTrack"));
+            if (indexOfTrack < 0 || indexOfTrack >= tracks.Count) return null;
+            return Reno.W<TrackGroup>((ulong)Reno.GI(tracks[indexOfTrack].H, Abi.RP_TRACK_GROUP, "Project.GetTrackGroupOfTrack"));
+        }
         public PreviewVideoProperties Preview { get { return new PreviewVideoProperties(); } }
         public AudioCDProperties AudioCD { get { return new AudioCDProperties(); } }
         public CustomDataContainer CustomData { get { return CustomDataContainer.Of(1); } }
@@ -958,6 +1011,46 @@ namespace ScriptPortal.Vegas
         {
             get { return (T360Output)I(Abi.RP_OUTPUT_360, "ProjectVideoProperties.T360Output"); }
             set { Reno.SI(1, Abi.RP_OUTPUT_360, (long)value, "ProjectVideoProperties.T360Output"); }
+        }
+        public HDRMode HDRMode
+        {
+            get { return (HDRMode)I(Abi.RP_HDR_MODE, "ProjectVideoProperties.HDRMode"); }
+            set { Reno.SI(1, Abi.RP_HDR_MODE, (long)value, "ProjectVideoProperties.HDRMode"); }
+        }
+        public Stereo3DOutputMode Stereo3DMode
+        {
+            get { return (Stereo3DOutputMode)I(Abi.RP_STEREO_MODE, "ProjectVideoProperties.Stereo3DMode"); }
+            set { Reno.SI(1, Abi.RP_STEREO_MODE, (long)value, "ProjectVideoProperties.Stereo3DMode"); }
+        }
+        // Reno keeps one swap and one crosstalk setting, for the mode the project is in: another mode's reads as off.
+        void NeedCurrentMode(Stereo3DOutputMode mode, string member)
+        {
+            if (mode != Stereo3DMode)
+                throw new NotSupportedException(member + " is only supported by Reno for the project's current Stereo3DMode.");
+        }
+        public bool GetStereo3DSwap(Stereo3DOutputMode mode) { return mode == Stereo3DMode && I(Abi.RP_STEREO_SWAP, "ProjectVideoProperties.GetStereo3DSwap") != 0; }
+        public void SetStereo3DSwap(Stereo3DOutputMode mode, bool value)
+        {
+            NeedCurrentMode(mode, "ProjectVideoProperties.SetStereo3DSwap");
+            Reno.SI(1, Abi.RP_STEREO_SWAP, value ? 1 : 0, "ProjectVideoProperties.SetStereo3DSwap");
+        }
+        public float GetStereo3DCrosstalkCancelation(Stereo3DOutputMode mode)
+        {
+            return mode == Stereo3DMode ? (float)Reno.GD(1, Abi.RP_STEREO_CROSSTALK, "ProjectVideoProperties.GetStereo3DCrosstalkCancelation") : 0f;
+        }
+        public void SetStereo3DCrosstalkCancelation(Stereo3DOutputMode mode, float value)
+        {
+            NeedCurrentMode(mode, "ProjectVideoProperties.SetStereo3DCrosstalkCancelation");
+            Reno.SD(1, Abi.RP_STEREO_CROSSTALK, value, "ProjectVideoProperties.SetStereo3DCrosstalkCancelation");
+        }
+        public bool GetIncludeCrosstalkCancelationInRenders(Stereo3DOutputMode mode)
+        {
+            return mode == Stereo3DMode && I(Abi.RP_STEREO_CROSSTALK_RENDER, "ProjectVideoProperties.GetIncludeCrosstalkCancelationInRenders") != 0;
+        }
+        public void SetIncludeCrosstalkCancelationInRenders(Stereo3DOutputMode mode, bool value)
+        {
+            NeedCurrentMode(mode, "ProjectVideoProperties.SetIncludeCrosstalkCancelationInRenders");
+            Reno.SI(1, Abi.RP_STEREO_CROSSTALK_RENDER, value ? 1 : 0, "ProjectVideoProperties.SetIncludeCrosstalkCancelationInRenders");
         }
         public string PrerenderedFilesFolder { get { return ""; } set { throw new NotSupportedException("ProjectVideoProperties.PrerenderedFilesFolder is not supported by Reno."); } }
         public bool MatchProjectSettingsWithMedia(Media media)
@@ -1543,7 +1636,7 @@ namespace ScriptPortal.Vegas
         public object this[object key] { get { return Find(key as string); } set { throw new NotSupportedException("MediaPool[key] = ... is not supported by Reno."); } }
         public ICollection Keys { get { List<string> k = new List<string>(); foreach (Media m in All()) k.Add(m.KeyString); return k; } }
         public ICollection Values { get { return All(); } }
-        public MediaBin RootMediaBin { get { throw new NotSupportedException("MediaPool.RootMediaBin is not supported by Reno."); } }
+        public MediaBin RootMediaBin { get { return Reno.W<MediaBin>(Reno.Call(1, Abi.RO_ROOT_BIN, null, null, null, "MediaPool.RootMediaBin")); } }
         public void CopyTo(Array array, int index) { ((ICollection)All()).CopyTo(array, index); }
         public void Add(object key, object value) { throw new NotSupportedException("MediaPool.Add is not supported by Reno: use AddMedia."); }
         public Media AddMedia(string path) { return Reno.W<Media>(Reno.Call(1, Abi.RO_IMPORT_MEDIA, null, null, path, "MediaPool.AddMedia")); }
@@ -1656,9 +1749,37 @@ namespace ScriptPortal.Vegas
         public bool ActiveInteract { get { return false; } }
         public bool ForceShowingOverlayInteract { get { return false; } set { } }
         public Keyframes Keyframes { get { throw NotSupported("Keyframes"); } }
-        public EffectPresets Presets { get { return new EffectPresets(); } }
-        public string Preset { set { throw new NotSupportedException("Effect.Preset is not supported by Reno (the effect keeps its default settings): \"" + value + "\""); } }
-        public EffectPreset CurrentPreset { get { return null; } set { throw NotSupported("CurrentPreset"); } }
+        public EffectPresets Presets { get { return H == 0 ? newPlugIn.Presets : new EffectPresets(H); } }
+        // (sets the settings the preset holds; the rest stay as they are)
+        public string Preset
+        {
+            set
+            {
+                if (H == 0) { pendingPreset = value ?? ""; return; }
+                Reno.Call(H, Abi.RO_APPLY_PRESET, null, null, value ?? "", "Effect.Preset");
+            }
+        }
+        string pendingPreset;
+        internal override void Attached(ulong h)
+        {
+            base.Attached(h);
+            if (pendingPreset != null)
+            {
+                string name = pendingPreset;
+                pendingPreset = null;
+                Reno.Call(H, Abi.RO_APPLY_PRESET, null, null, name, "Effect.Preset");
+            }
+        }
+        public EffectPreset CurrentPreset
+        {
+            get { return null; }
+            set
+            {
+                if (value == null) return;
+                NeedAdded("CurrentPreset");
+                Reno.Call(H, Abi.RO_APPLY_PRESET, new long[] { (long)value.H }, null, null, "Effect.CurrentPreset");
+            }
+        }
         public OFXEffect OFXEffect { get { if (!IsOFX) throw new InvalidOperationException("Effect.OFXEffect: " + Description + " is not an OpenFX effect"); NeedAdded("OFXEffect"); return new OFXEffect(this); } }
     }
 
@@ -2136,19 +2257,28 @@ namespace ScriptPortal.Vegas
         public override string ToString() { return Name; }
     }
 
-    public partial class EffectPreset
+    // An OpenFX effect's preset: its own, VEGAS's user presets and Reno's, as the effects window lists them.
+    public partial class EffectPreset : RenoObject
     {
         internal EffectPreset() { }
-        public string Name { get { return ""; } }
-        public int Index { get { return -1; } }
+        internal EffectPreset(ulong h) : base(h) { }
+        public string Name { get { return H == 0 ? "" : GS(Abi.RP_NAME); } }
+        public int Index { get { return H == 0 ? -1 : (int)GI(Abi.RP_INDEX); } }
         public override string ToString() { return Name; }
     }
 
+    // The presets of an effect or a plug-in (OpenFX effects only: an audio effect has none).
     public partial class EffectPresets : BaseList<EffectPreset>
     {
+        ulong owner;
         internal EffectPresets() { }
+        internal EffectPresets(ulong owner) { this.owner = owner; }
         public override bool IsReadOnly { get { return true; } }
-        internal override List<EffectPreset> Items() { return new List<EffectPreset>(); }
+        internal override List<EffectPreset> Items()
+        {
+            if (owner == 0) return new List<EffectPreset>();
+            return Reno.WrapAll<EffectPreset>(Reno.List(owner, Abi.RL_PRESETS, "EffectPresets"));
+        }
     }
 
     public partial class Keyframes : BaseList<Keyframe>
@@ -2229,7 +2359,7 @@ namespace ScriptPortal.Vegas
         public bool IsAutomatable { get { return IsAudio; } }
         public bool IsOFX { get { return !IsFolder && I(Abi.RP_IS_OFX, "IsOFX") != 0; } }
         public OFXPlugIn OFXPlugIn { get { return IsOFX ? new OFXPlugIn(this) : null; } }
-        public EffectPresets Presets { get { return new EffectPresets(); } }
+        public EffectPresets Presets { get { return IsFolder || H == 0 ? new EffectPresets() : new EffectPresets(H); } }
         public PlugInNode GetChild(int index) { return this[index]; }
 
         // VEGAS's own effects are called "VEGAS Gaussian Blur" (older scripts: "Sony Gaussian Blur"); Reno's list may
@@ -2780,22 +2910,45 @@ namespace ScriptPortal.Vegas
         public double Width { get { return GD(Abi.RP_KEY_W) * FW; } set { SD(Abi.RP_KEY_W, value / FW); } }
         public double Height { get { return GD(Abi.RP_KEY_H) * FH; } set { SD(Abi.RP_KEY_H, value / FH); } }
         public double RotationZ { get { return -GD(Abi.RP_KEY_ROTATION) * Math.PI / 180.0; } set { SD(Abi.RP_KEY_ROTATION, -value * 180.0 / Math.PI); } }
-        public double RotationOffsetX { get { return 0; } set { throw NotSupported("RotationOffsetX"); } }
-        public double RotationOffsetY { get { return 0; } set { throw NotSupported("RotationOffsetY"); } }
-        public double OrientationZ { get { return 0; } set { throw NotSupported("OrientationZ"); } }
+        // Reno keeps the 3D numbers as fractions of the frame's width and degrees; here they are pixels and radians as
+        // the other members (a pan/crop key has no 3D, so these members throw there)
+        internal virtual bool Has3D { get { return false; } }
+        double D3(int prop, string m)
+        {
+            if (!Has3D) throw NotSupported(m);
+            return GD(prop, m);
+        }
+        void D3(int prop, double v, string m)
+        {
+            if (!Has3D) throw NotSupported(m);
+            SD(prop, v, m);
+        }
+        static double Rad(double deg) { return deg * Math.PI / 180.0; }
+        static double Deg(double rad) { return rad * 180.0 / Math.PI; }
+        public double RotationOffsetX { get { return D3(Abi.RP_KEY_OFF_X, "RotationOffsetX") * FW; } set { D3(Abi.RP_KEY_OFF_X, value / FW, "RotationOffsetX"); } }
+        public double RotationOffsetY { get { return -D3(Abi.RP_KEY_OFF_Y, "RotationOffsetY") * FW; } set { D3(Abi.RP_KEY_OFF_Y, -value / FW, "RotationOffsetY"); } }
+        public double OrientationZ { get { return Rad(D3(Abi.RP_KEY_ORI_Z, "OrientationZ")); } set { D3(Abi.RP_KEY_ORI_Z, Deg(value), "OrientationZ"); } }
+        internal double Z3 { get { return D3(Abi.RP_KEY_Z, "PositionZ") * FW; } set { D3(Abi.RP_KEY_Z, value / FW, "PositionZ"); } }
+        internal double Depth3 { get { return D3(Abi.RP_KEY_DEPTH, "Depth"); } set { D3(Abi.RP_KEY_DEPTH, value, "Depth"); } }
+        internal double RotX3 { get { return Rad(D3(Abi.RP_KEY_ROT_X, "RotationX")); } set { D3(Abi.RP_KEY_ROT_X, Deg(value), "RotationX"); } }
+        internal double RotY3 { get { return Rad(D3(Abi.RP_KEY_ROT_Y, "RotationY")); } set { D3(Abi.RP_KEY_ROT_Y, Deg(value), "RotationY"); } }
+        internal double OffZ3 { get { return D3(Abi.RP_KEY_OFF_Z, "RotationOffsetZ") * FW; } set { D3(Abi.RP_KEY_OFF_Z, value / FW, "RotationOffsetZ"); } }
+        internal double OriX3 { get { return Rad(D3(Abi.RP_KEY_ORI_X, "OrientationX")); } set { D3(Abi.RP_KEY_ORI_X, Deg(value), "OrientationX"); } }
+        internal double OriY3 { get { return Rad(D3(Abi.RP_KEY_ORI_Y, "OrientationY")); } set { D3(Abi.RP_KEY_ORI_Y, Deg(value), "OrientationY"); } }
     }
 
     public partial class TrackMotionKeyframe : BaseTrackMotionKeyframe
     {
         internal TrackMotionKeyframe(ulong h) : base(h) { }
         public TrackMotionKeyframe() { throw new NotSupportedException("new TrackMotionKeyframe() is not supported by Reno: use TrackMotion.InsertMotionKeyframe."); }
-        public double PositionZ { get { return 0; } set { throw NotSupported("PositionZ"); } }
-        public double Depth { get { return 0; } set { throw NotSupported("Depth"); } }
-        public double RotationX { get { return 0; } set { throw NotSupported("RotationX"); } }
-        public double RotationY { get { return 0; } set { throw NotSupported("RotationY"); } }
-        public double RotationOffsetZ { get { return 0; } set { throw NotSupported("RotationOffsetZ"); } }
-        public double OrientationX { get { return 0; } set { throw NotSupported("OrientationX"); } }
-        public double OrientationY { get { return 0; } set { throw NotSupported("OrientationY"); } }
+        internal override bool Has3D { get { return true; } }
+        public double PositionZ { get { return Z3; } set { Z3 = value; } }
+        public double Depth { get { return Depth3; } set { Depth3 = value; } }
+        public double RotationX { get { return RotX3; } set { RotX3 = value; } }
+        public double RotationY { get { return RotY3; } set { RotY3 = value; } }
+        public double RotationOffsetZ { get { return OffZ3; } set { OffZ3 = value; } }
+        public double OrientationX { get { return OriX3; } set { OriX3 = value; } }
+        public double OrientationY { get { return OriY3; } set { OriY3 = value; } }
     }
 
     public partial class TrackMotionKeyframeList : BaseList<TrackMotionKeyframe>
@@ -2886,13 +3039,103 @@ namespace ScriptPortal.Vegas
     }
 
     // ------------------------------------------------------------------------------------------------ rendering (not in Reno's scripts)
-    public partial class Renderer { internal Renderer() { } public string FileTypeName { get { return ""; } } public string Name { get { return ""; } } public RenderTemplates Templates { get { return new RenderTemplates(); } } }
-    public partial class Renderers : BaseList<Renderer> { internal Renderers() { } internal override List<Renderer> Items() { return new List<Renderer>(); } }
-    public partial class RenderTemplate { internal RenderTemplate() { } public string Name { get { return ""; } } }
-    public partial class RenderTemplates : BaseList<RenderTemplate> { internal RenderTemplates() { } internal override List<RenderTemplate> Items() { return new List<RenderTemplate>(); } }
+    public partial class Renderer : RenoObject
+    {
+        internal Renderer(ulong h) : base(h) { }
+        public string Name { get { return GS(Abi.RP_NAME); } }
+        public string FileTypeName { get { return Name; } }
+        public uint ID { get { return (uint)GI(Abi.RP_INDEX) + 1; } }
+        public string FileExtension { get { return GS(Abi.RP_FILE_EXT); } }
+        public string[] FileExtensions { get { return new string[] { FileExtension }; } }
+        public bool SupportsAudio { get { return GB(Abi.RP_RT_HAS_AUDIO); } }
+        public bool SupportsVideo { get { return GB(Abi.RP_RT_HAS_VIDEO); } }
+        public RenderTemplates Templates { get { return new RenderTemplates(this); } }
+        public int TemplateCount() { return Templates.Count; }
+        public bool IsActive { get { return true; } }
+        public override string ToString() { return Name; }
+    }
+    public partial class Renderers : BaseList<Renderer>
+    {
+        internal Renderers() { }
+        internal override List<Renderer> Items() { return Reno.WrapAll<Renderer>(Reno.List(1, Abi.RL_RENDERERS, "Renderers")); }
+        public override bool IsReadOnly { get { return true; } }
+        public Renderer FindByName(string rendererName)
+        {
+            if (rendererName == null) return null;
+            foreach (Renderer r in Items()) if (string.Compare(r.Name, rendererName, StringComparison.OrdinalIgnoreCase) == 0) return r;
+            foreach (Renderer r in Items()) if (r.Name.IndexOf(rendererName, StringComparison.OrdinalIgnoreCase) >= 0) return r;
+            return null;
+        }
+        public Renderer FindByRendererID(uint rendererID)
+        {
+            foreach (Renderer r in Items()) if (r.ID == rendererID) return r;
+            return null;
+        }
+    }
+    public partial class RenderTemplate : RenoObject
+    {
+        internal RenderTemplate(ulong h) : base(h) { }
+        public string Name { get { return GS(Abi.RP_NAME); } }
+        public string Description { get { return GS(Abi.RP_DESCRIPTION); } }
+        public int Index { get { return (int)GI(Abi.RP_INDEX); } }
+        public uint TemplateID { get { return (uint)Index + 1; } }
+        public uint RendererID { get { Renderer r = Reno.W<Renderer>((ulong)GI(Abi.RP_RT_RENDERER)); return r == null ? 0 : r.ID; } }
+        public int VideoStreamCount { get { return GB(Abi.RP_RT_HAS_VIDEO) ? 1 : 0; } }
+        public int AudioStreamCount { get { return GB(Abi.RP_RT_HAS_AUDIO) ? 1 : 0; } }
+        public int VideoWidth { get { return (int)GI(Abi.RP_RT_WIDTH); } }
+        public int VideoHeight { get { return (int)GI(Abi.RP_RT_HEIGHT); } }
+        public double VideoFrameRate { get { return GD(Abi.RP_RT_FPS); } }
+        public double VideoPixelAspectRatio { get { return GD(Abi.RP_RT_PAR); } }
+        public uint AudioSampleRate { get { return (uint)GI(Abi.RP_RT_SAMPLE_RATE); } }
+        public int AudioChannelCount { get { return (int)GI(Abi.RP_RT_CHANNELS); } }
+        public int AudioBitsPerSample { get { return (int)GI(Abi.RP_RT_BITS); } }
+        public long VideoBitrate { get { return GI(Abi.RP_RT_VIDEO_KBPS) * 1000L; } }
+        public long AudioBitrate { get { return GI(Abi.RP_RT_AUDIO_KBPS) * 1000L; } }
+        public long TotalBitrate { get { return VideoBitrate + AudioBitrate; } }
+        public string[] FileExtensions { get { return new string[] { GS(Abi.RP_FILE_EXT) }; } }
+        public override string ToString() { return Name; }
+    }
+    public partial class RenderTemplates : BaseList<RenderTemplate>
+    {
+        Renderer owner;
+        internal RenderTemplates(Renderer r) { owner = r; }
+        public override bool IsReadOnly { get { return true; } }
+        internal override List<RenderTemplate> Items()
+        {
+            return owner == null ? new List<RenderTemplate>() : Reno.WrapAll<RenderTemplate>(Reno.List(owner.H, Abi.RL_RENDER_TEMPLATES, "RenderTemplates"));
+        }
+        public RenderTemplate FindByName(string templateName)
+        {
+            if (templateName == null) return null;
+            foreach (RenderTemplate t in Items()) if (string.Compare(t.Name, templateName, StringComparison.OrdinalIgnoreCase) == 0) return t;
+            return null;
+        }
+        public void Refresh() { }
+    }
     public partial class RenderArgs
     {
-        public RenderArgs() { throw new NotSupportedException("RenderArgs (rendering from a script) is not supported by Reno: use File > Render As."); }
+        string outputFile;
+        RenderTemplate template;
+        Timecode start = new Timecode(), length = new Timecode();
+        internal bool LengthSet;
+        bool useSelection, includeMarkers, useRotation, waitForIdle, showOpen;
+        public RenderArgs() { }
+        public RenderArgs(Project project) { }
+        public string OutputFile { get { return outputFile; } set { outputFile = value; } }
+        public string OutputFileName { get { return outputFile == null ? null : System.IO.Path.GetFileName(outputFile); } }
+        public RenderTemplate RenderTemplate { get { return template; } set { template = value; } }
+        public uint RendererID { get { return template == null ? 0 : template.RendererID; } }
+        public uint TemplateID { get { return template == null ? 0 : template.TemplateID; } }
+        public Timecode Start { get { return start; } set { start = value ?? new Timecode(); } }
+        public long StartNanos { get { return start.Nanos; } set { start = Timecode.FromNanos(value); } }
+        public Timecode Length { get { return length; } set { length = value ?? new Timecode(); LengthSet = true; } }
+        public long LengthNanos { get { return length.Nanos; } set { length = Timecode.FromNanos(value); LengthSet = true; } }
+        public bool UseSelection { get { return useSelection; } set { useSelection = value; } }
+        public bool IncludeMarkers { get { return includeMarkers; } set { includeMarkers = value; } }
+        public bool UseProjectRotation { get { return useRotation; } set { useRotation = value; } }
+        // (a render here runs to the end before the call returns, and shows no window: these only keep what was set)
+        public bool WaitForIdle { get { return waitForIdle; } set { waitForIdle = value; } }
+        public bool ShowOpenButtonsOnComplete { get { return showOpen; } set { showOpen = value; } }
     }
 
     // ------------------------------------------------------------------------------------------------ smaller parts
@@ -2997,23 +3240,110 @@ namespace ScriptPortal.Vegas
     public partial class MediaRegionList : BaseMediaMarkerList<MediaRegion> { }
     public partial class MediaCommandMarkerList : BaseMediaMarkerList<MediaCommandMarker> { }
 
-    // Track groups (VEGAS's TrackGroups): Reno has none.
+    // Track groups (VEGAS's TrackGroups): tracks that mute and solo together. Reno keeps no name or collapsed state for
+    // a group (TrackGroup.Name, ExpandTrackGroup and CollapseTrackGroup are in ScriptPortal.Vegas.Unsupported.cs).
     public partial class TrackGroup : BaseList<Track>
     {
+        internal ulong H;
         internal TrackGroup() { }
-        internal override List<Track> Items() { return new List<Track>(); }
+        internal TrackGroup(ulong h) { H = h; }
+        internal override List<Track> Items()
+        {
+            if (H == 0) return new List<Track>();
+            return Reno.WrapAll<Track>(Reno.List(H, Abi.RL_GROUP_TRACKS, "TrackGroup"));
+        }
+        internal override void AddItem(Track t)
+        {
+            if (H == 0) throw new InvalidOperationException("TrackGroup.Add: the group is not in the project");
+            Reno.Call(H, Abi.RO_TRACKGROUP_ADD, new long[] { (long)t.H }, null, null, "TrackGroup.Add");
+        }
+        public bool Mute
+        {
+            get { return Reno.GI(H, Abi.RP_MUTE, "TrackGroup.Mute") != 0; }
+            set { Reno.SI(H, Abi.RP_MUTE, value ? 1 : 0, "TrackGroup.Mute"); }
+        }
+        public bool Solo
+        {
+            get { return Reno.GI(H, Abi.RP_SOLO, "TrackGroup.Solo") != 0; }
+            set { Reno.SI(H, Abi.RP_SOLO, value ? 1 : 0, "TrackGroup.Solo"); }
+        }
+        public bool IsValid() { return H != 0 && Reno.GI(H, Abi.RP_IS_VALID, "TrackGroup.IsValid") != 0; }
+        // (a track's place in the project's track order is its own: the index is not used)
+        public bool InsertTrack(Track track, int ixWhereToInsert)
+        {
+            if (track == null) return false;
+            AddItem(track);
+            return true;
+        }
     }
     public partial class TrackGroups : BaseList<TrackGroup>
     {
         internal TrackGroups() { }
-        internal override List<TrackGroup> Items() { return new List<TrackGroup>(); }
+        internal override List<TrackGroup> Items() { return Reno.WrapAll<TrackGroup>(Reno.List(1, Abi.RL_TRACK_GROUPS, "TrackGroups")); }
     }
 
-    // A media bin (VEGAS's Project Media bins): Reno has none.
-    public partial class MediaBin : BaseList<IMediaBinNode>
+    // A media bin (VEGAS's Project Media bins): the root, or a bin in it. It lists the bins and the media in it. A bin
+    // made by the script with only a name is put in Project Media when it is added to a bin.
+    public partial class MediaBin : BaseList<IMediaBinNode>, IMediaBinNode
     {
-        internal MediaBin() { }
-        internal override List<IMediaBinNode> Items() { throw new NotSupportedException("MediaBin is not supported by Reno."); }
+        internal ulong H;
+        string pendingName;
+        internal MediaBin(ulong h) { H = h; }
+        public MediaBin(Project project, string name)
+        {
+            if (name == null) throw new ArgumentNullException("name");
+            H = Reno.Call(Reno.Call(1, Abi.RO_ROOT_BIN, null, null, null, "new MediaBin"), Abi.RO_NEW_BIN, null, null, name, "new MediaBin");
+            Reno.Adopt(this, H);
+        }
+        public MediaBin(string name)
+        {
+            if (name == null) throw new ArgumentNullException("name");
+            pendingName = name;
+        }
+        internal override List<IMediaBinNode> Items()
+        {
+            List<IMediaBinNode> r = new List<IMediaBinNode>();
+            if (H == 0) return r;
+            foreach (MediaBin b in Reno.WrapAll<MediaBin>(Reno.List(H, Abi.RL_BIN_BINS, "MediaBin"))) r.Add(b);
+            foreach (Media m in Reno.WrapAll<Media>(Reno.List(H, Abi.RL_BIN_MEDIA, "MediaBin"))) r.Add(m);
+            return r;
+        }
+        internal override void AddItem(IMediaBinNode item)
+        {
+            if (H == 0) throw new InvalidOperationException("MediaBin.Add: the bin is not in the project");
+            Media m = item as Media;
+            if (m != null)
+            {
+                Reno.Call(H, Abi.RO_BIN_ADD_MEDIA, new long[] { (long)m.H }, null, null, "MediaBin.Add");
+                return;
+            }
+            MediaBin b = item as MediaBin;
+            if (b != null && b.H == 0)
+            {
+                b.H = Reno.Call(H, Abi.RO_NEW_BIN, null, null, b.pendingName, "MediaBin.Add");
+                Reno.Adopt(b, b.H);
+                return;
+            }
+            throw new NotSupportedException("MediaBin.Add of a bin that is already in the project is not supported by Reno.");
+        }
+        internal override bool RemoveItem(IMediaBinNode item)
+        {
+            Media m = item as Media;
+            if (m == null) throw new NotSupportedException("MediaBin.Remove of a bin is not supported by Reno.");
+            // (taking media out of a bin puts it in the Project Media root)
+            Reno.Call(Reno.Call(1, Abi.RO_ROOT_BIN, null, null, null, "MediaBin.Remove"), Abi.RO_BIN_ADD_MEDIA, new long[] { (long)m.H }, null, null, "MediaBin.Remove");
+            return true;
+        }
+        public MediaBinNodeType NodeType { get { return MediaBinNodeType.Bin; } }
+        public uint NodeID { get { return (uint)(H | 0x80000000UL); } }
+        public string Name
+        {
+            get { return H == 0 ? pendingName : Reno.GS(H, Abi.RP_NAME, "MediaBin.Name"); }
+            set { if (H == 0) pendingName = value; else Reno.SS(H, Abi.RP_NAME, value, "MediaBin.Name"); }
+        }
+        public MediaBin Parent { get { return H == 0 ? null : Reno.W<MediaBin>((ulong)Reno.GI(H, Abi.RP_PARENT, "MediaBin.Parent")); } }
+        public bool IsValid() { return H != 0 && Reno.GI(H, Abi.RP_IS_VALID, "MediaBin.IsValid") != 0; }
+        public bool IsRoot() { return H != 0 && Reno.GI(H, Abi.RP_PARENT, "MediaBin.IsRoot") == 0; }
     }
 
     // The preview's video settings and the audio CD settings: not in Reno (their members are in ScriptPortal.Vegas.Unsupported.cs).

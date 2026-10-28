@@ -10,6 +10,7 @@
 #include "appstate.h"
 #include <QImage>
 #include <thread>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <vector>
@@ -44,6 +45,33 @@ void setOutputGain(float gain);
 float outputGain();
 std::unique_ptr<AudioOutput> createAudioOutput();
 std::unique_ptr<AudioOutput> createSilentOutput();
+
+// VEGAS's Preview bus: what the Trimmer and the Explorer's Start Preview play goes through it, apart from the project's
+// master. It has a fader and a mute (the Mixing Console's Preview strip) and meters, not saved with the project.
+struct PreviewBus {
+    std::atomic<float> gain{1.0f};
+    std::atomic<bool> mute{false};
+    std::atomic<float> peakL{0.0f}, peakR{0.0f};    // the loudest sample since the meters last read them
+    // Applies the fader and mute to 'n' samples a source has just produced, and notes the peaks.
+    void process(float* l, float* r, int n)
+    {
+        const float g = mute.load() ? 0.0f : gain.load();
+        float pl = 0, pr = 0;
+        for (int i = 0; i < n; ++i) {
+            l[i] *= g;
+            r[i] *= g;
+            pl = std::max(pl, std::fabs(l[i]));
+            pr = std::max(pr, std::fabs(r[i]));
+        }
+        if (pl > peakL.load()) peakL.store(pl);
+        if (pr > peakR.load()) peakR.store(pr);
+    }
+};
+inline PreviewBus& previewBus()
+{
+    static PreviewBus bus;
+    return bus;
+}
 
 // The Dynamic RAM Preview's frames: every frame the preview renders (not drafts) and the Shift+B range is kept here,
 // keyed by frame number and render scale (a bigger frame may serve a smaller request, not the reverse). Over the
@@ -131,6 +159,15 @@ public:
     // The meters of the mixer's strips as they are being heard: for each audio track and bus (by id) and the master (id 0),
     // the loudest sample per side after its fader, falling back gently (about 24 dB a second) when it gets quieter.
     void stripLevels(std::vector<AudioEngine::StripPeak>& out) const;
+    // Live sound in the mix (see AudioEngine::liveInput, inputTap, monitorInput): set once, before playing.
+    void setLiveInputs(std::function<bool(const InputBus&, float*, float*, int)> live,
+                       std::function<void(uint64_t, const float*, const float*, int)> tap,
+                       std::function<bool(const Track&, int64_t, float*, float*, int)> monitor)
+    {
+        audio_.liveInput = std::move(live);
+        audio_.inputTap = std::move(tap);
+        audio_.monitorInput = std::move(monitor);
+    }
     std::string audioDeviceName() const { return out_ ? out_->name() : std::string(); }
     // How many channels go to the sound card now: 6 while a 5.1 project plays on a device that has six (and Preferences
     // doesn't ask for the fold-down), else 2 (a 5.1 project folded down to stereo).
@@ -206,6 +243,8 @@ public:
 
     QImage renderNow(double seconds);
     static QImage blackFrame(const Project& p);
+    // Recording goes on past the end of the project (silence there), as in VEGAS, instead of stopping where it ends.
+    void setPlayPastEnd(bool on) { playPastEnd_ = on; }
     void setAudioOutput(std::unique_ptr<AudioOutput> out) { if (!playing_ && out) out_ = std::move(out); }
 
 private:
@@ -228,6 +267,7 @@ private:
     MediaPool pool_;
     VideoEngine video_;
     AudioEngine audio_;
+    std::atomic<bool> playPastEnd_{false};
     std::unique_ptr<AudioOutput> out_;
     int listener_ = 0;
     class QTimer* timer_ = nullptr;

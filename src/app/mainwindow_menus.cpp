@@ -1015,11 +1015,8 @@ void MainWindow::buildVegasMenus()
             if (id) openFx(t, 0);
         });
         putAfter(insert, "audioBus", assignable);
-        QAction* input = act("inputBus", "&Input Bus", QList<QKeySequence>(), [&app] {
-            app.status("Input buses are not available. Reno records from the input chosen in Preferences.");
-        });
-        input->setToolTip("Not available: Reno records from the input chosen in Preferences");
-        input->setEnabled(false);
+        QAction* input = act("inputBus", "&Input Bus", QList<QKeySequence>(), [] { insertInputBus(); });
+        input->setToolTip("Add an input bus to the Mixing Console: sound from a sound card input (VEGAS Pro 23)");
         putAfter(insert, "assignableFx", input);
     }
 

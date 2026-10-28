@@ -1,5 +1,6 @@
 // File > Render As's rendering: see renderas.h.
 #include "renderas.h"
+#include "smartplan.h"
 #include <map>
 #include "colormgmt.h"
 #include "loudness.h"
@@ -123,6 +124,7 @@ private:
     void prepare();
     void applyHdrAndChapters();
     bool openWriters();
+    void planSmart();
     bool finishAll(std::string* e);
     void mixBlock(AudioEngine& audio, int64_t k, AudioBlock& blk);
     bool writeBlock(AudioBlock& blk);
@@ -162,6 +164,8 @@ private:
     std::string firstPassFile_;
     std::unique_ptr<MediaWriter> writer_;
     std::vector<std::unique_ptr<MediaWriter>> monos_;
+    SmartPlan smart_;               // frames copied from their source (single pass, spec_.smartRender)
+    std::string smartNote_;
 
     LoudnessMeter meter_;
     bool measure_ = false;
@@ -435,6 +439,32 @@ ImagePtr RenderAsJob::finishFrame(ImagePtr img) const
     return img;
 }
 
+// Smart rendering: plan the copies, keep those this writer can take, tell it.
+void RenderAsJob::planSmart()
+{
+    smart_ = SmartPlan();
+    smartNote_.clear();
+    if (!spec_.smartRender || pass_ == 1 || !writer_ || !pe_.video || !monos_.empty()) return;
+    SmartPlan plan = planSmartRender(p_, from_, count_, es_.fpsNum, es_.fpsDen, es_.width, es_.height, rot_ != 0, spec_.transparent);
+    std::string why = plan.why;
+    int delay = 0;
+    for (const SmartCopy& c : plan.copies) {
+        std::string w;
+        if (!writer_->smartCompatible(*c.source, &w)) {
+            if (why.empty()) why = w;
+            continue;
+        }
+        for (int g = c.firstGop; g < c.firstGop + c.gopCount; ++g) delay = std::max(delay, c.source->gops[(size_t)g].delay);
+        smart_.copies.push_back(c);
+    }
+    if (smart_.copies.empty()) {
+        smartNote_ = " (smart render: nothing copied" + (why.empty() ? std::string() : ", " + why) + ")";
+        return;
+    }
+    writer_->beginSmart(delay);
+    smartNote_ = strfmt(" (smart render: %lld of %lld frames copied)", (long long)smart_.copiedFrames(), (long long)count_);
+}
+
 // One frame at a time, the sound mixed right after each frame.
 bool RenderAsJob::renderSequential(MediaPool& pool, FrameOptions& fo)
 {
@@ -444,7 +474,12 @@ bool RenderAsJob::renderSequential(MediaPool& pool, FrameOptions& fo)
     AudioBlock blk;
     tapBuses(audio);
     for (int64_t k = 0; k < count_; ++k) {
-        if (pe_.video) {
+        if (const SmartCopy* sc = pe_.video ? smart_.at(k) : nullptr) {
+            if (k == sc->firstFrame && !writer_->writeVideoCopy(*sc->source, sc->firstGop, sc->gopCount, &err_)) {
+                writer_->finish(nullptr);
+                return fail(err_.empty() ? "could not copy the frames" : err_);
+            }
+        } else if (pe_.video) {
             ImagePtr img = video.render(p_, timeOf(k) + 1e-7, fo);
             if (!img) return fail("out of memory");
             img = finishFrame(img);
@@ -525,10 +560,13 @@ bool RenderAsJob::renderPipelined(MediaPool& pool, FrameOptions& fo, int workers
                             workerCv.wait(lk, [&] { return stop.load() || k < written + window; });
                             if (stop.load()) return;
                         }
-                        ImagePtr img = video.render(p_, timeOf(k) + 1e-7, fo);
-                        if (stop.load()) return;
-                        img = finishFrame(img);
-                        if (!img) return giveUp("out of memory");
+                        ImagePtr img;
+                        if (!smart_.at(k)) {
+                            img = video.render(p_, timeOf(k) + 1e-7, fo);
+                            if (stop.load()) return;
+                            img = finishFrame(img);
+                            if (!img) return giveUp("out of memory");
+                        }
                         {
                             std::lock_guard<std::mutex> lk(m);
                             frames[k] = std::move(img);
@@ -592,7 +630,18 @@ bool RenderAsJob::renderPipelined(MediaPool& pool, FrameOptions& fo, int workers
             written = k + 1;
         }
         workerCv.notify_all();
-        if (!writer_ || !writer_->writeVideo(*img)) {
+        const SmartCopy* sc = smart_.at(k);
+        if (sc && !img) {
+            if (k == sc->firstFrame && !writer_->writeVideoCopy(*sc->source, sc->firstGop, sc->gopCount, &err_)) {
+                writer_->finish(nullptr);
+                if (err_.empty()) err_ = "could not copy the frames";
+                good = false;
+            } else if (withAudio && !writeBlock(blk)) {
+                good = false;
+            } else if (!progressAfter(k)) {
+                good = false;
+            }
+        } else if (!writer_ || !writer_->writeVideo(*img)) {
             if (writer_) writer_->finish(&err_);
             if (err_.empty()) err_ = "could not write the frame";
             good = false;
@@ -648,8 +697,9 @@ bool RenderAsJob::run()
             pass_ = 0;
             continue;
         }
+        planSmart();
         if (description_ && pass_ != 1)
-            *description_ = writer_ ? writer_->describe() + (pass_ == 2 ? " (two passes)" : "") : (monos_.empty() ? std::string() : monos_[0]->describe() + strfmt(" (%d mono files)", (int)monos_.size()));
+            *description_ = writer_ ? writer_->describe() + (pass_ == 2 ? " (two passes)" : "") + smartNote_ : (monos_.empty() ? std::string() : monos_[0]->describe() + strfmt(" (%d mono files)", (int)monos_.size()));
 
         MediaPool pool;
         if (opener_) pool.setOpener(opener_);

@@ -50,6 +50,8 @@ private:
 // Insert > Audio Assignable FX (and the console's Insert Assignable FX): a new assignable effects chain (a Bus with
 // 'assignable', named FX 1, FX 2 ...). One undo step. Returns its id.
 uint64_t insertAssignableFx();
+// Insert > Input Bus (VEGAS Pro 23): a new input bus named Input Bus A, B ...; its id, 0 if there are already 26.
+uint64_t insertInputBus();
 // VEGAS's Downmix Output menu (console and Master Bus window): 5.1 Surround / Stereo / Mono Output. Stereo is
 // Preferences' downmixOutput (from the next playback start); Mono is Playback's.
 void fillDownmixMenu(QMenu* m, Playback* pb);

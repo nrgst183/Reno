@@ -200,32 +200,15 @@ namespace ScriptPortal.Vegas
 
     public partial class RenderTemplate
     {
-        public uint RendererID { get { throw new NotSupportedException("RenderTemplate.RendererID is not supported by Reno."); } }
-        public uint TemplateID { get { throw new NotSupportedException("RenderTemplate.TemplateID is not supported by Reno."); } }
-        public int Index { get { throw new NotSupportedException("RenderTemplate.Index is not supported by Reno."); } }
         public System.Guid TemplateGuid { get { throw new NotSupportedException("RenderTemplate.TemplateGuid is not supported by Reno."); } }
-        public string Description { get { throw new NotSupportedException("RenderTemplate.Description is not supported by Reno."); } }
         public string Notes { get { throw new NotSupportedException("RenderTemplate.Notes is not supported by Reno."); } }
-        public int VideoStreamCount { get { throw new NotSupportedException("RenderTemplate.VideoStreamCount is not supported by Reno."); } }
-        public long TotalBitrate { get { throw new NotSupportedException("RenderTemplate.TotalBitrate is not supported by Reno."); } }
-        public long VideoBitrate { get { throw new NotSupportedException("RenderTemplate.VideoBitrate is not supported by Reno."); } }
-        public long AudioBitrate { get { throw new NotSupportedException("RenderTemplate.AudioBitrate is not supported by Reno."); } }
         public long VideoDataRate { get { throw new NotSupportedException("RenderTemplate.VideoDataRate is not supported by Reno."); } }
-        public int AudioStreamCount { get { throw new NotSupportedException("RenderTemplate.AudioStreamCount is not supported by Reno."); } }
-        public int AudioChannelCount { get { throw new NotSupportedException("RenderTemplate.AudioChannelCount is not supported by Reno."); } }
         public AudioChannelFlags AudioChannelFlags { get { throw new NotSupportedException("RenderTemplate.AudioChannelFlags is not supported by Reno."); } }
-        public uint AudioSampleRate { get { throw new NotSupportedException("RenderTemplate.AudioSampleRate is not supported by Reno."); } }
-        public int AudioBitsPerSample { get { throw new NotSupportedException("RenderTemplate.AudioBitsPerSample is not supported by Reno."); } }
-        public int VideoWidth { get { throw new NotSupportedException("RenderTemplate.VideoWidth is not supported by Reno."); } }
-        public int VideoHeight { get { throw new NotSupportedException("RenderTemplate.VideoHeight is not supported by Reno."); } }
-        public double VideoPixelAspectRatio { get { throw new NotSupportedException("RenderTemplate.VideoPixelAspectRatio is not supported by Reno."); } }
-        public double VideoFrameRate { get { throw new NotSupportedException("RenderTemplate.VideoFrameRate is not supported by Reno."); } }
         public bool SupportsStereoscopic { get { throw new NotSupportedException("RenderTemplate.SupportsStereoscopic is not supported by Reno."); } }
         public bool SupportsHDR10 { get { throw new NotSupportedException("RenderTemplate.SupportsHDR10 is not supported by Reno."); } }
         public bool SupportsHLG { get { throw new NotSupportedException("RenderTemplate.SupportsHLG is not supported by Reno."); } }
         public bool Supports360 { get { throw new NotSupportedException("RenderTemplate.Supports360 is not supported by Reno."); } }
         public VideoFieldOrder VideoFieldOrder { get { throw new NotSupportedException("RenderTemplate.VideoFieldOrder is not supported by Reno."); } }
-        public string[] FileExtensions { get { throw new NotSupportedException("RenderTemplate.FileExtensions is not supported by Reno."); } }
         public bool IsValid() { throw new NotSupportedException("RenderTemplate.IsValid is not supported by Reno."); }
         public byte[] GetTemplateData() { throw new NotSupportedException("RenderTemplate.GetTemplateData is not supported by Reno."); }
         public static byte[] ReadTemplateStream(System.Runtime.InteropServices.ComTypes.IStream templateDataStream, uint cbTemplateStream) { throw new NotSupportedException("RenderTemplate.ReadTemplateStream is not supported by Reno."); }
@@ -276,20 +259,13 @@ namespace ScriptPortal.Vegas
 
     public partial class RenderTemplates
     {
-        public RenderTemplate FindByName(string templateName) { throw new NotSupportedException("RenderTemplates.FindByName is not supported by Reno."); }
-        public void Refresh() { throw new NotSupportedException("RenderTemplates.Refresh is not supported by Reno."); }
         public RenderTemplate FindByGuid(System.Guid presetGUID) { throw new NotSupportedException("RenderTemplates.FindByGuid is not supported by Reno."); }
         public RenderTemplate[] FindProjectMatches(Project project) { throw new NotSupportedException("RenderTemplates.FindProjectMatches is not supported by Reno."); }
     }
 
     public partial class Renderer
     {
-        public uint ID { get { throw new NotSupportedException("Renderer.ID is not supported by Reno."); } }
         public System.Guid ClassID { get { throw new NotSupportedException("Renderer.ClassID is not supported by Reno."); } }
-        public string FileExtension { get { throw new NotSupportedException("Renderer.FileExtension is not supported by Reno."); } }
-        public string[] FileExtensions { get { throw new NotSupportedException("Renderer.FileExtensions is not supported by Reno."); } }
-        public bool SupportsAudio { get { throw new NotSupportedException("Renderer.SupportsAudio is not supported by Reno."); } }
-        public bool SupportsVideo { get { throw new NotSupportedException("Renderer.SupportsVideo is not supported by Reno."); } }
         public bool SupportsMultistream { get { throw new NotSupportedException("Renderer.SupportsMultistream is not supported by Reno."); } }
         public bool SupportsMarkers { get { throw new NotSupportedException("Renderer.SupportsMarkers is not supported by Reno."); } }
         public bool SupportsCommands { get { throw new NotSupportedException("Renderer.SupportsCommands is not supported by Reno."); } }
@@ -298,11 +274,9 @@ namespace ScriptPortal.Vegas
         public bool HasReader { get { throw new NotSupportedException("Renderer.HasReader is not supported by Reno."); } }
         public bool CanEditTemplates { get { throw new NotSupportedException("Renderer.CanEditTemplates is not supported by Reno."); } }
         public bool HasAboutBox { get { throw new NotSupportedException("Renderer.HasAboutBox is not supported by Reno."); } }
-        public bool IsActive { get { throw new NotSupportedException("Renderer.IsActive is not supported by Reno."); } }
         public static Renderer CreateInstance(Project project, System.Guid classID) { throw new NotSupportedException("Renderer.CreateInstance is not supported by Reno."); }
         public static Renderer CreateInstance(System.Guid classID) { throw new NotSupportedException("Renderer.CreateInstance is not supported by Reno."); }
         public RenderTemplate GetOptimizedTemplate(bool qualityHigh, bool formatWide, bool formatHD, bool format1080, bool portraitStyle, bool formatUHD, bool frameRate, bool fHDR, bool fHDR10, double dFrameRate) { throw new NotSupportedException("Renderer.GetOptimizedTemplate is not supported by Reno."); }
-        public int TemplateCount() { throw new NotSupportedException("Renderer.TemplateCount is not supported by Reno."); }
         public RenderTemplate CreateRenderTemplate(byte[] templateData) { throw new NotSupportedException("Renderer.CreateRenderTemplate is not supported by Reno."); }
         public RenderTemplate CreateRenderTemplate(uint templateID) { throw new NotSupportedException("Renderer.CreateRenderTemplate is not supported by Reno."); }
         public void ShowAboutBox(System.IntPtr hwndOwner) { throw new NotSupportedException("Renderer.ShowAboutBox is not supported by Reno."); }
@@ -350,9 +324,7 @@ namespace ScriptPortal.Vegas
 
     public partial class Renderers
     {
-        public Renderer FindByName(string rendererName) { throw new NotSupportedException("Renderers.FindByName is not supported by Reno."); }
         public Renderer FindByClassID(System.Guid classID) { throw new NotSupportedException("Renderers.FindByClassID is not supported by Reno."); }
-        public Renderer FindByRendererID(uint rendererID) { throw new NotSupportedException("Renderers.FindByRendererID is not supported by Reno."); }
     }
 
     public partial class Keyframe
@@ -415,14 +387,6 @@ namespace ScriptPortal.Vegas
 
     public partial class MediaBin
     {
-        public MediaBinNodeType NodeType { get { throw new NotSupportedException("MediaBin.NodeType is not supported by Reno."); } }
-        public uint NodeID { get { throw new NotSupportedException("MediaBin.NodeID is not supported by Reno."); } }
-        public string Name { get { throw new NotSupportedException("MediaBin.Name is not supported by Reno."); } set { throw new NotSupportedException("MediaBin.Name is not supported by Reno."); } }
-        public MediaBin Parent { get { throw new NotSupportedException("MediaBin.Parent is not supported by Reno."); } }
-        public MediaBin(Project project, string name) { throw new NotSupportedException("MediaBin.MediaBin is not supported by Reno."); }
-        public MediaBin(string name) { throw new NotSupportedException("MediaBin.MediaBin is not supported by Reno."); }
-        public bool IsValid() { throw new NotSupportedException("MediaBin.IsValid is not supported by Reno."); }
-        public bool IsRoot() { throw new NotSupportedException("MediaBin.IsRoot is not supported by Reno."); }
     }
 
     public partial class TrackMotion
@@ -498,12 +462,8 @@ namespace ScriptPortal.Vegas
     public partial class TrackGroup
     {
         public string Name { get { throw new NotSupportedException("TrackGroup.Name is not supported by Reno."); } set { throw new NotSupportedException("TrackGroup.Name is not supported by Reno."); } }
-        public bool Mute { get { throw new NotSupportedException("TrackGroup.Mute is not supported by Reno."); } set { throw new NotSupportedException("TrackGroup.Mute is not supported by Reno."); } }
-        public bool Solo { get { throw new NotSupportedException("TrackGroup.Solo is not supported by Reno."); } set { throw new NotSupportedException("TrackGroup.Solo is not supported by Reno."); } }
-        public bool IsValid() { throw new NotSupportedException("TrackGroup.IsValid is not supported by Reno."); }
         public void ExpandTrackGroup() { throw new NotSupportedException("TrackGroup.ExpandTrackGroup is not supported by Reno."); }
         public void CollapseTrackGroup() { throw new NotSupportedException("TrackGroup.CollapseTrackGroup is not supported by Reno."); }
-        public bool InsertTrack(Track track, int ixWhereToInsert) { throw new NotSupportedException("TrackGroup.InsertTrack is not supported by Reno."); }
     }
 
     public partial class MediaMarker
@@ -523,14 +483,6 @@ namespace ScriptPortal.Vegas
 
     public partial class ProjectVideoProperties
     {
-        public HDRMode HDRMode { get { throw new NotSupportedException("ProjectVideoProperties.HDRMode is not supported by Reno."); } set { throw new NotSupportedException("ProjectVideoProperties.HDRMode is not supported by Reno."); } }
-        public Stereo3DOutputMode Stereo3DMode { get { throw new NotSupportedException("ProjectVideoProperties.Stereo3DMode is not supported by Reno."); } set { throw new NotSupportedException("ProjectVideoProperties.Stereo3DMode is not supported by Reno."); } }
-        public bool GetStereo3DSwap(Stereo3DOutputMode mode) { throw new NotSupportedException("ProjectVideoProperties.GetStereo3DSwap is not supported by Reno."); }
-        public void SetStereo3DSwap(Stereo3DOutputMode mode, bool value) { throw new NotSupportedException("ProjectVideoProperties.SetStereo3DSwap is not supported by Reno."); }
-        public float GetStereo3DCrosstalkCancelation(Stereo3DOutputMode mode) { throw new NotSupportedException("ProjectVideoProperties.GetStereo3DCrosstalkCancelation is not supported by Reno."); }
-        public void SetStereo3DCrosstalkCancelation(Stereo3DOutputMode mode, float value) { throw new NotSupportedException("ProjectVideoProperties.SetStereo3DCrosstalkCancelation is not supported by Reno."); }
-        public bool GetIncludeCrosstalkCancelationInRenders(Stereo3DOutputMode mode) { throw new NotSupportedException("ProjectVideoProperties.GetIncludeCrosstalkCancelationInRenders is not supported by Reno."); }
-        public void SetIncludeCrosstalkCancelationInRenders(Stereo3DOutputMode mode, bool value) { throw new NotSupportedException("ProjectVideoProperties.SetIncludeCrosstalkCancelationInRenders is not supported by Reno."); }
     }
 
     public partial class PreviewVideoProperties
@@ -829,17 +781,12 @@ namespace ScriptPortal.Vegas
         public string CapturePath { get { throw new NotSupportedException("Project.CapturePath is not supported by Reno."); } set { throw new NotSupportedException("Project.CapturePath is not supported by Reno."); } }
         public AudioBusTrack AddAudioBusTrack() { throw new NotSupportedException("Project.AddAudioBusTrack is not supported by Reno."); }
         public AudioFXBusTrack AddAudioFXBusTrack(PlugInNode plugin) { throw new NotSupportedException("Project.AddAudioFXBusTrack is not supported by Reno."); }
-        public TrackGroup GroupSelectedTracks() { throw new NotSupportedException("Project.GroupSelectedTracks is not supported by Reno."); }
         public void UngroupSelectedTracks() { throw new NotSupportedException("Project.UngroupSelectedTracks is not supported by Reno."); }
-        public TrackGroup GetTrackGroupOfTrack(int indexOfTrack) { throw new NotSupportedException("Project.GetTrackGroupOfTrack is not supported by Reno."); }
         public bool BeginWrite(string fileName, ProjectSaveType saveType) { throw new NotSupportedException("Project.BeginWrite is not supported by Reno."); }
         public System.Windows.Forms.DialogResult ShowMultichannelMappingDialog() { throw new NotSupportedException("Project.ShowMultichannelMappingDialog is not supported by Reno."); }
         public System.Windows.Forms.DialogResult ShowMultichannelMappingDialog(System.Windows.Forms.IWin32Window parentWindow) { throw new NotSupportedException("Project.ShowMultichannelMappingDialog is not supported by Reno."); }
         public int GetNumberOfMappedAudioChannels() { throw new NotSupportedException("Project.GetNumberOfMappedAudioChannels is not supported by Reno."); }
         public void SetUntitledFlag() { throw new NotSupportedException("Project.SetUntitledFlag is not supported by Reno."); }
-        public RenderStatus Render(RenderArgs args) { throw new NotSupportedException("Project.Render is not supported by Reno."); }
-        public RenderStatus Render(string outputFile, RenderTemplate renderTemplate, Timecode start, Timecode length) { throw new NotSupportedException("Project.Render is not supported by Reno."); }
-        public RenderStatus Render(string outputFile, RenderTemplate renderTemplate) { throw new NotSupportedException("Project.Render is not supported by Reno."); }
         public bool ArchiveProject(string fileName) { throw new NotSupportedException("Project.ArchiveProject is not supported by Reno."); }
         public bool ArchiveProject(string fileName, ArchiveProjectFlags flags) { throw new NotSupportedException("Project.ArchiveProject is not supported by Reno."); }
         public Project CloneProject(string newPath) { throw new NotSupportedException("Project.CloneProject is not supported by Reno."); }
@@ -899,29 +846,13 @@ namespace ScriptPortal.Vegas
 
     public partial class RenderArgs
     {
-        public string OutputFile { get { throw new NotSupportedException("RenderArgs.OutputFile is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.OutputFile is not supported by Reno."); } }
-        public string OutputFileName { get { throw new NotSupportedException("RenderArgs.OutputFileName is not supported by Reno."); } }
-        public RenderTemplate RenderTemplate { get { throw new NotSupportedException("RenderArgs.RenderTemplate is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.RenderTemplate is not supported by Reno."); } }
-        public uint RendererID { get { throw new NotSupportedException("RenderArgs.RendererID is not supported by Reno."); } }
-        public uint TemplateID { get { throw new NotSupportedException("RenderArgs.TemplateID is not supported by Reno."); } }
-        public Timecode Start { get { throw new NotSupportedException("RenderArgs.Start is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.Start is not supported by Reno."); } }
-        public long StartNanos { get { throw new NotSupportedException("RenderArgs.StartNanos is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.StartNanos is not supported by Reno."); } }
-        public Timecode Length { get { throw new NotSupportedException("RenderArgs.Length is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.Length is not supported by Reno."); } }
-        public long LengthNanos { get { throw new NotSupportedException("RenderArgs.LengthNanos is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.LengthNanos is not supported by Reno."); } }
-        public bool UseSelection { get { throw new NotSupportedException("RenderArgs.UseSelection is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.UseSelection is not supported by Reno."); } }
-        public bool IncludeMarkers { get { throw new NotSupportedException("RenderArgs.IncludeMarkers is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.IncludeMarkers is not supported by Reno."); } }
         public bool StretchToFill { get { throw new NotSupportedException("RenderArgs.StretchToFill is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.StretchToFill is not supported by Reno."); } }
         public bool SaveAsMonoStreams { get { throw new NotSupportedException("RenderArgs.SaveAsMonoStreams is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.SaveAsMonoStreams is not supported by Reno."); } }
         public bool SaveAsMono { get { throw new NotSupportedException("RenderArgs.SaveAsMono is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.SaveAsMono is not supported by Reno."); } }
         public bool UseChannelMapping { get { throw new NotSupportedException("RenderArgs.UseChannelMapping is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.UseChannelMapping is not supported by Reno."); } }
-        public bool UseProjectRotation { get { throw new NotSupportedException("RenderArgs.UseProjectRotation is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.UseProjectRotation is not supported by Reno."); } }
         public bool SaveProjectPathLink { get { throw new NotSupportedException("RenderArgs.SaveProjectPathLink is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.SaveProjectPathLink is not supported by Reno."); } }
-        public Stereo3DOutputMode Stereo3DModeOverride { get { throw new NotSupportedException("RenderArgs.Stereo3DModeOverride is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.Stereo3DModeOverride is not supported by Reno."); } }
-        public bool WaitForIdle { get { throw new NotSupportedException("RenderArgs.WaitForIdle is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.WaitForIdle is not supported by Reno."); } }
-        public bool ShowOpenButtonsOnComplete { get { throw new NotSupportedException("RenderArgs.ShowOpenButtonsOnComplete is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.ShowOpenButtonsOnComplete is not supported by Reno."); } }
         public bool CancelRender { get { throw new NotSupportedException("RenderArgs.CancelRender is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.CancelRender is not supported by Reno."); } }
         public bool GenerateLoudnessLog { get { throw new NotSupportedException("RenderArgs.GenerateLoudnessLog is not supported by Reno."); } set { throw new NotSupportedException("RenderArgs.GenerateLoudnessLog is not supported by Reno."); } }
-        public RenderArgs(Project project) { throw new NotSupportedException("RenderArgs.RenderArgs is not supported by Reno."); }
     }
 
     public partial class Vegas
@@ -949,7 +880,6 @@ namespace ScriptPortal.Vegas
         public System.Windows.Forms.DialogResult ImportMediaFromProjectDialog(string initialDir, out string[] filePaths) { throw new NotSupportedException("Vegas.ImportMediaFromProjectDialog is not supported by Reno."); }
         public void ImportMediaFromProject(string fileName, bool importBins, bool mergeBins) { throw new NotSupportedException("Vegas.ImportMediaFromProject is not supported by Reno."); }
         public RenderStatus BeginRender(RenderArgs args) { throw new NotSupportedException("Vegas.BeginRender is not supported by Reno."); }
-        public RenderStatus Render(RenderArgs args) { throw new NotSupportedException("Vegas.Render is not supported by Reno."); }
         public System.Windows.Forms.DialogResult ShowRenderTemplateEditDialog(System.Windows.Forms.IWin32Window ownerWindow, Renderer renderer, bool includeDefaultTemplate, bool multichannelEnabled, RenderTemplate currentChoice, out RenderTemplate editedTemplate) { throw new NotSupportedException("Vegas.ShowRenderTemplateEditDialog is not supported by Reno."); }
         public System.Windows.Forms.DialogResult ShowRenderTemplateEditDialog(System.Windows.Forms.IWin32Window ownerWindow, Renderer renderer, bool includeDefaultTemplate, RenderTemplate currentChoice, out RenderTemplate editedTemplate) { throw new NotSupportedException("Vegas.ShowRenderTemplateEditDialog is not supported by Reno."); }
         public System.Windows.Forms.DialogResult ShowRenderTemplateEditDialog(System.Windows.Forms.IWin32Window ownerWindow, Renderer renderer, RenderTemplate currentChoice, out RenderTemplate editedTemplate) { throw new NotSupportedException("Vegas.ShowRenderTemplateEditDialog is not supported by Reno."); }

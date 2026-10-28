@@ -51,6 +51,16 @@ Bus* Project::findBus(uint64_t id)
     for (auto& b : buses) if (b.id == id) return &b;
     return nullptr;
 }
+InputBus* Project::findInputBus(uint64_t id)
+{
+    for (auto& b : inputBuses) if (b.id == id) return &b;
+    return nullptr;
+}
+const InputBus* Project::findInputBus(uint64_t id) const
+{
+    for (const auto& b : inputBuses) if (b.id == id) return &b;
+    return nullptr;
+}
 const Bus* Project::findBus(uint64_t id) const
 {
     for (const auto& b : buses) if (b.id == id) return &b;
@@ -152,6 +162,8 @@ void Project::forEachFx(const std::function<void(FxSlot&)>& fn)
     }
     for (auto& b : buses)
         for (auto& f : b.fx) fn(f);
+    for (auto& b : inputBuses)
+        for (auto& f : b.fx) fn(f);
     for (auto& f : videoOut) fn(f);
     for (auto& f : audioOut) fn(f);
 }
@@ -168,6 +180,8 @@ void Project::forEachFx(const std::function<void(const FxSlot&)>& fn) const
         }
     }
     for (const auto& b : buses)
+        for (const auto& f : b.fx) fn(f);
+    for (const auto& b : inputBuses)
         for (const auto& f : b.fx) fn(f);
     for (const auto& f : videoOut) fn(f);
     for (const auto& f : audioOut) fn(f);
@@ -789,7 +803,7 @@ Json surroundToJson(const SurroundPan& s)
     j["x"] = s.x;
     j["y"] = s.y;
     j["center"] = s.center;
-    j["smoothness"] = s.smoothness;
+    j["pathSmoothness"] = s.smoothness;      // before Smoothness was the path's curve, "smoothness" spread the sound over speakers: not read
     j["lfe"] = s.lfe;
     j["lfeLevel"] = s.lfeLevel;
     j["route"] = s.route;
@@ -804,6 +818,7 @@ Json surroundToJson(const SurroundPan& s)
             jk.push(k.y);
             jk.push(k.center);
             jk.push(k.curve);
+            jk.push(k.smoothness);
             a.push(jk);
         }
         j["keys"] = a;
@@ -818,8 +833,8 @@ SurroundPan surroundFromJson(const Json& j)
     auto clamp = [](double v, double lo, double hi) { return std::isfinite(v) ? std::min(hi, std::max(lo, v)) : lo; };
     s.x = clamp(j.get("x").asDouble(0), -1, 1);
     s.y = clamp(j.get("y").asDouble(0), -1, 1);
-    s.center = clamp(j.get("center").asDouble(1), 0, 1);
-    s.smoothness = clamp(j.get("smoothness").asDouble(1), 0, 1);
+    s.center = clamp(j.get("center").asDouble(1), 0, 8);
+    s.smoothness = clamp(j.get("pathSmoothness").asDouble(0), 0, 1);
     s.lfe = j.get("lfe").asBool();
     s.lfeLevel = clamp(j.get("lfeLevel").asDouble(1), 0, 4);
     s.route = j.get("route").asString("surround");
@@ -833,8 +848,13 @@ SurroundPan surroundFromJson(const Json& j)
         k.time = jk.at(0).asDouble();
         k.x = clamp(jk.at(1).asDouble(), -1, 1);
         k.y = clamp(jk.at(2).asDouble(), -1, 1);
-        k.center = clamp(jk.at(3).asDouble(1), 0, 1);
+        k.center = clamp(jk.at(3).asDouble(1), 0, 8);
         k.curve = jk.size() > 4 ? jk.at(4).asInt() : 0;
+        if (k.curve < 0 || k.curve > KeySharp) k.curve = KeyLinear;
+        if (jk.size() > 5) {
+            k.smoothness = jk.at(5).asDouble(-1);
+            if (!(k.smoothness <= 1)) k.smoothness = -1;
+        }
         if (std::isfinite(k.time)) s.keys.push_back(k);
     }
     std::stable_sort(s.keys.begin(), s.keys.end(), [](const SurroundKey& a, const SurroundKey& b) { return a.time < b.time; });
@@ -925,12 +945,98 @@ static Json busToJson(const Bus& b)
     jb["output"] = b.output;
     if (b.assignable) jb["assignable"] = true;
     if (b.fxPostFader) jb["fxPostFader"] = true;
+    if (!b.panType.empty()) jb["panType"] = b.panType;
     jb["fx"] = chainToJson(b.fx);
     if (!b.envelopes.empty()) jb["envelopes"] = envelopesToJson(b.envelopes);
     if (!b.surround.isDefault()) jb["surround"] = surroundToJson(b.surround);
     if (b.automation) jb["automation"] = true;
     if (b.automationMode != "read") jb["automationMode"] = b.automationMode;
     return jb;
+}
+
+Json recordInputToJson(const RecordInput& r)
+{
+    Json j = Json::object();
+    if (!r.device.empty()) j["device"] = r.device;
+    j["first"] = r.first;
+    j["channels"] = r.channels;
+    if (r.inputBus) j["inputBus"] = r.inputBus;
+    if (r.monitor != "off") j["monitor"] = r.monitor;
+    return j;
+}
+
+RecordInput recordInputFromJson(const Json& j)
+{
+    RecordInput r;
+    if (!j.isObject()) return r;
+    r.device = j.get("device").asString("");
+    r.first = std::max(0, std::min(63, j.get("first").asInt(0)));
+    r.channels = j.get("channels").asInt(2) == 1 ? 1 : 2;
+    r.inputBus = j.get("inputBus").asUInt64();
+    r.monitor = j.get("monitor").asString("off");
+    if (r.monitor != "on" && r.monitor != "auto") r.monitor = "off";
+    return r;
+}
+
+static Json sendsToJson(const std::vector<Send>& list)
+{
+    Json sends = Json::array();
+    for (const auto& sd : list) {
+        Json js = Json::object();
+        js["bus"] = sd.bus;
+        js["level"] = sd.level;
+        js["preFader"] = sd.preFader;
+        sends.push(js);
+    }
+    return sends;
+}
+
+static Json inputBusToJson(const InputBus& b)
+{
+    Json jb = Json::object();
+    jb["id"] = b.id;
+    jb["name"] = b.name;
+    if (!b.device.empty()) jb["device"] = b.device;
+    jb["first"] = b.first;
+    jb["channels"] = b.channels;
+    jb["level"] = b.level;
+    jb["pan"] = b.pan;
+    jb["mute"] = b.mute;
+    jb["solo"] = b.solo;
+    jb["output"] = b.output;
+    if (b.outputOff) jb["outputOff"] = true;
+    if (!b.panType.empty()) jb["panType"] = b.panType;
+    jb["fx"] = chainToJson(b.fx);
+    jb["sends"] = sendsToJson(b.sends);
+    if (!b.surround.isDefault()) jb["surround"] = surroundToJson(b.surround);
+    return jb;
+}
+
+static InputBus inputBusFromJson(const Json& jb)
+{
+    InputBus b;
+    b.id = jb.get("id").asUInt64();
+    b.name = jb.get("name").asString();
+    b.device = jb.get("device").asString("");
+    b.first = std::max(0, std::min(63, jb.get("first").asInt(0)));
+    b.channels = jb.get("channels").asInt(2) == 1 ? 1 : 2;
+    b.level = std::max(0.0, jb.get("level").asDouble(1.0));
+    b.pan = std::min(1.0, std::max(-1.0, jb.get("pan").asDouble(0)));
+    b.mute = jb.get("mute").asBool();
+    b.solo = jb.get("solo").asBool();
+    b.output = jb.get("output").asUInt64();
+    b.outputOff = jb.get("outputOff").asBool();
+    b.panType = jb.get("panType").asString("");
+    b.fx = chainFromJson(jb.get("fx"));
+    for (const auto& js : jb.get("sends").items()) {
+        Send sd;
+        sd.bus = js.get("bus").asUInt64();
+        sd.level = js.get("level").asDouble(0);
+        sd.preFader = js.get("preFader").asBool();
+        b.sends.push_back(sd);
+    }
+    b.surround = surroundFromJson(jb.get("surround"));
+    return b;
 }
 
 static Json markerToJson(const Project::Marker& m)
@@ -1102,15 +1208,8 @@ static Json trackToJson(const Track& t)
     if (!t.surround.isDefault()) jt["surround"] = surroundToJson(t.surround);
     jt["fx"] = chainToJson(t.fx);
     jt["output"] = t.output;
-    Json sends = Json::array();
-    for (const auto& sd : t.sends) {
-        Json js = Json::object();
-        js["bus"] = sd.bus;
-        js["level"] = sd.level;
-        js["preFader"] = sd.preFader;
-        sends.push(js);
-    }
-    jt["sends"] = sends;
+    jt["sends"] = sendsToJson(t.sends);
+    if (!t.recordInput.isDefault()) jt["recordInput"] = recordInputToJson(t.recordInput);
     if (!t.motion.empty()) jt["motion"] = motionToJson(t.motion);
     jt["composite"] = t.composite;
     jt["color"] = (double)t.color;
@@ -1151,12 +1250,27 @@ Json Project::toJson() const
     j["reno"] = 1;
     j["settings"] = settingsToJson(settings);
     j["masterVolume"] = masterVolume;
+    if (masterVolumeR >= 0) j["masterVolumeR"] = masterVolumeR;
+    {
+        bool any = false;
+        for (double v : masterTrim) any = any || v != 1.0;
+        if (any) {
+            Json a = Json::array();
+            for (double v : masterTrim) a.push(v);
+            j["masterTrim"] = a;
+        }
+    }
     j["masterPan"] = masterPan;
     j["masterMute"] = masterMute;
     if (masterFxPostFader) j["masterFxPostFader"] = true;
     Json bs = Json::array();
     for (const auto& b : buses) bs.push(busToJson(b));
     j["buses"] = bs;
+    if (!inputBuses.empty()) {
+        Json ib = Json::array();
+        for (const auto& b : inputBuses) ib.push(inputBusToJson(b));
+        j["inputBuses"] = ib;
+    }
     if (!masterEnvelopes.empty()) j["masterEnvelopes"] = envelopesToJson(masterEnvelopes);
     if (!videoEnvelopes.empty()) j["videoEnvelopes"] = envelopesToJson(videoEnvelopes);
     j["videoFadeTop"] = (double)videoFadeTop;
@@ -1280,6 +1394,7 @@ static Bus busFromJson(const Json& jb)
     b.output = jb.get("output").asUInt64();
     b.assignable = jb.get("assignable").asBool();
     b.fxPostFader = jb.get("fxPostFader").asBool();
+    b.panType = jb.get("panType").asString("");
     b.fx = chainFromJson(jb.get("fx"));
     b.envelopes = envelopesFromJson(jb.get("envelopes"));
     b.surround = surroundFromJson(jb.get("surround"));
@@ -1442,6 +1557,7 @@ static Track trackFromJson(const Json& jt)
     t.pan = jt.get("pan").asDouble(0.0);
     t.panType = jt.get("panType").asString("");
     t.surround = surroundFromJson(jt.get("surround"));
+    t.recordInput = recordInputFromJson(jt.get("recordInput"));
     t.fx = chainFromJson(jt.get("fx"));
     t.output = jt.get("output").asUInt64();
     for (const auto& js : jt.get("sends").items()) {
@@ -1494,10 +1610,17 @@ bool Project::fromJson(const Json& j, std::string* error)
     Project p;
     settingsFromJson(j.get("settings"), p.settings);
     p.masterVolume = j.get("masterVolume").asDouble(1.0);
+    for (int c = 0; c < 6 && j.get("masterTrim").isArray(); ++c) {
+        const double v = j.get("masterTrim").at((size_t)c).asDouble(1.0);
+        p.masterTrim[c] = std::isfinite(v) ? std::min(8.0, std::max(0.0, v)) : 1.0;
+    }
+    p.masterVolumeR = j.has("masterVolumeR") ? std::max(0.0, j.get("masterVolumeR").asDouble(-1)) : -1.0;
     p.masterPan = j.get("masterPan").asDouble(0);
     p.masterMute = j.get("masterMute").asBool();
     p.masterFxPostFader = j.get("masterFxPostFader").asBool();
     for (const auto& jb : j.get("buses").items()) p.buses.push_back(busFromJson(jb));
+    for (const auto& jb : j.get("inputBuses").items())
+        if (p.inputBuses.size() < 26) p.inputBuses.push_back(inputBusFromJson(jb));
     p.masterEnvelopes = envelopesFromJson(j.get("masterEnvelopes"));
     p.videoEnvelopes = envelopesFromJson(j.get("videoEnvelopes"));
     p.videoFadeTop = (uint32_t)j.get("videoFadeTop").asDouble((double)0xFFFFFFFFu);
@@ -1514,6 +1637,7 @@ bool Project::fromJson(const Json& j, std::string* error)
     uint64_t top = j.get("nextId").asUInt64(1);
     for (const auto& m : p.media) top = std::max(top, m.id + 1);
     for (const auto& b : p.buses) top = std::max(top, b.id + 1);
+    for (const auto& b : p.inputBuses) top = std::max(top, b.id + 1);
     for (const auto& m : p.markers) top = std::max(top, m.id + 1);
     for (const auto& t : p.tracks) {
         top = std::max(top, std::max(t.id, t.trackGroup) + 1);

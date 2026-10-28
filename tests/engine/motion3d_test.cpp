@@ -159,6 +159,8 @@ static void save(const ImagePtr& img, const std::string& name)
     std::fclose(f);
 }
 
+// VEGAS's camera (a vertical field of view of 50 degrees), as a fraction of the 200 pixel wide test frame (100 high)
+static double camFraction() { return trackMotion3dCamera(200, 100, 1.0) / 200.0; }
 static MotionKey key3d(double z, double rotX = 0, double rotY = 0, double rotZ = 0)
 {
     MotionKey k;
@@ -201,8 +203,8 @@ int main(int argc, char** argv)
         check(is(pixel(flat, 2, 2), kTL) && is(pixel(flat, 197, 97), kBR) && is(pixel(flat, 102, 52), kBR), "without keys the 3D track fills the frame",
               pxs(pixel(flat, 2, 2)));
 
-        // further away: smaller, about the middle (the camera is a frame's width away: twice that, half the size)
-        tr().motion = {key3d(-1)};
+        // further away: smaller, about the middle (VEGAS's camera is 0.5 H / tan(25 degrees) = 1.0723 frame heights away: twice that, half the size)
+        tr().motion = {key3d(-camFraction())};
         ImagePtr img = video.render(p, 0, fo);
         save(img, "away");
         check(is(pixel(img, 55, 28), kTL) && is(pixel(img, 145, 72), kBR) && black(pixel(img, 45, 50)) && black(pixel(img, 155, 50)) &&
@@ -210,7 +212,7 @@ int main(int argc, char** argv)
               "Position Z away from the camera by the camera's distance shows the picture at half the size", pxs(pixel(img, 45, 50)));
         check(rowWidth(img, 50) >= 98 && rowWidth(img, 50) <= 102 && columnHeight(img, 60) >= 48 && columnHeight(img, 60) <= 52,
               "exactly half: 100 x 50", strfmt("%d x %d", rowWidth(img, 50), columnHeight(img, 60)));
-        tr().motion = {key3d(0.5)};
+        tr().motion = {key3d(camFraction() / 2)};
         img = video.render(p, 0, fo);
         check(is(pixel(img, 20, 20), kTL) && is(pixel(img, 180, 80), kBR) && is(pixel(img, 98, 48), kTL) && is(pixel(img, 102, 52), kBR),
               "towards the camera by half its distance: twice the size", pxs(pixel(img, 20, 20)));
@@ -223,7 +225,7 @@ int main(int argc, char** argv)
         tr().motion = {key3d(0, 0, 50)};
         img = video.render(p, 0, fo);
         save(img, "turnY50");
-        const int left = columnHeight(img, 60), right = columnHeight(img, 140);
+        const int left = columnHeight(img, 80), right = columnHeight(img, 120);
         check(left > 100 - 1 && right < 90 && right > 50, "Rotation Y: the right side goes away and looks shorter, the left comes closer and looks taller",
               strfmt("left %d, right %d", left, right));
         check(is(pixel(img, 70, 25), kTL) && is(pixel(img, 125, 70), kBR), "and the picture still faces the camera the right way", pxs(pixel(img, 70, 25)));
@@ -240,7 +242,7 @@ int main(int argc, char** argv)
         check(rowWidth(img, 15) > rowWidth(img, 75) + 10, "Rotation X: the top comes towards the camera and looks wider than the bottom",
               strfmt("top %d, bottom %d", rowWidth(img, 15), rowWidth(img, 75)));
         // orientation turns the picture about its own centre; rotation about the rotation centre (offset)
-        MotionKey o = key3d(-1);
+        MotionKey o = key3d(-camFraction());
         o.oriZ = 90;
         tr().motion = {o};
         img = video.render(p, 0, fo);
@@ -254,14 +256,14 @@ int main(int argc, char** argv)
         check(is(pixel(img, 175, 62), kTR) && black(pixel(img, 100, 50)), "Rotation turns about the rotation offset: half a turn moves the picture across",
               pxs(pixel(img, 175, 62)));
         // keyframes: the 3D values are interpolated
-        MotionKey a = key3d(0), b = key3d(-2);
+        MotionKey a = key3d(0), b = key3d(-2 * camFraction());
         b.time = 2;
         tr().motion = {a, b};
         img = video.render(p, 1.0, fo);
         check(rowWidth(img, 50) >= 98 && rowWidth(img, 50) <= 102, "Position Z is interpolated between keyframes (half way: half the size)",
               strfmt("%d", rowWidth(img, 50)));
         // opacity, best quality and 32-bit float
-        tr().motion = {key3d(-1)};
+        tr().motion = {key3d(-camFraction())};
         tr().level = 0.5;
         img = video.render(p, 0, fo);
         check(std::abs(pixel(img, 60, 30).r - 128) <= 3, "the track's level applies to its 3D picture", pxs(pixel(img, 60, 30)));
@@ -277,6 +279,40 @@ int main(int argc, char** argv)
         ImagePtr f = video.render(p, 0, fo);
         if (f && f->depth != PixelDepth::Byte) f = f->converted(PixelDepth::Byte);
         check(f && is(pixel(f, 55, 28), kTL, 3) && black(pixel(f, 45, 50)), "and in 32-bit float projects", f ? pxs(pixel(f, 55, 28)) : "none");
+    }
+
+    // ---------------------------------------------------------------- VEGAS's camera
+    {
+        // vegas180k.dll's tCAMERASETTINGS::Init with dDefaultFieldOfView (0.8726646 rad): z = -1 / tan(fov / 2) in half-frame-height units
+        const double D = trackMotion3dCamera(1920, 1080, 1.0);
+        check(std::fabs(D - 540.0 / std::tan(0.8726646259971648 / 2)) < 1e-9, "the camera is cot(25 degrees) half frame heights away (a 50 degree vertical field of view)",
+              strfmt("%.4f", D));
+        check(std::fabs(trackMotion3dCamera(200, 100, 1.0) * 2 - trackMotion3dCamera(400, 200, 1.0)) < 1e-9, "and its distance follows the frame's height, not its width");
+        // a frame wider than 16:9 still has the same vertical view: a card at the frame plane fills the frame
+        Project p;
+        p.settings.width = 400;
+        p.settings.height = 200;
+        const uint64_t red = addMedia(p, "solid:0,0,255,255");
+        const uint64_t tid = addTrack(p, red, "3dsrcalpha");
+        p.findTrack(tid)->motion = {key3d(0)};
+        ImagePtr img = video.render(p, 0, fo);
+        check(is(pixel(img, 2, 2), kRed) && is(pixel(img, 397, 197), kRed), "a card at the frame plane fills the frame", pxs(pixel(img, 2, 2)));
+        // one camera distance away (in a frame twice as big): half the size, whatever the frame's size
+        p.findTrack(tid)->motion = {key3d(-trackMotion3dCamera(400, 200, 1.0) / 400.0)};
+        img = video.render(p, 0, fo);
+        check(is(pixel(img, 110, 60), kRed) && is(pixel(img, 290, 140), kRed) && black(pixel(img, 90, 100)) && black(pixel(img, 310, 100)),
+              "one camera distance away it is half the size in a bigger frame too", pxs(pixel(img, 90, 100)));
+        // 3D has no 2D Shadow or Glow in VEGAS (the keyframes are deleted when converting): leftover ones are not drawn
+        GlowKey g;
+        g.x = 0.1; g.y = 0.1; g.blur = 0; g.intensity = 1;
+        g.color = 0xFF00FF00;
+        p.findTrack(tid)->motion = {key3d(-camFraction())};
+        ImagePtr without = video.render(p, 0, fo);
+        p.findTrack(tid)->shadow2d = {g};
+        p.findTrack(tid)->glow2d = {g};
+        ImagePtr with = video.render(p, 0, fo);
+        std::string where;
+        check(same(without, with, 0, &where), "a 3D track's leftover 2D Shadow and Glow keyframes are not drawn", where);
     }
 
     // ---------------------------------------------------------------- several 3D tracks in one space
@@ -325,24 +361,24 @@ int main(int argc, char** argv)
         const uint64_t c1 = addTrack(p, green, "3dsrcalpha", 1);    // its children: the upper one at the frame's plane
         const uint64_t c2 = addTrack(p, red, "3dsrcalpha", 1);      // the lower one nearer the camera, half size
         p.findTrack(par)->parentComposite = "3dsrcalpha";
-        MotionKey near = key3d(0.25);
+        MotionKey near = key3d(0.1);
         near.w = near.h = 0.5;
         p.findTrack(c2)->motion = {near};
         ImagePtr img = video.render(p, 0, fo);
         check(is(pixel(img, 100, 50), kRed) && is(pixel(img, 10, 10), kGreen), "a 3D parent's 3D children share its space: the nearer child shows in front",
               pxs(pixel(img, 100, 50)));
         // Parent Motion moves the whole group in 3D, the children keeping their own depths
-        p.findTrack(par)->parentMotion = {key3d(-1)};
+        p.findTrack(par)->parentMotion = {key3d(-camFraction())};
         img = video.render(p, 0, fo);
         save(img, "parent");
         const int gw = rowWidth(img, 30);
         check(black(pixel(img, 45, 50)) && is(pixel(img, 55, 30), kGreen) && is(pixel(img, 100, 50), kRed) && gw >= 98 && gw <= 102,
               "Parent Motion takes the whole group away from the camera (the far child at half the size)", strfmt("%d wide", gw));
-        // the near child: 100 x 50 (half the frame), 50 nearer than the far one: seen at 200 / (200 + 200 - 50) of that
+        // the near child: 100 x 50 (half the frame), 20 nearer than the far one: seen at D / (D + D - 20) of that
         int redW = 0;
         for (int x = 0; x < 200; ++x)
             if (is(pixel(img, x, 50), kRed, 30)) ++redW;
-        check(std::abs(redW - (int)std::lround(100 * 200.0 / 350.0)) <= 2, "and the nearer child keeps its distance in front of the other",
+        check(std::abs(redW - (int)std::lround(100 * trackMotion3dCamera(200, 100, 1.0) / (2 * trackMotion3dCamera(200, 100, 1.0) - 20))) <= 2, "and the nearer child keeps its distance in front of the other",
               strfmt("%d wide", redW));
         // a parent in 3D whose children are not all in 3D: the group is laid flat and moved as one picture
         p.findTrack(c1)->composite = "srcalpha";
