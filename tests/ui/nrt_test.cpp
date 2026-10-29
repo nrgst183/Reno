@@ -269,13 +269,13 @@ int main(int argc, char** argv)
     const uint64_t E = A[0];
     const uint64_t original = ev(E)->mediaId;
     const std::string beforeJson = app.project().toJson().dump();
-    // sound of the event through Distortion, from the live mix, to compare the file with
+    // sound of the event through Amplitude Modulation (VEGAS's default Distortion passes the sound unchanged), from the live mix, to compare the file with
     std::vector<float> expect;
     {
         FxTarget t;
         t.kind = FxTarget::Event;
         t.id = E;
-        const uint64_t slot = app.addAudioFx(t, builtinAudio("reno.distortion"));
+        const uint64_t slot = app.addAudioFx(t, builtinAudio("reno.ampmod"));
         uitest::settle(100);
         expect = mixOf(2.0);
         app.undo();
@@ -286,7 +286,7 @@ int main(int argc, char** argv)
     const size_t undo0 = app.undoCount();
     bool takeSeen = false;
     QStringList chain;
-    chooseFx({"Distortion"});
+    chooseFx({"Amplitude Modulation"});
     drv.take = [&](QDialog* d) {
         takeSeen = true;
         QWidget* win = d->findChild<QWidget*>("nrtFxWindow");
@@ -318,7 +318,7 @@ int main(int argc, char** argv)
     };
     runCommand({E});
     check(takeSeen && drv.applies == 1 && drv.choosers == 1, "the flow: Plug-In Chooser, then Take FX, then the Apply window");
-    check(chain.size() == 1 && chain[0].contains("Distortion"), "Take FX window: the chosen plug-in is the chain", str(chain.join(",")));
+    check(chain.size() == 1 && chain[0].contains("Amplitude Modulation"), "Take FX window: the chosen plug-in is the chain", str(chain.join(",")));
     {
         const Event* e = ev(E);
         const MediaItem* nm = e ? media(e->mediaId) : nullptr;

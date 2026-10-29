@@ -398,7 +398,7 @@ inline void resetGraph(Settings& s)
 // ------------------------------------------------------------------------------------------------------------ sound
 class Dsp {
 public:
-    static const int kTable = 841;          // the gain at each tenth of a dB from 0 down to -84 dB
+    static constexpr int kTable = 841;          // the gain at each tenth of a dB from 0 down to -84 dB
 
     void setFormat(int rate, int channels)
     {

@@ -14,6 +14,7 @@
 #include "../../src/app/pluginchooser.h"
 #include "../../src/app/playback.h"
 #include "../../src/app/timeline.h"
+#include "../../src/audiofx/vegasdistortion.h"
 #include "../../src/engine/engine.h"
 #include "../../src/ofx/ofxhost.h"
 #include "uitestlib.h"
@@ -661,10 +662,17 @@ int main(int argc, char** argv)
             p.buses.push_back(b);
             p.findTrack(AT)->output = bus;
         });
-        FxTarget bt;
-        bt.kind = FxTarget::Bus;
-        bt.id = bus;
-        app.addAudioFx(bt, builtinAudio("reno.distortion"));
+        // VEGAS's (Default) Distortion is a straight line, which passes the sound as it is: the slot is made with its
+        // "Fuzz 1" preset
+        app.edit("Add Audio Effect", [&](Project& p) {
+            FxSlot sl;
+            sl.id = p.newId();
+            sl.kind = "audio";
+            sl.audio = builtinAudio("reno.distortion");
+            sl.name = sl.audio.name;
+            sl.state = Json(reno::vegdist::encode(reno::vegdist::presets()[3].s));
+            p.findBus(bus)->fx.push_back(sl);
+        });
         uitest::settle();
         const double pre = loudness(app.project(), 1.0, 0.5);
         app.edit("Post", [&](Project& p) { p.findBus(bus)->fxPostFader = true; });
@@ -902,8 +910,8 @@ int main(int argc, char** argv)
         uitest::settle(300);
         auto action = [&](const char* name) { return w.findChild<QAction*>(name); };
         QAction* bypass = action("bypassAudioFx");
-        check(action("realTimeRender") && action("nonRealTimeFx") && action("assignableFx") && action("inputBus") && !action("inputBus")->isEnabled() && bypass,
-              "menus: Real-Time Render, Apply Non-Real-Time Event FX, Audio Assignable FX, Input Bus (not available), Bypass All Audio FX");
+        check(action("realTimeRender") && action("nonRealTimeFx") && action("assignableFx") && action("inputBus") && action("inputBus")->isEnabled() && bypass,
+              "menus: Real-Time Render, Apply Non-Real-Time Event FX, Audio Assignable FX, Input Bus, Bypass All Audio FX");
         if (bypass) {
             bypass->trigger();
             check(app.bypassAudioFx.load(), "Options > Bypass All Audio FX turns the bypass on");

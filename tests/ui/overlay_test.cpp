@@ -221,6 +221,12 @@ int main(int argc, char** argv)
             for (const Event& e : t.events)
                 if (e.id == ev) track = t.id;
         const uint64_t slot2 = app.addVideoFx(target, "reno.test.overlay", "Test Overlay");
+        app.setCursor(1.0);
+        w.openFx(target, slot2);
+        uitest::settle(600);
+        // the frame's middle and scale as the preview lays it out now (opening the window can change its size)
+        const QPointF cNow = pv->canonicalToView(960, 540);
+        const QPointF cNow2 = pv->canonicalToView(1960, 540);
         app.edit("Track Motion", [&](Project& p) {
             MotionKey k;
             k.x = 0.75;
@@ -229,16 +235,14 @@ int main(int argc, char** argv)
             k.h = 0.5;
             p.findTrack(track)->motion.assign(1, k);
         });
-        app.setCursor(1.0);
-        w.openFx(target, slot2);
         uitest::settle(600);
         pic->update();
         uitest::settle(300);
-        const double pp = 1000.0 / (c2.x() - c.x());        // canonical units of the frame per widget pixel
+        const double pp = 1000.0 / (cNow2.x() - cNow.x());        // canonical units of the frame per widget pixel
         const QPointF m0 = pv->canonicalToView(960, 540);
         // the frame's middle, moved to the middle of the bottom right quarter: 480 right and 270 down
-        check(pv->overlayActive() && std::abs(m0.x() - (c.x() + 480 / pp)) < 1.5 && std::abs(m0.y() - (c.y() + 270 / pp)) < 1.5,
-              "with Track Motion the effect's controls are where its picture went", strfmt("%.1f,%.1f (centre %.1f,%.1f)", m0.x(), m0.y(), c.x(), c.y()));
+        check(pv->overlayActive() && std::abs(m0.x() - (cNow.x() + 480 / pp)) < 1.5 && std::abs(m0.y() - (cNow.y() + 270 / pp)) < 1.5,
+              "with Track Motion the effect's controls are where its picture went", strfmt("%.1f,%.1f (centre %.1f,%.1f)", m0.x(), m0.y(), cNow.x(), cNow.y()));
         const QPointF m1 = pv->canonicalToView(1960, 540);
         check(std::abs((m1.x() - m0.x()) - 500 / pp) < 1.5, "at half the size", strfmt("%.1f", m1.x() - m0.x()));
         QImage gm = uitest::shot(pic, out + "/overlay_track_motion.png").convertToFormat(QImage::Format_RGB32);

@@ -172,7 +172,7 @@ private:
 
 // A half-band filter pair for doubling and halving the sample rate (31-tap windowed sinc; every other tap is zero).
 struct HalfBand {
-    static const int kTaps = 31;
+    static constexpr int kTaps = 31;
     float h[kTaps];
     HalfBand()
     {

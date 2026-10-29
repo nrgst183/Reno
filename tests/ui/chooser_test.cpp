@@ -372,7 +372,9 @@ int main(int argc, char** argv)
         uitest::shot(&g, gOut + "/chooser_generator.png");
         PluginChooser t(ChooserKind::Transition, "Plug-In Chooser - Transition", FxChain());
         t.openFolder("All");
-        check(t.listed() == QStringList({"Test Dissolve"}), "transition chooser: transitions only", str(t.listed()));
+        // Reno's built-in transitions are listed with the scanned ones
+        check(t.listed().contains("Test Dissolve") && t.listed().contains("Cross Effect") && !t.listed().contains("Test Invert") && !t.listed().contains("Test Generator"),
+              "transition chooser: transitions only", str(t.listed()));
     }
     if (!vsts.empty()) {
         PluginChooser a(ChooserKind::AudioFx, "Plug-In Chooser - Audio Track FX", FxChain());

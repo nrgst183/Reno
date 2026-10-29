@@ -255,9 +255,10 @@ protected:
     {
         update();
         // VEGAS gets the samples interleaved; its slew state is shared by the channels, so it runs L, R, L, R...
+        // (a NaN or infinite input would index the gain table out of range and poison the state: it counts as silence)
         for (int k = 0; k < n; ++k) {
-            l[k] = (float)sample((double)l[k], 0);
-            r[k] = (float)sample((double)r[k], 1);
+            l[k] = (float)sample(std::isfinite(l[k]) ? (double)l[k] : 0.0, 0);
+            r[k] = (float)sample(std::isfinite(r[k]) ? (double)r[k] : 0.0, 1);
         }
     }
 

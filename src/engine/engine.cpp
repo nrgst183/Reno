@@ -1821,8 +1821,8 @@ private:
     }
 
     // A windowed sinc (Blackman, kHalfTaps zero crossings either side), tabulated.
-    static const int kHalfTaps = 8;
-    static const int kTableSteps = 512;         // table entries per zero crossing
+    static constexpr int kHalfTaps = 8;
+    static constexpr int kTableSteps = 512;         // table entries per zero crossing
     static const std::vector<float>& sincTable()
     {
         static const std::vector<float> table = [] {

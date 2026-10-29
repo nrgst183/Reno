@@ -98,6 +98,7 @@ static Ctx makeCtx(const Def& def, const Params& over, const Buf& src, Params& s
     for (const auto& kv : over) store[kv.first] = kv.second;
     Ctx c;
     c.testParams = &store;
+    c.levels = false;                   // (the plain versions are the float picture's arithmetic; 8-bit pictures take VEGAS's own algorithms)
     c.src = src;
     c.out.resize(src.w, src.h);
     c.frameW = src.w;
@@ -160,7 +161,8 @@ int main(int argc, char** argv)
         {"light rays off centre", V + "lightrays", {{"LightSource", {0.2, 0.8}}, {"group0Sensitivity", {0.8}}, {"group0Strength", {0.6}}, {"TintColor", {1, 0.6, 0.2}}}, ref::lightRays, 0.8, 24},
         // (Rays, Glint, Starburst and Fill Light follow VEGAS's managed filters step for step and are checked against VEGAS's own pictures by tools/effectref_compare.py)
         {"black bar fill default", V + "blackbarfill", {}, ref::blackBarFill, 0.8, 24},
-        {"black bar fill small foreground", V + "blackbarfill", {{"Foreground Scale", {0.5}}, {"Foreground Location", {0.3, 0.6}}, {"Foreground Shadow Blur", {0.5}}, {"Background Scale", {2}}, {"Background Blur", {0.2}}}, ref::blackBarFill, 1.0, 24},
+        // (the effect blurs with VEGAS's FIR sums now, the plain version with a generic gaussian: about one level apart on average)
+        {"black bar fill small foreground", V + "blackbarfill", {{"Foreground Scale", {0.5}}, {"Foreground Location", {0.3, 0.6}}, {"Foreground Shadow Blur", {0.5}}, {"Background Scale", {2}}, {"Background Blur", {0.2}}}, ref::blackBarFill, 1.5, 24},
     };
     for (const auto& pic : pictures) {
         for (const Case& cs : cases) {

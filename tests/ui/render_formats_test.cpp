@@ -203,7 +203,9 @@ void renderOne(const Project& p, const rt::Format& f, const rt::Tmpl& t, const s
     std::string err;
     const bool ok = renderProjectAs(p, fx, spec, 0.0, 1.0, [](const ExportProgress&) { return true; }, &err);
     if (!check(ok, name + ": renders" + (ok ? "" : ": " + err))) return;
-    const std::string made = f.sequence ? outDir + "/" + safe + "_000000." + ext : c.writerPath;
+    // Multiple Mono writes one file a channel ("<name> Left.<ext>", "<name> Right.<ext>"): the first is read back
+    std::string made = f.sequence ? outDir + "/" + safe + "_000000." + ext : c.writerPath;
+    if (spec.multipleMono) made = multipleMonoPaths(c.writerPath, 2)[0];
     std::string spec2 = made;
     if (f.sequence) spec2 = imageSequenceSpec(made, kFps);
     auto r = openMedia(spec2, &err);

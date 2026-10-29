@@ -32,7 +32,7 @@ struct Property {
 
 class PropertySet {
 public:
-    static const uint32_t kMagic = 0x50724f70;
+    static constexpr uint32_t kMagic = 0x50724f70;
     uint32_t magic = kMagic;
     void* owner = nullptr;                                        // whatever this set belongs to (not copied)
     std::function<void(const std::string& name)> onChanged;
@@ -71,7 +71,7 @@ class ParamSet;
 class EffectBase;
 
 struct Param {
-    static const uint32_t kMagic = 0x5061726d;
+    static constexpr uint32_t kMagic = 0x5061726d;
     uint32_t magic = kMagic;
     ParamSet* set = nullptr;
     std::string name, type;
@@ -110,7 +110,7 @@ struct Param {
 
 class ParamSet {
 public:
-    static const uint32_t kMagic = 0x50536574;
+    static constexpr uint32_t kMagic = 0x50536574;
     uint32_t magic = kMagic;
     EffectBase* owner = nullptr;
     PropertySet props;
@@ -136,7 +136,7 @@ struct ClipDesc {
 };
 
 struct ClipInst {
-    static const uint32_t kMagic = 0x436c6970;
+    static constexpr uint32_t kMagic = 0x436c6970;
     uint32_t magic = kMagic;
     Instance* inst = nullptr;
     std::string name;
@@ -149,7 +149,7 @@ struct ClipInst {
 
 class EffectBase {
 public:
-    static const uint32_t kMagic = 0x45666678;
+    static constexpr uint32_t kMagic = 0x45666678;
     uint32_t magic = kMagic;
     bool isInstance = false;
     Plugin* plugin = nullptr;

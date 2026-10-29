@@ -189,7 +189,7 @@ private:
 
     // scriptsession_ext.cpp: the project's HDR and stereoscopic 3D settings, track groups and media bins. Each returns
     // kNotMine when the object or property is not one of these, so the callers carry on.
-    static const int kNotMine = -1000;
+    static constexpr int kNotMine = -1000;
     int extGetI(const Desc& d, int prop, int64_t* out);
     int extGetD(const Desc& d, int prop, double* out);
     int extGetS(const Desc& d, int prop, std::string* out);

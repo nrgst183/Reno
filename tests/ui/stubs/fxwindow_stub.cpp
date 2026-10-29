@@ -6,6 +6,8 @@ FxWindow::FxWindow(Playback*, QWidget* parent) : QWidget(parent), d(new Impl()) 
 FxWindow::~FxWindow() {}
 void FxWindow::showTarget(const FxTarget& t, uint64_t) { d->target = t; }
 FxTarget FxWindow::target() const { return d->target; }
+// (the stand-in has no Take FX mode)
+void FxWindow::setOnlySlots(const std::vector<uint64_t>&, bool) {}
 void FxWindow::closeEvent(QCloseEvent*) {}
 void FxWindow::showEvent(QShowEvent*) {}
 void FxWindow::hideEvent(QHideEvent*) {}

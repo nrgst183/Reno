@@ -133,7 +133,10 @@ int main(int argc, char** argv)
     const uint64_t bars = app.addGeneratedMedia("com.vegascreativesoftware:testpattern", "Test Pattern");
     app.addMediaToTimeline(bars, 0.0);
     pic = frame(1.0, 640, 360);
-    check(!pic.isNull() && qRed(pic.pixel(20, 50)) > 150 && qBlue(pic.pixel(620, 50)) > 150, "Test Pattern draws its bars", "");
+    // VEGAS's 75% bars (level 180): grey on the left, then cyan, yellow, green, magenta, blue, and red on the right
+    check(!pic.isNull() && qRed(pic.pixel(20, 50)) > 150 && qGreen(pic.pixel(20, 50)) > 150 && qBlue(pic.pixel(20, 50)) > 150 &&
+              qBlue(pic.pixel(500, 50)) > 150 && qRed(pic.pixel(500, 50)) < 60 && qRed(pic.pixel(620, 50)) > 150 && qBlue(pic.pixel(620, 50)) < 60,
+          "Test Pattern draws its bars", "");
     pic.save(out + "/builtin_testpattern_frame.png");
     return uitest::summary();
 }

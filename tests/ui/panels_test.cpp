@@ -26,6 +26,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
+#include "../../src/app/vprefs.h"
 #include <QSpinBox>
 #include <QTimer>
 #include <QTreeWidget>
@@ -347,7 +348,7 @@ void testBrowsers()
         }
     }
 
-    // an empty catalog: Video FX still lists Reno's built-in effects; a window with nothing to list has a line of text and a button
+    // an empty catalog: Video FX and Transitions still list Reno's built-in ones; a window with nothing to list has a line of text and a button
     Catalog::get().scanInProcess(std::vector<std::string>(), std::vector<std::string>());
     {
         FxBrowser v(FxBrowser::VideoFx);
@@ -357,13 +358,26 @@ void testBrowsers()
         QTreeWidget* vt = tree(&v, "fxTree");
         check(vt && vt->isVisible() && !leaves(vt).empty() && !kid<QWidget>(&v, "noPlugins")->isVisible(), "browser: with nothing scanned Video FX lists the built-in effects");
     }
-    FxBrowser b(FxBrowser::Transitions);
+    {
+        FxBrowser t(FxBrowser::Transitions);
+        t.resize(320, 420);
+        t.show();
+        uitest::settle(100);
+        QTreeWidget* tt = tree(&t, "fxTree");
+        check(tt && tt->isVisible() && !leaves(tt).empty() && !kid<QWidget>(&t, "noPlugins")->isVisible(), "browser: with nothing scanned Transitions lists the built-in transitions");
+    }
+    // every audio effect (the built-in ones too) hidden in Preferences > VST Effects leaves a list with nothing to show
+    QStringList hidden;
+    for (const auto& e : Catalog::get().audio()) hidden << QString::fromStdString(e.desc.path);
+    vprefs::set("prefs/vstDisabled", hidden);
+    FxBrowser b(FxBrowser::AudioFx);
     b.resize(320, 420);
     b.show();
     uitest::settle(100);
+    vprefs::set("prefs/vstDisabled", QStringList());
     auto* page = kid<QWidget>(&b, "noPlugins");
     auto* button = kid<QPushButton>(&b, "lookForPlugins");
-    check(page && page->isVisible() && button && button->isVisible(), "browser: an empty catalog shows the explanation and the button");
+    check(page && page->isVisible() && button && button->isVisible(), "browser: with nothing to list the explanation and the button are shown");
     uitest::shot(&b, gOut + "/fx_empty.png");
     // the button runs the scan; with no reno_cli next to this program it says so
     QString text;

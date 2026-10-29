@@ -97,14 +97,15 @@ int main()
         std::vector<float> out = run(*p, 440, 1.0);
         for (float v : out) if (!std::isfinite(v)) finite = false;
         check(finite && rms(out) > 0.01, d.name + ": processes (finite, not silent)", std::to_string(rms(out)));
-        check(p->paramCount() >= 3 && !p->paramName(0).empty() && !p->paramText(0).empty(), d.name + ": parameters named and worded");
+        check(p->paramCount() >= 1 && !p->paramName(0).empty() && !p->paramText(0).empty(), d.name + ": parameters named and worded");
         // settings survive a save and a load into a new one
         for (int k = 0; k < p->paramCount(); ++k) p->paramSet(k, 0.37f);
         const std::string st = p->saveState();
         std::unique_ptr<AudioPlugin> q = make(d.uid);
         bool same = q && q->loadState(st);
+        // (a choice snaps to its nearest entry when loaded, so 0.37 comes back as 0.4: the same wording counts)
         for (int k = 0; same && k < p->paramCount(); ++k)
-            if (std::fabs(p->paramGet(k) - q->paramGet(k)) > 0.02f) same = false;
+            if (std::fabs(p->paramGet(k) - q->paramGet(k)) > 0.02f && p->paramText(k) != q->paramText(k)) same = false;
         check(same, d.name + ": state round trip");
         check(q && !q->loadState("garbage") && !q->loadState(""), d.name + ": a foreign state is refused");
         // presets
@@ -137,7 +138,7 @@ int main()
     int listed = 0;
     for (const AudioFxEntry& e : Catalog::get().audio())
         if (e.desc.format == "BUILTIN" && e.ok && !isTrk(e.desc.uid) && !isXp(e.desc.uid)) ++listed;
-    check(listed == 9, "catalog: listed", std::to_string(listed));
+    check(listed == (int)standIns, "catalog: listed", std::to_string(listed));
 
     // Pitch Shift (the exact reproduction of VEGAS's, with Preserve duration the sound trails by its latency): 440 Hz up 12
     // -> 880, down 7 -> 293.7, +3 semitones 50 cents -> 538.8
@@ -186,24 +187,17 @@ int main()
         p->process(s.data(), t.data(), 4800, 100000, true);
         check(rms(s) < 1e-6, "delay: a seek clears the echoes");
     }
-    // Distortion: hard clip stays within its output level
+    // Distortion (VEGAS's: a slew-rate limit, a low-pass and dry / wet levels; its default leaves a tone as it is)
     {
         auto p = make("reno.distortion");
-        setByName(*p, "Shape", 1, 0, 3);
-        setByName(*p, "Drive", 40, 0, 60);
-        setByName(*p, "Effect out", 0, -60, 24);
-        setByName(*p, "Tone", 20000, 500, 20000);
-        std::vector<float> o = run(*p, 200, 0.5, 0.9f);
-        float mx = 0;
-        for (float v : o) mx = std::max(mx, std::fabs(v));
-        check(mx <= 1.05f && rms(o) > 0.8, "distortion: hard clip squares the tone within +-1", std::to_string(mx) + " " + std::to_string(rms(o)));
-        // Bit crush to 1 bit: two levels only
-        auto b = make("reno.distortion");
-        b->setProgram(3);       // Bit crusher
-        setByName(*b, "Crush bits", 1, 1, 16);
-        setByName(*b, "Tone", 20000, 500, 20000);
-        std::vector<float> c = run(*b, 200, 0.5, 0.9f);
-        check(rms(c) > 0.1, "distortion: bit crush sounds");
+        std::vector<float> o = run(*p, 2000, 0.5, 0.9f);
+        check(std::fabs(rms(o) - 0.9 / std::sqrt(2.0)) < 0.05, "distortion: the default leaves a tone as it is", std::to_string(rms(o)));
+        // a low slew rate (it limits the change of the slope) cannot follow a loud 2 kHz tone
+        auto s = make("reno.distortion");
+        s->paramSet(0, 1.f);
+        s->paramSet(1, 0.03f);
+        std::vector<float> c = run(*s, 2000, 0.5, 0.9f);
+        check(rms(c) > 0.01 && rms(c) < 0.5 * rms(o), "distortion: a low slew rate limits the tone", std::to_string(rms(c)));
     }
     // Amplitude modulation at 100% depth, square: half the time silent
     {

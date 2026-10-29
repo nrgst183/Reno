@@ -186,7 +186,9 @@ int main(int argc, char** argv)
         // the header's menu button
         const QRect menu = tl->headerPartRect(audio, TimelineWidget::PartMenu);
         const QStringList trackMenu = menuTexts([&] { uitest::mouseClick(tl, menu.center()); });
-        check(trackMenu.contains("Track FX...") && trackMenu.contains("Delete Track") && st().currentTrack == audio, "the strip's menu button opens the track's menu",
+        // VEGAS 18's hamburger menu: the buttons the header has no room for, then Edit Visible Button Set
+        check(trackMenu.contains("Track FX") && trackMenu.contains("Arm for Record") && trackMenu.contains("Edit Visible Button Set...") && st().currentTrack == audio,
+              "the strip's menu button opens the track's menu",
               trackMenu.join("|").toStdString());
         const QRect vmenu = tl->headerPartRect(video, TimelineWidget::PartMenu);
         const QStringList modes = menuTexts([&] { uitest::mouseClick(tl, vmenu.center()); }, "Compositing Mode");
@@ -209,7 +211,8 @@ int main(int argc, char** argv)
                   tl->eventButtonRect(ev, false).right() < em.left(),
               "a video event has Pan/Crop, FX and menu buttons along its bottom right");
         const QStringList eventMenu = em.isEmpty() ? QStringList() : menuTexts([&] { uitest::mouseClick(tl, em.center()); });
-        check(eventMenu.contains("Split") && eventMenu.contains("Properties..."), "the event's menu button opens its menu", eventMenu.join("|").toStdString());
+        // VEGAS 18's hamburger menu for an event
+        check(eventMenu.contains("Event FX") && eventMenu.contains("Freeze Frame at Cursor") && eventMenu.contains("Edit Visible Button Set..."), "the event's menu button opens its menu", eventMenu.join("|").toStdString());
         // the zoom buttons at the end of the scroll bar
         const double span = tl->viewEndTime() - tl->viewStartTime();
         if (QAbstractButton* in = tl->findChild<QAbstractButton*>("zoomInButton")) in->click();

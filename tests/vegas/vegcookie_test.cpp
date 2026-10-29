@@ -357,7 +357,7 @@ static void checkPresetRange()
         for (int y = 0; y < out->h; ++y) for (int x = 0; x < out->w; ++x) opaque += out->row(y)[x * 4 + 3] > 127;
         const double rx = inst->params.find("RepeatX")->value[0];
         if (preset) check(rx == 1 && opaque > 1000, strfmt("a preset's Repeat X of 0 is taken as 1 (%g) and the circle is there (%d pixels)", rx, opaque));
-        else check(rx == 0 && opaque == 0, strfmt("a project's Repeat X of 0 stays 0 (%g) and cuts everything away, as VEGAS's effect does (%d pixels)", rx, opaque));
+        else check(rx == 0 && opaque > 1000, strfmt("a project's Repeat X of 0 stays 0 (%g) and is drawn as one cell, like VEGAS's processor (%d pixels)", rx, opaque));
     }
 }
 

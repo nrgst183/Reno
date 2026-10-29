@@ -22,9 +22,6 @@ using namespace reno;
 using namespace reno::app;
 using uitest::check;
 
-// the timeline stand-in this is linked with lacks it
-void reno::app::TimelineWidget::keyReleaseEvent(QKeyEvent*) {}
-
 namespace {
 FxWindow* gWin = nullptr;
 void settle(int ms = 150) { uitest::settle(ms); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); }

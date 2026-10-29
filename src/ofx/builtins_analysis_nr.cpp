@@ -235,7 +235,7 @@ void denoise(Ctx& c, double sigmaY, double sigmaC, int S, int R, double sharpen)
 // cut to 0 where it falls under 0.001), turned back and cut to whole levels; Amount then runs a 3 x 3 sharpening kernel over the bytes. Luminance and Color are the h of the planes
 // as they are. The plug-in's picture has its first row at the bottom and its border is mirrored one way at the top and left and the other way at the bottom and right; done the same.
 struct VegasNlm {
-    static const int T = 7, S = 21, TH = 3, SH = 10, B = TH + SH;
+    static constexpr int T = 7, S = 21, TH = 3, SH = 10, B = TH + SH;
     std::vector<double> tab;
     explicit VegasNlm(double hh)
     {

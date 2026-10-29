@@ -143,9 +143,9 @@ public:
     }
 
 private:
-    static const int kDelay = 6500;     // frames in the flange's delay line
-    static const int kTable = 2000;     // coefficients in the tables
-    static const int kChannels = 2;
+    static constexpr int kDelay = 6500;     // frames in the flange's delay line
+    static constexpr int kTable = 2000;     // coefficients in the tables
+    static constexpr int kChannels = 2;
 
     // the sine oscillator of the plug-in (CSineOscillator)
     struct Osc {

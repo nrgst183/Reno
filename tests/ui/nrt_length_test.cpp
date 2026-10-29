@@ -21,13 +21,6 @@ using namespace reno;
 using namespace reno::app;
 using uitest::check;
 
-// (the stand-in effects window of the test build has no Take FX mode; the test does not open one)
-namespace reno {
-namespace app {
-void FxWindow::setOnlySlots(const std::vector<uint64_t>&, bool) {}
-}  // namespace app
-}  // namespace reno
-
 static AudioPluginDesc builtinAudio(const std::string& uid)
 {
     for (const AudioFxEntry& e : Catalog::get().audio())

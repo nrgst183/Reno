@@ -254,8 +254,8 @@ private:
         size_t cost = 0;
         uint64_t used = 0;
     };
-    static const size_t kMaxBytes = 64u << 20;
-    static const size_t kMaxEntries = 24;
+    static constexpr size_t kMaxBytes = 64u << 20;
+    static constexpr size_t kMaxEntries = 24;
     std::mutex mu_;
     std::vector<Entry> list_;
     size_t bytes_ = 0;
@@ -1855,6 +1855,12 @@ struct VideoEngine::Pass {
         ro.abort = opt.cancel;
         return ro;
     }
+    // Whether 'inst' was made for this project's frame size. While the project's size changes the instances are made again, and one
+    // not yet remade would be given pictures of the new size to fill a window of the old one: such an effect is left out of the frame.
+    bool madeForProject(const ofx::Instance* inst) const
+    {
+        return inst && inst->setup.width == p.settings.width && inst->setup.height == p.settings.height;
+    }
     // Whether effect 'inst' works at the frame's size when that is smaller than the project's.
     bool atPreviewSize(const ofx::Instance* inst) const
     {
@@ -1878,7 +1884,7 @@ struct VideoEngine::Pass {
             return out;
         }
         ofx::Instance* inst = (slot.bypass || opt.skipEffects) ? nullptr : eng.fx_.video(slot.id);
-        if (!inst || cancelled()) return source(frame);
+        if (!inst || cancelled() || !madeForProject(inst)) return source(frame);
         const bool atFrameSize = atPreviewSize(inst);
         auto src = [&](double f) -> ImagePtr {
             ImagePtr img = source(f);
@@ -2326,7 +2332,7 @@ struct VideoEngine::Pass {
         ImagePtr out;
         // two events overlapping with an OpenFX transition chosen on the later one
         if (active.size() == 2 && active[1]->transition.kind == "ofx" && !active[1]->transition.bypass && !opt.skipEffects &&
-            active[0]->end() < active[1]->end() && eng.fx_.video(active[1]->transition.id)) {
+            active[0]->end() < active[1]->end() && madeForProject(eng.fx_.video(active[1]->transition.id))) {
             const Event& a = *active[0];
             const Event& b = *active[1];
             ofx::Instance* inst = eng.fx_.video(b.transition.id);

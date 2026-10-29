@@ -624,6 +624,8 @@ int main(int argc, char** argv)
 
     // ------------------------------------------------------------------ Edit Details: changed in place
     {
+        // a time format chosen in the ruler's menu is what new projects start with: forget the one chosen above
+        QSettings().remove("options/rulerFormat");
         buildProject();
         uitest::settle(50);
         EditDetails* ed = dynamic_cast<EditDetails*>(w.findChild<QWidget*>("editDetails"));

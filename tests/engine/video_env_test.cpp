@@ -414,10 +414,10 @@ int main(int argc, char** argv)
               pxs(pixel(img, 60, 90)) + " / " + pxs(pixel(img, 260, 90)));
         mask->motion.clear();
 
-        // a muted parent: the children show unmasked
+        // a muted parent mutes its children with it (the manual's "parent mute"): only the blue track below shows
         mask->mute = true;
         img = video.render(p, 1.0, preview);
-        check(near(pixel(img, 260, 90), 0, 0, 255), "muting the parent leaves its children unmasked", pxs(pixel(img, 260, 90)));
+        check(near(pixel(img, 260, 90), 255, 0, 0) && near(pixel(img, 60, 90), 255, 0, 0), "muting the parent mutes the whole group", pxs(pixel(img, 260, 90)) + " / " + pxs(pixel(img, 60, 90)));
         mask->mute = false;
 
         // the children are composited together first: a green child above the red one, half see-through

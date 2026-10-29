@@ -143,7 +143,7 @@ public:
     }
 
 private:
-    static const int kHop = 2048, kFft = 4096, kTaps = 2047;
+    static constexpr int kHop = 2048, kFft = 4096, kTaps = 2047;
     bool built_ = false, dirty_ = false;
     uint32_t rate_ = 48000;
     int32_t live_[12] = {}, copy_[12] = {};

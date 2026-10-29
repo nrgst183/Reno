@@ -58,7 +58,7 @@ inline ClipInst* asClip(OfxImageClipHandle h)
 
 // The effect's own window at the top of its panel (VEGAS's "HWnd interact"): what its handle points at.
 struct HwndInteractImpl {
-    static const uint32_t kMagic = 0x48776e64;
+    static constexpr uint32_t kMagic = 0x48776e64;
     uint32_t magic = kMagic;
     PropertySet props;
     OfxPluginEntryPoint* entry = nullptr;

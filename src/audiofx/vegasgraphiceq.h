@@ -476,7 +476,7 @@ public:
     float outAt(int c, int i) const { return out_[c][(size_t)i]; }
 
 private:
-    static const int kMaxCh = 2;
+    static constexpr int kMaxCh = 2;
     int rate_ = 48000, ch_ = 2;
     int n_ = 0x400, hop_ = 0x200, taps_ = 0x1ff;
     int fill_ = 0;

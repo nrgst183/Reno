@@ -350,9 +350,9 @@ void dropTests(TimelineWidget& w)
     buildProject();
     std::string err;
     const uint64_t m1 = st().importMedia("synth:3", &err), m2 = st().importMedia("synth:4", &err), m3 = st().importMedia("synthaudio:5", &err);
+    // room after the drops: the view cannot zoom out past the whole project, so an event far on makes it long
+    st().edit("Room", [](Project& p) { addEvent(p, ids.a2, ids.snd, 40.0, 1.0); });
     w.zoomToFit();
-    w.zoomOut();
-    w.zoomOut();
     uitest::settle(50);
     const double len1 = st().project().findMedia(m1)->info.duration, len2 = st().project().findMedia(m2)->info.duration;
     QMimeData md;
@@ -473,6 +473,8 @@ void dropTests(TimelineWidget& w)
 void snapOffsetTests(TimelineWidget& w)
 {
     buildProject();
+    // room after the event: the view cannot zoom out past the whole project, so an event far on makes it long
+    st().edit("Room", [](Project& p) { addEvent(p, ids.a2, ids.snd, 40.0, 1.0); });
     w.zoomToFit();
     st().snapping = true;
     st().setSelection(std::set<uint64_t>{ids.e3});
@@ -486,14 +488,14 @@ void snapOffsetTests(TimelineWidget& w)
     check(e3 && near(e3->snapOffset, 1.0, 1e-6), "dragging the snap offset flag sets the event's snap offset (snapping to the cursor)",
           e3 ? strfmt("%.4f", e3->snapOffset) : "");
     check(st().undoName() == "Event Snap Offset", "(one undo step)", st().undoName());
-    // moving the event: the snap offset snaps (to the cursor at 9 s)
-    st().setCursor(9.0);
+    // moving the event: the snap offset snaps (to a marker at 9 s: pressing on an event moves the cursor to the press)
+    st().edit("Marker", [](Project& p) { Project::Marker m; m.id = p.newId(); m.time = 9.0; p.markers.push_back(m); });
     const QRect r2 = w.eventRectOf(ids.e3);
     const QPoint grab(r2.center());
     const double want = 9.0 - 1.0;
     uitest::mouseDrag(&w, grab, grab + QPoint(w.xAt(want) - w.xAt(2.0) + 2, 0), 12);
     e3 = st().project().findEvent(ids.e3);
-    check(e3 && near(e3->start, want, 1e-6), "moving the event snaps its snap offset point (not its start) to the cursor", e3 ? strfmt("%.4f", e3->start) : "");
+    check(e3 && near(e3->start, want, 1e-6), "moving the event snaps its snap offset point (not its start) to the marker", e3 ? strfmt("%.4f", e3->start) : "");
     st().snapping = false;
 }
 

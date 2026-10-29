@@ -21,7 +21,7 @@ static const std::string kPlanet = "de.magix:stereographicProjectionOCL";
 static const std::string kMesh = "de.magix:MeshWarp";
 static const std::string kUpscale = "com.sonycreativesoftware:smart_upscale";
 
-static Buf runS(const Def& def, const Params& over, const StrMap& sover, const Buf& src, double scale)
+static Buf runS(const Def& def, const Params& over, const StrMap& sover, const Buf& src, double scale, bool levels = true)
 {
     Params store;
     StrMap strs;
@@ -35,6 +35,7 @@ static Buf runS(const Def& def, const Params& over, const StrMap& sover, const B
     Ctx c;
     c.testParams = &store;
     c.testStrings = &strs;
+    c.levels = levels;
     c.time = 3;
     c.fps = 30;
     c.src = src;
@@ -207,18 +208,19 @@ static void curveTests()
         check(worst < 0.012, "a master curve from (0,255) to (255,0) inverts all three channels", f1(worst));
     }
     {
-        // soft alpha: the curve works on the colour, not on the colour times alpha
+        // soft alpha, float picture: the curve works on the colour, not on the colour times alpha
         const Buf half = ramp(64, 8, 0.5f);
         const std::string inv = withMaster(ofx::builtin::kMagixDefaultCurves, 255, 0, -51, 51);
-        const Buf o = runS(*d, {}, {{"Property", inv}}, half, 1.0);
+        const Buf o = runS(*d, {}, {{"Property", inv}}, half, 1.0, false);
         float s[3], q[3], a;
         straight(half, 10, 3, s);
         straight(o, 10, 3, q);
         a = o.at(10, 3)[3];
-        check(std::fabs(q[0] - (1.f - s[0])) < 0.012f && std::fabs(a - 0.5f) < 1e-6f, "a half transparent picture: the colour is curved as a straight colour, alpha stays", strfmt("%.3f alpha %.3f", q[0], a));
-        Buf clear = ramp(8, 8, 0.f);
-        const Buf z = runS(*d, {}, {{"Property", inv}}, clear, 1.0);
-        check(maxDiff(z, clear) == 0, "a transparent picture stays as it is");
+        check(std::fabs(q[0] - (1.f - s[0])) < 0.012f && std::fabs(a - 0.5f) < 1e-6f, "a half transparent float picture: the colour is curved as a straight colour, alpha stays", strfmt("%.3f alpha %.3f", q[0], a));
+        // 8-bit (VEGAS's way, exact): the byte tables act on the premultiplied bytes and are held to the alpha
+        const Buf o8 = runS(*d, {}, {{"Property", inv}}, half, 1.0, true);
+        const float *p8 = o8.at(10, 3);
+        check(std::fabs(p8[3] - 0.5f) < 0.5f / 255 + 1e-6f && p8[0] <= p8[3] + 1.f / 255 && p8[0] > 0.45f, "a half transparent 8-bit picture: the colour is curved as bytes and held to the alpha", strfmt("%.3f alpha %.3f", p8[0], p8[3]));
     }
     for (const char* bad : {"", "abc", "AQAAAAIAAAA=", "////////////////////////"}) {
         const Buf o = runS(*d, {}, {{"Property", bad}}, src, 1.0);

@@ -240,7 +240,8 @@ void radialBlur(Ctx& c)
 // Starburst); Disc curvature / 100 shapes the gradient of the iris (below 0 the rim is dimmer).
 void defocus(Ctx& c)
 {
-    const double radius = std::max(0.0, c.d("Radius")) / 100.0 * (double)std::max(c.out.w, c.out.h);
+    // (the slider stops at 11.2; a hand-edited setting is held to the frame's own size, or the iris table would need gigabytes)
+    const double radius = std::min(100.0, std::max(0.0, c.d("Radius"))) / 100.0 * (double)std::max(c.out.w, c.out.h);
     if (radius < 0.5) { copyThrough(c); return; }
     const int shape = c.i("IrisShape");
     const double turn = c.d("Orientation") * 2 * kPi;

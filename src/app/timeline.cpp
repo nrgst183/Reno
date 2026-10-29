@@ -70,6 +70,9 @@ TimelineWidget::Impl::Impl(TimelineWidget* w, Playback* pb) : q(w), playback(pb)
     QObject::connect(hbar, &QScrollBar::valueChanged, q, [this](int v) {
         const double was = viewStart;
         viewStart = (double)v / kHBarRange * hbarSpan;
+        // on a whole pixel (the bar has far more steps than the view has pixels), so that what is drawn can be moved
+        // across and only what comes into view is painted; the end of the range stays where it is
+        if (pps > 0 && v < kHBarRange) viewStart = std::floor(viewStart * pps + 0.5) / pps;
         viewMoved(was, scrollY);
     });
     QObject::connect(hbar, &QScrollBar::sliderReleased, q, [this] { updateBars(); });

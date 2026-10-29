@@ -348,8 +348,10 @@ static void prerenderedFramesLookRight(MainWindow& w, const QString& out)
     uitest::settle(100);
     const QImage now = pb->renderNow(t);
     const QImage shown2 = shownAt(t);
-    check(meanDiff(shown2, now) == 0, "prerender: after a change the preview shows the project, not the old prerendered frames",
-          strfmt("mean difference %.1f (shown %dx%d, project %dx%d)", meanDiff(shown2, now), shown2.width(), shown2.height(), now.width(), now.height()));
+    // the live preview is drawn at the preview's size (half here), the prerendered file and renderNow at the project's: compare at one size
+    const double d2 = shown2.isNull() ? -1 : meanDiffCoarse(shown2.scaled(now.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation), now);
+    check(d2 >= 0 && d2 < 2, "prerender: after a change the preview shows the project, not the old prerendered frames",
+          strfmt("mean difference %.1f (shown %dx%d, project %dx%d)", d2, shown2.width(), shown2.height(), now.width(), now.height()));
     pb->clearPrerendered(true);
 }
 

@@ -66,7 +66,7 @@ public:
     }
 
 private:
-    static const int kRing = 6500;
+    static constexpr int kRing = 6500;
     int32_t s_[8] = {0, -800, 0, 1000, 50, 500, 75, 500};
     uint32_t rate_ = 48000;
     int32_t eff_ = 0;
