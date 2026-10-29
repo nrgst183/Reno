@@ -157,6 +157,29 @@ void Writer::trackEvents(const Track& t, const VegTrackOrigin* o, OutNode& out)
     }
 }
 
+// A video track's parent/child bits for word 0x0c of its settings: 0x20 for a child (a video track at level 1 under
+// a level-0 video track), 0x40 for a parent (the next video track below is a child). 0 if neither; for a child
+// without a parent above it, also 0 (it is written as an ordinary track).
+uint32_t Writer::parentChildRelation(const Track& t) const
+{
+    if (t.type != TrackType::Video) return 0;
+    const Track* b = p_.tracks.data();
+    if (&t < b || &t >= b + p_.tracks.size()) return 0;
+    const size_t i = (size_t)(&t - b);
+    if (t.compositeLevel > 0) {
+        for (size_t j = i; j-- > 0;) {
+            if (p_.tracks[j].type != TrackType::Video) continue;
+            if (p_.tracks[j].compositeLevel == 0) return 0x20;
+        }
+        return 0;
+    }
+    for (size_t j = i + 1; j < p_.tracks.size(); ++j) {
+        if (p_.tracks[j].type != TrackType::Video) continue;
+        return p_.tracks[j].compositeLevel > 0 ? 0x40u : 0u;
+    }
+    return 0;
+}
+
 // The track's video or audio settings record (levels, pan, compositing mode, bus...).
 void Writer::trackSettings(const Track& t, const Chunk& base, const VegTrackOrigin* o, const Track& was, bool video, const std::string& label,
                            size_t fxWritten, size_t chainWritten, OutNode& out)
@@ -209,6 +232,16 @@ void Writer::trackSettings(const Track& t, const Chunk& base, const VegTrackOrig
             }
             if (automationMode && d.size() >= 0xb4 && t.mute != was.mute) setU32(d, 0xb0, t.mute ? 1u : 0u);
             setMode(0x80, t.parentComposite, was.parentComposite, "parent compositing mode");
+            // parent and child: u32 0xac the nesting level (1 for a child), word 0x0c bit 0x20 on a child and 0x40 on the track
+            // above it that is its parent (the one Reno puts a child under: the nearest video track above at level 0)
+            if (d.size() >= 0xb0) {
+                const uint32_t relation = parentChildRelation(t);
+                const bool child = (relation & 0x20) != 0;
+                const uint32_t level = d.size() >= 0xb0 ? dc->data.u32(0xac) : 0;
+                if (((dc->data.u32(0x0c) & 0x60) != relation) || (child != (level != 0)))
+                    setU32(d, 0x0c, (dc->data.u32(0x0c) & ~0x60u) | relation);
+                if (child != (level != 0)) setU32(d, 0xac, child ? 1u : 0u);
+            }
             // effect count and last-shown effect (VEGAS uses 0 or -1 for none)
             if (dc->data.u32(0xa0) != (uint32_t)fxWritten) setU32(d, 0xa0, (uint32_t)fxWritten);
             const int32_t sel = dc->data.i32(0x9c);
@@ -261,8 +294,8 @@ void Writer::trackWarnings(const Track& t, const VegTrackOrigin* o, const Track&
     if (!t.shadow2d.empty() || !t.glow2d.empty())
         warn(label + ": its Track Motion 2D Shadow / 2D Glow was not saved: no VEGAS project here shows how VEGAS keeps them.");
     if (!t.sends.empty()) warn(label + ": its sends to buses were not saved: no VEGAS project shows how a send is kept.");
-    if (t.compositeLevel != 0 && (!o || t.compositeLevel != was.compositeLevel))
-        warn(label + ": its compositing parent/child setting was not saved: where VEGAS keeps it is not known.");
+    if (t.compositeLevel != 0 && parentChildRelation(t) == 0)
+        warn(label + ": it is a compositing child but no video track above it is its parent; it was saved as an ordinary track.");
     if (t.trackGroup != 0 && (!o || t.trackGroup != was.trackGroup))
         warnCount("%d track(s) in a track group: the group was not saved (no VEGAS project here has one, so where VEGAS keeps it is not known).");
     if (t.adjustment) warn(label + ": it is an adjustment track, which VEGAS Pro 18 does not have; it was saved as an ordinary track.");
@@ -410,7 +443,21 @@ void Writer::eventVideoParts(const Event& e, const Chunk& base, const VegEventOr
     const Chunk* vd = vl ? childChunk(*vl, G::VideoEventData) : nullptr;
     if (vd) {
         std::string v = bytesOf(vd->data);
-        if (!o || e.resample != was.resample) setU32(v, 4, (vd->data.u32(4) & ~0x200u) | (e.resample == "off" ? 0u : 0x200u));
+        // the switches in the flags word (see the reader) and the undersample rate
+        uint32_t flags = vd->data.u32(4);
+        const auto setBit = [&](uint32_t bit, bool on) { flags = on ? (flags | bit) : (flags & ~bit); };
+        if (!o || e.resample != was.resample) {
+            if (e.resample == "optical") {
+                warnCount("%d event(s) with Optical flow resampling were not saved: no VEGAS project here has it, so where VEGAS keeps it is not known.");
+            } else {
+                setBit(0x200, e.resample != "off" && e.resample != "force");
+                setBit(0x80, e.resample == "force");
+            }
+        }
+        if (!o || e.keepAspect != was.keepAspect) setBit(0x1, e.keepAspect);
+        if (!o || e.reduceFlicker != was.reduceFlicker) setBit(0x100, e.reduceFlicker);
+        if (flags != vd->data.u32(4)) setU32(v, 4, flags);
+        if (v.size() >= 0x80 && (!o || e.undersample != was.undersample)) setF64(v, 0x78, e.undersample);
         // last-shown effect: -1 for none
         const int32_t sel = vd->data.i32(0x68);
         if (!o) setU32(v, 0x68, 0xFFFFFFFFu);
@@ -422,9 +469,6 @@ void Writer::eventVideoParts(const Event& e, const Chunk& base, const VegEventOr
     if (haveFx) out.kids.push_back(std::move(fxList));
     eventPanCrop(e, base, o, was, where, out);
     if (!e.transition.kind.empty()) warnCount("%d transition(s) were not saved: no VEGAS project here has one, so how VEGAS keeps them is not known.");
-    if (e.resample == "force" || e.resample == "optical") warnCount("%d event resample mode(s) (Force / Optical flow) were not saved: where VEGAS keeps them is not known.");
-    if (!e.keepAspect) warnCount("%d event(s) with Maintain Aspect Ratio off were not saved: where VEGAS keeps it is not known.");
-    if (e.undersample != 1.0) warnCount("%d event undersample rate(s) were not saved: where VEGAS keeps them is not known.");
     if (e.maskOn || !e.mask.empty()) warnCount("%d Event Pan/Crop mask(s) were not saved: no VEGAS project here has one, so how VEGAS keeps them is not known.");
     if (e.stretchToFill) warnCount("%d Event Pan/Crop \"Stretch to fill frame\" setting(s) were not saved: where VEGAS keeps it is not known.");
     bool smooth = false;

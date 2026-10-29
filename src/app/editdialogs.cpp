@@ -7,9 +7,6 @@
 #include "editdialogs.h"
 #include "editdialogs_internal.h"
 #include "vprefs.h"
-#include "../engine/colormgmt.h"
-#include "../engine/timefmt.h"
-#include "../engine/stretch.h"
 #include "playback.h"
 #include "strconv.h"
 #include <QAbstractSpinBox>

@@ -200,26 +200,6 @@ double sigmaForDiameter(double px)
 }
 
 // ------------------------------------------------------------------ planes
-// What Plane::sample works out along one axis (the two pixels and the weight of the second), for a plane len long.
-inline void sampleAxisAt(double x, int len, int& i0, int& i1, float& f)
-{
-    x = clampd(x, 0.0, (double)(len - 1));
-    i0 = (int)x;
-    if (i0 > len - 2) i0 = std::max(0, len - 2);
-    f = (float)(x - i0);
-    i1 = std::min(len - 1, i0 + 1);
-}
-// That for 'count' positions along an axis (the plane's len long), so a warp does it once per column.
-struct SampleAxis {
-    std::vector<int> i0, i1;
-    std::vector<float> f;
-    template <class F> void set(int count, int len, F pos)
-    {
-        i0.resize((size_t)count); i1.resize((size_t)count); f.resize((size_t)count);
-        for (int k = 0; k < count; ++k) sampleAxisAt(pos(k), len, i0[(size_t)k], i1[(size_t)k], f[(size_t)k]);
-    }
-};
-
 struct Plane {
     int w = 0, h = 0;
     std::vector<float> v;
@@ -683,18 +663,6 @@ double bezierCurve(const std::vector<BezierPoint>& pts, double x)
     const double p0 = pts[(size_t)i].value, p1 = p0 + pts[(size_t)i].right, p3 = pts[(size_t)next].value, p2 = p3 + pts[(size_t)next].left;
     const double u = 1 - f;
     return u * u * u * p0 + 3 * f * u * u * p1 + 3 * f * f * u * p2 + f * f * f * p3;
-}
-
-// Gaussian blur of float planes (one weight per pixel, cut at 3 deviations, edges carried on), in place.
-void firGaussian(std::vector<float>& v, int W, int H, int planes, double sigma)
-{
-    if (!(sigma > 0.05) || W <= 0 || H <= 0) return;
-    const int r = std::max(1, std::min(4000, (int)std::ceil(sigma * 3.0)));
-    std::vector<double> k((size_t)(2 * r + 1));
-    double sum = 0;
-    for (int i = -r; i <= r; ++i) sum += (k[(size_t)(i + r)] = std::exp(-0.5 * i * i / (sigma * sigma)));
-    for (double& w : k) w /= sum;
-    firBlurDoubles(v, W, H, planes, k, k);
 }
 
 

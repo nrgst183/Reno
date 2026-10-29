@@ -118,8 +118,6 @@ Rot mul(const Rot& a, const Rot& b)
 Rot rotYaw(double a) { const double c = std::cos(a), s = std::sin(a); return Rot{{c, 0, s, 0, 1, 0, -s, 0, c}}; }
 // About the sideways axis: straight ahead is turned up by 'a' (its latitude grows by a).
 Rot rotPitch(double a) { const double c = std::cos(a), s = std::sin(a); return Rot{{1, 0, 0, 0, c, -s, 0, s, c}}; }
-// About the line of sight: a direction to the right is turned down by 'a'.
-Rot rotRoll(double a) { const double c = std::cos(a), s = std::sin(a); return Rot{{c, s, 0, -s, c, 0, 0, 0, 1}}; }
 
 // An equirectangular picture seen through a rotation: output pixel (x, y) of a W x H picture takes the colour of the direction the rotation turns
 // it to. The picture is the part [px, px + pw) x [py, py + ph) of the frame (stereo halves).
@@ -856,7 +854,7 @@ void addFiltersVegasRest(std::vector<Def>& out)
             if (p.name == kStClear) p.hint = "All results of the analysis are discarded.";
             if (p.name == kStExclude) p.hint = "Views that are not included in the analysis.";
             if (p.name == kStRefine) p.hint = "Click to automatically refine the results.";
-            if (p.name == kStSmooth) p.hint = "The Smoothing parameter is the parameter that helps to define how much the video is stabilized.";
+            if (p.name == kStSmooth) p.hint = "The Smoothing parameter is the parameter that helps to define how much \"unsteadiness\" should be kept in a scene, the higher that factor is, the more the movements are smoothed.";
         }
         Def d = make("com.magix.ofx.vr.stabilization", "360 Stabilization", "VEGAS\\360", "Steadies a 360 degree picture from the camera's analysed motion", ps, stabilization);
         d.changed = stabilizationChanged;

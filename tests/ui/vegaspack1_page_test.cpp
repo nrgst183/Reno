@@ -13,6 +13,7 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QSlider>
 #include <QThread>
 #include <cmath>
@@ -247,10 +248,10 @@ int main(int argc, char** argv)
             settle();
             check(std::lround(rig.real(8)) == 3, "multi-tap: number of taps slider", std::to_string(rig.real(8)));
             int enabled = 0;
-            for (int k = 0; k < 8; ++k) enabled += ctl<QPushButton>(page, QString("dxTap%1").arg(k))->isEnabled();
+            for (int k = 0; k < 8; ++k) enabled += ctl<QRadioButton>(page, QString("dxTap%1").arg(k))->isEnabled();
             check(enabled == 3, "multi-tap: only the buttons of existing taps are on", std::to_string(enabled));
             // pick tap 3 and change its delay, gain and pan
-            ctl<QPushButton>(page, "dxTap2")->click();
+            ctl<QRadioButton>(page, "dxTap2")->click();
             settle();
             QSlider* ds = ctl<QSlider>(page, "dxTapDelay");
             QSlider* gs = ctl<QSlider>(page, "dxTapGain");
@@ -288,7 +289,7 @@ int main(int argc, char** argv)
                 settle();
                 check(std::fabs(rig.real(9 + 1) - 200) <= 4, "multi-tap: pulling a tap in the graph sets its delay", std::to_string(rig.real(9 + 1)));
                 check(rig.real(17 + 1) > 20, "multi-tap: and its gain", std::to_string(rig.real(17 + 1)));
-                check(ctl<QPushButton>(page, "dxTap1")->isChecked(), "multi-tap: and picks it");
+                check(ctl<QRadioButton>(page, "dxTap1")->isChecked(), "multi-tap: and picks it");
                 g->parentWidget()->grab().save(out + "/multitap_graph.png");
             }
             // low-pass on/off enables its slider

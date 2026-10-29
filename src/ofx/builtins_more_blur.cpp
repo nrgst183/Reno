@@ -5,7 +5,6 @@
 #include "vkfilters.h"
 #include "builtins_deriche.h"
 #include "builtins_fast.h"
-#include "builtins_vec.h"
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
@@ -167,7 +166,6 @@ void radialBlur(Ctx& c)
     RbSetup g;
     radialBlurSetup(c, W, H, g);
     if (g.pass) { copyThrough(c); return; }
-    const int type = g.type;
     const bool q8 = g.q8;
     // the picture bottom row first; 8-bit values (exact levels) or floats in 0..255
     std::vector<float> src((size_t)W * H * 4), dst;

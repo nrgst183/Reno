@@ -2,7 +2,6 @@
 // VEGAS's plug-ins are not installed. The output approximates VEGAS's. See builtins.h.
 #include <mutex>
 #include "builtins_impl.h"
-#include "builtins_fast.h"
 #include "builtins_vec.h"
 #include "builtins_deriche.h"
 #include "vegas8.h"
@@ -90,12 +89,6 @@ bool invertRows(Ctx& c, RowFn& fn)
     return true;
 }
 void invert(Ctx& c) { runRows(c, invertRows); }
-
-// luma() of four pixels
-inline V4 lumaV(V4 r, V4 g, V4 b)
-{
-    return v4::add(v4::add(v4::mul(v4::set(0.2126f), r), v4::mul(v4::set(0.7152f), g)), v4::mul(v4::set(0.0722f), b));
-}
 
 // Black and White: on 8-bit levels, the grey is floor(sum / 3); each level moves towards it by ceil(|difference| * amount) levels.
 // Amount reads slightly high at 25% (65/256, measured), exact at 50% and 75%.
@@ -881,37 +874,6 @@ void linearBlur(Ctx& c)
 // ------------------------------------------------------------------ keying, edges, light
 // Chroma keyer from VEGAS's own code: d = (sqrt(3) * |RGB - key RGB| + (2 * hue diff + |sat diff| + |lightness diff|) / 3) / 2 in floats (HSL in 0..1, hue diff folded to 0..0.5), the
 // alpha byte from the ramp low..high (truncated), the blur (below) of the alpha, then a blue key limits blue to green, a green key green to red (spill removal), colours times alpha.
-double chromaKeyDistance(double r, double g, double b, const double* key)
-{
-    struct Hsl { double h, s, l; };
-    auto hsl = [](double r, double g, double b) {
-        const double mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b)), d = mx - mn;
-        Hsl o;
-        o.l = (mx + mn) * 0.5;
-        if (d <= 0) { o.h = 0; o.s = 0; return o; }
-        if (mx == r) { o.h = (g - b) / d; if (o.h < 0) o.h += 6; }
-        else if (mx == g) o.h = (b - r) / d + 2;
-        else o.h = (r - g) / d + 4;
-        o.h *= 60;
-        o.s = o.l <= 0.5 ? d / (mx + mn) : d / (2 - mx - mn);
-        return o;
-    };
-    const Hsl p = hsl(r, g, b), k = hsl(key[0], key[1], key[2]);
-    double dh = std::fabs(p.h - k.h);
-    dh = std::min(dh, 360 - dh);
-    const double dr = r - key[0], dg = g - key[1], db = b - key[2];
-    return 0.8660254037844386 * std::sqrt(dr * dr + dg * dg + db * db) + (dh / 180 + std::fabs(p.s - k.s) + std::fabs(p.l - k.l)) / 6;
-}
-
-// The 8-bit alpha (0..255) of a distance under the thresholds.
-float chromaKeyAlpha8(double d, double low, double high)
-{
-    double a;
-    if (high <= low) a = d >= low ? 1.0 : 0.0;
-    else a = clampd((d - low) / (1.0 - low), 0.0, 1.0);
-    return (float)std::min(255.0, std::floor(a * 255.0 + 1e-6));
-}
-
 // 1: the key is a blue screen, 2: a green one, 0: neither
 int chromaKeyDespill(const double* key) { return (key[2] > key[1] && key[2] > key[0]) ? 1 : ((key[1] > key[0] && key[1] >= key[2]) ? 2 : 0); }
 
@@ -1321,7 +1283,7 @@ void border(Ctx& c)
     BorderGeo g;
     borderGeometry(c, c.out.w, c.out.h, g);
     const int W = g.W, H = g.H, type = g.type;
-    const float Wf = g.Wf, Hf = g.Hf, bx = g.bx;
+    const float Hf = g.Hf, bx = g.bx;
     c.out = c.src;
     if (W <= 0 || H <= 0) return;
     const bool q8 = c.levels;
@@ -1437,13 +1399,6 @@ void glow(Ctx& c)
 }
 
 // Add noise: grain added to each pixel (the same in all channels if Monochromatic), new every frame if Animate.
-uint32_t hash3(uint32_t x, uint32_t y, uint32_t z)
-{
-    uint32_t h = x * 374761393u + y * 668265263u + z * 2147483647u;
-    h = (h ^ (h >> 13)) * 1274126177u;
-    return h ^ (h >> 16);
-}
-
 // VEGAS's grain comes from an R250 shift-register generator (w[i] ^= w[i + 103]) filled from the Microsoft C rand()
 // (x = x * 214013 + 2531011, bits 16..30) after srand(seed), with 32 bits fixed up for full rank.
 struct NoiseR250 {

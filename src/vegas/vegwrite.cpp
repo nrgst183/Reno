@@ -312,15 +312,46 @@ OutNode Writer::summary(const Chunk& c)
 
 // ---------------------------------------------------------------- buses
 // The mixer chunk (sample rate at 0x6e4, bit depth at 0x6e8), the video bus, the master, then Bus A, B...
+// Whether a bus record's pan type word is not the one 'name' stands for. For a bus "" is VEGAS's default for a new bus
+// (word 0, Add Channels) and also any word Reno has no name for (kept).
+static std::string busPanTypeName(const Bytes& orig)
+{
+    const uint32_t w = orig.u32(busPanTypeOffset);
+    return w == 0 ? std::string() : panTypeName(w);
+}
+static bool busPanTypeChanged(const Bytes& orig, const std::string& name)
+{
+    return orig.size() >= busPanTypeOffset + 4 && name != busPanTypeName(orig);
+}
+
+bool Writer::busFlagsChanged(const Bytes& orig, bool master, bool mute, bool solo, const std::string& panType)
+{
+    if (orig.size() < busPanTypeOffset + 4) return false;
+    if ((orig.u32(busMuteOffset) != 0) != mute) return true;
+    if (!master && (orig.u32(busSoloOffset) != 0) != solo) return true;
+    return !master && busPanTypeChanged(orig, panType);
+}
+
 // A bus record: u32 0xc8, ..., u32 type at 0x0c, u32 number at 0x14, f64 level at 0x18 and 0x20, u32 at 0xcc the
-// bytes from 0xd0 to the end (unpadded), three texts at 0xd0 (output device, name, name again), then (aligned to 4)
-// 0x328 unknown bytes, u32 audio effect count, u32 chain bytes + 4, u32 0, the chain, u32 0, and 12 zero bytes.
-std::string Writer::busRecord(const Bytes& orig, const FxChain* fx, const std::string* name, double level, uint32_t index, const std::string& where)
+// bytes from 0xd0 to the end (unpadded), three texts at 0xd0 (output device, name, description; a fourth, the default
+// name, is in the next block), then (aligned to 4) 0x328 bytes (the default name first, the rest not worked out), u32 audio effect count, u32 chain bytes + 4, u32 0, the chain, u32 0, and 12 zero bytes.
+std::string Writer::busRecord(const Bytes& orig, const FxChain* fx, const std::string* name, double level, uint32_t index, const std::string& where,
+                              int mute, int solo, const std::string* panType)
 {
     std::string d = bytesOf(orig);
     if (orig.f64(0x18) != level) setF64(d, 0x18, level);
     if (orig.f64(0x20) != level) setF64(d, 0x20, level);
     if (index && orig.u32(0x14) != index) setU32(d, 0x14, index);
+    if (d.size() >= busPanTypeOffset + 4) {
+        if (mute >= 0 && (orig.u32(busMuteOffset) != 0) != (mute != 0)) setU32(d, busMuteOffset, (uint32_t)mute);
+        if (solo >= 0 && (orig.u32(busSoloOffset) != 0) != (solo != 0)) setU32(d, busSoloOffset, (uint32_t)solo);
+        uint32_t pt = 0;
+        if (panType && busPanTypeChanged(orig, *panType)) {
+            if (panType->empty()) setU32(d, busPanTypeOffset, 0);
+            else if (panTypeOf(*panType, pt)) setU32(d, busPanTypeOffset, pt);
+            else warn(where + ": its pan type '" + *panType + "' is not one of VEGAS's; the file keeps the one it had.");
+        }
+    }
     // texts
     size_t at = 0xd0;
     std::vector<std::string> texts;
@@ -334,9 +365,8 @@ std::string Writer::busRecord(const Bytes& orig, const FxChain* fx, const std::s
     const uint32_t count = orig.u32(chainHead), clen = orig.u32(chainHead + 4);
     const std::string chainBytes = clen >= 4 && orig.has(chainHead + 12, clen) ? bytesOf(orig.sub(chainHead + 12, clen - 4)) : std::string();
     bool rebuild = false;
-    if (name && (*name != texts[1] || *name != texts[2])) {
-        texts[1] = *name;
-        texts[2] = *name;
+    if (name && *name != texts[1]) {
+        texts[1] = *name;       // (the third text is the description, kept)
         rebuild = true;
     }
     std::string newChain = chainBytes;
@@ -420,10 +450,12 @@ OutNode Writer::buses(const Chunk* list)
         // master: level and audio effects
         const bool levelSame = po_ && p_.masterVolume == po_->masterVolume;
         const bool fxSame = po_ && sameAudioChain(p_.audioOut, &k);
-        if (levelSame && fxSame) out.kids.push_back(copyNode(k));
-        else out.kids.push_back(chunkNode(G::Bus, busRecord(k.data, fxSame ? nullptr : &p_.audioOut, nullptr, p_.masterVolume, 0, "The master bus")));
+        if (levelSame && fxSame && !busFlagsChanged(k.data, true, p_.masterMute, false, std::string()))
+            out.kids.push_back(copyNode(k));
+        else
+            out.kids.push_back(chunkNode(G::Bus, busRecord(k.data, fxSame ? nullptr : &p_.audioOut, nullptr, p_.masterVolume, 0, "The master bus",
+                                                           p_.masterMute ? 1 : 0)));
         if (p_.masterPan != 0) warn("The master bus's pan was not saved: where VEGAS keeps it is not known.");
-        if (p_.masterMute) warn("The master bus is muted in Reno; where VEGAS keeps that is not known, so it was not saved.");
         if (p_.masterFxPostFader) warn("The master's effects come after its volume (Post FX) in Reno; where VEGAS keeps that is not known, so it was not saved.");
         for (const Bus& bus : p_.buses) {
             if (bus.assignable) warn(bus.name + " is an Assignable FX chain in Reno; it was saved as a bus (how VEGAS keeps assignable FX is not known).");
@@ -443,15 +475,16 @@ OutNode Writer::buses(const Chunk* list)
             if (!base) { warn(where + " could not be written (no bus record to start from)."); continue; }
             const bool chainSame = o && sameAudioChain(bus.fx, base);
             const uint32_t index = busIndex_[bus.id];
-            const bool same = o && chainSame && bus.name == o->asRead.name && bus.level == o->asRead.level && index == base->data.u32(0x14);
+            const bool same = o && chainSame && bus.name == o->asRead.name && bus.level == o->asRead.level && index == base->data.u32(0x14) &&
+                              !busFlagsChanged(base->data, false, bus.mute, bus.solo, bus.panType);
             if (same) out.kids.push_back(copyNode(*base));
-            else out.kids.push_back(chunkNode(G::Bus, busRecord(base->data, chainSame ? nullptr : &bus.fx, &bus.name, bus.level, index, where)));
+            else
+                out.kids.push_back(chunkNode(G::Bus, busRecord(base->data, chainSame ? nullptr : &bus.fx, &bus.name, bus.level, index, where,
+                                                               bus.mute ? 1 : 0, bus.solo ? 1 : 0, &bus.panType)));
             std::vector<std::string> lost;
             const Bus def;
             const Bus& was = o ? o->asRead : def;
             if (bus.pan != was.pan) lost.push_back("pan");
-            if (bus.mute != was.mute) lost.push_back("mute");
-            if (bus.solo != was.solo) lost.push_back("solo");
             if (bus.output != was.output) lost.push_back("output (VEGAS sends every bus to the master)");
             if (!bus.envelopes.empty()) lost.push_back("envelopes");
             if (!lost.empty()) {
@@ -774,13 +807,11 @@ OutNode Writer::groups(const Chunk* orig)
             }
         }
     }
-    const Chunk* tg = sameFile([](const Chunk& c) { return !c.isList && c.id == G::Group; });
-    if (!tg) tg = tpl("group");
     for (const auto& g : groups) {
         if (done.count(g.first) || g.second.size() < 2) continue;
         std::string d;
         addU32(d, 0x10);
-        addU32(d, tg ? tg->data.u32(4) : 1u);
+        addU32(d, 1);       // (1 in the group VEGAS made for the Settings Matrix and in nearly every sample group; a few have 5, not worked out)
         addU32(d, (uint32_t)g.second.size());
         addU32(d, 0);
         for (uint64_t id : g.second) {

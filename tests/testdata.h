@@ -4,6 +4,7 @@
 //
 //   RENO_SAMPLES      folder with sample VEGAS projects (.veg, searched recursively) and their media
 //   RENO_CMP          folder with what the VEGAS bridge scripts wrote (tools/vegas/bridge_scripts): "info", "shorttests", ...
+//   RENO_MATRIX       a folder written by the Settings Matrix script (manifest.txt and VEGAS's .veg files) for vegmatrix_write_test
 //   RENO_TEST_PLUGIN  the test OpenFX plug-in file (effects.ofx) the host tests load besides their own
 //   RENO_TEST_VST_DIR folder with test VST plug-ins
 //   RENO_VEGAS_DIR    a VEGAS Pro 18 program folder

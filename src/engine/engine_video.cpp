@@ -6,7 +6,7 @@
 #include "profile.h"
 #include "colormgmt.h"
 #include "engine_internal.h"
-#include "automation.h"
+#include "composememo.h"
 #include "builtinfx.h"
 #include <algorithm>
 #include <atomic>
@@ -200,17 +200,8 @@ static void underlayShape(Image& dst, const Image& shape, const GlowKey& g, int 
 }
 
 // Whether the shortcuts that give the same pictures faster are used (see setComposeFastPaths); a test turns them off to compare.
-static bool composePlainFromEnv()
-{
-    const char* v = std::getenv("RENO_COMPOSE_PLAIN");
-    return v && *v && std::strcmp(v, "0") != 0;
-}
-static std::atomic<bool> gComposeFast{!composePlainFromEnv()};
-static bool composeMemoOn()
-{
-    static const bool off = [] { const char* v = std::getenv("RENO_COMPOSE_NOMEMO"); return v && *v && std::strcmp(v, "0") != 0; }();
-    return !off && gComposeFast.load();
-}
+static std::atomic<bool> gComposeFast{true};
+static bool composeMemoOn() { return gComposeFast.load(); }
 void setComposeFastPaths(bool on) { gComposeFast.store(on); }
 static std::atomic<uint64_t> gFastAxisWarps{0}, gFastWarps{0}, gFastCopies{0}, gFastOwned{0};
 static std::atomic<uint64_t> gMemoHits;
@@ -222,6 +213,12 @@ void composeFastStats(uint64_t& axisWarps, uint64_t& warps, uint64_t& layerCopie
 // Finished warps (Pan/Crop, Track Motion) and frame blends kept for the next picture of a preview.
 class WarpMemo {
 public:
+    void clear()
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        list_.clear();
+        bytes_ = 0;
+    }
     ImagePtr find(const ImagePtr& a, const ImagePtr& b, const double* k, int n)
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -265,6 +262,7 @@ private:
     uint64_t clock_ = 0;
 };
 static WarpMemo& warpMemo() { static WarpMemo m; return m; }
+void clearComposeMemo() { warpMemo().clear(); }
 
 // ---------------------------------------------------------------------- resampling
 // How carefully frames are resampled (Project Properties' render quality, or a draft preview).

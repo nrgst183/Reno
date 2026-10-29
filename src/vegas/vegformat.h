@@ -111,6 +111,35 @@ void readChunkTree(const Bytes& file, ChunkTree& out);
 // d52af8d4-7359-11d2-8709-00c04f8edb8a in an event after EventFx (probably the transition), a list
 // b12f5229-c44c-413e-84bd-a6eff5746218 in a track after TrackMotionList, and several project-level chunks
 // (media bins among them). Reno keeps unknown chunks as they are.
+// Where vegas180.exe's writer puts parts Reno does not write yet (read from the program; contents not worked out, so
+// nothing is written): a video event's transition is a list d52af8d4 holding one chunk d52af8d7 (a plug-in object of
+// type 0x25; written when the event's transition object is set), after EventFx; a video event's VideoEventList can
+// also hold two envelope lists 3277f926-b5d3-40a1-8203-0ee5fa443f4a and ef72046c-3a19-40e8-b7e1-56ba79a825ed (after
+// VideoEventData, only when they have envelopes). tools/scripts/"Reno Settings Matrix.cs" (AddGapVariants) makes the
+// files that show the rest.
+//
+// Found in a Settings Matrix run (files saved by VEGAS Pro 18, one change each; see vegmatrix_write_test):
+//   - A bus record (G::Bus): u32 mute at 0x5c, u32 solo at 0x60, u32 pan type at 0x7c (numbers as an audio track's, 0 for a
+//     new bus). The master has mute and solo there but its pan type is not kept (the file does not change), and render
+//     flags (mono 0x02, stereo 0x04, surround 0x40 at 0x19c in the master, bytes at 0x150 in a bus with the render orders
+//     at 0x158, 0x15c; master 0x1a4, 0x1a8, 0x1b8). The record's four texts are the output device, name, description and
+//     the default name ("Bus A").
+//   - VideoEventData: flags at 0x04 (0x001 Maintain Aspect Ratio, 0x080 Force Resample, 0x100 Reduce Interlace Flicker,
+//     0x200 smart resample; Disable has neither), f64 undersample rate at 0x78.
+//   - VideoTrackData: u32 at 0x0c has 0x20 on a child track and 0x40 on its parent, u32 at 0xac is the child's nesting
+//     level (1). Only one level with one child was seen.
+//   - Track groups: the two grouped video tracks have 0x80000000 in their header flags (word 0x04), and the lower one also
+//     0x20000000; no chunk was added. Not enough to write (several groups, mixed video and audio groups).
+//   - AudioTrackData: PanX at 0x10 (as the stereo pan), PanY at 0x14, PanCenter at 0x18 (f32 each; 1.0 default centre),
+//     stored in a stereo project too; AutomatedPanX is the pan automation value at 0x208 and adds a track envelope list.
+//   - TrackMotion (G::TrackMotion) word at 0x04 has 0x08 when the shadow is enabled and 0x10 when the glow is, 0x01 always
+//     (ShadowEnabled / GlowEnabled change nothing else). A key's time is an i64 at 0x08 from the key's u32 size, in
+//     100 ns ticks (10000000 = 1 s). A key inserted without changing it is a copy of the part's default key. Project-wide
+//     LensSeparation and DepthAdjust are f64 at 0x14 and 0x1c of ViewData (value / 100).
+// Track motion keys, from ITrackCOM's getters in vegas180.exe (GetTrackMotionPosX... read an info struct that holds a
+// copy of the key 0x58 bytes on from the key's start in the file): Org X/Y/Z at 0x10/0x18/0x20, Pos X/Y/Z at 0x30/0x38/
+// 0x40, Scl X/Y/Z at 0x50/0x58/0x60 (these three match the defaults seen in the one sample), Rot X/Y/Z at 0x70/0x78/0x80.
+// The units of Rot and Org, Ori, Smoothness and Type are not located, so changed track motion is still not written.
 // The four marker lists (90020ef4..ef7) are the project's lists at 0x7a0, 0x7a8, 0x7b0, 0x7b8: markers and regions,
 // command markers, a list no scripting object uses, CD tracks and indexes.
 
@@ -270,6 +299,9 @@ uint32_t trackColorIndex(uint32_t argb);
 // (-6 dB), 5 Film; as Reno's names (Track::panType). Empty / false if unknown.
 std::string panTypeName(uint32_t v);
 bool panTypeOf(const std::string& name, uint32_t& v);
+// Where a bus record (G::Bus) keeps its mute, solo and pan type words (u32 each; the pan type as an audio track's; the
+// master has mute and solo but no pan type). Found by changing one setting of an added bus.
+constexpr size_t busMuteOffset = 0x5c, busSoloOffset = 0x60, busPanTypeOffset = 0x7c;
 
 // ================================================================ writing
 // Numbers are written little-endian and text as UTF-16LE, as the readers take them.

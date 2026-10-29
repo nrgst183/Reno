@@ -27,7 +27,7 @@ int main(int argc, char** argv)
                 if (e.length >= limit) continue;
                 ++n;
                 minLen = std::min(minLen, e.length);
-                const double fs = e.start * fps, fe = e.end() * fps;
+                const double fs = e.start * fps;
                 if (e.length * fps < 1) ++subframe;
                 if (std::fabs(fs - std::round(fs)) > 1e-3) ++offFrame;
                 if (n <= 12)

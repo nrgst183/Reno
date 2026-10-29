@@ -181,57 +181,61 @@
     }
 
     // ---- Track Compressor
-    // Input and output gain (-Inf. to 25 dB), threshold, amount, attack and release as trackbars with a box each (tenths of a
-    // unit a step), and the two switches. (VEGAS's level meters are not drawn.)
+    // Dialog 1001 of sftrkfx1 (245x198): the input and the output level meters (two bars each), the input and output gain as faders with a reading
+    // at the right, the reduction meter, then threshold, amount, attack and release as trackbars with a box each (tenths of a unit a step), and the
+    // two switches.
     void trkComp()
     {
+        const Placed pl = placedPage(245, 198);
         SMap g;
         g.inf = true;
         SMap one;
-        QVBoxLayout* col = new QVBoxLayout();
-        col->setSpacing(7);
-        // the meters (dialog: the input's and the output's level as two bars each, and the reduction); range 48 dB
-        auto levelMeter = [this](const char* name, int first) {
+        auto levelMeter = [this, &pl](const char* name, int first, int y) {
             LevelMeter* m = new LevelMeter(this, false, 2, -48.0, false);
             m->setObjectName(name);
-            m->setFixedSize(411, 50);
+            put(pl, m, 5, y, 235, 27);
             addMeterPoll([this, m, first] {
                 for (int c = 0; c < 2; ++c) m->feed(c, meterDb(h_.meter(first + c), -48.0));
             });
-            return m;
         };
-        col->addWidget(levelMeter("dxMeterInput", 0));
-        col->addWidget(trkBlock(0, "<u>I</u>nput gain (dB):", 850, g));
-        col->addWidget(levelMeter("dxMeterOutput", 2));
-        col->addWidget(trkBlock(1, "<u>O</u>utput gain (dB):", 850, g));
-        {
-            QHBoxLayout* rr = new QHBoxLayout();
-            rr->setSpacing(8);
-            QLabel* rl = text("Reduction (dB):");
-            rl->setFixedWidth(105);
-            rr->addWidget(rl);
-            LevelMeter* m = new LevelMeter(this, false, 1, -30.0, true);
-            m->setObjectName("dxMeterReduction");
-            m->setFixedSize(303, 22);
-            addMeterPoll([this, m] {
-                const float g2 = h_.meter(4);
-                m->feed(0, g2 > 0.f && g2 < 1.f ? -20.0 * std::log10((double)g2) : 0.0, 0.8);
+        auto gainRow = [&](int i, const QString& caption, int y) {
+            QLabel* l = putLabel(pl, caption, 5, y + 1, 60, 8);
+            QLabel* read = putLabel(pl, QString(), 218, y + 1, 22, 8, Qt::AlignRight | Qt::AlignVCenter);
+            read->setObjectName(QString("dxParam%1Value").arg(i));
+            DxSlider* s = trkSlider(i, 850, g, QString("dxParam%1").arg(i), nullptr);
+            put(pl, s, 67, y, 145, 10);
+            l->setBuddy(s);
+            sync_.push_back([this, i, read] {
+                const Rng r = rng(i);
+                const double v = get(i);
+                read->setText(v <= r.lo + 0.05 ? QString("-Inf.") : QString::number(v, 'f', 1) + " dB");
             });
-            rr->addWidget(m);
-            rr->addStretch(1);
-            col->addLayout(rr);
-        }
-        col->addWidget(trkBlock(2, "<u>T</u>hreshold (dB):", 600, one));
-        col->addWidget(trkBlock(3, "Amount (<u>x</u>:1):", 490, one));
-        col->addWidget(trkBlock(4, "Attac<u>k</u> (ms):", 5000, one));
-        col->addWidget(trkBlock(5, "Re<u>l</u>ease (ms):", 50000, one));
-        QHBoxLayout* checks = new QHBoxLayout();
-        checks->setSpacing(14);
-        checks->addWidget(checkBox(6, "Auto gain &compensation"));
-        checks->addWidget(checkBox(7, "S&mooth saturation"));
-        checks->addStretch(1);
-        col->addLayout(checks);
-        root_->addLayout(col);
+        };
+        auto trackRow = [&](int i, const QString& caption, int steps, int y) {
+            QLabel* l = putLabel(pl, caption, 5, y + 2, 60, 8);
+            QLineEdit* box = putEdit(pl, 205, y, 35, 12);
+            DxSlider* s = trkSlider(i, steps, one, QString("dxParam%1").arg(i), box);
+            put(pl, s, 67, y, 135, 12);
+            l->setBuddy(s);
+        };
+        levelMeter("dxMeterInput", 0, 19);
+        gainRow(0, "<u>I</u>nput gain (dB):", 49);
+        levelMeter("dxMeterOutput", 2, 61);
+        gainRow(1, "<u>O</u>utput gain (dB):", 91);
+        putLabel(pl, "Reduction (dB):", 5, 109, 60, 8);
+        LevelMeter* rm = new LevelMeter(this, false, 1, -30.0, true);
+        rm->setObjectName("dxMeterReduction");
+        put(pl, rm, 67, 107, 173, 12);
+        addMeterPoll([this, rm] {
+            const float g2 = h_.meter(4);
+            rm->feed(0, g2 > 0.f && g2 < 1.f ? -20.0 * std::log10((double)g2) : 0.0, 0.8);
+        });
+        trackRow(2, "<u>T</u>hreshold (dB):", 600, 122);
+        trackRow(3, "Amount (<u>x</u>:1):", 490, 137);
+        trackRow(4, "Attac<u>k</u> (ms):", 5000, 152);
+        trackRow(5, "Re<u>l</u>ease (ms):", 50000, 167);
+        put(pl, checkBox(6, "Auto gain &compensation"), 5, 183, 98, 10);
+        put(pl, checkBox(7, "S&mooth saturation"), 108, 183, 80, 10);
     }
 
     // ---- Dither
@@ -303,22 +307,16 @@
         return std::floor(v * k + 0.5) / k;
     }
     // A trackbar of 'steps' positions over the range of setting ix() (log or linear), values rounded to m.dec digits, and its box.
-    QWidget* trkEqRow(const QString& caption, int base, int steps, const SMap& m, const QString& name, double shownLo = 0, double shownHi = 0)
+    struct EqRow { QLabel* label; DxSlider* slider; QLineEdit* box; void show(bool on) const { label->setVisible(on); slider->setVisible(on); box->setVisible(on); } };
+    EqRow trkEqRow(const Placed& pl, const QString& caption, int base, int steps, const SMap& m, const QString& name, int y, double shownLo = 0, double shownHi = 0)
     {
-        QWidget* w = new QWidget(this);
-        QHBoxLayout* h = new QHBoxLayout(w);
-        h->setContentsMargins(0, 0, 0, 0);
-        h->setSpacing(6);
-        QLabel* l = text(caption);
-        l->setFixedWidth(116);
-        h->addWidget(l);
+        QLabel* l = putLabel(pl, caption, 75, y + 2, 54, 8);
         DxSlider* s = new DxSlider(Qt::Horizontal, this);
         s->setObjectName(name);
         s->setRange(0, steps);
-        QLineEdit* box = editBox(54);
+        QLineEdit* box = putEdit(pl, 205, y, 34, 12);
         box->setObjectName(name + "Edit");
-        h->addWidget(s, 1);
-        h->addWidget(box);
+        put(pl, s, 131, y, 72, 12);
         l->setBuddy(s);
         auto ix = [this, base] { return base + eqSel_; };
         QObject::connect(s, &QSlider::valueChanged, s, [=](int pos) {
@@ -348,19 +346,18 @@
             if (!s->isSliderDown()) s->setValue((int)std::lround(std::max(0.0, std::min(1.0, t)) * steps));
             if (!box->hasFocus()) box->setText(edit(v, m, r));
         });
-        return w;
+        return EqRow{l, s, box};
     }
     void trkEq()
     {
-        QWidget* sheetEq = new QWidget(this);
-        QVBoxLayout* col = new QVBoxLayout(sheetEq);
-        col->setContentsMargins(0, 0, 0, 0);
-        col->setSpacing(6);
-
+        // Dialog 3001 of sftrkfx1 (255x167): the response graph (plot 226x60 at 18,19 with +15 / 0 / -15 and the frequencies around it), a group
+        // box without a caption with "Enabled", the band's kind, and frequency, gain and bandwidth (rolloff for the shelves) as trackbar and box.
+        const Placed plEq = placedPage(255, 167);
+        QWidget* sheetEq = plEq.box;
         Graph* g = new Graph(this);
         g->setObjectName("dxEqGraph");
-        g->setFixedHeight(120);
-        g->margins = QMargins(30, 6, 8, 18);
+        put(plEq, g, 5, 17, 245, 68);
+        g->margins = QMargins(Placed::px(13), Placed::py(2), Placed::px(6), Placed::py(6));
         graphs_.push_back(g);
         g->draw = [this](QPainter& p, const QRectF& pl) {
             const double lo = std::log(20.0), hi = std::log(20000.0);
@@ -443,25 +440,15 @@
                 }
             }
         };
-        col->addWidget(g);
 
-        QFrame* box = new QFrame(this);
-        box->setFrameShape(QFrame::StyledPanel);
-        QVBoxLayout* bv = new QVBoxLayout(box);
-        bv->setSpacing(4);
-        QHBoxLayout* top = new QHBoxLayout();
-        top->setSpacing(10);
-        QLabel* title = text(QString());
-        title->setObjectName("dxEqBand");
-        top->addWidget(title);
+        QGroupBox* box = new QGroupBox(this);
+        put(plEq, box, 9, 85, 238, 62);
         QCheckBox* en = new QCheckBox("&Enabled", this);
         en->setObjectName("dxEqEnabled");
         QObject::connect(en, &QCheckBox::toggled, en, [this](bool on) { commit(20 + eqSel_, on ? 1 : 0); });
-        top->addWidget(en);
+        put(plEq, en, 17, 97, 40, 10);
         QComboBox* mode = combo([this] { return 16 + eqSel_; }, QStringList() << "Low Shelf" << "Band" << "High Shelf", "dxEqMode");
-        top->addWidget(mode);
-        top->addStretch(1);
-        bv->addLayout(top);
+        put(plEq, mode, 17, 111, 52, 12);
         SMap fm;
         fm.log = true;
         fm.dec = 0;
@@ -469,28 +456,25 @@
         SMap bm;
         SMap rm;
         rm.dec = 0;
-        bv->addWidget(trkEqRow("&Frequency (Hz):", 0, 1000, fm, "dxEqFreq"));
-        bv->addWidget(trkEqRow("&Gain (dB):", 4, 300, gm, "dxEqGain", -15, 15));
-        QWidget* bw = trkEqRow("&Bandwidth (oct):", 8, 39, bm, "dxEqBandwidth");
-        QWidget* ro = trkEqRow("&Rolloff (dB/oct):", 12, 3, rm, "dxEqRolloff");
-        bv->addWidget(bw);
-        bv->addWidget(ro);
-        col->addWidget(box);
-        sync_.push_back([this, title, en, bw, ro] {
-            title->setText(QString("Band %1").arg(eqSel_ + 1));
+        trkEqRow(plEq, "&Frequency (Hz):", 0, 1000, fm, "dxEqFreq", 95);
+        trkEqRow(plEq, "&Gain (dB):", 4, 300, gm, "dxEqGain", 111, -15, 15);
+        const EqRow bw = trkEqRow(plEq, "&Bandwidth (oct):", 8, 39, bm, "dxEqBandwidth", 127);
+        const EqRow ro = trkEqRow(plEq, "&Rolloff (dB/oct):", 12, 3, rm, "dxEqRolloff", 127);
+        for (QWidget* w : {(QWidget*)box}) w->lower();
+        sync_.push_back([this, en, bw, ro] {
             QSignalBlocker b(en);
             en->setChecked(get(20 + eqSel_) >= 0.5);
             const bool band = (int)std::lround(get(16 + eqSel_)) == 1;
-            bw->setVisible(band);
-            ro->setVisible(!band);
+            bw.show(band);
+            ro.show(!band);
         });
 
-        QWidget* sheetCh = new QWidget(this);
-        QVBoxLayout* cv = new QVBoxLayout(sheetCh);
-        cv->setSpacing(10);
+        // Dialog 8005: the six channel switches
+        const Placed plCh = placedPage(255, 167);
+        QWidget* sheetCh = plCh.box;
         const char* chn[6] = {"Enable &Left", "Enable &Right", "Enable &Center", "Enable Le&ft Surround", "Enable Ri&ght Surround", "Enable LF&E"};
-        for (int k = 0; k < 6; ++k) cv->addWidget(checkBox(24 + k, chn[k]));
-        cv->addStretch(1);
+        static const int chy[6] = {33, 51, 69, 86, 105, 123};
+        for (int k = 0; k < 6; ++k) put(plCh, checkBox(24 + k, chn[k]), 71, chy[k], 113, 10);
         sheetCh->hide();
 
         QHBoxLayout* tabs = new QHBoxLayout();
@@ -510,10 +494,7 @@
             sheetEq->setVisible(on);
             sheetCh->setVisible(!on);
         });
-        root_->addLayout(tabs);
-        root_->addWidget(sheetEq);
-        root_->addWidget(sheetCh);
-        root_->addStretch(1);
+        root_->insertLayout(0, tabs);
     }
     bool eqDrag_ = false;
 

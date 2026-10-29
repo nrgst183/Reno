@@ -4,7 +4,6 @@
 #include "appstate.h"
 #include "loudnesswin.h"
 #include "mainwindow.h"
-#include "playback.h"
 #include "../engine/loudness.h"
 #include "../media/media.h"
 #include "menuutil.h"

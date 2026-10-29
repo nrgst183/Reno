@@ -21,14 +21,6 @@ inline void putGen(float* p, const Color& c)
     const double a = c.a;
     p[0] = truncLevel(c.r * a); p[1] = truncLevel(c.g * a); p[2] = truncLevel(c.b * a); p[3] = truncLevel(a);
 }
-// blend of two colours in premultiplied values (a transparent colour fades in without turning dark)
-inline void putGenMix(float* p, const Color& a, const Color& b, double t)
-{
-    p[0] = truncLevel(lerp(a.r * a.a, b.r * b.a, t));
-    p[1] = truncLevel(lerp(a.g * a.a, b.g * b.a, t));
-    p[2] = truncLevel(lerp(a.b * a.a, b.b * b.a, t));
-    p[3] = truncLevel(lerp(a.a, b.a, t));
-}
 
 // ------------------------------------------------------------------ Solid Color
 void solidColor(Ctx& c)
@@ -645,15 +637,6 @@ void noiseTexture(Ctx& c)
 }
 
 // ------------------------------------------------------------------ Test Pattern
-// Test pattern levels: Reno's frames are computer RGB, so black is 0 and white 1 (not studio levels).
-void fillRect(Buf& b, double x0, double y0, double x1, double y1, const Color& col)
-{
-    const int X0 = (int)std::lround(x0 * b.w), X1 = (int)std::lround(x1 * b.w);
-    const int Y0 = (int)std::lround(y0 * b.h), Y1 = (int)std::lround(y1 * b.h);
-    for (int y = std::max(0, Y0); y < std::min(b.h, Y1); ++y)
-        for (int x = std::max(0, X0); x < std::min(b.w, X1); ++x) put(b.at(x, y), col);
-}
-
 // Test Pattern: VEGAS's nine patterns in broadcast 8-bit levels (black 7, white 235, 75% bars 180, 16/25 pluge steps). The seven bars are
 // floor(width/7) wide, the last taking the rest; the "porch" of framed patterns is the middle 80% of the frame (ends included, rows from the
 // bottom); the Gradient uses the frame's own coordinates. Matches VEGAS Pro 18 at 320x180.

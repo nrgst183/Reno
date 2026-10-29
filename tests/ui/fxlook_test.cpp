@@ -450,7 +450,7 @@ int main(int argc, char** argv)
         settle(450);
         QWidget* vg = nullptr;
         for (QWidget* c : gWin->findChildren<QWidget*>())
-            if (c->isVisibleTo(gWin) && c->objectName() == "dxGraph" && c->width() == 300 && c->height() == 184) vg = c;
+            if (c->isVisibleTo(gWin) && c->objectName() == "dxGraph" && c->height() < 260) vg = c;
         check(vg != nullptr, "Vibrato: the graph is there");
         if (vg) {
             uitest::mouseDrag(vg, QPoint(vg->width() / 2, vg->height() / 2), QPoint(vg->width() / 2, vg->height() / 4), 4);

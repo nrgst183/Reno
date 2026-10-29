@@ -226,8 +226,8 @@ void flickerRender(Ctx& c)
                     for (int q = 0; q < kGX * kGY; ++q) tmean[(size_t)q] += mj[(size_t)q];
                 }
                 for (float& v : tmean) v /= (float)nb.size();
-                double gs0 = 0, gst = 0, gsw = 0;
-                for (int q = 0; q < kGX * kGY; ++q) { gs0 += w0[(size_t)q] * mean0[(size_t)q]; gst += w0[(size_t)q] * tmean[(size_t)q]; gsw += w0[(size_t)q]; }
+                double gs0 = 0, gst = 0;
+                for (int q = 0; q < kGX * kGY; ++q) { gs0 += w0[(size_t)q] * mean0[(size_t)q]; gst += w0[(size_t)q] * tmean[(size_t)q]; }
                 const double g0 = (gs0 > 1e-6) ? clampd(gst / gs0, 0.4, 2.5) : 1.0;
                 gainGrid.assign(kGX * kGY, 1.f);
                 for (int q = 0; q < kGX * kGY; ++q) {

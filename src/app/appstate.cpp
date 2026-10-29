@@ -405,6 +405,7 @@ void AppState::fxEditStep(uint64_t slotId, const std::string& what, const std::f
 void AppState::newProject(bool vegasDefaults)
 {
     if (dragging_) cancelDrag();
+    ++projectSerial_;
     project_ = Project();
     releaseUnusedNestedProjects();
     if (vegasDefaults) {

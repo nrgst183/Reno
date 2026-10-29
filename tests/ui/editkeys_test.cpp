@@ -41,27 +41,6 @@ MainWindow* gW = nullptr;
 QString gOut;
 std::string gStatus;
 
-QString plain(QString t) { return t.split('\t')[0].remove('&'); }
-
-QAction* item(const QString& path)
-{
-    const QStringList parts = path.split('/');
-    QList<QAction*> acts = gW->menuBar()->actions();
-    QAction* found = nullptr;
-    for (QString p : parts) {
-        p.replace('|', '/');
-        found = nullptr;
-        for (QAction* a : acts)
-            if (!a->isSeparator() && plain(a->text()) == p) { found = a; break; }
-        if (!found) return nullptr;
-        if (found->menu()) {
-            emit found->menu()->aboutToShow();
-            acts = found->menu()->actions();
-        }
-    }
-    return found;
-}
-
 bool near(double a, double b, double tol = 1e-6) { return std::fabs(a - b) <= tol; }
 
 struct Ids { uint64_t v1 = 0, a1 = 0, a2 = 0, clip = 0, snd = 0, V = 0, S = 0, V2 = 0, S2 = 0; } ids;
@@ -179,9 +158,10 @@ void testBuiltinAudio()
     for (const AudioFxEntry& e : Catalog::get().audio())
         if (e.desc.format == "BUILTIN") {
             ++listed;
-            if (e.desc.name == "Pitch Shift") pitch = e.desc;
+            if (e.desc.uid == "reno.pitchshift") pitch = e.desc;
         }
-    check(listed == 9 && !pitch.uid.empty(), "the built-in audio effects are in the Audio FX lists", strfmt("%d", listed));
+    // Reno's own effects and its VEGAS-identical versions of VEGAS's DirectX ones
+    check(listed >= 9 && !pitch.uid.empty(), "the built-in audio effects are in the Audio FX lists", strfmt("%d", listed));
     buildProject();
     FxTarget t;
     t.kind = FxTarget::Track;
@@ -194,7 +174,7 @@ void testBuiltinAudio()
             for (const FxSlot& s : x.fx) if (s.id == slot && s.audio.format == "BUILTIN") onTrack = true;
     check(slot && onTrack, "Pitch Shift (built-in) goes on an audio track");
     AudioPlugin* pl = app.fx.audio(slot);
-    check(pl && pl->paramCount() == 5 && pl->programCount() > 0, "and is running, with its settings and presets");
+    check(pl && pl->paramCount() >= 5 && pl->programCount() > 0, "and is running, with its settings and presets");
     // its effects window: the sliders and the presets (as for any plug-in without a window of its own)
     gW->openFx(t, slot);
     uitest::settle(300);
@@ -205,16 +185,21 @@ void testBuiltinAudio()
         QWidget* top = fw->window();
         uitest::shot(top, gOut + "/builtin_pitch_shift.png");
     }
-    if (box && box->count() > 0) {
-        box->setCurrentIndex(0);
-        emit box->activated(0);
+    const int fifth = box ? box->findText("Fifth up") : -1;
+    if (fifth >= 0) {
+        box->setCurrentIndex(fifth);
+        emit box->activated(fifth);
         uitest::settle(50);
-        check(pl && std::fabs(pl->paramGet(0) - 0.75f) < 1e-3, "its \"Up an octave\" preset sets +12 semitones", pl ? pl->paramText(0) : "");
+        pl = app.fx.audio(slot);
+        check(pl && pl->paramText(0).find('7') != std::string::npos, "its \"Fifth up\" preset sets +7 semitones", pl ? pl->paramText(0) : "");
+    } else {
+        check(false, "its presets include VEGAS's \"Fifth up\"");
     }
     pl = app.fx.audio(slot);
     if (pl) {
-        pl->paramSet(0, 0.75f);     // +12
         app.fx.captureStates(const_cast<Project&>(app.project()));
+        std::string before;
+        for (const Track& x : app.project().tracks) for (const FxSlot& s : x.fx) if (s.id == slot) before = s.state.isString() ? s.state.asString() : s.state.dump();
         std::string err;
         const QString path = gOut + "/builtin_fx.reno";
         const bool saved = app.save(path.toStdString(), &err);
@@ -222,7 +207,7 @@ void testBuiltinAudio()
         const bool loaded = saved && q.load(path.toStdString(), &err);
         std::string state;
         for (const Track& x : q.tracks) for (const FxSlot& s : x.fx) if (s.id == slot) state = s.state.isString() ? s.state.asString() : s.state.dump();
-        check(loaded && state.find("Semitones=12") != std::string::npos, "its settings are kept in the project", state.substr(0, 80));
+        check(loaded && !state.empty() && state == before, "its settings are kept in the project", state.substr(0, 80));
     }
 }
 

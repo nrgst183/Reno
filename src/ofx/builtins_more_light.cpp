@@ -3,7 +3,6 @@
 #include "vkfilters.h"
 #include "builtins_more_internal.h"
 #include "builtins_fast.h"
-#include "builtins_vec.h"
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>

@@ -27,7 +27,6 @@ D2 d2(double d)
     std::memcpy(&b, &d, 8);
     return D2{(uint32_t)(b >> 32), (uint32_t)b};
 }
-inline uint32_t u32(int v) { return (uint32_t)std::max(0, v); }
 
 bool planSepia(Ctx& c, Plan& p)
 {
@@ -592,7 +591,6 @@ bool planRadialBlur(Ctx& c, Plan& p)
         tab.resize(rec.size());
         if (okSteps) std::memcpy(tab.data(), rec.data(), rec.size() * 4);
         key = k;
-        if (std::getenv("VKDBG")) std::fprintf(stderr, "radialblur: %s, %zu steps, %zu pixels\n", okSteps ? "ok" : "declined", starts.size(), rec.size());
     }
     if (!okSteps) return false;        // (more than 1000 steps: about HD and up, where the host replay (~100 ms at 1080p, ~350 ms at 4K) costs as much as the CPU effect)
     const int S = p.addBuf(p.w, p.h, 4), D = p.addBuf(p.w, p.h, 4);

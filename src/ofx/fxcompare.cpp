@@ -1725,7 +1725,7 @@ int compareParameterLists(const std::vector<std::string>& dirs, Json& out, std::
     Host& host = Host::get();
     Binary* bin = host.loadBinary(kBuiltinBinaryPath, nullptr);
     Json effects = Json::array(), noBuiltin = Json::array();
-    int differ = 0, same = 0, labelOnly = 0, compared = 0;
+    int differ = 0, same = 0, labelOnly = 0;
     std::vector<std::string> noBuiltinLines, diffLines;
     for (const auto& kv : res) {
         const std::string& id = kv.first;
@@ -1775,7 +1775,6 @@ int compareParameterLists(const std::vector<std::string>& dirs, Json& out, std::
             std::string err;
             std::unique_ptr<Instance> inst = pl->createInstance(full, setup, &err);
             if (!inst) { cj["problem"] = "no instance: " + err; ctxArr.push(cj); effDiffers = true; effLines.push_back(strfmt("    %s: the built-in makes no instance (%s)", c, err.c_str())); continue; }
-            ++compared;
             std::map<std::string, Param*> have, haveLower;
             for (const auto& p : inst->params.params) { have[p->name] = p.get(); haveLower[toLower(p->name)] = p.get(); }
             Json caseOnly = Json::array();

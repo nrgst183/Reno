@@ -15,6 +15,7 @@
 #include "timeline.h"
 #include "../media/media.h"
 #include "lazyrefresh.h"
+#include "pollrate.h"
 #include "strconv.h"
 #include <QAbstractButton>
 #include <QApplication>
@@ -433,6 +434,7 @@ struct VideoScopes::Impl {
     QToolButton* whilePlaying = nullptr;
     QToolButton* settings = nullptr;
     QTimer* timer = nullptr;
+    PollRate* rate = nullptr;          // slows the timer when the picture is not changing
     qint64 lastKey = -1;
     void take(const QImage& img)
     {
@@ -540,11 +542,16 @@ VideoScopes::VideoScopes(Playback* playback, QWidget* parent) : QWidget(parent),
         if (!isVisible() || !d->pb) return;
         if (d->pb->playing() && !d->whilePlaying->isChecked()) return;
         const QImage img = d->pb->lastFrame();
-        if (img.isNull() || img.cacheKey() == d->lastKey) return;
+        if (img.isNull() || img.cacheKey() == d->lastKey) {
+            if (d->rate) d->rate->ticked(false);
+            return;
+        }
         d->lastKey = img.cacheKey();
         d->take(img);
+        if (d->rate) d->rate->ticked(true);
     });
     d->timer->start();
+    d->rate = new PollRate(this, d->timer, 100);
 }
 
 VideoScopes::~VideoScopes() {}

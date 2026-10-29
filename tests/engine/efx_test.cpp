@@ -127,17 +127,6 @@ static double toneLevel(const std::vector<float>& x, double f, size_t from)
 
 // ---------------------------------------------------------------------------------------------------- what the real ones read
 // (setting, 0..1 value, the text the real plug-in showed for it)
-struct Reading { int index; double x; const char* text; };
-
-static void textsOf(const char* label, AudioPlugin& p, const std::vector<Reading>& rs)
-{
-    for (const Reading& r : rs) {
-        p.paramSet(r.index, (float)r.x);
-        const std::string t = p.paramText(r.index);
-        check(t == r.text, std::string(label) + ": #" + std::to_string(r.index) + " " + p.paramName(r.index) + " " + fmt("%.4f", r.x) + " reads \"" + r.text + "\"", "got \"" + t + "\"");
-    }
-}
-
 // the saved settings of a slot of the sample projects, as the .veg's FxCk values (31 floats)
 static std::string stateOf(const std::vector<float>& v)
 {

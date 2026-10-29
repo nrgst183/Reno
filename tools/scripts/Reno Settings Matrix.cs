@@ -785,6 +785,32 @@ public class EntryPoint
                 return "";
             });
 
+        // more groups (the first run showed a group as flags in the track headers: which track carries which flag needs more)
+        Func<Vegas, int[], string> selectGroup = delegate(Vegas x, int[] which)
+        {
+            foreach (object t in (System.Collections.IEnumerable)Get(Resolve(x, "Project"), "Tracks")) Set(t, "Selected", false);
+            foreach (int i in which) Set(Resolve(x, "Project.Tracks[" + i + "]"), "Selected", true);
+            Call(Resolve(x, "Project"), "GroupSelectedTracks");
+            return "";
+        };
+        AddCustom(list, BaseFile, "trackgroup_all_three", "all three tracks grouped",
+            delegate(Vegas x) { return selectGroup(x, new int[] { 0, 1, 2 }); });
+        AddCustom(list, BaseFile, "trackgroup_two_groups", "a third video track added; tracks 1+2 grouped and tracks 3+4 grouped (two groups)",
+            delegate(Vegas x)
+            {
+                Call(Resolve(x, "Project"), "AddVideoTrack");
+                selectGroup(x, new int[] { 0, 1 });
+                return selectGroup(x, new int[] { 2, 3 });
+            });
+        AddCustom(list, BaseFile, "trackgroup_audio_pair", "a second audio track added; the two audio tracks grouped",
+            delegate(Vegas x)
+            {
+                Call(Resolve(x, "Project"), "AddAudioTrack");
+                return selectGroup(x, new int[] { 2, 3 });
+            });
+        AddCustom(list, BaseFile, "trackgroup_first_and_third", "tracks 1 and 3 grouped (not next to each other)",
+            delegate(Vegas x) { return selectGroup(x, new int[] { 0, 2 }); });
+
         // --- buses: sends (envelopes), settings, envelopes on buses, the master and the video output
         AddCustom(list, BaseBusFile, "send_envelope_to_bus_A", "the audio track gets a BusA (send) envelope with a point at 1 s (0.5)",
             delegate(Vegas x)

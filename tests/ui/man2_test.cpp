@@ -38,7 +38,6 @@ using uitest::check;
 namespace {
 
 AppState& st() { return AppState::get(); }
-MainWindow* gW = nullptr;
 
 struct Ids {
     uint64_t v1 = 0, v2 = 0, a1 = 0, a2 = 0;
@@ -155,8 +154,6 @@ bool menuPick(QWidget* w, QPoint pos, const QString& text, const QString& sub = 
     uitest::settle(50);
     return found;
 }
-
-QAction* action(const char* name) { return gW ? gW->findChild<QAction*>(name) : nullptr; }
 
 // ================================================================================================ envelopes
 void envelopeTests(TimelineWidget& w, const QString& out)

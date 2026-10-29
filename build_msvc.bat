@@ -48,9 +48,15 @@ if errorlevel 1 (type "%LOG%" & goto failed)
 if not exist build\out mkdir build\out
 for %%f in (reno.exe reno_cli.exe reno_vst32.exe mediatest.exe) do copy /Y "%BDIR%\bin\%%f" build\out\ >nul
 rem Qt's DLLs and plug-ins (without Qt's FFmpeg backend; Reno's own FFmpeg is copied below)
-"%QTDIR%\bin\windeployqt.exe" --release --no-translations --no-compiler-runtime --exclude-plugins ffmpegmediaplugin build\out\reno.exe >> "%LOG%" 2>&1
+rem and without what Reno never uses: the software OpenGL fallback, Direct3D shader compilers, SVG and PDF, network
+rem and touch plug-ins, and the image formats it does not read (the color-match picker reads png jpg bmp tif gif webp)
+"%QTDIR%\bin\windeployqt.exe" --release --no-translations --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler --skip-plugin-types generic,networkinformation,tls,iconengines --exclude-plugins ffmpegmediaplugin,qsvg,qico,qicns,qtga,qwbmp,qpdf,qdirect2d,qminimal,qoffscreen build\out\reno.exe >> "%LOG%" 2>&1
+rem (leftovers of an earlier, fuller deployment into the same folder)
+for %%d in (iconengines generic networkinformation tls) do if exist "build\out\%%d" rmdir /s /q "build\out\%%d"
+for %%f in (Qt6Svg Qt6Pdf Qt6OpenGLWidgets opengl32sw D3Dcompiler_47 dxcompiler dxil avdevice-* avfilter-* postproc-*) do del /q "build\out\%%f*.dll" 2>nul
+for %%f in (qsvg qico qicns qtga qwbmp qpdf) do del /q "build\out\imageformats\%%f.dll" 2>nul
 rem reno_cli.exe needs only Qt Core and Gui, which the reno.exe deployment already copied
-for %%p in (av sw postproc) do if exist "%FFDIR%\bin\%%p*.dll" copy /Y "%FFDIR%\bin\%%p*.dll" build\out\ >nul
+for %%p in (avcodec avformat avutil swscale swresample) do if exist "%FFDIR%\bin\%%p*.dll" copy /Y "%FFDIR%\bin\%%p*.dll" build\out\ >nul
 rem Tools > Scripting: the ScriptPortal.Vegas source (compiled on first use) and an empty Script Menu folder
 if not exist build\out\scripting mkdir build\out\scripting
 copy /Y src\scripting\*.cs build\out\scripting\ >nul

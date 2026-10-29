@@ -189,7 +189,8 @@ struct FxBrowser::Impl {
         if (id.isEmpty() || id.startsWith("com.vegascreativesoftware") || id.startsWith("com.sonycreativesoftware") || id.startsWith("com.magix") ||
             id.startsWith("org.reno"))
             return QString();
-        QStringList parts = id.split(QRegularExpression("[.:]"), Qt::SkipEmptyParts);
+        static const QRegularExpression dotOrColon("[.:]");       // (compiled once: this runs for every plug-in)
+        QStringList parts = id.split(dotOrColon, Qt::SkipEmptyParts);
         if (parts.size() >= 2 && (parts[0] == "com" || parts[0] == "org" || parts[0] == "net" || parts[0] == "de" || parts[0] == "fr" || parts[0] == "uk")) return parts[1];
         return parts.isEmpty() ? QString() : parts[0];
     }
@@ -355,8 +356,21 @@ struct FxBrowser::Impl {
         }
     }
 
+    // The list is filled when it is shown (a browser in a hidden tab costs nothing at start-up, and hidden ones are not
+    // refilled for every catalog change); a visible one is filled at once.
+    bool stale = false;
     void rebuild()
     {
+        if (owner->isVisible()) fill();
+        else stale = true;
+    }
+    void ensureFilled()
+    {
+        if (stale) fill();
+    }
+    void fill()
+    {
+        stale = false;
         for (int k = 0; k < tree->topLevelItemCount(); ++k) {
             QTreeWidgetItem* g = tree->topLevelItem(k);
             if (g->isExpanded()) collapsed.erase(g->text(0));
@@ -601,6 +615,19 @@ FxBrowser::FxBrowser(Kind kind, QWidget* parent) : QWidget(parent), d(new Impl()
         });
         menu.exec(impl->tree->viewport()->mapToGlobal(pos));
     });
+    // filled when first shown
+    struct FillOnShow : QObject {
+        std::function<void()> fill;
+        bool eventFilter(QObject*, QEvent* e) override
+        {
+            if (e->type() == QEvent::Show) fill();
+            return false;
+        }
+    };
+    auto* onShow = new FillOnShow();
+    onShow->setParent(this);
+    onShow->fill = [impl] { impl->ensureFilled(); };
+    installEventFilter(onShow);
     d->rebuild();
 }
 
@@ -616,6 +643,7 @@ void FxBrowser::setFavorite(const std::string& pluginId, bool on)
 
 void FxBrowser::setCategory(const QString& key)
 {
+    d->ensureFilled();
     if (!d->category) return;
     const int i = d->category->findData(key);
     if (i >= 0) d->category->setCurrentIndex(i);
@@ -623,6 +651,7 @@ void FxBrowser::setCategory(const QString& key)
 
 int FxBrowser::listedPlugins() const
 {
+    d->ensureFilled();
     int n = 0;
     for (QTreeWidgetItemIterator it(d->tree); *it; ++it)
         if ((*it)->data(0, kRoleLeaf).toBool()) ++n;

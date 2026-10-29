@@ -10,7 +10,7 @@
 //
 //   perf_bench <media folder> [--fx testfx.ofx] [--frames N] [--quick] project.veg...
 // The media folder holds clip480.mp4 (640x480 29.97), clip720.mp4 (1280x720 30, 60 s, GOP 300), clip1080.mp4
-// (1920x1080 60, GOP 600), tone.wav and still.png (see tests/engine/perf_media.sh). With --fx every OpenFX effect in
+// (1920x1080 60, GOP 600), tone.wav and still.png (make them with ffmpeg). With --fx every OpenFX effect in
 // the project is replaced by the test plug-in's Invert.
 #include "../../src/engine/engine.h"
 #include "../../src/vegas/vegas.h"
@@ -182,13 +182,11 @@ int main(int argc, char** argv)
         double t0 = nowMs();
         if (!loadProjectFile(path, p, &err)) { std::fprintf(stderr, "%s: %s\n", path.c_str(), err.c_str()); continue; }
         report("open", nowMs() - t0, "ms");
-        size_t events = 0, fxCount = 0, envPts = 0;
+        size_t events = 0, fxCount = 0;
         int vtracks = 0, atracks = 0;
         for (const auto& t : p.tracks) {
             events += t.events.size();
             (t.type == TrackType::Video ? vtracks : atracks)++;
-            for (const auto& e : t.events)
-                for (const auto& env : e.envelopes) envPts += env.points.size();
         }
         p.forEachFx([&](const FxSlot&) { ++fxCount; });
         std::printf("INFO  %s: %dx%d %.3f fps, %d video + %d audio tracks, %zu events, %zu media, %zu effects, %.1f s\n", gName.c_str(),

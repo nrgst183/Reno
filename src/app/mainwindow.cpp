@@ -161,6 +161,8 @@
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QProcess>
+#include <QHash>
+#include <QIcon>
 #include <QProxyStyle>
 #include <QPushButton>
 #include <QProgressDialog>
@@ -210,6 +212,11 @@ class RenoStyle : public QProxyStyle {
 public:
     RenoStyle() : QProxyStyle(QStyleFactory::create("Fusion")) {}
 
+private:
+    mutable QHash<int, QIcon> icons_;
+
+public:
+
     int pixelMetric(PixelMetric m, const QStyleOption* o, const QWidget* w) const override
     {
         if (m == PM_ScrollBarExtent) return 17;
@@ -221,6 +228,25 @@ public:
         // VEGAS keeps a dragged scroll box with the mouse however far it goes; Windows' hint would snap it back
         if (m == PM_MaximumDragDistance) return -1;
         return QProxyStyle::pixelMetric(m, o, w);
+    }
+
+    // Fusion reads and decodes the title bar button pictures of a dock (close, float) from Qt's resources every time a dock
+    // is made or floated: about a fifth of the start-up time with the 30 or so docks of the default layout. They never
+    // change, so each is read once.
+    QIcon standardIcon(StandardPixmap sp, const QStyleOption* o, const QWidget* w) const override
+    {
+        switch (sp) {
+        case SP_TitleBarCloseButton:
+        case SP_TitleBarNormalButton:
+        case SP_TitleBarMinButton:
+        case SP_TitleBarMaxButton:
+        case SP_DockWidgetCloseButton: {
+            auto it = icons_.find((int)sp);
+            if (it == icons_.end()) it = icons_.insert((int)sp, QProxyStyle::standardIcon(sp, o, w));
+            return it.value();
+        }
+        default: return QProxyStyle::standardIcon(sp, o, w);
+        }
     }
 
     // Docked window tab close button: a plain light cross as in VEGAS (Fusion's boxed image showed as a red box).
@@ -1205,8 +1231,11 @@ MainWindow::MainWindow() : a_(new Actions())
     AutomationHooks::position = [this] { return playback_ ? playback_->position() : 0.0; };
     QTimer* automationTimer = new QTimer(this);
     automationTimer->setInterval(30);
-    QObject::connect(automationTimer, &QTimer::timeout, this, [] { automationTick(AppState::get()); });
-    automationTimer->start();
+    // (runs only while automation takes are going, instead of waking the program 33 times a second)
+    QObject::connect(automationTimer, &QTimer::timeout, this, [automationTimer] {
+        if (!automationTick(AppState::get())) automationTimer->stop();
+    });
+    AutomationHooks::wake = [automationTimer] { if (!automationTimer->isActive()) automationTimer->start(); };
 
     themePref_ = app.prefs.theme;
     listener_ = app.addListener([this](int changes) {
@@ -1328,6 +1357,7 @@ void MainWindow::restyle()
 
 MainWindow::~MainWindow()
 {
+    AutomationHooks::wake = nullptr;
     if (layoutSaver_) layoutSaver_->stop();
     stopAudioProxies(false);
     tools_.reset();
@@ -1480,7 +1510,7 @@ void MainWindow::buildActions()
     // ---- navigation
     add("goTo", "&Go To...", keys({"Ctrl+G"}), [this] { goToDialog(false); });
     add("setSelectionEnd", "Set &End of Time Selection...", keys({"Ctrl+Shift+G"}), [this] { goToDialog(true); });
-    add("goStart", "Go to &Start", keys({"Ctrl+Home", "W"}), [pb, &app, moved] { pb->jumpTo(0); moved(); });
+    add("goStart", "Go to &Start", keys({"Ctrl+Home", "W"}), [pb, moved] { pb->jumpTo(0); moved(); });
     add("goEnd", "Go to E&nd", keys({"Ctrl+End"}), [pb, &app, moved] { pb->pause(); app.setCursor(app.project().length()); moved(); });
     // with the track list focused (Tab), Ctrl+Left / Right change track volume instead
     add("prevMarker", "Previous &Marker", keys({"Ctrl+Left"}), [tl] {

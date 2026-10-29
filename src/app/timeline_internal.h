@@ -1593,7 +1593,7 @@ struct TimelineWidget::Impl {
     void pickFadeColor(const EnvelopeOwner& o, bool top);
     void fxWindowsMenu(QMenu& menu, uint64_t id);
 
-    // ---- the right-click menus, in VEGAS Pro 18's order and with its names (its menu resources: notes/vegas_menus.txt)
+    // ---- the right-click menus, in VEGAS Pro 18's order and with its names (its menu resources)
     // A command of the main window (its QAction, by object name), shown as it is there with its key, ticked or
     // greyed. Left out when there is no main window.
     QAction* command(QMenu& menu, const char* name, const QString& text = QString());

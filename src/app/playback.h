@@ -296,6 +296,14 @@ private:
     struct HandedRun { int64_t dev = 0; double timeline = 0; double rate = 1; };
     std::deque<HandedRun> handed_;
     int64_t handedFrames_ = 0;
+    // The play position as shown: the heard position followed smoothly (smoothPosition). The device takes sound in
+    // pieces at uneven moments, so the heard position runs in small jumps and stalls; frames paced by it would come
+    // unevenly and some be skipped. smoothWall_ 0: starts again from the heard position.
+    double heardPosition();
+    double smoothPosition(double heard);
+    std::mutex smoothMutex_;
+    double smoothPos_ = 0, smoothWall_ = 0;
+    bool smoothMoving_ = false;     // the heard position has moved since smoothing started again (the device plays)
     // Diagnostics for playback-log.txt beside reno.exe: a line a second while playing with what the frame threads, the
     // sound device and the UI did, for investigating a slow preview.
     struct Diag {
@@ -413,7 +421,7 @@ private:
     void newPlayGeneration();
     void setPlayClock(double pos);
     void present();
-    void showFrame(const QImage& image, double seconds, double ms, double scale, bool counted);
+    void showFrame(const QImage& image, double seconds, double ms, double scale, bool counted, int64_t frame = -1);
     bool planPlayJob(int index, std::unique_lock<std::mutex>& lk, int64_t& frame, std::shared_ptr<std::atomic<bool>>& cancel,
                      double& dyn, double& waitFor, bool& aheadJob);
     void ramToReady(bool post = true);
@@ -445,7 +453,8 @@ private:
     std::atomic<double> lastScale_{1.0};
     double dynScale_ = 1.0;
     int fastFrames_ = 0;
-    std::deque<double> shownAt_;
+    struct Shown { double at; int64_t frame; };     // when a frame was shown while playing, and which
+    std::deque<Shown> shownAt_;
     double playBegan_ = 0;
     double frameScale(const Project& p, double dyn);
     std::deque<Cached> cache_;

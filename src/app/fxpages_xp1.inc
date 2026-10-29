@@ -115,8 +115,8 @@ private:
     {
         QWidget* box = xpBox(265, 133);
         QLabel* el = xpLabel(box, "E<u>f</u>fect:", 5, 22, 28, 8);
-        QRadioButton* fl = new QRadioButton("&Flange", this);
-        QRadioButton* wah = new QRadioButton("&Wah-Wah", this);
+        QRadioButton* fl = new QRadioButton("Flange", this);
+        QRadioButton* wah = new QRadioButton("Wah-Wah", this);
         fl->setObjectName("dxParam0_0");
         wah->setObjectName("dxParam0_1");
         xpPut(box, fl, 39, 21, 42, 10);

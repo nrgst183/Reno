@@ -219,8 +219,10 @@ int main(int argc, char** argv)
         const int piece = 240;
         std::vector<float> l(piece), r(piece), heard;
         double worstOutside = 0, worstOff = 0;
+        // taken in real time, 5 ms every 5 ms (the shown position follows the clock, drawn toward the sound)
+        const auto began = std::chrono::steady_clock::now();
         for (int k = 0; k < 300 && out->pull; ++k) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            std::this_thread::sleep_until(began + std::chrono::microseconds(5000 * k));
             out->pull(l.data(), r.data(), piece);
             heard.insert(heard.end(), l.begin(), l.end());
             const double pos = pb.position();
@@ -237,7 +239,8 @@ int main(int argc, char** argv)
         }
         pb.pause();
         check(worstOutside < 1e-6, "a short loop region: the cursor stays inside it", strfmt("%.4f s outside", worstOutside));
-        check(worstOff < 0.002, "and is at the sample being heard", strfmt("%.4f s off", worstOff));
+        // (the cursor follows the heard position smoothly, so a late piece of sound does not jerk it: within half a frame)
+        check(worstOff < 0.015, "and is at the sample being heard", strfmt("%.4f s off", worstOff));
         out->latency = 0;
         app.loopOn = false;
         app.setLoop(0, 0);

@@ -215,6 +215,9 @@ public:
     const std::vector<std::string>& openNotes() const { return openNotes_; }
     const std::vector<std::string>& saveWarnings() const { return saveWarnings_; }
     const std::string& path() const { return path_; }
+    // Goes up each time another project replaces this one (File > New, Open, Close): caches of the last one's frames
+    // and pictures are let go then.
+    uint64_t projectSerial() const { return projectSerial_; }
     bool dirty() const { return dirty_; }
     // Keeps the project but ties it to no file (restored from auto-save: Save asks for a name).
     void untieFromFile();
@@ -422,6 +425,7 @@ private:
     int nextListener_ = 1;
     int notifyDepth_ = 0;
     int pending_ = 0;
+    uint64_t projectSerial_ = 0;
 };
 
 // An event's start moved by 'delta': its envelope points move back by as much so they stay put on the timeline.

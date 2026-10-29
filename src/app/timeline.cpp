@@ -556,8 +556,6 @@ void TimelineWidget::updateCursor(const QRegion& r)
 // cursor, and a size that isn't huge.
 bool TimelineWidget::Impl::layerUsable() const
 {
-    static const bool off = std::getenv("RENO_NO_TIMELINE_LAYER") != nullptr;
-    if (off) return false;
     const qreal dpr = q->devicePixelRatioF();
     if (dpr != std::floor(dpr) || dpr < 1.0 || dpr > 4.0) return false;
     if ((double)q->width() * q->height() * dpr * dpr > 24e6) return false;

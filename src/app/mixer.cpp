@@ -14,6 +14,7 @@
 #include "pluginchooser.h"
 #include "fxlibrary.h"
 #include "automationctl.h"
+#include "pollrate.h"
 #include "strconv.h"
 #include <QApplication>
 #include <QComboBox>
@@ -2010,6 +2011,8 @@ struct MixerWindow::Impl {
     bool stale = false;
     std::unique_ptr<Listener> listener;
     QTimer* meterTimer = nullptr;
+    PollRate* rate = nullptr;       // slows the meter timer when nothing plays
+    bool previewMoving = false;
     MeterFeed<> feed;
     std::function<void(const QPoint&)> meterMenuFn;
 
@@ -2303,7 +2306,9 @@ struct MixerWindow::Impl {
             const double dt = std::min(0.2, std::max(0.0, now - previewLast));
             previewLast = now;
             PreviewBus& pv = previewBus();
-            preview->fader->feed(pv.peakL.exchange(0.f), pv.peakR.exchange(0.f), now, dt);
+            const float pl = pv.peakL.exchange(0.f), pr = pv.peakR.exchange(0.f);
+            preview->fader->feed(pl, pr, now, dt);
+            previewMoving = pl > 0.f || pr > 0.f;
         }
         if (view.vu) {
             const double dt = vuClock.isValid() ? std::min(0.25, vuClock.restart() / 1000.0) : 0.033;
@@ -2319,6 +2324,7 @@ struct MixerWindow::Impl {
             const QSignalBlocker b(dimBtn);
             dimBtn->setChecked(pb->dimmed());
         }
+        if (rate) rate->ticked((pb && pb->playing()) || previewMoving);
     }
 
     void save() const
@@ -2881,6 +2887,7 @@ MixerWindow::MixerWindow(Playback* playback, QWidget* parent) : QWidget(parent),
     d->meterTimer->setInterval(33);
     QObject::connect(d->meterTimer, &QTimer::timeout, [this] { d->tickMeters(); });
     d->meterTimer->start();
+    d->rate = new PollRate(this, d->meterTimer, 33);
     d->load();
     setProperty("channelListShown", !d->channelPane->isHidden());
     setProperty("viewControlsShown", !d->viewPane->isHidden());
@@ -2910,7 +2917,7 @@ bool MixerWindow::handleKey(int key, Qt::KeyboardModifiers mods)
     if (!consoleKey(key, mods)) return false;
     const bool shift = mods & Qt::ShiftModifier;
     ConsoleView& v = d->view;
-    auto toggle = [this](QToolButton* b) { b->setChecked(!b->isChecked()); };
+    auto toggle = [](QToolButton* b) { b->setChecked(!b->isChecked()); };
     switch (key) {
     case Qt::Key_F2: {
         for (Strip* s : d->all())
@@ -3422,6 +3429,7 @@ struct MasterBusWidget::Impl {
     MasterMeter* meters = nullptr;
     std::unique_ptr<Listener> listener;
     QTimer* meterTimer = nullptr;
+    PollRate* rate = nullptr;
     MeterFeed<MasterMeter> feed;
 
     void refresh()
@@ -3441,6 +3449,7 @@ struct MasterBusWidget::Impl {
         std::vector<std::pair<uint64_t, MasterMeter*>> list;
         list.push_back(std::make_pair((uint64_t)0, meters));
         feed.tick(pb, list);
+        if (rate) rate->ticked(pb && pb->playing());
     }
 };
 
@@ -3548,6 +3557,7 @@ MasterBusWidget::MasterBusWidget(Playback* playback, QWidget* parent) : QWidget(
     d->meterTimer->setInterval(33);
     QObject::connect(d->meterTimer, &QTimer::timeout, [this] { d->tickMeters(); });
     d->meterTimer->start();
+    d->rate = new PollRate(this, d->meterTimer, 33);
     d->refresh();
 }
 

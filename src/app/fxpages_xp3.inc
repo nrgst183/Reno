@@ -72,7 +72,7 @@ private:
         SMap m;
         m.dec = dec;
         m.comma = comma;
-        QLineEdit* e = x3Edit(box, i, boxX, y + 10, boxW, dec, comma);
+        x3Edit(box, i, boxX, y + 10, boxW, dec, comma);
         DxSlider* s = slider(Qt::Horizontal, fixed(i), m, QString("dxParam%1").arg(i), nullptr, nullptr);
         x3Put(box, s, x, y + 10, trackW, 12);
         l->setBuddy(s);
@@ -164,6 +164,7 @@ private:
             fm.inf = true;
             DxSlider* f = slider(Qt::Vertical, fixed(b), fm, QString("dxParam%1").arg(b), nullptr, nullptr);
             x3Put(box, f, x, 27, 10, 73);
+            digitMnemonic(f, b);
             x3Label(box, centre[b], x - 2, 100, 14, 8, Qt::AlignHCenter | Qt::AlignVCenter);
             sync_.push_back([=] {
                 const Rng r = rng(b);

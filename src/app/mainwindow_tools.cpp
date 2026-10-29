@@ -1,5 +1,6 @@
 // The main window's added windows and tools; see mainwindow_tools.h.
 #include "mainwindow_tools.h"
+#include "pollrate.h"
 #include "vprefs.h"
 #include "timeline.h"
 #include "panels.h"
@@ -89,8 +90,10 @@ public:
         QObject::connect(timer_, &QTimer::timeout, this, [this] {
             rec_->inputLevel(l_, r_);
             update();
+            if (rate_) rate_->ticked(rec_->recording() || l_ > 1e-4f || r_ > 1e-4f);
         });
         timer_->start();
+        rate_ = new PollRate(this, timer_, 50);
     }
     float left() const { return l_; }
 
@@ -127,6 +130,7 @@ protected:
 private:
     Recorder* rec_;
     QTimer* timer_ = nullptr;
+    PollRate* rate_ = nullptr;
     float l_ = 0, r_ = 0;
 };
 

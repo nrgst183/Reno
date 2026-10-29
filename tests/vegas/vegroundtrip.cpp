@@ -114,7 +114,7 @@ static void describe(const Project& p, std::vector<std::string>& out)
     out.push_back(strfmt("project %dx%d %d/%d %d Hz bits %d par %s tempo %s bpm %d", s.width, s.height, s.fpsNum, s.fpsDen, s.sampleRate, s.audioBits,
                          fmtd(s.pixelAspect).c_str(), fmtd(s.tempo).c_str(), s.beatsPerMeasure));
     out.push_back("info '" + s.title + "' '" + s.artist + "' '" + s.engineer + "' '" + s.copyright + "' '" + s.comments + "'");
-    out.push_back("master " + fmtd(p.masterVolume));
+    out.push_back("master " + fmtd(p.masterVolume) + strfmt(" mute %d", p.masterMute));
     std::map<uint64_t, std::string> mediaName;
     for (const auto& m : p.media) {
         mediaName[m.id] = m.generated ? "gen:" + m.name : m.path;
@@ -124,7 +124,7 @@ static void describe(const Project& p, std::vector<std::string>& out)
     std::map<uint64_t, std::string> busName;
     for (const auto& b : p.buses) {
         busName[b.id] = b.name;
-        out.push_back("bus '" + b.name + "' " + fmtd(b.level));
+        out.push_back("bus '" + b.name + "' " + fmtd(b.level) + strfmt(" mute %d solo %d pan type '%s'", b.mute, b.solo, b.panType.c_str()));
         for (const auto& f : b.fx) out.push_back("  bus fx " + fxText(f));
     }
     std::map<uint64_t, int> groupNo, groupSize;
@@ -133,9 +133,9 @@ static void describe(const Project& p, std::vector<std::string>& out)
             if (e.group) ++groupSize[e.group];
     for (size_t ti = 0; ti < p.tracks.size(); ++ti) {
         const Track& t = p.tracks[ti];
-        out.push_back(strfmt("track %zu %s '%s' mute %d solo %d level %s pan %s height %d out '%s' comp %s parent %s fade %08x %08x", ti,
+        out.push_back(strfmt("track %zu %s '%s' mute %d solo %d level %s pan %s height %d out '%s' comp %s parent %s child %d fade %08x %08x", ti,
                              t.type == TrackType::Video ? "V" : "A", t.name.c_str(), t.mute, t.solo, fmtd(t.level).c_str(), fmtd(t.pan).c_str(), t.height,
-                             t.output ? busName[t.output].c_str() : "", t.composite.c_str(), t.parentComposite.c_str(), t.fadeTop, t.fadeBottom));
+                             t.output ? busName[t.output].c_str() : "", t.composite.c_str(), t.parentComposite.c_str(), t.compositeLevel, t.fadeTop, t.fadeBottom));
         for (const auto& f : t.fx) out.push_back("  track fx " + fxText(f));
         for (const auto& e : t.envelopes) out.push_back("  track env " + envText(e) + (e.kind == "send" ? " to '" + busName[e.target] + "'" : ""));
         for (const auto& e : t.events) {
@@ -146,10 +146,11 @@ static void describe(const Project& p, std::vector<std::string>& out)
                 g = it->second;
             }
             out.push_back(strfmt("  event %.7f +%.7f off %.7f rate %s gain %.6g fades %.7f/%.7f curves %d/%d mute %d loop %d rev %d pitch %s keep %d "
-                                 "ch %s aspect %d resample %s grp %d '%s' media %s",
+                                 "ch %s aspect %d resample %s under %s flicker %d grp %d '%s' media %s",
                                  e.start, e.length, e.offset, fmtd(e.rate).c_str(), e.gain, e.fadeIn, e.fadeOut, e.fadeInCurve, e.fadeOutCurve, e.mute, e.loop,
                                  e.reverse, e.stretchMethod == "none" ? "-" : fmtd(e.pitch).c_str(), e.stretchMethod == "none" ? 0 : e.keepPitch,
-                                 e.channels.c_str(), e.keepAspect, e.resample.c_str(), g, e.name.c_str(), mediaName[e.mediaId].c_str()));
+                                 e.channels.c_str(), e.keepAspect, e.resample.c_str(), fmtd(e.undersample).c_str(), e.reduceFlicker, g, e.name.c_str(),
+                                 mediaName[e.mediaId].c_str()));
             out.push_back(strfmt("    locked %d", e.locked));
             if (t.type == TrackType::Audio)
                 out.push_back(strfmt("    stretch %s %s formant %s preserve %d invert %d", e.stretchMethod.c_str(),
@@ -320,7 +321,7 @@ static bool writtenField(const std::string& kind, size_t off)
 {
     static const std::map<std::string, std::vector<std::pair<size_t, size_t>>> fields = {
         {"header", {{0x0c, 0x20}, {0x28, 0x2c}, {0x3c, 0x50}}},
-        {"video track", {{0x30, 0x50}, {0x64, 0x7c}, {0x80, 0x84}, {0x88, 0x98}, {0x9c, 0xa8}, {0xb0, 0xb4}}},
+        {"video track", {{0x0c, 0x10}, {0x30, 0x50}, {0x64, 0x7c}, {0x80, 0x84}, {0x88, 0x98}, {0x9c, 0xa8}, {0xac, 0xb4}}},
         {"audio track", {{0x08, 0x14}, {0x1f8, 0x200}, {0x204, 0x20c}, {0x300, 0x308}}},
         {"envelope points", {{0x08, 0x1c}}},
         {"envelope header", {{0x08, 0x18}, {0x30, 0x38}}},
@@ -330,9 +331,9 @@ static bool writtenField(const std::string& kind, size_t off)
         {"marker", {{0x08, 0x24}}},
         {"group", {{0x08, 0x0c}}},
         {"effect", {{0x20, 0x24}, {0x28, 0x30}}},
-        {"bus", {{0x14, 0x28}}},
+        {"bus", {{0x14, 0x28}, {0x5c, 0x64}, {0x7c, 0x80}}},
         {"audio event", {{0x04, 0x28}}},
-        {"video event", {{0x04, 0x08}, {0x68, 0x6c}}},
+        {"video event", {{0x04, 0x08}, {0x68, 0x6c}, {0x78, 0x80}}},
         {"track header", {{0x04, 0x0c}, {0x10, 0x18}, {0x1c, 0x20}}},
         {"mixer", {{0x6e4, 0x6ec}}},
     };
@@ -408,7 +409,16 @@ static void editValues(Project& p)
     s.artist = "Somebody";
     s.comments = "Saved by Reno";
     p.masterVolume = 0.75;
-    for (auto& b : p.buses) b.level = 0.5;
+    int bi = 0;
+    for (auto& b : p.buses) {
+        b.level = 0.5;
+        b.mute = (bi % 2) == 0;
+        b.solo = (bi % 3) == 1;
+        b.panType = bi % 2 ? "film" : "balance3";
+        ++bi;
+    }
+    p.masterMute = true;
+    int videoTracks = 0;
     int ti = 0;
     for (auto& t : p.tracks) {
         ++ti;
@@ -422,6 +432,8 @@ static void editValues(Project& p)
         } else {
             t.fadeTop = 0xFFFF8000;
             t.fadeBottom = 0xFF102030;
+            t.compositeLevel = videoTracks == 1 ? 1 : 0;       // the second video track a child of the first
+            ++videoTracks;
         }
         for (auto& f : t.fx) f.bypass = !f.bypass;
         for (auto& v : t.envelopes)
@@ -446,7 +458,10 @@ static void editValues(Project& p)
                 e.keepPitch = true;
                 e.pitch = 2.0;
             } else {
-                e.resample = e.resample == "off" ? "project" : "off";
+                e.resample = e.resample == "off" ? "project" : e.resample == "project" ? "force" : "off";
+                e.undersample = ei % 2 ? 0.5 : 0.25;
+                e.keepAspect = !e.keepAspect;
+                e.reduceFlicker = !e.reduceFlicker;
                 if (!e.panCrop.empty()) e.panCrop[0].cx = 0.25;
             }
             for (auto& f : e.fx) {

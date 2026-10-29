@@ -405,10 +405,10 @@ Recorder::Recorder(Playback* playback) : pb_(playback)
     timer_ = new QTimer();
     timer_->setInterval(30);
     QObject::connect(timer_, &QTimer::timeout, [this] {
-        if (!recording_ || stopping_ || stopAt_ <= 0) return;
+        if (!recording_ || stopping_ || stopAt_ <= 0) { timer_->stop(); return; }
         if (AppState::get().cursor() >= stopAt_ - 1e-3) stop();
     });
-    timer_->start();
+    // (runs only while a recording with an end is going: started by start())
     if (pb_) {
         pb_->setLiveInputs(
             [](const InputBus& ib, float* l, float* r, int n) { return inputHub().read(ib.id, ib.device, ib.first, ib.channels, l, r, n); },
@@ -683,6 +683,7 @@ bool Recorder::start(std::string* error)
         std::lock_guard<std::mutex> lk(mutex_);
         recording_ = true;
     }
+    if (stopAt_ > 0) timer_->start();
     if (pb_) {
         pb_->setPlayPastEnd(true);
         pb_->play();
@@ -717,6 +718,7 @@ std::vector<uint64_t> Recorder::stop()
     else syncArming();
     stopAt_ = 0;
     stopping_ = false;
+    timer_->stop();
     int64_t most = 0;
     for (int64_t f : frames) most = std::max(most, f);
     if (!ok || most <= 0) {

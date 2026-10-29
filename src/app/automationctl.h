@@ -14,6 +14,7 @@ namespace app {
 struct AutomationHooks {
     static std::function<bool()> playing;
     static std::function<double()> position;       // playback position (seconds)
+    static std::function<void()> wake;             // a take began: the main window starts calling automationTick
 };
 // The time a control shows and writes at: playback position while playing, else the cursor.
 double automationNow();
@@ -44,7 +45,7 @@ bool controlMoved(Project& p, const EnvelopeOwner& o, const std::string& kind, u
 // Control released: Touch stops writing (the old envelope returns), Latch continues until playback stops.
 void controlReleased(AppState& app);
 // Polled by a timer: Latch writes the last value during playback and finishes when it stops.
-void automationTick(AppState& app);
+bool automationTick(AppState& app);      // false: no take is going, the caller can stop calling
 
 }  // namespace app
 }  // namespace reno

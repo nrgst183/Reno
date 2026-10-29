@@ -66,6 +66,8 @@ std::string propString(PS h, const char* n, int idx = 0)
     return v;
 }
 
+#include "builtins_ranges.inc"
+
 void defineParam(OfxParamSetHandle set, const PDef& p)
 {
     const char* type = kOfxParamTypeDouble;
@@ -282,7 +284,35 @@ OfxStatus describeInContext(const Def& d, OfxImageEffectHandle effect)
             gProp->propSetInt(tp, kOfxParamPropAnimates, 0, 1);
         }
     }
-    for (const PDef& p : d.params) defineParam(set, p);
+    std::vector<PDef> ordered = d.params;
+    for (const OrderFix& f : kOrderFixes) {
+        if (d.id != f.id) continue;
+        std::vector<size_t> slots;
+        for (size_t i = 0; i < ordered.size(); ++i)
+            for (const char* n : f.names)
+                if (ordered[i].name == n) { slots.push_back(i); break; }
+        std::vector<PDef> sorted;
+        for (const char* n : f.names)
+            for (const PDef& q : ordered)
+                if (q.name == n) { sorted.push_back(q); break; }
+        if (sorted.size() == slots.size())
+            for (size_t i = 0; i < slots.size(); ++i) ordered[slots[i]] = sorted[i];
+    }
+    for (const PDef& p0 : ordered) {
+        PDef p = p0;
+        if (p.hint.empty())
+            for (const HintFix& f : kHintFixes)
+                if (d.id == f.id && p.name == f.name) p.hint = f.hint;
+        for (const RangeFix& f : kRangeFixes)
+            if (d.id == f.id && p.name == f.name && p.def.size() == 1 && (p.type == PT::Double || p.type == PT::Int)) {
+                // the display range is VEGAS's; the hard range only grows (VEGAS's presets hold values past what its sliders show)
+                p.min = std::min(p.min, f.lo);
+                p.max = std::max(p.max, f.hi);
+                p.dmin = f.lo;
+                p.dmax = f.hi;
+            }
+        defineParam(set, p);
+    }
     return kOfxStatOK;
 }
 

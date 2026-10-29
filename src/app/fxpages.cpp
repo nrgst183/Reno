@@ -9,6 +9,7 @@
 #include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QGroupBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFrame>
@@ -29,6 +30,8 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSignalBlocker>
+#include <QStyle>
+#include <QStyleOptionButton>
 #include <QSlider>
 #include <QTimer>
 #include <QTabWidget>
@@ -89,7 +92,7 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, false);
-        p.fillRect(rect(), palette().color(QPalette::Window));
+        p.fillRect(rect(), QColor(240, 240, 240));    // (the page's own face: the application style sheet would give the palette the dark theme)
         const QRectF pl = plot();
         p.fillRect(pl, Qt::white);
         p.setFont(font());
@@ -182,7 +185,7 @@ protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
-        p.fillRect(rect(), palette().color(QPalette::Window));
+        p.fillRect(rect(), QColor(240, 240, 240));    // (the page's own face: the application style sheet would give the palette the dark theme)
         const QRectF pl = plot();
         p.fillRect(pl, Qt::white);
         auto X = [&](double v) { return pl.left() + (v + 84) / 84 * pl.width(); };
@@ -323,6 +326,7 @@ struct SMap {
     int dec = 1;
     bool inf = false;
     bool comma = true;
+    bool noGap = false;     // a readout's unit follows the number with no space ("100%")
     double shown = 1;   // the boxes show the value times this (seconds for a setting kept in ms)
     int stepCount = 0;  // the slider's number of steps when it is not the usual 1000 (a trackbar of the plug-in that has one step per unit)
 };
@@ -430,6 +434,47 @@ private:
     std::vector<double> shown_;
 };
 
+// The small up/down spinner some pages have beside a number box (VEGAS's own "SpinnerClass" control): two arrow buttons stacked, a click on the upper one
+// adds a step to the setting, on the lower one takes one off.
+class SpinArrows : public QWidget {
+public:
+    std::function<void(int)> step;     // +1 or -1
+    explicit SpinArrows(QWidget* parent) : QWidget(parent) { setFocusPolicy(Qt::NoFocus); }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        const int h2 = height() / 2;
+        for (int k = 0; k < 2; ++k) {
+            QStyleOptionButton o;
+            o.initFrom(this);
+            o.rect = QRect(0, k ? h2 : 0, width(), k ? height() - h2 : h2);
+            o.state = (isEnabled() ? QStyle::State_Enabled : QStyle::State_None) | (down_ == k ? QStyle::State_Sunken : QStyle::State_Raised);
+            style()->drawControl(QStyle::CE_PushButton, &o, &p, this);
+            QStyleOption a;
+            a.initFrom(this);
+            a.rect = o.rect.adjusted(1, 0, -1, 0);
+            a.state = o.state;
+            style()->drawPrimitive(k ? QStyle::PE_IndicatorArrowDown : QStyle::PE_IndicatorArrowUp, &a, &p, this);
+        }
+    }
+    void mousePressEvent(QMouseEvent* e) override
+    {
+        down_ = e->position().y() < height() / 2 ? 0 : 1;
+        update();
+        if (step) step(down_ == 0 ? 1 : -1);
+    }
+    void mouseReleaseEvent(QMouseEvent*) override
+    {
+        down_ = -1;
+        update();
+    }
+
+private:
+    int down_ = -1;
+};
+
 class Page : public DxPage {
 public:
     Page(QWidget* parent, const std::string& uid, const DxHost& host) : DxPage(parent), h_(host)
@@ -476,7 +521,7 @@ public:
         root_->setContentsMargins(8, 6, 8, 8);
         root_->setSpacing(4);
         int width = 430;
-        if (uid == "reno.distortion") distortion();
+        if (uid == "reno.distortion") { distortion(); width = 520; }
         else if (uid == "reno.vibrato") vibrato();
         else if (uid == "reno.pitchshift") pitchShift();
         else if (uid == "reno.timestretch") timeStretch(false);
@@ -633,7 +678,7 @@ private:
             s->setRange(0, steps(m, r));
             if (!s->isSliderDown()) s->setValue(toPos(v, m, r));
             if (box && !box->hasFocus()) box->setText(edit(v, m, r));
-            if (readout) readout->setText(m.inf && v <= r.lo + 0.05 ? QString("-Inf.") : QString::number(std::fabs(v) < 0.5 * std::pow(10.0, -m.dec) ? 0.0 : v, 'f', m.dec) + (readUnit.isEmpty() ? QString() : " " + readUnit));
+            if (readout) readout->setText(m.inf && v <= r.lo + 0.05 ? QString("-Inf.") : QString::number(std::fabs(v) < 0.5 * std::pow(10.0, -m.dec) ? 0.0 : v, 'f', m.dec) + (readUnit.isEmpty() ? QString() : (m.noGap ? QString() : QString(" ")) + readUnit));
         });
         return s;
     }
@@ -644,6 +689,16 @@ private:
         e->setFixedSize(width, 21);
         e->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         return e;
+    }
+
+    // VEGAS's faders have a label of one digit ("&1") in front of them that Alt+digit goes through; it is hidden behind the fader
+    static void digitMnemonic(QWidget* fader, int index)
+    {
+        QLabel* l = new QLabel(QString("&%1").arg((index + 1) % 10), fader);
+        l->setBuddy(fader);
+        l->setAttribute(Qt::WA_TransparentForMouseEvents);
+        l->setStyleSheet("background: transparent; color: transparent;");
+        l->setGeometry(0, 0, 8, 8);
     }
 
     QLabel* text(const QString& t, Qt::Alignment a = Qt::AlignLeft | Qt::AlignVCenter)
@@ -812,6 +867,80 @@ private:
         return inner;
     }
 
+    // ---- a page placed as the dialog places things (dialog units; the 14 units of the logo bar above the page are left out)
+    struct Placed {
+        QWidget* box = nullptr;
+        static constexpr double kx = 1.75, ky = 1.875;
+        static int px(int x) { return (int)std::lround(x * kx); }
+        static int py(int y) { return (int)std::lround(y * ky); }
+    };
+    Placed placedPage(int dlgW, int dlgH)
+    {
+        Placed pl;
+        pl.box = new QWidget(this);
+        pl.box->setFixedSize(Placed::px(dlgW), Placed::py(dlgH - 14));
+        root_->addWidget(pl.box);
+        return pl;
+    }
+    template <class W>
+    W* put(const Placed& pl, W* w, int x, int y, int cw, int ch)
+    {
+        w->setParent(pl.box);
+        w->setGeometry(Placed::px(x), Placed::py(y - 14), Placed::px(cw), Placed::py(ch));
+        static_cast<QWidget*>(w)->show();
+        return w;
+    }
+    QLabel* putLabel(const Placed& pl, const QString& t, int x, int y, int cw, int ch, Qt::Alignment a = Qt::AlignLeft | Qt::AlignVCenter)
+    {
+        return put(pl, text(t, a), x, y, cw, ch);
+    }
+    // A number box of the dialog's size. Boxes keep their own height (the style's), centred on the dialog's.
+    QLineEdit* putEdit(const Placed& pl, int x, int y, int cw, int ch)
+    {
+        QLineEdit* e = new QLineEdit(this);
+        e->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        return put(pl, e, x, y, cw, ch);
+    }
+    // A gain fader the way the dialogs have them: the value above, the fader, the name and range below.
+    DxSlider* putFader(const Placed& pl, int i, int fx, int fy, int fh, int rx, int rw, const QString& caption, int readX = -1, int readW = -1)
+    {
+        if (readX < 0) readX = rx - 8, readW = rw + 16;
+        QLabel* rd = putLabel(pl, QString(), readX, fy - 9, readW, 8, Qt::AlignHCenter | Qt::AlignVCenter);
+        SMap m;
+        m.inf = true;
+        m.dec = 1;
+        DxSlider* s = slider(Qt::Vertical, fixed(i), m, QString("dxParam%1").arg(i), nullptr, rd, "dB");
+        put(pl, s, fx, fy, 10, fh);
+        QLabel* cap = putLabel(pl, caption, rx - 8, fy + fh + 1, rw + 16, 16, Qt::AlignHCenter | Qt::AlignTop);   // (a little wider than the dialog's: the page's font may be wider)
+        (void)cap;
+        return s;
+    }
+    // A horizontal trackbar with the label above it (the label's mnemonic is the trackbar's), an optional number box and/or readout.
+    DxSlider* putTrack(const Placed& pl, int i, const SMap& m, int sx, int sy, int sw, QLineEdit* box, QLabel* readout, QLabel* caption, const QString& readUnit = QString())
+    {
+        DxSlider* s = slider(Qt::Horizontal, fixed(i), m, QString("dxParam%1").arg(i), box, readout, readUnit);
+        put(pl, s, sx, sy, sw, 12);
+        if (caption) caption->setBuddy(s);
+        return s;
+    }
+    // The tempo-sync multiplier of a setting: a number box and the spinner beside it, which steps it by one.
+    QLineEdit* putMultiplier(const Placed& pl, int i, int x, int y, int bw)
+    {
+        QLineEdit* box = valueBox(i, 3, 56, QString("dxParam%1Edit").arg(i));
+        box->setMinimumSize(0, 0);
+        box->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+        put(pl, box, x, y, bw, 12);
+        SpinArrows* sp = new SpinArrows(this);
+        put(pl, sp, x + bw, y, 10, 12);
+        sp->step = [this, i](int dir) {
+            if (updating_) return;
+            const Rng r = rng(i);
+            commit(i, std::max(r.lo, std::min(r.hi, get(i) + dir)));
+        };
+        sync_.push_back([=] { sp->setEnabled(box->isEnabled()); });
+        return box;
+    }
+
 #include "fxpages_vegastrk.inc"
 
     static QRectF dot(const QPointF& c, double r) { return QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r); }
@@ -832,24 +961,32 @@ private:
         syncAll();
     }
 
+    // Dialog 5001 of sfppack3 (285x221), placed as the dialog places things: the Dry out and Wet out faders, the graph with its marks around it, the
+    // polarity mode, Pos/Neg and Reset, and the slew rate and low-pass start with a check box, a trackbar and a box each.
     void distortion()
     {
-        QHBoxLayout* top = new QHBoxLayout();
-        top->setSpacing(0);
-        top->addWidget(gainColumn(4, "<u>D</u>ry out"));
-        top->addWidget(gainColumn(5, "<u>W</u>et out"));
-        top->addSpacing(8);
-        QVBoxLayout* gv = new QVBoxLayout();
-        gv->setSpacing(1);
-        QHBoxLayout* cap = new QHBoxLayout();
-        cap->addWidget(text("<u>G</u>raph:"));
-        QLabel* readout = text(QString(), Qt::AlignRight | Qt::AlignVCenter);
+        const Placed pl = placedPage(285, 221);
+        {
+            SMap m;
+            m.inf = true;
+            m.dec = 1;
+            QLabel* r4 = putLabel(pl, QString(), 15, 17, 28, 8, Qt::AlignHCenter | Qt::AlignVCenter);
+            DxSlider* s4 = slider(Qt::Vertical, fixed(4), m, "dxParam4", nullptr, r4, "dB");
+            put(pl, s4, 24, 26, 10, 71);
+            putLabel(pl, "<u>D</u>ry out<br>(-Inf. to 0 dB)", 2, 98, 46, 16, Qt::AlignHCenter | Qt::AlignTop)->setBuddy(s4);
+            QLabel* r5 = putLabel(pl, QString(), 58, 17, 28, 8, Qt::AlignHCenter | Qt::AlignVCenter);
+            DxSlider* s5 = slider(Qt::Vertical, fixed(5), m, "dxParam5", nullptr, r5, "dB");
+            put(pl, s5, 67, 26, 10, 71);
+            putLabel(pl, "<u>W</u>et out<br>(-Inf. to 24 dB)", 49, 98, 49, 16, Qt::AlignHCenter | Qt::AlignTop)->setBuddy(s5);
+        }
+        QLabel* gl = putLabel(pl, "<u>G</u>raph:", 108, 17, 26, 8);
+        QLabel* readout = putLabel(pl, QString(), 147, 17, 132, 8, Qt::AlignRight | Qt::AlignVCenter);
         readout->setObjectName("dxGraphReadout");
-        cap->addWidget(readout, 1);
-        gv->addLayout(cap);
         EnvelopeGraph* g = new EnvelopeGraph(this);
         g->setObjectName("dxGraph");
-        g->setFixedSize(QSize(282, 236));
+        put(pl, g, 93, 24, 191, 146);
+        g->margins = QMargins(Placed::px(15), Placed::py(2), Placed::px(4), Placed::py(9));
+        gl->setBuddy(g);
         graphs_.push_back(g);
         g->readout = readout;
         g->edited = [this, g](int phase) {
@@ -870,18 +1007,12 @@ private:
             const int n = s.editPositive ? s.posCount : s.negCount;
             g->pts.assign(from, from + n);
         });
-        gv->addWidget(g);
-        top->addLayout(gv, 1);
-        root_->addLayout(top);
 
-        QHBoxLayout* mode = new QHBoxLayout();
-        mode->setSpacing(6);
-        QLabel* ml = text("Graph p<u>o</u>larity edit mode:");
-        mode->addWidget(ml);
+        QLabel* ml = putLabel(pl, "Graph p<u>o</u>larity edit mode:", 5, 173, 95, 8);
         QComboBox* c = new QComboBox(this);
         c->setObjectName("dxPolarityMode");
         c->addItems({"Individual", "Synchronize", "Mirror Y", "Mirror X", "Mirror X/Y"});
-        c->setFixedWidth(110);
+        put(pl, c, 106, 171, 75, 12);
         ml->setBuddy(c);
         QObject::connect(c, QOverload<int>::of(&QComboBox::currentIndexChanged), c, [this](int k) {
             if (k < 0) return;
@@ -890,17 +1021,18 @@ private:
             vegdist::applyMode(s);
             distStore(s, "Change \"Graph polarity edit mode\"");
         });
-        mode->addWidget(c);
+        // (the button shows the polarity the next press switches to)
         QPushButton* pn = button("Nega&tive");
         pn->setObjectName("dxPosNeg");
+        put(pl, pn, 186, 170, 45, 14);
         QObject::connect(pn, &QPushButton::clicked, pn, [this] {
             vegdist::Settings s = distSettings();
             s.editPositive = !s.editPositive;
             distStore(s, "Change polarity edited");
         });
-        mode->addWidget(pn);
         QPushButton* reset = button("R&eset");
         reset->setObjectName("dxReset");
+        put(pl, reset, 235, 170, 45, 14);
         QObject::connect(reset, &QPushButton::clicked, reset, [this] {
             vegdist::Settings s = distSettings();
             vegdist::Point* to = s.editPositive ? s.pos : s.neg;
@@ -910,32 +1042,32 @@ private:
             vegdist::applyMode(s);
             distStore(s, "Reset Distortion graph");
         });
-        mode->addWidget(reset);
         sync_.push_back([=] {
             const vegdist::Settings s = distSettings();
             QSignalBlocker b(c);
             c->setCurrentIndex(s.mode);
             pn->setText(s.editPositive ? "Nega&tive" : "Posi&tive");
         });
-        root_->addLayout(mode);
 
         SMap slew;
         slew.dec = 0;
-        QCheckBox* sc = nullptr;
-        QLineEdit* slewBox = nullptr;
-        DxSlider* slewSlider = nullptr;
-        root_->addWidget(lineRow(150, fixed(1), "S<u>l</u>ew rate (1 to 100):", slew, "dxParam1", &sc, &slewBox, &slewSlider));
+        QCheckBox* sc = new QCheckBox("S&lew rate (1 to 100):", this);
         sc->setObjectName("dxParam0");
+        put(pl, sc, 5, 190, 95, 10);
         QObject::connect(sc, &QCheckBox::toggled, sc, [this](bool on) { commit(0, on ? 1 : 0); });
+        QLineEdit* slewBox = putEdit(pl, 236, 188, 44, 12);
+        DxSlider* slewSlider = slider(Qt::Horizontal, fixed(1), slew, "dxParam1", slewBox, nullptr);
+        put(pl, slewSlider, 106, 188, 128, 12);
         SMap lpm;
         lpm.log = true;
         lpm.dec = 0;
-        QCheckBox* lc = nullptr;
-        QLineEdit* lpBox = nullptr;
-        DxSlider* lpSlider = nullptr;
-        root_->addWidget(lineRow(150, fixed(3), "Low-pass start <u>f</u>req. (Hz):", lpm, "dxParam3", &lc, &lpBox, &lpSlider));
+        QCheckBox* lc = new QCheckBox("Low-pass start &freq. (Hz):", this);
         lc->setObjectName("dxParam2");
+        put(pl, lc, 5, 204, 95, 10);
         QObject::connect(lc, &QCheckBox::toggled, lc, [this](bool on) { commit(2, on ? 1 : 0); });
+        QLineEdit* lpBox = putEdit(pl, 236, 203, 44, 12);
+        DxSlider* lpSlider = slider(Qt::Horizontal, fixed(3), lpm, "dxParam3", lpBox, nullptr);
+        put(pl, lpSlider, 106, 203, 128, 12);
         sync_.push_back([=] {
             QSignalBlocker b1(sc), b2(lc);
             const bool slewOn = get(0) >= 0.5, lpOn = get(2) >= 0.5;
@@ -1233,63 +1365,70 @@ private:
 
     // VEGAS's Chorus page (dialog 6001): Input gain / Dry out / Chorus out faders, the two phase inversions, Chorus
     // size (1 to 3), Modulation rate (or, with Tempo sync, the Modulation period as a note times a multiplier), Depth,
-    // Feedback, Delay, and the high-frequency attenuation with its frequency.
+    // Feedback, Delay, and the high-frequency attenuation with its frequency. Placed as the dialog places things.
     void chorus()
     {
-        QHBoxLayout* top = new QHBoxLayout();
-        top->setSpacing(6);
-        QHBoxLayout* left = new QHBoxLayout();
-        left->setSpacing(0);
-        left->addWidget(gainColumn(9, "<u>I</u>nput gain"));
-        left->addWidget(gainColumn(10, "Dr<u>y</u> out"));
-        left->addWidget(gainColumn(11, "C<u>h</u>orus out"));
-        top->addLayout(left);
-        QWidget* holder = new QWidget(this);
-        holder->setFixedWidth(300);
-        QVBoxLayout* r = new QVBoxLayout(holder);
-        r->setContentsMargins(0, 0, 0, 0);
-        r->setSpacing(4);
-        top->addWidget(holder, 1);
-        root_->addLayout(top);
+        const Placed pl = placedPage(272, 224);
+        putFader(pl, 9, 23, 26, 70, 5, 45, "<u>I</u>nput gain<br>(-Inf. to 0 dB)");
+        putFader(pl, 10, 69, 26, 70, 51, 45, "Dr<u>y</u> out<br>(-Inf. to 0 dB)");
+        putFader(pl, 11, 114, 26, 70, 97, 45, "<u>C</u>horus out<br>(-Inf. to 0 dB)");
+        put(pl, checkBox(5, "In<u>v</u>ert chorus phase"), 145, 48, 107, 10);
+        put(pl, checkBox(6, "Invert feedbac<u>k</u> phase"), 145, 61, 110, 10);
 
-        r->addWidget(checkBox(5, "In<u>v</u>ert chorus phase"));
-        r->addWidget(checkBox(6, "Invert fee<u>d</u>back phase"));
+        QLabel* sizeCap = putLabel(pl, "Chorus si<u>z</u>e (1 to 3):", 145, 74, 71, 8);
+        QLabel* sizeRead = putLabel(pl, QString(), 247, 74, 10, 8, Qt::AlignLeft | Qt::AlignVCenter);
         SMap size;
         size.dec = 0;
-        r->addWidget(block(4, "Chorus <u>s</u>ize", "", size));
+        putTrack(pl, 4, size, 218, 73, 23, nullptr, sizeRead, sizeCap);
+
+        QLabel* rateCap = putLabel(pl, "Modulation ra<u>t</u>e (0.001 to 20.0 Hz):", 5, 120, 130, 8);
+        QLineEdit* rateBox = putEdit(pl, 237, 118, 30, 12);
         SMap rate;
         rate.dec = 3;
         rate.log = true;
-        QWidget* rateBlock = block(0, "<u>M</u>odulation rate", "Hz", rate);
-        r->addWidget(rateBlock);
-        QCheckBox* ts = checkBox(15, "<u>T</u>empo sync");
-        r->addWidget(ts);
-        QHBoxLayout* th = new QHBoxLayout();
-        QLineEdit* mult = valueBox(14, 3, 56, "dxParam14Edit");
-        QComboBox* note = combo(fixed(13), choicesOf("reno.chorus", 13), "dxParam13");
-        th->addWidget(mult);
-        th->addWidget(note, 1);
-        r->addLayout(th);
+        DxSlider* rateS = putTrack(pl, 0, rate, 145, 118, 90, rateBox, nullptr, rateCap);
+
+        QLabel* depthCap = putLabel(pl, "Modulation d<u>e</u>pth (1 to 100 %):", 5, 135, 130, 8);
+        QLabel* depthRead = putLabel(pl, QString(), 237, 135, 30, 8, Qt::AlignLeft | Qt::AlignVCenter);
         SMap pc;
         pc.dec = 0;
-        r->addWidget(block(1, "Modulation <u>d</u>epth", "%", pc));
-        r->addWidget(block(3, "<u>F</u>eedback", "%", pc));
+        putTrack(pl, 1, pc, 145, 133, 90, nullptr, depthRead, depthCap, "%");
+
+        QLabel* fbCap = putLabel(pl, "<u>F</u>eedback (0 to 100 %):", 5, 150, 130, 8);
+        QLabel* fbRead = putLabel(pl, QString(), 237, 150, 30, 8, Qt::AlignLeft | Qt::AlignVCenter);
+        putTrack(pl, 3, pc, 145, 148, 90, nullptr, fbRead, fbCap, "%");
+
+        QLabel* delCap = putLabel(pl, "Chorus out <u>d</u>elay (0.1 to 100.0 ms):", 5, 165, 130, 8);
+        QLineEdit* delBox = putEdit(pl, 237, 163, 30, 12);
         SMap dl;
         dl.dec = 1;
-        r->addWidget(block(2, "De<u>l</u>ay", "ms", dl));
-        r->addWidget(checkBox(7, "<u>A</u>ttenuate high frequencies"));
+        putTrack(pl, 2, dl, 145, 163, 90, delBox, nullptr, delCap);
+
+        QCheckBox* hf = put(pl, checkBox(7, "Attenuate high frequencies ab<u>o</u>ve (Hz):"), 5, 179, 138, 10);
+        QLineEdit* hfBox = putEdit(pl, 237, 178, 30, 12);
         SMap hz;
         hz.dec = 0;
         hz.log = true;
-        QWidget* lp = block(8, "Attenuation fre<u>q</u>uency", "Hz", hz);
-        r->addWidget(lp);
-        r->addStretch(1);
+        DxSlider* hfS = putTrack(pl, 8, hz, 145, 178, 90, hfBox, nullptr, nullptr);
+
+        QCheckBox* ts = put(pl, checkBox(15, "Tempo <u>s</u>ync"), 5, 194, 54, 10);
+        QLabel* perCap = putLabel(pl, "Modulation <u>p</u>eriod:", 5, 208, 130, 8);
+        QLineEdit* mult = putMultiplier(pl, 14, 145, 206, 35);
+        perCap->setBuddy(mult);
+        QComboBox* note = put(pl, combo(fixed(13), choicesOf("reno.chorus", 13), "dxParam13"), 193, 206, 74, 14);
+        (void)ts;
         sync_.push_back([=] {
             const bool tsOn = get(15) >= 0.5;
-            rateBlock->setEnabled(!tsOn);
+            rateCap->setEnabled(!tsOn);
+            rateBox->setEnabled(!tsOn);
+            rateS->setEnabled(!tsOn);
+            perCap->setEnabled(tsOn);
             mult->setEnabled(tsOn);
             note->setEnabled(tsOn);
-            lp->setEnabled(get(7) >= 0.5);
+            const bool hfOn = get(7) >= 0.5;
+            hfS->setEnabled(hfOn);
+            hfBox->setEnabled(hfOn);
+            (void)hf;
         });
     }
 
@@ -1322,67 +1461,38 @@ private:
 
     // ============================================================================================ Simple Delay
     // VEGAS's Simple Delay page (dialog 3001): Dry out and Delay out faders, Delay time (seconds) with a Tempo sync
-    // delay (note and multiplier), Multiple delays (Feedback) with Decay time and its own Tempo sync.
+    // delay (note and multiplier), Multiple delays (Feedback) with Decay time and its own Tempo sync. Placed as the dialog places things.
     void simpleDelay()
     {
-        QHBoxLayout* top = new QHBoxLayout();
-        top->setSpacing(6);
-        QHBoxLayout* left = new QHBoxLayout();
-        left->setSpacing(0);
-        left->addWidget(gainColumn(3, "Dr<u>y</u> out"));
-        left->addWidget(gainColumn(4, "<u>D</u>elay out"));
-        top->addLayout(left);
-        QWidget* holder = new QWidget(this);
-        holder->setFixedWidth(300);
-        QVBoxLayout* r = new QVBoxLayout(holder);
-        r->setContentsMargins(0, 0, 0, 0);
-        r->setSpacing(4);
-        top->addWidget(holder, 1);
-        root_->addLayout(top);
+        const Placed pl = placedPage(257, 208);
+        putFader(pl, 3, 23, 26, 160, 5, 45, "Dr<u>y</u> out<br>(-Inf. to 0 dB)");
+        putFader(pl, 4, 69, 26, 160, 51, 45, "<u>D</u>elay out<br>(-Inf. to 0 dB)");
 
-        std::vector<QWidget*> delayWays, tempoDelay, decayAll, decayPlain, decayTempo;
-        auto timeRow = [&](int i, const QString& label, double shown, int dec, std::vector<QWidget*>& group, const QString& name) {
-            QHBoxLayout* h = new QHBoxLayout();
-            QLabel* l = text(label);
-            h->addWidget(l, 1);
+        std::vector<QWidget*> delayWays, tempoDelay, decayPlain, decayTempo;
+        auto timeRow = [&](int i, const QString& label, double shown, int dec, int capY, int boxY, int sliderY, std::vector<QWidget*>& group) {
+            QLabel* l = putLabel(pl, label, 102, capY, 118, 8);
             SMap m;
             m.dec = dec;
             m.shown = shown;
             m.comma = false;
-            QLineEdit* box = editBox(46);
+            QLineEdit* box = putEdit(pl, 220, boxY, 32, 12);
             if (shown != 1) box->setProperty("shown", true);
-            h->addWidget(box);
-            r->addLayout(h);
-            DxSlider* s = slider(Qt::Horizontal, fixed(i), m, name, box, nullptr);
-            l->setBuddy(s);
-            r->addWidget(s);
+            DxSlider* s = putTrack(pl, i, m, 102, sliderY, 150, box, nullptr, l);
             group.push_back(l);
             group.push_back(box);
             group.push_back(s);
         };
-        timeRow(0, "De<u>l</u>ay time (0.001 to 5.0 seconds):", 0.001, 3, delayWays, "dxParam0");
-        QCheckBox* ts = checkBox(8, "<u>T</u>empo sync delay");
-        r->addWidget(ts);
-        QHBoxLayout* th = new QHBoxLayout();
-        QLineEdit* mult = valueBox(7, 3, 56, "dxParam7Edit");
-        QComboBox* note = combo(fixed(6), choicesOf("reno.simpledelay", 6), "dxParam6");
-        th->addWidget(mult);
-        th->addWidget(note, 1);
-        r->addLayout(th);
+        timeRow(0, "De<u>l</u>ay time (0.001 to 5.0 seconds):", 0.001, 3, 25, 23, 39, delayWays);
+        put(pl, checkBox(8, "<u>T</u>empo sync delay"), 102, 55, 73, 10);
+        QLineEdit* mult = putMultiplier(pl, 7, 102, 69, 36);
+        QComboBox* note = put(pl, combo(fixed(6), choicesOf("reno.simpledelay", 6), "dxParam6"), 151, 69, 101, 14);
         tempoDelay = {mult, note};
-        QCheckBox* multi = checkBox(2, "<u>M</u>ultiple delays (Feedback)");
-        r->addWidget(multi);
-        timeRow(1, "De<u>c</u>ay time (0.1 to 20.0 seconds):", 1.0, 1, decayPlain, "dxParam1");
-        QCheckBox* tsd = checkBox(11, "Tempo <u>s</u>ync decay");
-        r->addWidget(tsd);
-        QHBoxLayout* dh = new QHBoxLayout();
-        QLineEdit* dmult = valueBox(10, 3, 56, "dxParam10Edit");
-        QComboBox* dnote = combo(fixed(9), choicesOf("reno.simpledelay", 9), "dxParam9");
-        dh->addWidget(dmult);
-        dh->addWidget(dnote, 1);
-        r->addLayout(dh);
+        put(pl, checkBox(2, "<u>M</u>ultiple delays (Feedback)"), 102, 107, 110, 10);
+        timeRow(1, "De<u>c</u>ay time (0.1 to 20.0 seconds):", 1.0, 1, 123, 121, 137, decayPlain);
+        QCheckBox* tsd = put(pl, checkBox(11, "Tempo <u>s</u>ync decay"), 102, 153, 75, 10);
+        QLineEdit* dmult = putMultiplier(pl, 10, 102, 167, 36);
+        QComboBox* dnote = put(pl, combo(fixed(9), choicesOf("reno.simpledelay", 9), "dxParam9"), 151, 167, 101, 14);
         decayTempo = {dmult, dnote};
-        r->addStretch(1);
         sync_.push_back([=] {
             const bool tsOn = get(8) >= 0.5, multiOn = get(2) >= 0.5, tsdOn = get(11) >= 0.5;
             for (QWidget* w : delayWays) w->setEnabled(!tsOn);
@@ -1466,12 +1576,10 @@ private:
 
         label("<u>C</u>urrent tap:", 9, 135, 42, 8);
         static const int bx[8] = {54, 75, 96, 117, 138, 159, 180, 203};
-        std::vector<QPushButton*> tapBtn;
+        std::vector<QRadioButton*> tapBtn;
         for (int k = 0; k < 8; ++k) {
-            QPushButton* b = button(QString("&%1").arg(k + 1));
+            QRadioButton* b = new QRadioButton(QString("&%1").arg(k + 1), this);
             b->setObjectName(QString("dxTap%1").arg(k));
-            b->setCheckable(true);
-            b->setAutoExclusive(true);
             put(b, bx[k], 135, 20, 10);
             QObject::connect(b, &QPushButton::clicked, b, [this, k] {
                 tap_ = k;

@@ -68,14 +68,6 @@ inline void toYuv(float r, float g, float b, float& y, float& u, float& v)
     u = 0.492f * (b - y);
     v = 0.877f * (r - y);
 }
-// How much of a range a value is in: 1 between lo and hi, falling to 0 over 'smooth' outside them.
-inline float inRange(float x, float lo, float hi, float smooth)
-{
-    if (hi < lo) std::swap(lo, hi);
-    if (x >= lo && x <= hi) return 1.f;
-    const float d = x < lo ? lo - x : x - hi;
-    return smooth > 1e-6f ? std::max(0.f, 1.f - d / smooth) : 0.f;
-}
 
 // ------------------------------------------------------------------ Color Corrector (Secondary)
 // Measured on VEGAS's reference renders (tools/vegasref_compare.py). Works in Rec. 601 Y, U = 0.492 (B - Y), V = 0.877 (R - Y) of the straight colour: Chrominance adds 0.5 x amount^2 at its

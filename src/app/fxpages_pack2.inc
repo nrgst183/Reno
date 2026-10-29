@@ -13,19 +13,19 @@ private:
             *width = 400;
         } else if (uid == "reno.graphiceq") {
             graphicEq();
-            *width = 560;
+            *width = 700;
         } else if (uid == "reno.parametriceq") {
             parametricEq();
             *width = 470;
         } else if (uid == "reno.paragraphiceq") {
             paragraphicEq();
-            *width = 610;
+            *width = 600;
         } else if (uid == "reno.graphicdynamics") {
             graphicDynamics();
             *width = 530;
         } else if (uid == "reno.multibanddynamics") {
             multiBandDynamics();
-            *width = 600;
+            *width = 660;
         } else if (uid == "reno.resonantfilter") {
             resonantFilter();
             *width = 480;
@@ -76,28 +76,19 @@ private:
         syncAll();
     }
 
-    // one fader of a band view: band b (0..19), w the trapezoid's half width (250 on the 20 band view, 500 on the 10 band one)
-    QWidget* geqBand(int b, int w, const QString& center, int colW, int fontPx, const QString& objName)
+    // one fader of a band view (dialog 6003 / 6004), b the band (0..19), w the trapezoid's half width (250 on the 20 band view, 500 on the 10 band
+    // one): the reading above (rx), the fader (fx, 10 wide, 100 high at y 26) and the centre frequency below (cx)
+    void geqBand(const Placed& pl, int b, int w, int fx, int rx, int rw, int cx, int cw, const QString& center, const QString& objName, int digit)
     {
-        QWidget* col = new QWidget(this);
-        col->setFixedWidth(colW);
-        QVBoxLayout* v = new QVBoxLayout(col);
-        v->setContentsMargins(0, 0, 0, 0);
-        v->setSpacing(3);
-        QLabel* readout = text(QString(), Qt::AlignHCenter | Qt::AlignVCenter);
-        readout->setFixedHeight(16);
-        readout->setStyleSheet(QString("font-size: %1px;").arg(fontPx));
-        v->addWidget(readout);
+        QLabel* readout = putLabel(pl, QString(), rx, 17, rw, 8, Qt::AlignHCenter | Qt::AlignVCenter);
         DxSlider* s = new DxSlider(Qt::Vertical, this);
         s->setObjectName(objName);
         s->setRange(0, 720);
         s->setSingleStep(10);
         s->setPageStep(30);
-        s->setFixedHeight(118);
-        v->addWidget(s, 0, Qt::AlignHCenter);
-        QLabel* cap = text(center, Qt::AlignHCenter | Qt::AlignTop);
-        cap->setStyleSheet(QString("font-size: %1px;").arg(fontPx));
-        v->addWidget(cap);
+        put(pl, s, fx, 26, 10, 100);
+        if (digit >= 0) digitMnemonic(s, digit);
+        putLabel(pl, center, cx, 127, cw, 8, Qt::AlignHCenter | Qt::AlignVCenter);
         QObject::connect(s, &QSlider::sliderPressed, s, [this, b] {
             if (h_.beginEdit) h_.beginEdit(strfmt("Change band %d gain", b + 1));
         });
@@ -122,34 +113,62 @@ private:
             if (!s->isSliderDown()) s->setValue(tenths + 480);
             readout->setText(tenths <= -480 ? QString("-Inf.") : QString::number(tenths / 10.0, 'f', 1));
         });
-        return col;
     }
 
-    QWidget* geqBandsView(bool twenty)
+    // The three views each have the output gain fader, the Accuracy box and Reset (the dialogs repeat them); 'tag' is added to the names of the ones
+    // after the first view's, so every name is its own.
+    void geqCommon(const Placed& pl, const QString& tag, QTabWidget* tabs)
+    {
+        QLabel* rd = putLabel(pl, QString(), 340, 17, 30, 8, Qt::AlignHCenter | Qt::AlignVCenter);
+        SMap om;
+        om.inf = true;
+        om.dec = 1;
+        DxSlider* of = slider(Qt::Vertical, fixed(1), om, "dxParam1" + tag, nullptr, rd, "dB");
+        put(pl, of, 350, 26, 10, 100);
+        QLabel* ol = putLabel(pl, "<u>O</u>utput gain<br>(-60 to 20 dB)", 332, 128, 48, 16, Qt::AlignHCenter | Qt::AlignTop);
+        ol->setBuddy(of);
+        QLabel* al = putLabel(pl, "A<u>c</u>curacy:", 5, 140, 40, 8);
+        QComboBox* acc = combo(fixed(0), {"Low (fast, good for high bands)", "Medium (great for mid and high bands)", "High (slow, great for all bands)"}, "dxParam0" + tag);
+        put(pl, acc, 55, 138, 164, 12);
+        al->setBuddy(acc);
+        QPushButton* reset = button("Rese&t");
+        reset->setObjectName("dxReset" + tag);
+        put(pl, reset, 223, 137, 50, 14);
+        QObject::connect(reset, &QPushButton::clicked, reset, [this, tabs] {
+            veggeq::Settings s = geqSettings();
+            s.count = 2;
+            s.pt[0][0] = 0;
+            s.pt[0][1] = 0;
+            s.pt[1][0] = 10000;
+            s.pt[1][1] = 0;
+            if (tabs->currentIndex() != 2)
+                for (int32_t& b : s.band) b = 0;
+            geqStore(s, "Reset Graphic EQ");
+        });
+    }
+
+    Placed geqSheet()
+    {
+        Placed pl;
+        pl.box = new QWidget(this);
+        pl.box->setFixedSize(Placed::px(385), Placed::py(156 - 14));
+        return pl;
+    }
+
+    QWidget* geqBandsView(bool twenty, QTabWidget* tabs)
     {
         static const char* const names20[20] = {"20", "28", "40", "56", "80", "113", "160", "225", "320", "450", "640", "900", "1.3k", "1.8k", "2.5k", "3.6k", "5.1k", "7.2k", "10k", "15k"};
-        QWidget* view = new QWidget(this);
-        QHBoxLayout* h = new QHBoxLayout(view);
-        h->setContentsMargins(0, 0, 0, 0);
-        h->setSpacing(0);
-        QVBoxLayout* left = new QVBoxLayout();
-        left->setSpacing(0);
-        QLabel* gl = text("<u>G</u>ain:<br>(-Inf. to 24 dB)");
-        gl->setFixedHeight(32);
-        left->addWidget(gl);
-        left->addStretch(1);
-        left->addWidget(text("Center (Hz):"));
-        QWidget* lw = new QWidget(this);
-        lw->setFixedWidth(112);
-        lw->setLayout(left);
-        h->addWidget(lw);
-        const int colW = twenty ? 30 : 56;
-        for (int b = 0; b < veggeq::kBands; ++b) {
-            if (!twenty && b % 2 == 0) continue;
-            h->addWidget(geqBand(b, twenty ? 250 : 500, names20[b], colW, twenty ? 10 : 12, QString(twenty ? "dxGeq20Band%1" : "dxGeq10Band%1").arg(b)));
+        const Placed pl = geqSheet();
+        putLabel(pl, "<u>G</u>ain:<br>(-Inf. to 24 dB)", 5, 17, 49, 16, Qt::AlignLeft | Qt::AlignTop);
+        putLabel(pl, "Center (Hz):", 5, 127, 46, 8);
+        if (twenty) {
+            for (int b = 0; b < 20; ++b) geqBand(pl, b, 250, 54 + 14 * b, 52 + 14 * b, 14, 52 + 14 * b, 14, names20[b], QString("dxGeq20Band%1").arg(b), (b % 2 == 0) ? b / 2 : -1);
+        } else {
+            static const char* const centres10[10] = {"28", "56", "113", "225", "450", "900", "1.8k", "3.6k", "7.2k", "15k"};
+            for (int k = 0; k < 10; ++k) geqBand(pl, 2 * k + 1, 500, 66 + 27 * k, 58 + 27 * k, 25, 61 + 27 * k, 20, centres10[k], QString("dxGeq10Band%1").arg(2 * k + 1), k);
         }
-        h->addStretch(1);
-        return view;
+        geqCommon(pl, twenty ? "_20" : "", tabs);
+        return pl.box;
     }
 
     static QString geqFreqText(int x)
@@ -163,22 +182,17 @@ private:
         return QString::number(veggeq::posDb(y), 'f', 1);
     }
 
-    QWidget* geqEnvelopeView()
+    QWidget* geqEnvelopeView(QTabWidget* tabs)
     {
-        QWidget* view = new QWidget(this);
-        QVBoxLayout* v = new QVBoxLayout(view);
-        v->setContentsMargins(0, 0, 0, 0);
-        v->setSpacing(1);
-        QHBoxLayout* cap = new QHBoxLayout();
-        cap->addWidget(text("Fr<u>e</u>quency graph:"));
-        QLabel* readout = text(QString(), Qt::AlignRight | Qt::AlignVCenter);
+        // dialog 6005: the graph's plot is 304x100 at 26,26 with the dB marks to its left and the frequencies under it
+        const Placed pl = geqSheet();
+        putLabel(pl, "Fr<u>e</u>quency graph:", 26, 17, 56, 8);
+        QLabel* readout = putLabel(pl, QString(), 186, 17, 144, 8, Qt::AlignRight | Qt::AlignVCenter);
         readout->setObjectName("dxGraphReadout");
-        cap->addWidget(readout, 1);
-        v->addLayout(cap);
         CurveGraph* g = new CurveGraph(this);
         g->setObjectName("dxGraph");
-        g->setFixedSize(QSize(500, 172));
-        g->margins = QMargins(40, 4, 16, 20);
+        put(pl, g, 5, 26, 330, 110);
+        g->margins = QMargins(Placed::px(21), 0, Placed::px(5), Placed::py(10));
         g->xMin = 0;
         g->xMax = 10000;
         g->yMin = -500;
@@ -226,49 +240,19 @@ private:
             g->pts.clear();
             for (int k = 0; k < geqCache_.count; ++k) g->pts.push_back(CurveGraph::Pt{geqCache_.pt[k][0], geqCache_.pt[k][1]});
         });
-        v->addWidget(g);
-        v->addStretch(1);
-        return view;
+        geqCommon(pl, "_env", tabs);
+        return pl.box;
     }
 
     void graphicEq()
     {
         sync_.push_back([this] { geqCache_ = geqSettings(); });          // first: the others read this
-        QHBoxLayout* top = new QHBoxLayout();
-        top->setSpacing(6);
         QTabWidget* tabs = new QTabWidget(this);
         tabs->setObjectName("dxGeqTabs");
-        tabs->addTab(geqBandsView(false), "10 Band");
-        tabs->addTab(geqBandsView(true), "20 Band");
-        tabs->addTab(geqEnvelopeView(), "Envelope");
-        top->addWidget(tabs, 1);
-        top->addWidget(gainColumn(1, "<u>O</u>utput gain", false, 96), 0, Qt::AlignTop);
-        root_->addLayout(top);
-
-        QHBoxLayout* bottom = new QHBoxLayout();
-        bottom->setSpacing(6);
-        QLabel* al = text("A<u>c</u>curacy:");
-        bottom->addWidget(al);
-        QComboBox* acc = combo(fixed(0), {"Low (fast, good for high bands)", "Medium (great for mid and high bands)", "High (slow, great for all bands)"}, "dxParam0");
-        acc->setMinimumWidth(240);
-        al->setBuddy(acc);
-        bottom->addWidget(acc);
-        QPushButton* reset = button("Rese&t");
-        reset->setObjectName("dxReset");
-        QObject::connect(reset, &QPushButton::clicked, reset, [this, tabs] {
-            veggeq::Settings s = geqSettings();
-            s.count = 2;
-            s.pt[0][0] = 0;
-            s.pt[0][1] = 0;
-            s.pt[1][0] = 10000;
-            s.pt[1][1] = 0;
-            if (tabs->currentIndex() != 2)
-                for (int32_t& b : s.band) b = 0;
-            geqStore(s, "Reset Graphic EQ");
-        });
-        bottom->addWidget(reset);
-        bottom->addStretch(1);
-        root_->addLayout(bottom);
+        tabs->addTab(geqBandsView(false, tabs), "10 Band");
+        tabs->addTab(geqBandsView(true, tabs), "20 Band");
+        tabs->addTab(geqEnvelopeView(tabs), "Envelope");
+        root_->addWidget(tabs);
     }
 
     // ============================================================================================ Parametric EQ
@@ -371,84 +355,56 @@ private:
     // ============================================================================================ Paragraphic EQ
     // VEGAS's Paragraphic EQ page: the dry and wet faders and the response graph on top; four bands (gain fader, width,
     // center frequency) and the low and high shelf below.
-    QWidget* pgeqFader(int i, const QString& name, bool inf, int height)
+    // Dry out and Wet out: the reading above, the fader (10x60 units), the caption with its range below
+    void pgeqFader(const Placed& pl, int i, const QString& name, bool inf, int fx, int capX, int capW, const QString& range)
     {
-        QWidget* col = new QWidget(this);
-        QVBoxLayout* v = new QVBoxLayout(col);
-        v->setContentsMargins(0, 0, 0, 0);
-        v->setSpacing(3);
         SMap m;
         m.inf = inf;
-        QLabel* readout = text(QString(), Qt::AlignHCenter | Qt::AlignVCenter);
-        readout->setFixedHeight(16);
-        v->addWidget(readout);
+        QLabel* readout = putLabel(pl, QString(), fx - 10, 17, 30, 8, Qt::AlignHCenter | Qt::AlignVCenter);
         DxSlider* s = slider(Qt::Vertical, fixed(i), m, QString("dxParam%1").arg(i), nullptr, readout, "dB");
-        s->setFixedHeight(height);
-        v->addWidget(s, 0, Qt::AlignHCenter);
-        v->addWidget(text(name + "<br>" + rangeText(i, m, "dB"), Qt::AlignHCenter | Qt::AlignTop));
-        col->setFixedWidth(100);
-        return col;
+        put(pl, s, fx, 26, 10, 60);
+        QLabel* cap = putLabel(pl, name + "<br>" + range, capX, 86, capW, 16, Qt::AlignHCenter | Qt::AlignTop);
+        cap->setBuddy(s);
     }
 
-    QWidget* pgeqBand(int k)
+    // one band (dialog units from x0): the gain fader with its reading, the width trackbar with its reading, the centre frequency box and trackbar
+    void pgeqBand(const Placed& pl, int k)
     {
-        QWidget* col = new QWidget(this);
-        QGridLayout* g = new QGridLayout(col);
-        g->setContentsMargins(0, 0, 0, 0);
-        g->setHorizontalSpacing(4);
-        g->setVerticalSpacing(2);
-        QLabel* num = text(QString("<b><u>%1</u></b>").arg(k + 1), Qt::AlignHCenter | Qt::AlignVCenter);
-        g->addWidget(num, 0, 0, 1, 2);
+        const int x0 = 66 * k;
         SMap gm;
-        QLabel* gr = text(QString());
+        QLabel* gr = putLabel(pl, QString(), 91 + x0, 108, 30, 8, Qt::AlignRight | Qt::AlignVCenter);
         DxSlider* gs = slider(Qt::Vertical, fixed(2 + k), gm, QString("dxParam%1").arg(2 + k), nullptr, gr, "dB");
-        gs->setFixedHeight(78);
-        g->addWidget(gs, 1, 0, 3, 1, Qt::AlignHCenter);
-        g->addWidget(gr, 1, 1);
+        put(pl, gs, 71 + x0, 108, 10, 51);
+        digitMnemonic(gs, k);
         SMap wm;
-        QLabel* wr = text(QString());
+        QLabel* wr = putLabel(pl, QString(), 91 + x0, 123, 30, 8, Qt::AlignRight | Qt::AlignVCenter);
         DxSlider* ws = slider(Qt::Horizontal, fixed(6 + k), wm, QString("dxParam%1").arg(6 + k), nullptr, wr, "oct.");
-        g->addWidget(wr, 2, 1);
-        g->addWidget(ws, 3, 1);
+        put(pl, ws, 86 + x0, 131, 35, 12);
         SMap fm;
         fm.log = true;
         fm.dec = 0;
-        QLineEdit* box = editBox(62);
+        QLineEdit* box = putEdit(pl, 86 + x0, 146, 35, 12);
         DxSlider* fs = slider(Qt::Horizontal, fixed(10 + k), fm, QString("dxParam%1").arg(10 + k), box, nullptr);
-        g->addWidget(box, 4, 0, 1, 2, Qt::AlignRight);
-        g->addWidget(fs, 5, 0, 1, 2);
-        col->setFixedWidth(112);
-        return col;
+        put(pl, fs, 71 + x0, 160, 64, 12);
     }
 
-    // one shelf: the check box, the frequency (slider and edit box) and the gain (slider and readout)
-    QWidget* pgeqShelf(int on, int freq, int gain, const QString& label)
+    // one shelf: the check box with its caption, the frequency (trackbar and edit box) and the gain (trackbar and reading)
+    void pgeqShelf(const Placed& pl, int on, int freq, int gain, const QString& label, int y, int checkW)
     {
-        QWidget* w = new QWidget(this);
-        QHBoxLayout* h = new QHBoxLayout(w);
-        h->setContentsMargins(0, 0, 0, 0);
-        h->setSpacing(6);
-        QCheckBox* c = new QCheckBox(w);
+        QCheckBox* c = new QCheckBox(label, this);
         c->setObjectName(QString("dxParam%1").arg(on));
-        QLabel* l = text(label);
-        l->setFixedWidth(206);
-        h->addWidget(c);
-        h->addWidget(l);
+        put(pl, c, 5, y, checkW, 10);
         SMap fm;
         fm.log = true;
         fm.dec = 0;
-        QLineEdit* box = editBox(62);
+        QLineEdit* box = putEdit(pl, 220, y - 2, 35, 12);
         DxSlider* fs = slider(Qt::Horizontal, fixed(freq), fm, QString("dxParam%1").arg(freq), box, nullptr);
-        h->addWidget(fs, 1);
-        h->addWidget(box);
+        put(pl, fs, 129, y - 2, 88, 12);
         SMap gm;
         gm.inf = true;
-        QLabel* gr = text(QString(), Qt::AlignRight | Qt::AlignVCenter);
-        gr->setFixedWidth(60);
+        QLabel* gr = putLabel(pl, QString(), 301, y + 2, 30, 8, Qt::AlignRight | Qt::AlignVCenter);
         DxSlider* gs = slider(Qt::Horizontal, fixed(gain), gm, QString("dxParam%1").arg(gain), nullptr, gr, "dB");
-        gs->setFixedWidth(80);
-        h->addWidget(gs);
-        h->addWidget(gr);
+        put(pl, gs, 259, y - 2, 40, 12);
         QObject::connect(c, &QCheckBox::toggled, c, [this, on](bool v) { commit(on, v ? 1 : 0); });
         sync_.push_back([=] {
             QSignalBlocker b(c);
@@ -458,7 +414,6 @@ private:
             box->setEnabled(v);
             gs->setEnabled(v);
         });
-        return w;
     }
 
     void pgeqPaint(QPainter& p, const QRectF& pl)
@@ -767,38 +722,45 @@ private:
     bool mbMeters_ = true;
 
 
-    QWidget* mbTab(int first)
+    // One tab is a whole dialog (5000 / 5001): two bands, the output gain fader at the right, and under them Sync channels and Enable meters. The
+    // second tab's own copies of the ones every tab has carry 'tag' at the end of their names.
+    QWidget* mbTab(int first, const QString& tag)
     {
         const double kx = 1.75, ky = 1.875;
         QWidget* box = new QWidget(this);
-        box->setFixedSize((int)std::lround(308 * kx), (int)std::lround((234 - 16) * ky));
+        box->setFixedSize((int)std::lround(362 * kx), (int)std::lround((256 - 16) * ky));
+        auto put = [=](QWidget* w, int x, int y, int cw, int ch) {
+            w->setParent(box);
+            w->setGeometry((int)std::lround(x * kx), (int)std::lround((y - 16) * ky), (int)std::lround(cw * kx), (int)std::lround(ch * ky));
+            w->show();
+            return w;
+        };
         mbBand(box, first, 17);
         mbBand(box, first + 1, 128);
-        QFrame* sep = new QFrame(box);
-        sep->setFrameShape(QFrame::HLine);
-        sep->setFrameShadow(QFrame::Sunken);
-        sep->setGeometry((int)std::lround(8 * kx), (int)std::lround((123 - 16) * ky), (int)std::lround(240 * kx), 2);
-        return box;
-    }
-
-    void multiBandDynamics()
-    {
-        QHBoxLayout* top = new QHBoxLayout();
-        top->setSpacing(6);
-        QTabWidget* tabs = new QTabWidget(this);
-        tabs->setObjectName("dxMbTabs");
-        tabs->addTab(mbTab(0), "Bands 1 && 2");
-        tabs->addTab(mbTab(2), "Bands 3 && 4");
-        top->addWidget(tabs, 0, Qt::AlignTop);
-        top->addWidget(gainColumn(41, "<u>O</u>utput gain", false, 96), 0, Qt::AlignTop);
-        top->addStretch(1);
-        root_->addLayout(top);
-        QHBoxLayout* opts = new QHBoxLayout();
-        opts->setSpacing(14);
-        opts->addWidget(checkBox(40, "S<u>y</u>nc channels"));
+        for (int y : {123, 234}) {
+            QFrame* sep = new QFrame(box);
+            sep->setFrameShape(QFrame::HLine);
+            sep->setFrameShadow(QFrame::Sunken);
+            sep->setGeometry((int)std::lround(8 * kx), (int)std::lround((y - 16) * ky), (int)std::lround(297 * kx), 2);
+        }
+        // the output gain
+        SMap om;
+        om.dec = 1;
+        QLabel* orr = text(QString(), Qt::AlignHCenter | Qt::AlignVCenter);
+        put(orr, 316, 17, 33, 8);
+        DxSlider* of = slider(Qt::Vertical, fixed(41), om, "dxParam41" + tag, nullptr, orr, "dB");
+        put(of, 328, 25, 10, 78);
+        QLabel* ol = text("<u>O</u>utput gain<br>(-25 to 25 dB)", Qt::AlignHCenter | Qt::AlignTop);
+        put(ol, 309 - 4, 104, 48 + 8, 16);
+        ol->setBuddy(of);
+        // Sync channels and Enable meters
+        QCheckBox* sy = checkBox(40, "S&ync channels");
+        sy->setObjectName("dxParam40" + tag);
+        put(sy, 8, 241, 86, 10);
         // "Enable meters" is kept in the plug-in's saved form (the settings it keeps for its window, field 46)
         QCheckBox* em = new QCheckBox("Enable &meters", this);
-        em->setObjectName("dxMbEnableMeters");
+        em->setObjectName("dxMbEnableMeters" + tag);
+        put(em, 100, 241, 62, 10);
         QObject::connect(em, &QCheckBox::toggled, em, [this](bool on) {
             if (updating_ || !h_.state || !h_.setState) return;
             vegmb::Settings s;
@@ -814,9 +776,17 @@ private:
             QSignalBlocker b(em);
             em->setChecked(mbMeters_);
         });
-        opts->addWidget(em);
-        opts->addStretch(1);
-        root_->addLayout(opts);
+        return box;
+    }
+
+    void multiBandDynamics()
+    {
+        QTabWidget* tabs = new QTabWidget(this);
+        tabs->setObjectName("dxMbTabs");
+        tabs->addTab(mbTab(0, QString()), "Bands 1 && 2");
+        tabs->addTab(mbTab(2, "_b34"), "Bands 3 && 4");
+        root_->addWidget(tabs, 0, Qt::AlignLeft | Qt::AlignTop);
+        root_->addStretch(1);
     }
 
     // ============================================================================================ Resonant Filter
@@ -886,37 +856,18 @@ private:
 
     void paragraphicEq()
     {
-        QHBoxLayout* top = new QHBoxLayout();
-        top->setSpacing(6);
-        top->addWidget(pgeqFader(0, "<u>D</u>ry out", true, 80), 0, Qt::AlignTop);
-        top->addWidget(pgeqFader(1, "<u>W</u>et out", false, 80), 0, Qt::AlignTop);
-        Graph* g = graph(QSize(330, 120));
+        const Placed pl = placedPage(338, 211);
+        pgeqFader(pl, 0, "<u>D</u>ry out", true, 21, 5, 49, "(-Inf. to 25 dB)");
+        pgeqFader(pl, 1, "<u>W</u>et out", false, 71, 53, 46, "(-25 to 25 dB)");
+        Graph* g = new Graph(this);
         g->setObjectName("dxPgeqGraph");
-        g->margins = QMargins(32, 4, 8, 18);
-        g->draw = [this](QPainter& p, const QRectF& pl) { pgeqPaint(p, pl); };
-        top->addWidget(g, 0, Qt::AlignTop);
-        top->addStretch(1);
-        root_->addLayout(top);
-
-        QHBoxLayout* bands = new QHBoxLayout();
-        bands->setSpacing(4);
-        QVBoxLayout* labels = new QVBoxLayout();
-        labels->setSpacing(0);
-        labels->addSpacing(20);
-        labels->addWidget(text("<u>G</u>ain<br>(-25 to 25 dB):"));
-        labels->addSpacing(34);
-        labels->addWidget(text("Width<br>(0.3 to 2.5 oct.):"));
-        labels->addSpacing(16);
-        labels->addWidget(text("Center frequency<br>(20 to 15,000 Hz):"));
-        labels->addStretch(1);
-        QWidget* lw = new QWidget(this);
-        lw->setLayout(labels);
-        lw->setFixedWidth(136);
-        bands->addWidget(lw);
-        for (int k = 0; k < 4; ++k) bands->addWidget(pgeqBand(k));
-        bands->addStretch(1);
-        root_->addLayout(bands);
-
-        root_->addWidget(pgeqShelf(14, 16, 18, "Enable l<u>o</u>w-shelf (-Inf. to 25 dB):"));
-        root_->addWidget(pgeqShelf(15, 17, 19, "<u>E</u>nable high-shelf (-Inf. to 25 dB):"));
+        put(pl, g, 95, 16, 240, 84);
+        g->margins = QMargins(Placed::px(20), Placed::py(1), Placed::px(2), Placed::py(10));
+        g->draw = [this](QPainter& p, const QRectF& pl2) { pgeqPaint(p, pl2); };
+        putLabel(pl, "<u>G</u>ain (-25 to 25 dB):", 5, 108, 64, 8);
+        putLabel(pl, "Width<br>(0.3 to 2.5 oct.):", 5, 121, 66, 16, Qt::AlignLeft | Qt::AlignTop);
+        putLabel(pl, "Center frequency<br>(20 to 15,000 Hz):", 5, 158, 62, 16, Qt::AlignLeft | Qt::AlignTop);
+        for (int k = 0; k < 4; ++k) pgeqBand(pl, k);
+        pgeqShelf(pl, 14, 16, 18, "Enable l&ow-shelf (-Inf. to 25 dB):", 181, 124);
+        pgeqShelf(pl, 15, 17, 19, "&Enable high-shelf (-Inf. to 25 dB):", 194, 124);
     }

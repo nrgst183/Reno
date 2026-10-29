@@ -1,4 +1,5 @@
 #include "playback.h"
+#include "../engine/composememo.h"
 #include <QDir>
 #include <QFile>
 #include <QGuiApplication>
@@ -140,11 +141,21 @@ Playback::Playback() : app_(AppState::get()), video_(pool_, app_.fx), audio_(poo
         videoThread(0);
     });
     idleWarmThread_ = std::thread([this] { idleWarmLoop(); });
-    listener_ = app_.addListener([this, shownPath = std::make_shared<std::string>(),
+    listener_ = app_.addListener([this, shownPath = std::make_shared<std::string>(), serial = std::make_shared<uint64_t>(app_.projectSerial()),
                                   media = std::make_shared<std::map<uint64_t, std::pair<bool, double>>>()](int changes) {
         if ((changes & kFile) && app_.path() != *shownPath) {
             *shownPath = app_.path();
             pool_.clear();
+        }
+        if ((changes & kFile) && app_.projectSerial() != *serial) {
+            // another project (File > New, Open, Close): the frames of the one before are of no more use; they are
+            // let go now, not when frames of the next one push them out
+            *serial = app_.projectSerial();
+            clearRamPreview();
+            clearComposeMemo();
+            std::lock_guard<std::mutex> lk(videoMutex_);
+            cache_.clear();
+            if (!playing_) ready_.clear();
         }
         if (changes & kProject) {
             // Project Media's Refresh: a file that couldn't be read and is there now, or one that changed (another
@@ -438,6 +449,10 @@ void Playback::startAt(double from)
     playingNow_ = true;
     setPreviewPlaying(true);
     lastTickPos_ = from;
+    {
+        std::lock_guard<std::mutex> lk(smoothMutex_);
+        smoothWall_ = 0;
+    }
     setPlayClock(from);
     videoCv_.notify_all();
 #ifdef _WIN32
@@ -474,6 +489,10 @@ void Playback::pause()
     if (!playing_) return;
     playing_ = false;
     playingNow_ = false;
+    {
+        std::lock_guard<std::mutex> lk(smoothMutex_);
+        smoothWall_ = 0;
+    }
     setPreviewPlaying(false);
     prewarmCancel_ = true;
     prewarmStop_ = true;
@@ -539,6 +558,68 @@ void Playback::toggle()
 }
 
 double Playback::position()
+{
+    const double heard = heardPosition();
+    return playingNow_ ? smoothPosition(heard) : heard;
+}
+
+// The shown position moves on with the clock at the playing rate and is drawn toward the heard one, closing a quarter
+// of the gap every 60 ms or so: a burst of sound handed to the device moves it a little, not a frame at once, and
+// over a second it follows the sound to within a millisecond or two. It never steps back while playing: when the sound
+// is held up it goes at most 80 ms past what is heard and waits there. A jump (the start, a seek, a loop going round:
+// more than 0.15 s ahead or 0.12 s back) is taken at once.
+double Playback::smoothPosition(double heard)
+{
+    static const double kFollow = 0.25;     // seconds: the time constant of following the heard position
+    static const double kAheadMost = 0.15;  // the heard position this far ahead is taken at once
+    static const double kLead = 0.08;       // shown at most this far past the heard position (then it waits)
+    static const double kBack = 0.12;       // the heard position this far behind is taken at once
+    const double now = steadyNow();
+    std::lock_guard<std::mutex> lk(smoothMutex_);
+    const double rate = rate_;
+    const double dir = rate < 0 ? -1.0 : 1.0;
+    const double speed = std::max(1.0, std::fabs(rate));
+    if (smoothWall_ <= 0 || !(now >= smoothWall_)) {
+        smoothPos_ = heard;
+        smoothWall_ = now;
+        smoothMoving_ = false;
+        return heard;
+    }
+    // until the sound starts (the device's latency after starting or a jump) the shown position waits with it
+    if (!smoothMoving_) {
+        smoothWall_ = now;
+        if (heard == smoothPos_) return heard;
+        smoothMoving_ = true;
+        smoothPos_ = heard;
+        return heard;
+    }
+    const double dt = std::min(0.1, now - smoothWall_);
+    smoothWall_ = now;
+    // looping, with the heard position in the region: the gap is the shorter way round, and the shown position goes
+    // round with it at the region's end
+    const double L = app_.loopEnd - app_.loopStart;
+    const bool loop = loopsNow(this, app_) && L > 0 && heard >= app_.loopStart && heard <= app_.loopEnd;
+    double gap = (heard - smoothPos_) * dir;            // how far the heard position is ahead of the shown one
+    if (loop) {
+        if (gap > L / 2) gap -= L;
+        else if (gap < -L / 2) gap += L;
+    }
+    if (gap > kAheadMost * speed || gap < -kBack * speed) {
+        smoothPos_ = heard;
+        smoothMoving_ = false;
+        return heard;
+    }
+    if (gap < -kLead * speed) return smoothPos_;
+    const double step = dt * std::fabs(rate) + (gap - dt * std::fabs(rate)) * std::min(1.0, dt / kFollow);
+    smoothPos_ = std::max(0.0, smoothPos_ + dir * std::max(0.0, step));
+    if (loop) {
+        if (smoothPos_ >= app_.loopEnd) smoothPos_ = app_.loopStart + std::fmod(smoothPos_ - app_.loopStart, L);
+        else if (smoothPos_ < app_.loopStart) smoothPos_ = app_.loopEnd - std::fmod(app_.loopStart - smoothPos_, L);
+    }
+    return smoothPos_;
+}
+
+double Playback::heardPosition()
 {
     const double latency = out_ ? out_->latencySeconds() : 0.0;
     {
@@ -1076,7 +1157,7 @@ double Playback::renderingFor() const
 {
     const double now = steadyNow();
     if (playing_) {
-        const double last = shownAt_.empty() ? playBegan_ : std::max(playBegan_, shownAt_.back());
+        const double last = shownAt_.empty() ? playBegan_ : std::max(playBegan_, shownAt_.back().at);
         const double fps = clock_.fps > 0 ? clock_.fps : 30.0;
         return std::max(0.0, now - last - 1.0 / (fps * std::max(0.05, std::fabs(clock_.rate))));
     }
@@ -1101,20 +1182,42 @@ void Playback::setPreviewSize(int width, int height, bool autoSize)
     if (changed && playing_) requestFrame();
 }
 
-// Frames shown a second while playing: over the last second, or - when they come slower than three a second - over
-// the last four (so that a frame every two seconds reads 0.5 rather than flickering between 0 and 1).
+// Frames shown a second while playing. Every frame due shown over the last second and a half (each the one after the
+// last, at the rate played): the rate they are due at, the project's (divided by the step when the display shows every
+// second frame or so). Else measured over the frames' own spacing in that time (so 30 frames a second read 30, not 29 or
+// 31 as counting them in a second does), and up to now when none has come for a while; when they come slower than
+// three a second, over the last four seconds (so that a frame every two seconds reads 0.5 rather than flickering
+// between 0 and 1).
 double Playback::previewFrameRate() const
 {
     if (!playing_ || shownAt_.empty()) return 0.0;
     const double now = steadyNow();
     const double played = now - playBegan_;
     if (played < 0.1) return 0.0;
-    size_t last1 = 0, last4 = 0;
-    for (double t : shownAt_) {
-        if (t > now - 1.0) ++last1;
-        if (t > now - 4.0) ++last4;
+    const double fps = clock_.fps > 0 ? clock_.fps : 30.0;
+    const int step = std::max(1, clock_.step);
+    const double due = fps * std::max(0.01, std::fabs(clock_.rate)) / step;
+    const double window = std::min(1.5, played);
+    size_t n = 0, last4 = 0;
+    double first = -1, last = -1;
+    bool every = true;
+    int64_t prev = -1;
+    for (const Shown& s : shownAt_) {
+        if (s.at > now - 4.0) ++last4;
+        if (s.at <= now - window) continue;
+        if (first < 0) first = s.at;
+        else if (s.frame < 0 || prev < 0 || std::llabs(s.frame - prev) != step) every = false;
+        last = s.at;
+        prev = s.frame;
+        ++n;
     }
-    if (last1 >= 3) return (double)last1 / std::min(1.0, played);
+    if (n >= 3) {
+        const double span = last - first;
+        const double gap = now - last;
+        const bool stalled = gap > 2.5 * span / (double)(n - 1);
+        if (every && !stalled && played >= 0.5) return due;
+        return (double)(n - 1) / std::max(1e-3, stalled ? now - first : span);
+    }
     return (double)last4 / std::min(4.0, played);
 }
 
@@ -1552,11 +1655,11 @@ void Playback::present()
         const int64_t f = p.frameAt(pos);
         if (f != diag_.lastFrame) { ++diag_.positions; diag_.lastFrame = f; }
     }
-    if (have) { ++diag_.shown; showFrame(pick.image, p.frameTime(pick.frame), pick.ms, pick.scale, true); }
+    if (have) { ++diag_.shown; showFrame(pick.image, p.frameTime(pick.frame), pick.ms, pick.scale, true, pick.frame); }
     if (nextDue >= 0 && presentTimer_) presentTimer_->start(std::max(0, (int)std::ceil(nextDue * 1000.0)));
 }
 
-void Playback::showFrame(const QImage& image, double seconds, double ms, double scale, bool counted)
+void Playback::showFrame(const QImage& image, double seconds, double ms, double scale, bool counted, int64_t frame)
 {
     lastFrame_ = image;
     ++framesShown_;
@@ -1565,8 +1668,8 @@ void Playback::showFrame(const QImage& image, double seconds, double ms, double 
     if (counted) {
         ++playShown_;
         const double now = steadyNow();
-        shownAt_.push_back(now);
-        while (!shownAt_.empty() && shownAt_.front() < now - 4.0) shownAt_.pop_front();
+        shownAt_.push_back(Shown{now, frame});
+        while (!shownAt_.empty() && shownAt_.front().at < now - 4.0) shownAt_.pop_front();
     }
     if (onFrame) onFrame(image, seconds, ms);
 }

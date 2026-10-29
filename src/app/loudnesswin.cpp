@@ -1,9 +1,9 @@
 // Loudness Meters window; see loudnesswin.h.
 #include "loudnesswin.h"
 #include "toolwin.h"
+#include "pollrate.h"
 #include "playback.h"
 #include "../engine/loudness.h"
-#include "../engine/timefmt.h"
 #include <QContextMenuEvent>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -186,6 +186,9 @@ struct LoudnessWindow::Impl {
     QLabel *tpName = nullptr;
     Indicator *iOver = nullptr, *tpOver = nullptr;
     QTimer* timer = nullptr;
+    PollRate* pollRate = nullptr;          // slows the timer when nothing is measured
+    double lastSeconds = -1;           // how much sound the meter had at the last look
+    bool moved = false;
     std::unique_ptr<Listener> listener;
     Alive alive = makeAlive();
 
@@ -231,6 +234,8 @@ struct LoudnessWindow::Impl {
                 holds[c] = meter.channelTruePeak(c);
             }
         }
+        moved = r.seconds != lastSeconds;
+        lastSeconds = r.seconds;
         bars->opt = opt;
         bars->values[0] = r.momentary;
         bars->values[1] = r.shortTerm;
@@ -342,8 +347,12 @@ LoudnessWindow::LoudnessWindow(Playback* playback, QWidget* parent) : QWidget(pa
 
     d->timer = new QTimer(this);
     d->timer->setInterval(100);
-    QObject::connect(d->timer, &QTimer::timeout, this, [impl] { impl->show(); });
+    QObject::connect(d->timer, &QTimer::timeout, this, [impl] {
+        impl->show();
+        if (impl->pollRate) impl->pollRate->ticked(impl->moved || (impl->pb && impl->pb->playing()));
+    });
     d->timer->start();
+    d->pollRate = new PollRate(this, d->timer, 100);
     d->listener.reset(new Listener([impl](int changes) {
         if (!(changes & kPlayback) || !impl->pb) return;
         const bool now = impl->pb->playing();

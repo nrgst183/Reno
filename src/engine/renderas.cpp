@@ -53,8 +53,6 @@ bool encoderTakesTwoPasses(const std::string& description)
     return description.find("libx264") != std::string::npos || description.find("libx265") != std::string::npos;
 }
 
-std::string dbText(double v) { return v <= LoudnessMeter::kSilence + 0.05 ? std::string("-inf") : strfmt("%.1f", v); }
-
 }  // namespace
 
 ImagePtr rotateImage(const ImagePtr& img, int degrees)
@@ -547,7 +545,7 @@ bool RenderAsJob::renderPipelined(MediaPool& pool, FrameOptions& fo, int workers
     std::vector<std::thread> threads;
     for (int i = 0; i < workers; ++i) {
         FxRuntime& runtime = i == 0 ? fx_ : *extra[(size_t)i - 1];
-        threads.emplace_back([&, i] {
+        threads.emplace_back([&] {
             lowerThreadPriority();
             try {
                 VideoEngine video(pool, runtime);

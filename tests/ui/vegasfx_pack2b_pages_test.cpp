@@ -65,9 +65,6 @@ struct Rig {
     }
 };
 
-// (the page reads a setting from a float fraction of its range: close to, not exactly, the whole numbers)
-static double value(Rig& r, int i) { return std::round(r.host.get(i) * 100) / 100; }
-
 static void parametricEq(const QString& out)
 {
     Rig r("reno.parametriceq");

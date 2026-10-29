@@ -21,6 +21,7 @@
 #include "../../src/app/mainwindow.h"
 #include "../../src/app/timeline.h"
 #include "../../src/app/playback.h"
+#include "../../src/engine/engine.h"
 #include "../../src/app/fxwindow.h"
 #include "../../src/app/pluginchooser.h"
 #include "../../src/vegas/vegas.h"
@@ -34,13 +35,24 @@
 #include <QFileInfo>
 #include <QScrollBar>
 #include <QTabBar>
+#include <QTimer>
+#include <QEventLoop>
 #include <QSettings>
 #include <chrono>
 #include <cmath>
 #include <algorithm>
+#ifdef __linux__
+#include <malloc.h>
+#endif
+#ifdef RENO_CALLGRIND
+#include <valgrind/callgrind.h>
+#endif
 #include <cstdio>
 #include <ctime>
 #include <map>
+#ifdef __linux__
+#include <dlfcn.h>
+#endif
 #include <functional>
 #include <memory>
 #include <set>
@@ -101,6 +113,11 @@ public:
         // taken first: the object or event may be gone afterwards
         const int type = (int)e->type();
         const std::string who = o ? std::string(o->metaObject()->className()) + " " + o->objectName().toStdString() : std::string("?");
+        std::string timerOf;
+        if (type == QEvent::Timer && o) {
+            // which timer: its interval and what owns it
+            if (auto* t = qobject_cast<QTimer*>(o)) timerOf = strfmt(" every %d ms, owner %s %s", t->interval(), t->parent() ? t->parent()->metaObject()->className() : "-", t->parent() ? t->parent()->objectName().toStdString().c_str() : "");
+        }
         const double t0 = nowMs();
         const bool r = QApplication::notify(o, e);
         const double ms = nowMs() - t0;
@@ -108,7 +125,7 @@ public:
         busy += ms;
         if (ms > longest) longest = ms;
         if (type != QEvent::UpdateRequest && type != QEvent::Paint) {
-            Tally& t = tally["event " + who + " type " + std::to_string(type)];
+            Tally& t = tally["event " + who + timerOf + " type " + std::to_string(type)];
             t.ms += ms;
             ++t.n;
         }
@@ -605,6 +622,25 @@ static void session(MainWindow& w, const QString& path, const QString& shots, in
     }
 }
 
+
+// RENO_PERF_HEAPDUMP=<prefix>: under jemalloc with profiling on (LD_PRELOAD=libjemalloc.so.2
+// MALLOC_CONF=prof:true,...), writes a heap profile <prefix>.<label>.heap, for comparing what is held.
+static void heapDump(const std::string& label)
+{
+#ifdef __linux__
+    const QByteArray prefix = qgetenv("RENO_PERF_HEAPDUMP");
+    if (prefix.isEmpty()) return;
+    typedef int (*Mallctl)(const char*, void*, size_t*, void*, size_t);
+    static Mallctl ctl = (Mallctl)dlsym(RTLD_DEFAULT, "mallctl");
+    if (!ctl) return;
+    std::string name = prefix.toStdString() + "." + label + ".heap";
+    const char* p = name.c_str();
+    ctl("prof.dump", nullptr, nullptr, (void*)&p, sizeof(p));
+#else
+    (void)label;
+#endif
+}
+
 int main(int argc, char** argv)
 {
     TimedApp qapp(argc, argv);
@@ -637,10 +673,14 @@ int main(int argc, char** argv)
     qputenv("RENO_TEST_OPEN_LOG", (out + "/opened.txt").toLocal8Bit());
     uitest::setup(std::vector<std::string>(), std::vector<std::string>());
     setProjectFileLoader([](const std::string& path, Project& o, std::string* error) { return loadProjectFile(path, o, error); });
+    applyTheme();       // as main() does: the Reno style and palette
     writeFakeCatalog(450, 120);
 
     gProject = "(start)";
     {
+#ifdef RENO_CALLGRIND
+        if (qgetenv("RENO_CG") == "start") CALLGRIND_START_INSTRUMENTATION;     // (valgrind --tool=callgrind --instr-atstart=no)
+#endif
         const double t0 = nowWallMs();
         auto w = std::make_unique<MainWindow>();
         const double t1 = nowWallMs();
@@ -650,10 +690,38 @@ int main(int argc, char** argv)
         const double t2 = nowWallMs();
         w->grab();
         const double t3 = nowWallMs();
+#ifdef RENO_CALLGRIND
+        if (qgetenv("RENO_CG") == "start") CALLGRIND_STOP_INSTRUMENTATION;
+#endif
         bench("start_ctor", t1 - t0, "ms");
         bench("start_show", t2 - t1, "ms");
         bench("start_first_grab", t3 - t2, "ms");
         uitest::settle(300);
+
+        // idle: the window just sits there. The UI thread's processor time over 5 s, and what woke it (timers, paints)
+        if (want("idle")) {
+            drain();
+            gApp->tally.clear();
+#ifdef RENO_CALLGRIND
+            if (qgetenv("RENO_CG") == "idle") CALLGRIND_START_INSTRUMENTATION;
+#endif
+            const double c0 = nowMs(), w0 = nowWallMs();
+            const double idleMs = qEnvironmentVariableIntValue("RENO_PERF_IDLE_SECS") > 0 ? 1000.0 * qEnvironmentVariableIntValue("RENO_PERF_IDLE_SECS") : 5000.0;
+            {
+                // (a real event loop that sleeps: processEvents(flags, ms) polls without waiting)
+                QEventLoop loop;
+                QTimer::singleShot((int)idleMs, &loop, &QEventLoop::quit);
+                loop.exec();
+            }
+            const double wall = nowWallMs() - w0;
+            bench("idle_cpu", 100.0 * (nowMs() - c0) / wall, "% of one core");
+            int wakes = 0;
+            for (auto& kv : gApp->tally) wakes += kv.second.n;
+            bench("idle_events_per_second", wakes / (wall / 1000.0), "events/s");
+            if (qEnvironmentVariableIsSet("RENO_PERF_BREAKDOWN")) gApp->report("idle");
+        }
+        bench("memory_after_start", memoryNowMb(), "MB");
+        heapDump("start");
 
         for (const QString& name : names) {
             QString orig;
@@ -665,9 +733,53 @@ int main(int argc, char** argv)
             AppState::get().newProject(true);
             uitest::settle(200);
             gProject = name.toStdString();
+            const double mBefore = memoryNowMb();
+            bench("widgets_before_open", (double)QApplication::allWidgets().size(), "n");
             session(*w, folder + "/" + name, shots, extraTracks);
             AppState::get().newProject(true);
             uitest::settle(200);
+            // what stays behind after the project is closed (the first open also loads code and caches, so it is a ceiling)
+            bench("memory_before_open", mBefore, "MB");
+            bench("memory_after_close", memoryNowMb(), "MB");
+            uitest::settle(4000);
+            // (a real event loop for a moment, as the running program always has: processEvents alone, outside one,
+            // leaves widgets given deleteLater() undeleted, which would read as held memory)
+            {
+                QEventLoop loop;
+                QTimer::singleShot(200, &loop, &QEventLoop::quit);
+                loop.exec();
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            }
+            malloc_trim(0);
+            bench("memory_4s_later_trimmed", memoryNowMb(), "MB");
+            bench("widgets_after_close", (double)QApplication::allWidgets().size(), "n");
+            // RENO_PERF_WIDGETS: the kinds of widget left after the close (class, the top-level window it is in), most first
+            if (qEnvironmentVariableIsSet("RENO_PERF_WIDGETS")) {
+                std::map<std::string, int> kinds;
+                for (QWidget* x : QApplication::allWidgets()) {
+                    QWidget* top = x->window();
+                    std::string k = std::string(x->metaObject()->className()) + " in " + top->metaObject()->className() + " '" +
+                                    top->objectName().toStdString() + "'" + (top->isVisible() ? "" : " (hidden)");
+                    ++kinds[k];
+                }
+                std::vector<std::pair<int, std::string>> v;
+                for (auto& kv : kinds) v.push_back(std::make_pair(kv.second, kv.first));
+                std::sort(v.rbegin(), v.rend());
+                for (size_t k = 0; k < v.size() && k < 25; ++k) std::printf("WIDGETS %6d %s\n", v[k].first, v[k].second.c_str());
+            }
+            bench("audio_event_cache_after_close", (double)AudioEngine::eventCacheBytes() / 1048576.0, "MB");
+#ifdef __linux__
+            malloc_trim(0);         // what is really held, apart from free memory the allocator did not give back
+            bench("memory_after_close_trimmed", memoryNowMb(), "MB");
+            {
+                const struct mallinfo2 mi = mallinfo2();        // what malloc itself counts as in use now (arenas + mmapped blocks)
+                bench("heap_in_use_after_close", (double)(mi.uordblks + mi.hblkhd) / 1048576.0, "MB");
+            }
+            {
+                static int cycle = 0;
+                heapDump("close" + std::to_string(++cycle));
+            }
+#endif
         }
     }
     return 0;

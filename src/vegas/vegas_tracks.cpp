@@ -177,6 +177,13 @@ if (const Chunk* l = childList(tc, G::VideoTrackList)) {
             }
         }
         if (v.size() >= 0x98) t.parentComposite = mode(0x80, "parent compositing mode");
+        // parent/child (Track.CompositeNestingLevel, Settings Matrix run 20261028: nesting video track 2 under track 1 set
+        // u32 0x20 at 0x0c of track 2's record, 0x40 at 0x0c of track 1's (it has a child) and u32 1 at 0xac of track 2's)
+        if (v.size() >= 0xb0 && v.u32(0xac) != 0) {
+            t.compositeLevel = 1;
+            if (v.u32(0xac) > 1)
+                notes_.add(label + ": it is nested " + std::to_string(v.u32(0xac)) + " levels deep; Reno has one level of parent and child (the file keeps it).");
+        }
         if (t.composite == "custom")
             notes_.add(label + ": its compositing mode is Custom (a compositing plug-in), which Reno cannot host; it shows Source "
                        "Alpha (the file keeps it).");
@@ -389,13 +396,23 @@ if (!m.mediaFx.empty()) {
                           "effects of every event that uses it (saved back as the media's).",
                           windowsFileName(m.name.empty() ? m.path : m.name).c_str(), m.mediaFx.size(), m.mediaFx.size() == 1 ? "" : "s"));
 }
-// u32 0x80, u32 flags at 0x04. Bit 0x200 is Resample (smart: the project's resample mode applies); clear is
-// "Disable Resample" (checked against VEGAS's export: 1 event in 1284 has it clear and VEGAS says Disable; that
-// event keeps its aspect ratio, so the bit is not "maintain aspect ratio"). Bit 0x100 is set on 2 events in 2
-// projects and is not understood. Where "maintain aspect ratio" is stored is unknown; it is assumed on (VEGAS's
-// default). u32 at 0x68: last-shown effect (-1 none).
+// u32 0x80, u32 flags at 0x04 (bits found by changing one switch of an event, Settings Matrix run 20261028):
+// 0x001 Maintain Aspect Ratio (set in every sample; the matrix event with it off has it clear), 0x080 Force Resample,
+// 0x100 Reduce Interlace Flicker, 0x200 Resample (smart: the project's resample mode applies). Disable Resample has
+// 0x200 and 0x080 clear (57 events in the samples; VEGAS's export says Disable for them). Optical flow resampling was
+// not tried. f64 at 0x78: the undersample rate (1.0 in every sample; 0.5 when set to 0.5). u32 at 0x68: last-shown
+// effect (-1 none).
 if (const Chunk* vl = childList(ev, G::VideoEventList))
-    if (const Chunk* vd = childChunk(*vl, G::VideoEventData)) e.resample = (vd->data.u32(4) & 0x200) ? "project" : "off";
+    if (const Chunk* vd = childChunk(*vl, G::VideoEventData)) {
+        const uint32_t flags = vd->data.u32(4);
+        e.resample = (flags & 0x200) ? "project" : (flags & 0x80) ? "force" : "off";
+        e.keepAspect = (flags & 0x1) != 0;
+        e.reduceFlicker = (flags & 0x100) != 0;
+        if (vd->data.size() >= 0x80) {
+            const double us = vd->data.f64(0x78);
+            if (std::isfinite(us) && us > 0 && us <= 1.0) e.undersample = us;
+        }
+    }
 if (const Chunk* fx = childList(ev, G::EventFx)) {
     for (const auto& f : fx->kids) {
         OfxRecord r;

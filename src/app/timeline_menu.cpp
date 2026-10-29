@@ -708,10 +708,10 @@ void TimelineWidget::Impl::autoDuckingMenu(QMenu& menu, uint64_t id)
     if (!t) return;
     const bool controller = t->duckController, listener = t->duckListener;
     add(menu, controller ? "Auto Ducking Controls..." : "Auto Ducking Controller...", [this, id] { showAutoDuckingDialog(q, id); });
-    toggleItem(menu, "Auto Ducking Listener", listener, [this, id, listener] { setAutoDuckingListener(id, !listener); });
+    toggleItem(menu, "Auto Ducking Listener", listener, [id, listener] { setAutoDuckingListener(id, !listener); });
     if (controller) {
         menu.addSeparator();
-        add(menu, "Remove Auto Ducking Controller", [this, id] { removeAutoDuckingController(id); });
+        add(menu, "Remove Auto Ducking Controller", [id] { removeAutoDuckingController(id); });
     }
 }
 

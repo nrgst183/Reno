@@ -6,7 +6,6 @@
 // with shared helpers in builtins_more_internal.h.
 #include "builtins_vfxdata.h"
 #include "builtins_more_internal.h"
-#include "builtins_vec.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>

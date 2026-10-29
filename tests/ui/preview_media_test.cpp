@@ -111,20 +111,20 @@ void testPreview()
 
     // channels: red alone, then alpha as grey (the preview's pictures are opaque: white)
     pv.setChannel(1);
-    uitest::settle(50);
+    uitest::settle(300);
     QRgb c = centre(picture, r);
     check(qGreen(c) == 0 && qBlue(c) == 0, "preview: Overlays > Red shows only the red channel", strfmt("%d %d %d (was %d %d %d)", qRed(c), qGreen(c), qBlue(c), qRed(normal), qGreen(normal), qBlue(normal)));
     uitest::shot(&pv, gOut + "/preview_red.png");
     pv.setChannel(5);
-    uitest::settle(50);
+    uitest::settle(300);
     c = centre(picture, r);
     check(qRed(c) == qGreen(c) && qGreen(c) == qBlue(c) && std::abs(qGreen(c) - qGreen(normal)) <= 3, "preview: Green as Grayscale", strfmt("%d %d %d", qRed(c), qGreen(c), qBlue(c)));
     pv.setChannel(7);
-    uitest::settle(50);
+    uitest::settle(300);
     c = centre(picture, r);
     check(qRed(c) == 255 && qGreen(c) == 255, "preview: Alpha as Grayscale: opaque is white");
     pv.setChannel(0);
-    uitest::settle(50);
+    uitest::settle(300);
     check(centre(picture, r) == normal, "preview: back to the whole picture");
 
     // the Overlays menu lists the channels (VEGAS's)

@@ -1,7 +1,5 @@
 // Built-in colour effects (Saturation, Soft Contrast, White Balance, Lab Adjust, Black Restore, Broadcast Colors, Channel Blend); see builtins_more.cpp.
 #include "builtins_more_internal.h"
-#include "builtins_fast.h"
-#include "builtins_vec.h"
 #include "vegas8.h"
 #include <cstdio>
 #include <cstring>

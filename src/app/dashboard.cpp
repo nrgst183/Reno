@@ -1,6 +1,7 @@
 // Dashboard window; see dashboard.h.
 #include "dashboard.h"
 #include "toolwin.h"
+#include "pollrate.h"
 #include "playback.h"
 #include "recorder.h"
 #include <QContextMenuEvent>
@@ -98,6 +99,7 @@ struct Dashboard::Impl {
     bool shown[TileCount] = {true, true, true, true, true, true};
     QGridLayout* grid = nullptr;
     QTimer* timer = nullptr;
+    PollRate* pollRate = nullptr;          // slows the timer when nothing plays or records
     // frame rate: when frames were shown lately
     std::deque<std::pair<double, uint64_t>> samples;        // seconds, frames shown so far
     double fps = 0;
@@ -183,6 +185,7 @@ struct Dashboard::Impl {
             }
         }
         for (TileWidget* t : tiles) t->update();
+        if (pollRate) pollRate->ticked(playing || (rec && (rec->recording() || rec->inputOpen())));
     }
 };
 
@@ -209,6 +212,7 @@ Dashboard::Dashboard(Playback* playback, Recorder* recorder, QWidget* parent) : 
     Impl* impl = d.get();
     QObject::connect(d->timer, &QTimer::timeout, this, [impl] { impl->read(); });
     d->timer->start();
+    d->pollRate = new PollRate(this, d->timer, 100);
     d->read();
 }
 

@@ -59,10 +59,13 @@ public:
         it->second.used = ++clock_;
         return it->second.img;
     }
-    void put(uint64_t media, uint64_t shape, double from, double until, const ImagePtr& img)
+    // 'generation': generation() when the frame was asked for. A frame asked for before the last clear() (a project
+    // closed while it was being decoded) is not kept: it would stay until the next project's frames push it out.
+    void put(uint64_t media, uint64_t shape, double from, double until, const ImagePtr& img, uint64_t generation)
     {
         if (!img || !(from <= until)) return;
         std::lock_guard<std::mutex> lk(m_);
+        if (generation != generation_) return;
         auto& g = groups_[Key{media, shape}];
         auto it = g.lower_bound(from);
         if (it != g.begin()) {
@@ -86,6 +89,12 @@ public:
         std::lock_guard<std::mutex> lk(m_);
         groups_.clear();
         bytes_ = 0;
+        ++generation_;
+    }
+    uint64_t generation() const
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        return generation_;
     }
     size_t bytes() const
     {
@@ -131,6 +140,7 @@ private:
     std::map<Key, std::map<double, Span>> groups_;
     size_t bytes_ = 0, limit_;
     uint64_t clock_ = 0;
+    uint64_t generation_ = 0;
 };
 
 void MediaPool::setShareFrames(bool on, size_t bytes)
@@ -432,6 +442,7 @@ ImagePtr MediaPool::videoFrame(uint64_t user, const MediaItem& m0, double second
     }
     std::shared_ptr<FrameShare> share = (depth == PixelDepth::Float && m.info.bitDepth > 8) ? nullptr : share_;
     const uint64_t shape = share ? shapeOf(m, bw, bh, deinterlace) : 0;
+    const uint64_t generation = share ? share->generation() : 0;
     auto finish = [&](const ImagePtr& got) {
         if (f == 1.0 && !rot) return withAlphaMode(got, m0.alphaMode);
         return withAlphaMode(reshapedMedia(got, f, rot), m0.alphaMode);
@@ -479,10 +490,10 @@ ImagePtr MediaPool::videoFrame(uint64_t user, const MediaItem& m0, double second
     if (depth == PixelDepth::Float && e->reader->info().bitDepth > 8) return finish(e->reader->videoFrameInDepth(seconds, bw, bh, depth));
     double from = 1.0, until = 0.0;
     ImagePtr got = share ? e->reader->videoFrameSpan(seconds, bw, bh, &from, &until) : e->reader->videoFrame(seconds, bw, bh);
-    if (share && got && from <= until) share->put(m.id, shape, from, until, got);
+    if (share && got && from <= until) share->put(m.id, shape, from, until, got, generation);
     if (share && got && !mediaReadHints().cancelled()) {
         const uint64_t id = m.id;
-        e->reader->harvestKept(bw, bh, kHarvestFrames, [&](double f, double u, const ImagePtr& img) { share->put(id, shape, f, u, img); });
+        e->reader->harvestKept(bw, bh, kHarvestFrames, [&](double f, double u, const ImagePtr& img) { share->put(id, shape, f, u, img, generation); });
     }
     return finish(got);
 }

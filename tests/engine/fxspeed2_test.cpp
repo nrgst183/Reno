@@ -128,17 +128,6 @@ int main(int argc, char** argv)
         if (!std::strcmp(argv[i], "--only") && i + 1 < argc) only = argv[++i];
     const std::string V = "com.vegascreativesoftware:";
     std::vector<Case> cases;
-    auto kernel = [](std::initializer_list<double> k, double rot, bool norm, double scale, double offset) {
-        Params p;
-        int i = 0;
-        for (double v : k) { p[strfmt("Row%dColumn%d", i / 3 + 1, i % 3 + 1)] = {v}; ++i; }
-        p["Rotation"] = {rot};
-        p["AutoNormalize"] = {norm ? 1.0 : 0.0};
-        p["Scale"] = {scale};
-        p["Offset"] = {offset};
-        return p;
-    };
-
     // Convolution Kernel, Mirror's slanted lines and Layer Dimensionality's shadows are VEGAS's own arithmetic now (8-bit steps
     // transcribed from VEGAS), checked pixel for pixel against VEGAS by tools/vegasref_compare.py; the older Reno models in
     // fxspeed2_ref.inc no longer describe them, so only the cases where both still agree (straight Mirror lines, Layer

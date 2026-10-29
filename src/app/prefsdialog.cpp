@@ -2,7 +2,7 @@
 // MIDI, VST
 // Effects, Editing, Display, Sync, External Control & Automation, Deprecated Features, File I/O; no CD Settings) with
 // VEGAS's
-// wording and layout (from vegas180.exe's dialog resources 810-912, see notes/vegas_dialogs.txt), Default All on each tab.
+// wording and layout (from vegas180.exe's dialog resources 810-912), Default All on each tab.
 //
 // Values are Reno's Preferences (appstate.h) where the setting already existed there, otherwise vprefs.h's QSettings
 // values.

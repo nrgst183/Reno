@@ -136,7 +136,9 @@ private:
     OutNode header();
     OutNode summary(const Chunk& c);
     OutNode buses(const Chunk* list);
-    std::string busRecord(const Bytes& orig, const FxChain* fx, const std::string* name, double level, uint32_t index, const std::string& where);
+    std::string busRecord(const Bytes& orig, const FxChain* fx, const std::string* name, double level, uint32_t index, const std::string& where,
+                          int mute = -1, int solo = -1, const std::string* panType = nullptr);
+    static bool busFlagsChanged(const Bytes& orig, bool master, bool mute, bool solo, const std::string& panType);
     bool sameAudioChain(const FxChain& chain, const Chunk* chunk);
     void prepareMedia();
     std::set<uint64_t> grouped_;                        // VEGAS ids of the events that are in a group
@@ -146,6 +148,7 @@ private:
     void trackEvents(const Track& t, const VegTrackOrigin* o, OutNode& out);
     void trackSettings(const Track& t, const Chunk& base, const VegTrackOrigin* o, const Track& was, bool video, const std::string& label,
                        size_t fxWritten, size_t chainWritten, OutNode& out);
+    uint32_t parentChildRelation(const Track& t) const;
     void trackWarnings(const Track& t, const VegTrackOrigin* o, const Track& was, const std::string& label);
     OutNode event(const Event& e, const Track& t);
     const Chunk* eventTemplate(bool video);

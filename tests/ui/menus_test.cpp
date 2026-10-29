@@ -1,4 +1,4 @@
-// The main window's menus and the timeline's right-click menus against VEGAS Pro 18's (read from vegas180.exe: notes/vegas_menus.txt),
+// The main window's menus and the timeline's right-click menus against VEGAS Pro 18's (read from vegas180.exe),
 // and that each command works and is one undo step: Paste Event Attributes / Selectively Paste, Event Heal, Close Gaps, Undo All,
 // Clear Edit History, Select Events to End / All After Cursor, the switches (Invert Phase, Normalize, Reduce Interlace Flicker...),
 // Channels, Group > Cut / Copy / Delete All, Insert Time / Empty Event, Clean Project Media, Duplicate Track, View > Audio / Video

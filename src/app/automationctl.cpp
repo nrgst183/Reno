@@ -10,6 +10,7 @@ namespace app {
 
 std::function<bool()> AutomationHooks::playing;
 std::function<double()> AutomationHooks::position;
+std::function<void()> AutomationHooks::wake;
 
 double automationNow()
 {
@@ -171,6 +172,7 @@ bool controlMoved(Project& p, const EnvelopeOwner& o, const std::string& kind, u
     if (!tk) {
         gTakes.emplace_back();
         tk = &gTakes.back();
+        if (AutomationHooks::wake) AutomationHooks::wake();
         tk->owner = o;
         tk->take.kind = kind;
         tk->take.target = target;
@@ -207,21 +209,21 @@ void controlReleased(AppState& app)
         app.edit("Smooth and Thin Automation", [&](Project& p) { for (const Take& t : done) thinTake(p, t); });
 }
 
-void automationTick(AppState& app)
+bool automationTick(AppState& app)
 {
-    if (gTakes.empty()) return;
+    if (gTakes.empty()) return false;
     const bool playing = AutomationHooks::playing && AutomationHooks::playing();
     bool any = false;
     for (Take& t : gTakes) any = any || t.released;
     if (!any) {
         if (!playing) gTakes.clear();                   // Touch take still held when playback stops
-        return;
+        return !gTakes.empty();
     }
     const double now = automationNow();
     if (playing) {
         // Latch: keep writing the last value
         if (!gLatchDrag) {
-            if (app.dragging()) return;
+            if (app.dragging()) return true;
             app.beginDrag();
             gLatchDrag = true;
         }
@@ -232,7 +234,7 @@ void automationTick(AppState& app)
                 if (Envelopes* envs = AppState::envelopesOf(p, t.owner)) t.take.apply(*envs);
             }
         });
-        return;
+        return true;
     }
     // playback stopped: end the Latch takes
     if (gLatchDrag) {
@@ -248,6 +250,7 @@ void automationTick(AppState& app)
         gLatchDrag = false;
     }
     gTakes.clear();
+    return false;
 }
 
 }  // namespace app

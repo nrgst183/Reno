@@ -54,12 +54,6 @@ static Buf runS(const Def& def, const Params& over, const StrMap& sover, const B
     return c.out;
 }
 
-static Buf runP(const std::string& id, const Params& over, const Buf& src, double scale = 1.0)
-{
-    const Def* d = findDef(id);
-    return d ? runS(*d, over, StrMap(), src, scale) : Buf();
-}
-
 static double maxDiff(const Buf& a, const Buf& b)
 {
     double m = 0;

@@ -51,11 +51,15 @@ above each reader or writer says which parts are confirmed and which are guesses
   window lists what the `.veg` could not hold and was left out. Nothing is written to a `.veg` that VEGAS itself
   does not write.
 - Not written yet, because no sample shows where VEGAS stores them: changed track motion, sends to buses,
-  transitions, the Custom compositing mode (a compositing plug-in), the parent/child setting, track groups, effects
-  and envelopes on the video output and the master, bus pan/mute/solo, VST3 plug-ins, the event undersample rate,
-  surround pans, multichannel channel choice, Trimmer markers, Red Eye Reduction areas, and keyframe interpolation
-  other than Linear for keys that did not come from a `.veg`. The Color Grading panel's effect and adjustment tracks
-  have no VEGAS equivalent.
+  transitions, the Custom compositing mode (a compositing plug-in), track groups, effects and envelopes on the video
+  output and the master, a bus's pan position, a master solo, VST3 plug-ins, surround pans, multichannel channel
+  choice, Trimmer markers, Red Eye Reduction areas, and keyframe interpolation other than Linear for keys that did
+  not come from a `.veg`. The Color Grading panel's effect and adjustment tracks have no VEGAS equivalent.
+- Written from the files of a Settings Matrix run (`tools/scripts/Reno Settings Matrix.cs`, one change per file;
+  `vegmatrix_write_test` rebuilds each change from its base and compares the records byte for byte with VEGAS's):
+  a bus's mute, solo and pan type and the master's mute, the compositing parent/child setting (one level), an
+  event's undersample rate, Maintain Aspect Ratio, Reduce Interlace Flicker and Force Resample. Optical flow
+  resampling was not in the run and is still left out.
 - Other `.veg` files used as media (nested projects) are read for frame size, frame rate and length. Edit > Nested
   Timelines creates and opens them.
 - Older (pre-OpenFX) VEGAS effects Swirl, Pinch/Punch, Wave, TV Simulator and Light Rays map to Reno's built-ins of
@@ -366,6 +370,7 @@ own command-line argument wins) and print a `SKIP` line, which does not count as
 |---|---|
 | `RENO_SAMPLES` | folder of sample VEGAS projects (`.veg`, searched recursively) and their media; tests that look at "the samples" run over every `.veg` in it |
 | `RENO_SAMPLE_VEG` | one particular `.veg` file for the tests that look at a single project (`cookie_paste_test`, `vegmatrix_diff_test`, `open_media_test`, `zoombar_test`, `scrollzoom_test`, `load_lag_test`, `shortclips_test`, `builtins_test`, `reno_cli_test.sh`); without it each picks a suitable project from `RENO_SAMPLES`, and the test skips when there is none |
+| `RENO_MATRIX` | a folder written by the Settings Matrix script (`manifest.txt` and the `.veg` files, in VEGAS's own saves) for `vegmatrix_write_test` |
 | `RENO_CMP` | folder the VEGAS bridge scripts (`tools/vegas/bridge_scripts`) wrote: `info` (`real_<project>.vegas.reno`), `loud` (`loud_sweep.veg`), `pitchtests`, `shorttests`, `vegas` (VEGAS's own renders: `nofx_<project>.wav` with `<project>` the name of a `.veg` under this folder, spaces as `_`, and `nofx_loud_sweep.wav`) |
 | `RENO_TEST_PLUGIN` | the test OpenFX plug-in file (`effects.ofx`) for `tests/ofx` and `tests/vegas/vegofxstate` |
 | `RENO_TEST_VST_DIR` | folder with test VST2 plug-ins (`vegofxstate`) |

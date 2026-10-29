@@ -611,8 +611,9 @@ void Importer::audioChain(const Chunk* chunk, size_t off, const std::string& whe
 
 // ---------------------------------------------------------------- buses
 // Bus chunk: u32 0xc8, u32 kind at 0x0c (2 master, 3 audio bus, 7 video bus), u32 index at 0x14 (1 = Bus A), f64
-// level at 0x18 (and 0x20 for the right side); at 0xd0 three 0-terminated texts (output device, name, name again),
-// then the audio effect chain. At 0x98 the audio and video buses hold -2 in every sample, taken to mean
+// level at 0x18 (and 0x20 for the right side); u32 mute at 0x5c, u32 solo at 0x60, u32 pan type at 0x7c (as a track's,
+// see panTypeName; the master has no pan type there); at 0xd0 four 0-terminated texts (output device, name,
+// description, default name "Bus A"), then the audio effect chain. At 0x98 the audio and video buses hold -2 in every sample, taken to mean
 // "to the master"; anything else is reported.
 void Importer::readBuses(const Chunk& list)
 {
@@ -628,12 +629,16 @@ void Importer::readBuses(const Chunk& list)
         const size_t chain = b.find(chainGuid, 16, 0xd0);
         if (type == 2) {
             if (level >= 0 && level < 16) p_->masterVolume = level;
+            p_->masterMute = b.u32(busMuteOffset) != 0;
             if (chain != std::string::npos) audioChain(c, chain, "The master bus", p_->audioOut);
         } else if (type == 3) {
             Bus bus;
             bus.id = p_->newId();
             bus.name = name.empty() ? strfmt("Bus %c", (char)('A' + std::min<uint32_t>(index ? index - 1 : 0, 25))) : name;
             bus.level = (level >= 0 && level < 16) ? level : 1.0;
+            bus.mute = b.u32(busMuteOffset) != 0;
+            bus.solo = b.u32(busSoloOffset) != 0;
+            bus.panType = b.u32(busPanTypeOffset) == 0 ? std::string() : panTypeName(b.u32(busPanTypeOffset));     // ("": VEGAS's default, Add Channels)
             if (b.i32(0x98) != -2)
                 notes_.add("Bus '" + bus.name + "': where its sound goes could not be read; Reno sends it to the master.");
             if (chain != std::string::npos) audioChain(c, chain, "Bus '" + bus.name + "'", bus.fx);

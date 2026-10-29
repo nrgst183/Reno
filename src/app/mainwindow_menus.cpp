@@ -976,7 +976,7 @@ void MainWindow::buildVegasMenus()
                 }
             m->addAction(a);
         };
-        QAction* bypassAudio = act("bypassAudioFx", "Bypass All A&udio FX", QList<QKeySequence>(), [&app] {});
+        QAction* bypassAudio = act("bypassAudioFx", "Bypass All A&udio FX", QList<QKeySequence>(), [] {});
         bypassAudio->setCheckable(true);
         bypassAudio->setChecked(app.bypassAudioFx.load());
         QObject::connect(bypassAudio, &QAction::toggled, this, [&app](bool on) {

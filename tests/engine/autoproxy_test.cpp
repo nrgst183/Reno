@@ -206,7 +206,7 @@ int main(int argc, char** argv)
         check(n1.save(P("N1.reno"), &err), "and so can the one that nests it", err);
     }
     auto loader = [](const std::string& path, Project& out) { return out.load(path, nullptr); };
-    uint64_t mA, mB, mC, mE, mF, mH, mI, mK, mStill, mN;
+    uint64_t mA, mB, mC, mE, mF, mH, mI, mStill, mN;
     {
         top.settings.width = 320; top.settings.height = 180; top.settings.fpsNum = 25;
         mA = addMedia(top, P("A.mp4"));
@@ -216,7 +216,7 @@ int main(int argc, char** argv)
         mF = addMedia(top, P("F.mov"));
         mH = addMedia(top, P("H.mp4"));
         mI = addMedia(top, P("I.mp4"));
-        mK = addMedia(top, P("K.mp4"));
+        addMedia(top, P("K.mp4"));
         mStill = addMedia(top, P("A.mp4"));
         top.media.back().info.isStill = true;
         top.media.back().path = P("still.png");

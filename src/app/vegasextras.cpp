@@ -5,8 +5,6 @@
 #include "playback.h"
 #include "timeline.h"
 #include "vprefs.h"
-#include "../engine/engine.h"
-#include "../engine/loudness.h"
 #include "../engine/timefmt.h"
 #include "../media/media.h"
 #include "../vegas/vegas.h"
@@ -880,7 +878,7 @@ namespace {
 
 class BackupKeeper : public QObject {
 public:
-    explicit BackupKeeper(MainWindow* w) : QObject(w), w_(w)
+    explicit BackupKeeper(MainWindow* w) : QObject(w)
     {
         timer_ = new QTimer(this);
         timer_->setInterval(15000);
@@ -940,7 +938,6 @@ private:
             }
         }
     }
-    MainWindow* w_;
     QTimer* timer_ = nullptr;
     int listener_ = 0;
     bool saving_ = false;

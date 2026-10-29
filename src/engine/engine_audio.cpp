@@ -1,10 +1,8 @@
 // The mixer: a project's sound.
 #include "engine.h"
 #include "engine_internal.h"
-#include "automation.h"
 #include "stretch.h"
 #include "../core/base.h"
-#include "../media/vegasfiles.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>

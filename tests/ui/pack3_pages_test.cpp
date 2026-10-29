@@ -68,7 +68,7 @@ static std::unique_ptr<Bound> open(const std::string& uid)
     b->host.get = [raw](int i) { return raw->real(i); };
     b->host.set = [raw](int i, double v) { raw->setReal(i, v); ++raw->edits; };
     b->host.name = [raw](int i) { return raw->plugin->paramName(i); };
-    b->host.begin = [raw](int) {};
+    b->host.begin = [](int) {};
     b->host.end = [] {};
     b->host.state = [raw] { return raw->plugin->saveState(); };
     b->host.setState = [raw](const std::string& st, const std::string&) { raw->plugin->loadState(st); ++raw->edits; };
@@ -155,7 +155,7 @@ static void vibrato(const QString& out)
     b->plugin->setProgram(0);
     b->page->refresh();
     const QSize gsz = graph->size();
-    const double left = 30, right = gsz.width() - 6, top = 6, bottom = gsz.height() - 6;
+    const double left = 35, right = gsz.width() - 6, top = 6, bottom = gsz.height() - 6;
     const double xs = left + (right - left) * 0.5, ym = (top + bottom) / 2;
     clickAt(graph, QPointF(xs, ym));
     vegvib::Settings s;
@@ -243,7 +243,7 @@ static void ampmod(const QString& out)
     b->plugin->setProgram(0);
     b->page->refresh();
     const QSize gsz = graph->size();
-    const double left = 34, right = gsz.width() - 6, top = 6, bottom = gsz.height() - 6;
+    const double left = 32, right = gsz.width() - 6, top = 6, bottom = gsz.height() - 6;
     const double xs = left + (right - left) * 0.5, ym = (top + bottom) / 2;
     clickAt(graph, QPointF(xs, ym));
     vegamp::Settings s;
@@ -328,7 +328,7 @@ static void flange(const QString& out)
     QSlider* wet = find<QSlider>(*b, "dxParam5");
     check(rs && rb && ds && dv && cs && qs && qv && mult && per && ts && dry && wet, "Flange/Wah-wah: all the controls of the dialog are there");
     if (!(rs && rb && ds && dv && cs && qs && qv && mult && per && ts && dry && wet)) return;
-    check(rb->text() == "10.000" && dv->text() == "10 %" && qv->text() == "1 %", "Flange/Wah-wah: starts at the defaults",
+    check(rb->text() == "10.000" && dv->text() == "10%" && qv->text() == "1%", "Flange/Wah-wah: starts at the defaults",
           (rb->text() + " " + dv->text() + " " + qv->text()).toStdString());
     check(!cs->isEnabled() && !qs->isEnabled() && !per->isEnabled(), "Flange/Wah-wah: the flange has no center frequency or resonance, and no period without tempo sync");
     QList<QRadioButton*> rd = b->page->findChildren<QRadioButton*>();
@@ -342,7 +342,7 @@ static void flange(const QString& out)
     QApplication::processEvents();
     check(std::fabs(b->real(3) - 2.5) < 1e-3, "Flange/Wah-wah: rate box 2.5 Hz");
     ds->setValue(1000);
-    check(std::fabs(b->real(4) - 100) < 1e-3 && dv->text() == "100 %", "Flange/Wah-wah: depth slider to the right end: 100%");
+    check(std::fabs(b->real(4) - 100) < 1e-3 && dv->text() == "100%", "Flange/Wah-wah: depth slider to the right end: 100%");
     qs->setValue(0);
     check(std::fabs(b->real(2) - 1) < 1e-3, "Flange/Wah-wah: resonance slider to the left end: 1");
     dry->setValue(1000);

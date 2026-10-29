@@ -22,7 +22,6 @@ static double cpuMs()
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
     return ts.tv_sec * 1000.0 + ts.tv_nsec / 1.0e6;
 }
-static double wallMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static double rssMb()
 {
     FILE* f = std::fopen("/proc/self/statm", "r");

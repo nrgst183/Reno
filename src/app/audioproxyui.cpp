@@ -113,6 +113,8 @@ public:
     void refresh()
     {
         const autoproxy::Status st = autoproxy::Worker::get().status();
+        const int want = st.enabled && st.working ? 400 : 1500;        // (looked at less often while no proxy is being made)
+        if (timer_ && timer_->interval() != want) timer_->setInterval(want);
         if (!st.enabled || !st.working) {
             hide();
             return;

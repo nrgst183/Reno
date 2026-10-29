@@ -145,42 +145,6 @@ static size_t diffBytes(const std::string& a, const std::string& b, size_t* firs
 }
 
 // ---------------------------------------------------------------------------------------------- VEGAS's presets
-// The settings of a preset of the OpenFX package Reno carries (the copy of VEGAS's own): name -> numbers.
-static std::map<std::string, std::vector<double>> presetValues(const std::string& plugin, const std::string& preset)
-{
-    std::map<std::string, std::vector<double>> out;
-    const std::string& xml = ofx::builtinPresetPackage();
-    const std::string key = "plugin=\"" + plugin + "\"";
-    size_t at = 0;
-    while ((at = xml.find("<OfxPreset ", at)) != std::string::npos) {
-        const size_t endTag = xml.find("</OfxPreset>", at);
-        if (endTag == std::string::npos) break;
-        const std::string head = xml.substr(at, xml.find('>', at) - at);
-        if (head.find(key) != std::string::npos && head.find("name=\"" + preset + "\"") != std::string::npos) {
-            size_t q = at;
-            for (;;) {
-                q = xml.find("<OfxParamType", q);
-                if (q == std::string::npos || q > endTag) break;
-                const size_t n0 = xml.find("name=\"", q) + 6, n1 = xml.find('"', n0);
-                const size_t v0 = xml.find("<OfxParamValue>", q) + 15, v1 = xml.find("</OfxParamValue>", v0);
-                const std::string name = xml.substr(n0, n1 - n0), text = xml.substr(v0, v1 - v0);
-                std::vector<double> v;
-                if (text == "true") v.push_back(1);
-                else if (text == "false") v.push_back(0);
-                else {
-                    std::istringstream is(text);
-                    double d;
-                    while (is >> d) v.push_back(d);
-                }
-                out[name] = v;
-                q = v1;
-            }
-            return out;
-        }
-        at = endTag;
-    }
-    return out;
-}
 
 // ---------------------------------------------------------------------------------------------- rendering
 class Still : public MediaReader {

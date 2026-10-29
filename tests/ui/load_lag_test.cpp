@@ -75,7 +75,6 @@ constexpr int kDepth = 48, kMax = 200000;
 static void* gStacks[kMax][kDepth];
 static int gDepths[kMax];
 static std::atomic<int> gCount{0};
-static std::atomic<bool> gBusy{false};
 static std::atomic<long long> gEventStart{0};      // steady ns when the outermost event began, 0 when idle
 static pthread_t gMain;
 static std::atomic<bool> gRun{false};

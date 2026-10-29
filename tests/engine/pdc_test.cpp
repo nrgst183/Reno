@@ -179,7 +179,6 @@ int main()
     }
 
     // the sound, once through the effect's path and once plain: first the effect's own length, to see that it is not nothing
-    const int N = 4 * kRate;        // from 0.5 s to 4.5 s
     struct Case {
         const char* name;
         int kind;       // 0 event chain, 1 track chain, 2 bus chain, 3 two tracks into a latent bus, 4 master chain, 5 track chain + bus chain, 6 two events with different latencies

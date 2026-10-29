@@ -9,16 +9,11 @@
 #include "outputcmds.h"
 #include "startup.h"
 #include "recovery.h"
-#include "../engine/timefmt.h"
-#include "pluginchooser.h"
 #include "timeline.h"
 #include "fxwindow.h"
 #include "mixer.h"
 #include "editdialogs.h"
 #include "mainwindow_tools.h"
-#include "../vegas/vegas.h"
-#include "theme.h"
-#include "renderdialog.h"
 #include "keyboard.h"
 #include "trackdefaults.h"
 #include "smalldialogs.h"
@@ -40,7 +35,6 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QTimer>
-#include "automationctl.h"
 #include <QVBoxLayout>
 #include <algorithm>
 #include <map>

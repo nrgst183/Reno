@@ -68,7 +68,7 @@ protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
-        p.fillRect(rect(), palette().color(QPalette::Window));
+        p.fillRect(rect(), QColor(240, 240, 240));    // (the page's own face: the application style sheet would give the palette the dark theme)
         const QRectF pl = plot();
         p.fillRect(pl, Qt::white);
         p.setPen(QPen(QColor(160, 160, 160), 1));

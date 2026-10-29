@@ -1,6 +1,7 @@
 // The Plug-In Manager: see pluginmanager.h.
 #include "pluginmanager.h"
 #include "toolwin.h"
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QKeyEvent>
@@ -160,8 +161,20 @@ struct PluginManager::Impl {
             for (int c = 0; c < 4; ++c) it->setForeground(c, QColor(230, 110, 100));
     }
 
+    // The tree is filled when shown (a Plug-In Manager in a hidden tab costs nothing at start-up); a visible one at once.
+    bool stale = false;
     void fill()
     {
+        if (q->isVisible()) doFill();
+        else stale = true;
+    }
+    void ensureFilled()
+    {
+        if (stale) doFill();
+    }
+    void doFill()
+    {
+        stale = false;
         std::map<QString, bool> open;
         std::function<void(QTreeWidgetItem*, const QString&)> remember = [&](QTreeWidgetItem* it, const QString& path) {
             for (int k = 0; k < it->childCount(); ++k) {
@@ -311,6 +324,18 @@ PluginManager::PluginManager(QWidget* parent) : QWidget(parent), d(new Impl())
     d->listener.reset(new Listener([impl](int changes) {
         if (changes & kCatalog) impl->fill();
     }));
+    struct FillOnShow : QObject {
+        std::function<void()> fill;
+        bool eventFilter(QObject*, QEvent* e) override
+        {
+            if (e->type() == QEvent::Show) fill();
+            return false;
+        }
+    };
+    auto* onShow = new FillOnShow();
+    onShow->setParent(this);
+    onShow->fill = [impl] { impl->ensureFilled(); };
+    installEventFilter(onShow);
     d->fill();
 }
 
@@ -339,12 +364,17 @@ int PluginManager::count(const QString& folderPath) const { return keys(folderPa
 
 QStringList PluginManager::keys(const QString& folderPath) const
 {
+    d->ensureFilled();
     QStringList out;
     if (QTreeWidgetItem* f = d->find(folderPath)) d->leaves(f, out);
     return out;
 }
 
-QWidget* PluginManager::tree() const { return d->tree; }
+QWidget* PluginManager::tree() const
+{
+    d->ensureFilled();
+    return d->tree;
+}
 
 }  // namespace app
 }  // namespace reno

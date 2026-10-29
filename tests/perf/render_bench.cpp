@@ -47,13 +47,6 @@ static uint64_t hashImage(uint64_t h, const ImagePtr& img)
     return h;
 }
 
-static Json val(std::initializer_list<double> v)
-{
-    Json e = Json::object(), a = Json::array();
-    for (double x : v) a.push(x);
-    e["v"] = a;
-    return e;
-}
 static FxSlot slot(Project& p, const std::string& id, const Json& params = Json())
 {
     FxSlot s;

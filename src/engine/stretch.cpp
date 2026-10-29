@@ -237,7 +237,6 @@ private:
     void splice(const StretchPull& pull)
     {
         // Splice i is laid at [i H - C, i H - C + L) of the output and is at full strength from i H on.
-        const int64_t outStart = i_ * H_;
         const int64_t nom = (int64_t)std::llround((double)(i_ * H_) / alpha_);
         int64_t lo = nom - S_, hi = nom + S_ + L_;
         const int64_t natural = prevPos_ + H_;
@@ -272,7 +271,7 @@ private:
             accL_[(size_t)j] += w * sl[j];
             accR_[(size_t)j] += w * sr[j];
         }
-        // [outStart, outStart + H) is finished
+        // [i H, i H + H) of the output is finished
         out_.at = 0;
         out_.n = H_;
         std::memcpy(out_.l.data(), accL_.data(), (size_t)H_ * sizeof(float));

@@ -1363,6 +1363,7 @@ private:
 struct PreviewWidget::Impl {
     PreviewWidget* owner = nullptr;
     Playback* pb = nullptr;
+    std::unique_ptr<ListenerHandle> busyListener;      // wakes the rendering-indicator check up after a change
     PictureView* view = nullptr;
     GlyphButton *bypass = nullptr, *overlays = nullptr, *play = nullptr;
     QToolButton* qualityButton = nullptr;
@@ -1841,7 +1842,10 @@ PreviewWidget::PreviewWidget(Playback* playback, QWidget* parent) : QWidget(pare
         QTimer* busyTimer = new QTimer(this);
         busyTimer->setInterval(70);
         PictureView* view = d->view;
-        QObject::connect(busyTimer, &QTimer::timeout, this, [this, busy, view, playback] {
+        QObject::connect(busyTimer, &QTimer::timeout, this, [this, busy, view, playback, busyTimer] {
+            // quiet: nothing playing and no picture awaited, so a slow check will do until something changes (below)
+            const bool quiet = !(playback && (playback->playing() || playback->renderingFor() > 0)) && busy->isHidden();
+            if (quiet != (busyTimer->interval() > 70)) busyTimer->setInterval(quiet ? 500 : 70);
             const bool on = isVisible() && playback && playback->renderingFor() > 0.15;
             if (on) {
                 const QRect pic = view->target().isEmpty() ? view->rect() : view->target().intersected(view->rect());
@@ -1857,6 +1861,8 @@ PreviewWidget::PreviewWidget(Playback* playback, QWidget* parent) : QWidget(pare
             }
         });
         busyTimer->start();
+        // any change in the project, cursor or playback state: back to the quick check
+        d->busyListener.reset(new ListenerHandle([busyTimer](int) { if (busyTimer->interval() != 70) busyTimer->setInterval(70); }));
     }
     d->view->setObjectName("previewPicture");
     root->addWidget(d->view, 1);

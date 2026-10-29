@@ -1815,8 +1815,16 @@ MediaBin::MediaBin(QWidget* parent) : QWidget(parent), d(new Impl())
         impl->binMenu(impl->bins->viewport()->mapToGlobal(pos));
     });
 
-    d->listener.reset(new ListenerHandle([impl](int changes) {
-        if (changes & kProject) impl->refresh();
+    d->listener.reset(new ListenerHandle([impl, serial = std::make_shared<uint64_t>(AppState::get().projectSerial())](int changes) {
+        if ((changes & kFile) && AppState::get().projectSerial() != *serial) {
+            *serial = AppState::get().projectSerial();
+            // another project: the thumbnails are of the last one's media (whose ids the new one may reuse)
+            impl->icons.clear();
+            impl->requested.clear();
+            impl->refresh(true);
+        } else if (changes & kProject) {
+            impl->refresh();
+        }
         if (changes & kPrefs) impl->applyLook();
     }));
     d->setView(QSettings().value("media/view", 0).toInt());

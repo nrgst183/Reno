@@ -108,7 +108,7 @@ if(RENO_WITH_APP AND TARGET reno_media)
   if(WIN32 AND NOT CMAKE_PREFIX_PATH AND NOT CMAKE_CROSSCOMPILING)
     set(CMAKE_PREFIX_PATH "C:/Qt/6.8.3/msvc2022_64")
   endif()
-  find_package(Qt6 COMPONENTS Widgets OPTIONAL_COMPONENTS Multimedia OpenGL OpenGLWidgets)
+  find_package(Qt6 COMPONENTS Widgets OPTIONAL_COMPONENTS Multimedia OpenGL)
   if(Qt6_FOUND)
     # the project, the compositor and mixer, rendering; .veg reading and writing (no Qt)
     reno_sources(RENO_ENGINE_SOURCES engine vegas)
@@ -137,12 +137,9 @@ if(RENO_WITH_APP AND TARGET reno_media)
         MACOSX_BUNDLE_BUNDLE_VERSION 1.0 MACOSX_BUNDLE_SHORT_VERSION_STRING 1.0)
     endif()
     target_link_libraries(reno PRIVATE reno_engine Qt6::Widgets)
-    # effects' on-screen controls are drawn with OpenGL (Qt's offscreen framebuffer)
+    # effects' on-screen controls are drawn with OpenGL (Qt's offscreen framebuffer; no OpenGL widgets are used)
     if(TARGET Qt6::OpenGL)
       target_link_libraries(reno PRIVATE Qt6::OpenGL)
-    endif()
-    if(TARGET Qt6::OpenGLWidgets)
-      target_link_libraries(reno PRIVATE Qt6::OpenGLWidgets)
     endif()
     if(WIN32)
       target_link_libraries(reno PRIVATE dwmapi opengl32)   # the dark title bars; OpenGL
@@ -187,11 +184,16 @@ if(RENO_WITH_APP AND TARGET reno_media)
       if(WINDEPLOYQT)
         add_custom_command(TARGET reno POST_BUILD
           COMMAND "${WINDEPLOYQT}" $<IF:$<CONFIG:Debug>,--debug,--release> --no-translations --no-compiler-runtime
-                  --exclude-plugins ffmpegmediaplugin $<TARGET_FILE:reno>
+                  --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler
+                  --skip-plugin-types generic,networkinformation,tls,iconengines
+                  --exclude-plugins ffmpegmediaplugin,qsvg,qico,qicns,qtga,qwbmp,qpdf,qdirect2d,qminimal,qoffscreen
+                  $<TARGET_FILE:reno>
           VERBATIM)
       endif()
       get_filename_component(_ffroot "${FFMPEG_INCLUDE_DIR}" DIRECTORY)
-      file(GLOB _ffdlls "${_ffroot}/bin/av*.dll" "${_ffroot}/bin/sw*.dll" "${_ffroot}/bin/postproc*.dll")
+      # (only the five libraries Reno links; not avdevice, avfilter or postproc)
+      file(GLOB _ffdlls "${_ffroot}/bin/avcodec*.dll" "${_ffroot}/bin/avformat*.dll" "${_ffroot}/bin/avutil*.dll"
+                        "${_ffroot}/bin/swscale*.dll" "${_ffroot}/bin/swresample*.dll")
       if(_ffdlls)
         add_custom_command(TARGET reno POST_BUILD
           COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_ffdlls} $<TARGET_FILE_DIR:reno>
