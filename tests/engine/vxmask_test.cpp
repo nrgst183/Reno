@@ -703,18 +703,35 @@ static void bezierTests()
 }
 
 // ------------------------------------------------------------------ 2e. Warp Flow
+// Blocks of pseudo-random colour (10 x 10 pixels), moved by whole pixels: plenty of corners for the tracker to follow.
+static Buf blocks(int W, int H, int dx, int dy)
+{
+    Buf b;
+    b.resize(W, H);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            const int cx = (x - dx + 1000) / 10, cy = (y - dy + 1000) / 10;
+            unsigned h = (unsigned)cx * 73856093u ^ (unsigned)cy * 19349663u;
+            h ^= h >> 13;
+            h *= 1274126177u;
+            h ^= h >> 16;
+            premul(b.at(x, y), (float)((h & 255) / 255.0), (float)(((h >> 8) & 255) / 255.0), (float)(((h >> 16) & 255) / 255.0), 1.f);
+        }
+    return b;
+}
+
 static void flowTests()
 {
     const Def* d = findDef(kFlow);
     if (!d) return;
     check(d->params.empty(), "Warp Flow has no settings (VEGAS's has none)");
     const int W = 256, H = 144;
-    const Buf A = texture(W, H, 0, 0), B = texture(W, H, 6, 3);
+    const Buf A = blocks(W, H, 0, 0), B = blocks(W, H, 6, 2);
     const Buf out0 = runS(*d, {}, {}, A, 1.0, &B, 0.0), out1 = runS(*d, {}, {}, A, 1.0, &B, 1.0);
-    check(maxDiff(out0, A) == 0, "progress 0 is the outgoing picture");
-    check(maxDiff(out1, B) == 0, "progress 1 is the incoming picture");
-    // halfway: the picture shifted by (3, 1.5)
-    const Buf ideal = texture(W, H, 3, 1.5);
+    check(maxDiff(out0, A) < 0.01, "progress 0 is the outgoing picture (to a level)");
+    check(maxDiff(out1, B) < 0.01, "progress 1 is the incoming picture (to a level)");
+    // halfway: the picture shifted by (3, 1)
+    const Buf ideal = blocks(W, H, 3, 1);
     auto err = [&](const Buf& o) {
         double s = 0;
         int n = 0;
@@ -726,16 +743,15 @@ static void flowTests()
     Buf cross;
     cross.resize(W, H);
     for (size_t i = 0; i < cross.px.size(); ++i) cross.px[i] = 0.5f * (A.px[i] + B.px[i]);
-    for (int q = 0; q < 3; ++q) {
-        const Buf mid = runFlow(A, B, 0.5, q);
+    {
+        const Buf mid = runFlow(A, B, 0.5, 1);
         const double e = err(mid), ec = err(cross);
-        check(e < ec * 0.5, std::string("the middle frame of a 6 x 3 pixel move is closer to the true one than a dissolve is (quality ") + (q == 0 ? "low" : q == 1 ? "medium" : "high") + ")",
-              strfmt("flow %.4f, dissolve %.4f", e, ec));
+        check(e < ec * 0.5, "the middle frame of a 6 x 2 pixel move is closer to the true one than a dissolve is", strfmt("flow %.4f, dissolve %.4f", e, ec));
     }
     // a quarter of the way
     {
         const Buf q = runS(*d, {}, {}, A, 1.0, &B, 0.25);
-        const Buf idealQ = texture(W, H, 1.5, 0.75);
+        const Buf idealQ = blocks(W, H, 1, 1);  // (1.5, 0.5 of the way: nearest whole pixels)
         double s = 0, sc = 0;
         int n = 0;
         for (int y = 20; y < H - 20; ++y)

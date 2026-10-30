@@ -3,6 +3,7 @@
 // to continue forever; values below 1e-17 count as 0. Every step is in doubles in VEGAS's order, so 8-bit results match to the level.
 #include "builtins_deriche.h"
 #include "builtins_vec.h"
+#include "../core/cpufeat.h"
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -64,6 +65,56 @@ const int kLanes = 16;           // four lines (rows or columns) of four channel
 
 // The filter along 'L' values of each of the kLanes independent lines: x[i * kLanes + lane] in, yc (causal) and ya (anti-causal) out, the line's result being yc + ya.
 // The first and last five values take the edge terms; after that every value is a sum of five taps in the scalar filter's order (the taps that are exactly 0 left out).
+#ifdef RENO_HAVE_AVX2_CODE
+RENO_AVX2_FN static inline __m256d a4tiny(__m256d a, __m256d lim, __m256d nlim)
+{
+    const __m256d m = _mm256_and_pd(_mm256_cmp_pd(a, lim, _CMP_LT_OS), _mm256_cmp_pd(a, nlim, _CMP_GT_OS));
+    return _mm256_andnot_pd(m, a);
+}
+// The two long loops of dericheLanes with four doubles to a vector (the same operations in the same order; no fused multiply-add).
+RENO_AVX2_FN static void dericheMainAvx2(const DericheCoefs& c, int L, const double* x, double* yc, double* ya)
+{
+    const int LN = kLanes;
+    const __m256d n0 = _mm256_set1_pd(c.n[0]), n1 = _mm256_set1_pd(c.n[1]), n2 = _mm256_set1_pd(c.n[2]), n3 = _mm256_set1_pd(c.n[3]);
+    const __m256d m1 = _mm256_set1_pd(c.m[1]), m2 = _mm256_set1_pd(c.m[2]), m3 = _mm256_set1_pd(c.m[3]), m4 = _mm256_set1_pd(c.m[4]);
+    const __m256d d1 = _mm256_set1_pd(c.d[1]), d2v = _mm256_set1_pd(c.d[2]), d3 = _mm256_set1_pd(c.d[3]), d4 = _mm256_set1_pd(c.d[4]);
+    const __m256d lim = _mm256_set1_pd(1e-17), nlim = _mm256_set1_pd(-1e-17);
+#define tinyz(a) a4tiny((a), lim, nlim)
+#define ld(q) _mm256_loadu_pd(q)
+#define mul(a, b) _mm256_mul_pd((a), (b))
+#define add(a, b) _mm256_add_pd((a), (b))
+#define sub(a, b) _mm256_sub_pd((a), (b))
+    for (int i = 5; i < L; ++i) {
+        const double* xi = x + (size_t)i * LN;
+        double* yi = yc + (size_t)i * LN;
+        for (int p = 0; p < LN; p += 4) {
+            __m256d acc = mul(ld(xi + p), n0);
+            acc = add(acc, sub(mul(ld(xi + p - LN), n1), mul(d1, ld(yi + p - LN))));
+            acc = add(acc, sub(mul(ld(xi + p - 2 * LN), n2), mul(d2v, ld(yi + p - 2 * LN))));
+            acc = add(acc, sub(mul(ld(xi + p - 3 * LN), n3), mul(d3, ld(yi + p - 3 * LN))));
+            acc = sub(acc, mul(d4, ld(yi + p - 4 * LN)));
+            _mm256_storeu_pd(yi + p, tinyz(acc));
+        }
+    }
+    for (int j = L - 6; j >= 0; --j) {
+        const double* xj = x + (size_t)j * LN;
+        double* yj = ya + (size_t)j * LN;
+        for (int p = 0; p < LN; p += 4) {
+            __m256d acc = sub(mul(ld(xj + p + LN), m1), mul(d1, ld(yj + p + LN)));
+            acc = add(acc, sub(mul(ld(xj + p + 2 * LN), m2), mul(d2v, ld(yj + p + 2 * LN))));
+            acc = add(acc, sub(mul(ld(xj + p + 3 * LN), m3), mul(d3, ld(yj + p + 3 * LN))));
+            acc = add(acc, sub(mul(ld(xj + p + 4 * LN), m4), mul(d4, ld(yj + p + 4 * LN))));
+            _mm256_storeu_pd(yj + p, tinyz(acc));
+        }
+    }
+#undef tinyz
+#undef ld
+#undef mul
+#undef add
+#undef sub
+}
+#endif
+
 void dericheLanes(const DericheCoefs& c, int L, const double* x, double* yc, double* ya)
 {
     if (L <= 0) return;
@@ -91,29 +142,35 @@ void dericheLanes(const DericheCoefs& c, int L, const double* x, double* yc, dou
             ya[(size_t)j * LN + l] = acca;
         }
     }
+#ifdef RENO_HAVE_AVX2_CODE
+    if (cpuHasAvx2()) { dericheMainAvx2(c, L, x, yc, ya); return; }
+#endif
     const D2 n0 = d2set(c.n[0]), n1 = d2set(c.n[1]), n2 = d2set(c.n[2]), n3 = d2set(c.n[3]);
     const D2 m1 = d2set(c.m[1]), m2 = d2set(c.m[2]), m3 = d2set(c.m[3]), m4 = d2set(c.m[4]);
     const D2 d1 = d2set(c.d[1]), d2 = d2set(c.d[2]), d3 = d2set(c.d[3]), d4 = d2set(c.d[4]);
     const D2 lim = d2set(tiny);
-    for (int p = 0; p < LN; p += 2) {
-        for (int i = 5; i < L; ++i) {
-            const double* xi = x + (size_t)i * LN + p;
-            double* yi = yc + (size_t)i * LN + p;
-            D2 acc = d2mul(d2ld(xi), n0);
-            acc = d2add(acc, d2sub(d2mul(d2ld(xi - LN), n1), d2mul(d1, d2ld(yi - LN))));
-            acc = d2add(acc, d2sub(d2mul(d2ld(xi - 2 * LN), n2), d2mul(d2, d2ld(yi - 2 * LN))));
-            acc = d2add(acc, d2sub(d2mul(d2ld(xi - 3 * LN), n3), d2mul(d3, d2ld(yi - 3 * LN))));
-            acc = d2sub(acc, d2mul(d4, d2ld(yi - 4 * LN)));
-            d2st(yi, d2tiny(acc, lim));
+    // (every lane has its own recurrence: all of them step together, so the pairs do not wait for one another)
+    for (int i = 5; i < L; ++i) {
+        const double* xi = x + (size_t)i * LN;
+        double* yi = yc + (size_t)i * LN;
+        for (int p = 0; p < LN; p += 2) {
+            D2 acc = d2mul(d2ld(xi + p), n0);
+            acc = d2add(acc, d2sub(d2mul(d2ld(xi + p - LN), n1), d2mul(d1, d2ld(yi + p - LN))));
+            acc = d2add(acc, d2sub(d2mul(d2ld(xi + p - 2 * LN), n2), d2mul(d2, d2ld(yi + p - 2 * LN))));
+            acc = d2add(acc, d2sub(d2mul(d2ld(xi + p - 3 * LN), n3), d2mul(d3, d2ld(yi + p - 3 * LN))));
+            acc = d2sub(acc, d2mul(d4, d2ld(yi + p - 4 * LN)));
+            d2st(yi + p, d2tiny(acc, lim));
         }
-        for (int j = L - 6; j >= 0; --j) {
-            const double* xj = x + (size_t)j * LN + p;
-            double* yj = ya + (size_t)j * LN + p;
-            D2 acc = d2sub(d2mul(d2ld(xj + LN), m1), d2mul(d1, d2ld(yj + LN)));
-            acc = d2add(acc, d2sub(d2mul(d2ld(xj + 2 * LN), m2), d2mul(d2, d2ld(yj + 2 * LN))));
-            acc = d2add(acc, d2sub(d2mul(d2ld(xj + 3 * LN), m3), d2mul(d3, d2ld(yj + 3 * LN))));
-            acc = d2add(acc, d2sub(d2mul(d2ld(xj + 4 * LN), m4), d2mul(d4, d2ld(yj + 4 * LN))));
-            d2st(yj, d2tiny(acc, lim));
+    }
+    for (int j = L - 6; j >= 0; --j) {
+        const double* xj = x + (size_t)j * LN;
+        double* yj = ya + (size_t)j * LN;
+        for (int p = 0; p < LN; p += 2) {
+            D2 acc = d2sub(d2mul(d2ld(xj + p + LN), m1), d2mul(d1, d2ld(yj + p + LN)));
+            acc = d2add(acc, d2sub(d2mul(d2ld(xj + p + 2 * LN), m2), d2mul(d2, d2ld(yj + p + 2 * LN))));
+            acc = d2add(acc, d2sub(d2mul(d2ld(xj + p + 3 * LN), m3), d2mul(d3, d2ld(yj + p + 3 * LN))));
+            acc = d2add(acc, d2sub(d2mul(d2ld(xj + p + 4 * LN), m4), d2mul(d4, d2ld(yj + p + 4 * LN))));
+            d2st(yj + p, d2tiny(acc, lim));
         }
     }
 }

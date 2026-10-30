@@ -21,6 +21,8 @@ namespace ofx {
 // The path the built-in plug-ins are "loaded" from (Host::loadBinary knows it; it is no file).
 extern const char* const kBuiltinBinaryPath;     // "builtin:reno"
 bool isBuiltinPath(const std::string& path);
+// Whether this built-in (by identifier) is a filter that renders on the Vulkan path now, so a frame handed to it may still be only on the card.
+bool builtinGpuChainable(const std::string& id);
 
 // The OpenFX entry points of the built-in "binary".
 int builtinNumberOfPlugins();

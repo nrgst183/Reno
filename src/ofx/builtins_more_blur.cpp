@@ -422,34 +422,51 @@ static void rankFilter8(Ctx& c, float rank, bool topFirst, bool colsDesc)
     const int W = c.out.w, H = c.out.h;
     const MinMaxKernel k = rank8Kernel(c, W, H);
     static const int kOrder[4] = {2, 1, 0, 3};   // byte 0..3 = B, G, R, A = Buf channels 2, 1, 0, 3
-    forRows(H, W * k.nx * k.ny, [&](int y) {
-        std::vector<float> hist(4 * 256);
-        std::vector<unsigned char> px;
+    // the window's taps in the order the weights are added (Min and Max walk the rows bottom first, Median top first), those with weight 0 left out
+    struct Tap { int dx, dy; float w; };
+    std::vector<Tap> taps;
+    for (int step = 0; step < 2 * k.ny - 1; ++step) {
+        const int dy = topFirst ? step - (k.ny - 1) : (k.ny - 1) - step;
+        const int iy = dy < 0 ? -dy : dy;
+        for (int dxs = 0; dxs < 2 * k.nx - 1; ++dxs) {
+            const int dx = colsDesc ? (k.nx - 1) - dxs : dxs - (k.nx - 1);
+            const float w = k.at(dx < 0 ? -dx : dx, iy);
+            if (w == 0.f) continue;
+            taps.push_back(Tap{dx, dy, w});
+        }
+    }
+    // the picture as levels once (B, G, R, A per pixel), not once per tap
+    std::vector<unsigned char> lv((size_t)W * H * 4);
+    forRows(H, W * 4, [&](int y) {
+        const float* p = c.src.at(0, y);
+        unsigned char* d = &lv[(size_t)y * W * 4];
+        for (int x = 0; x < W; ++x, p += 4, d += 4)
+            for (int b = 0; b < 4; ++b) d[b] = (unsigned char)v8::toLevel(p[kOrder[b]]);
+    });
+    forRows(H, W * (int)std::min<size_t>(taps.size() + 64, 4096), [&](int y) {
+        std::vector<float> hist(4 * 256, 0.f);       // (all zero between pixels: only the levels a pixel touched are cleared again)
         for (int x = 0; x < W; ++x) {
-            std::fill(hist.begin(), hist.end(), 0.f);
-            for (int step = 0; step < 2 * k.ny - 1; ++step) {   // Min and Max walk the rows bottom first, Median top first
-                const int dy = topFirst ? step - (k.ny - 1) : (k.ny - 1) - step;
-                const int yy = y + dy;
-                if (yy < 0 || yy >= H) continue;
-                const int iy = dy < 0 ? -dy : dy;
-                for (int dxs = 0; dxs < 2 * k.nx - 1; ++dxs) {
-                    const int dx = colsDesc ? (k.nx - 1) - dxs : dxs - (k.nx - 1);
-                    const int xx = x + dx;
-                    if (xx < 0 || xx >= W) continue;
-                    const float w = k.at(dx < 0 ? -dx : dx, iy);
-                    if (w == 0.f) continue;
-                    const float* p = c.src.at(xx, yy);
-                    for (int b = 0; b < 4; ++b) hist[(size_t)b * 256 + (size_t)v8::toLevel(p[kOrder[b]])] += w;
+            int lo8[4] = {255, 255, 255, 255}, hi8[4] = {0, 0, 0, 0};
+            for (const Tap& t : taps) {
+                const int xx = x + t.dx, yy = y + t.dy;
+                if (xx < 0 || xx >= W || yy < 0 || yy >= H) continue;
+                const unsigned char* q = &lv[((size_t)yy * W + xx) * 4];
+                for (int b = 0; b < 4; ++b) {
+                    const int v = q[b];
+                    hist[(size_t)b * 256 + (size_t)v] += t.w;
+                    if (v < lo8[b]) lo8[b] = v;
+                    if (v > hi8[b]) hi8[b] = v;
                 }
             }
+            // (the levels outside the touched range hold 0, which adds nothing to the total and is skipped below)
             float total = 0.f;
-            for (int i = 0; i < 256; ++i) total += hist[(size_t)i];
+            for (int i = lo8[0]; i <= hi8[0]; ++i) total += hist[(size_t)i];
             const float t = ((total - 1.f) * rank) + 0.5f;
             const float lo = t - 0.5f, hi = 0.5f + t;
             float* o = c.out.at(x, y);
             for (int b = 0; b < 4; ++b) {
                 float prev = 0.f, acc = 0.f;
-                for (int v = 0; v < 256; ++v) {
+                for (int v = lo8[b]; v <= hi8[b]; ++v) {
                     const float w = hist[(size_t)b * 256 + (size_t)v];
                     if (!(w > 0.f)) continue;
                     const float cur = w + prev;
@@ -463,11 +480,11 @@ static void rankFilter8(Ctx& c, float rank, bool topFirst, bool colsDesc)
                 }
                 int r = (int)acc;
                 o[kOrder[b]] = v8::fromLevel(r < 0 ? 0 : (r > 255 ? 255 : r));
+                if (lo8[b] <= hi8[b]) std::fill(hist.begin() + (size_t)b * 256 + lo8[b], hist.begin() + (size_t)b * 256 + hi8[b] + 1, 0.f);
             }
         }
     });
 }
-
 static void minMax8(Ctx& c, bool maximum) { rankFilter8(c, maximum ? 1.f : 0.f, false, false); }
 
 // Median / Min and Max: over a (square or round) neighbourhood of each pixel.

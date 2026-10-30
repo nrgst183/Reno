@@ -1643,6 +1643,7 @@ static void frameSizeFor(const Project& p, const FrameOptions& o, int& w, int& h
 // preview frame and the project's).
 static ImagePtr stretchImage(const Image& src, int w, int h)
 {
+    src.sync();
     if (src.w == w && src.h == h) return src.clone();
     ImagePtr out = Image::make(w, h, src.depth, false);
     if (!out || src.w < 1 || src.h < 1) return out;
@@ -1873,7 +1874,22 @@ struct VideoEngine::Pass {
     bool cancelled() const { return opt.cancel && opt.cancel->load(); }
 
     // One effect: 'frame' is the time the effect is told, source(frame) gives its input at any time.
-    ImagePtr runFx(const FxSlot& slot, double frame, const std::function<ImagePtr(double)>& source)
+    // Whether 'next', the effect that takes the frame the current effect makes, is a built-in effect that will take it from the graphics card: the
+    // current one then need not download it (Image::gpuHold). Everything that could read the frame in between syncs it first (Image::sync()), so this
+    // only has to be right about the effect that runs next: a slot the stage functions pass over, or one that cannot run, must say no.
+    bool chainNext(const FxSlot& next) const
+    {
+        if (opt.skipEffects || next.bypass || !isVideoFxSlot(next) || isBuiltinVideo(next)) return false;
+        ofx::Instance* i = eng.fx_.video(next.id);
+        return i && i->gpuChainable();
+    }
+    static ImagePtr synced(ImagePtr img)
+    {
+        if (img) img->sync();
+        return img;
+    }
+
+    ImagePtr runFx(const FxSlot& slot, double frame, const std::function<ImagePtr(double)>& source, bool deferToNext = false)
     {
         if (isBuiltinVideo(slot)) {
             // one of Reno's own effects (the Color Grading panel's): worked on a copy of its input
@@ -1884,7 +1900,7 @@ struct VideoEngine::Pass {
             return out;
         }
         ofx::Instance* inst = (slot.bypass || opt.skipEffects) ? nullptr : eng.fx_.video(slot.id);
-        if (!inst || cancelled() || !madeForProject(inst)) return source(frame);
+        if (!inst || cancelled() || !madeForProject(inst)) return synced(source(frame));
         const bool atFrameSize = atPreviewSize(inst);
         auto src = [&](double f) -> ImagePtr {
             ImagePtr img = source(f);
@@ -1894,17 +1910,19 @@ struct VideoEngine::Pass {
         source(frame);
         // One use of an instance at a time.
         ofx::RenderGate::Hold own(eng.fx_.renderLock(inst));
-        if (!own.ok()) return source(frame);
+        if (!own.ok()) return synced(source(frame));
         const std::vector<std::string> inputs = inst->inputClipNames();
         std::string main = inputs.empty() ? std::string() : inputs[0];
         for (const auto& n : inputs) if (n == kOfxImageEffectSimpleSourceClipName) main = n;
         if (!main.empty()) inst->setClipSource(main, src);
         std::string err;
-        ImagePtr out = inst->render(frame, fxOptions(inst), &err);
+        ofx::RenderOptions ro = fxOptions(inst);
+        ro.deferGpuOutput = deferToNext;
+        ImagePtr out = inst->render(frame, ro, &err);
         if (!main.empty()) inst->setClipSource(main, [](double) { return ImagePtr(); });
         if (!out) {
             if (!cancelled()) eng.fx_.setError(slot.id, err);
-            return source(frame);
+            return synced(source(frame));
         }
         if (!eng.fx_.error(slot.id).empty()) eng.fx_.setError(slot.id, std::string());     // it has recovered
         return inDepth(toFrameSize(out));
@@ -2298,7 +2316,8 @@ struct VideoEngine::Pass {
         if (!isVideoFxSlot(slot) || slot.beforePanCrop) out = eventStage(e, stage - 1, t);
         else {
             // effects on an event count time in frames from where the event starts
-            out = runFx(slot, frameNumber(t - e.start, fps), [&](double f) { return eventStage(e, stage - 1, e.start + f / fps); });
+            out = runFx(slot, frameNumber(t - e.start, fps), [&](double f) { return eventStage(e, stage - 1, e.start + f / fps); },
+                        stage < (int)e.fx.size() && isVideoFxSlot(e.fx[(size_t)stage]) && !e.fx[(size_t)stage].beforePanCrop && chainNext(e.fx[(size_t)stage]));
         }
         // Event Pan/Crop's mask with Apply to FX: the effects show inside the mask, the frame without them outside
         if (out && stage == (int)e.fx.size() && e.maskApplyToFx && maskActive(e) && out->w == W && out->h == H) {
@@ -2410,7 +2429,8 @@ struct VideoEngine::Pass {
         ImagePtr out;
         ImagePtr in = trackStage(tr, stage - 1, t);
         if (!isVideoFxSlot(slot) || !in) out = in;                     // nothing playing
-        else out = runFx(slot, frameNumber(t, fps), [&](double f) { return trackStage(tr, stage - 1, f / fps); });
+        else out = runFx(slot, frameNumber(t, fps), [&](double f) { return trackStage(tr, stage - 1, f / fps); },
+                         stage < preCompositeCount(tr) && chainNext(tr.fx[(size_t)stage]));
         memoPut(key, out);
         return out;
     }
@@ -2438,7 +2458,8 @@ struct VideoEngine::Pass {
         ImagePtr in = trackPost(tr, stage - 1, t);
         ImagePtr out;
         if (!isVideoFxSlot(slot) || !in) out = in;
-        else out = runFx(slot, frameNumber(t, fps), [&](double f) { return trackPost(tr, stage - 1, f / fps); });
+        else out = runFx(slot, frameNumber(t, fps), [&](double f) { return trackPost(tr, stage - 1, f / fps); },
+                         stage < (int)tr.fx.size() && chainNext(tr.fx[(size_t)stage]));
         memoPut(key, out);
         return out;
     }
@@ -2819,7 +2840,8 @@ struct VideoEngine::Pass {
         const FxSlot& slot = e.fx[(size_t)stage - 1];
         ImagePtr out;
         if (!isVideoFxSlot(slot)) out = adjustEventStage(e, stage - 1, t, under);
-        else out = runFx(slot, frameNumber(t - e.start, fps), [&](double f) { return adjustEventStage(e, stage - 1, e.start + f / fps, under); });
+        else out = runFx(slot, frameNumber(t - e.start, fps), [&](double f) { return adjustEventStage(e, stage - 1, e.start + f / fps, under); },
+                         stage < (int)e.fx.size() && chainNext(e.fx[(size_t)stage]));
         memoPut(key, out);
         return out;
     }
@@ -2834,7 +2856,8 @@ struct VideoEngine::Pass {
         const FxSlot& slot = tr.fx[(size_t)stage - 1];
         ImagePtr out;
         if (!isVideoFxSlot(slot)) out = adjustStage(tr, stage - 1, t, under);
-        else out = runFx(slot, frameNumber(t, fps), [&](double f) { return adjustStage(tr, stage - 1, f / fps, under); });
+        else out = runFx(slot, frameNumber(t, fps), [&](double f) { return adjustStage(tr, stage - 1, f / fps, under); },
+                         stage < (int)tr.fx.size() && chainNext(tr.fx[(size_t)stage]));
         memoPut(key, out);
         return out;
     }
@@ -2868,7 +2891,8 @@ struct VideoEngine::Pass {
         const FxSlot& slot = p.videoOut[(size_t)stage - 1];
         ImagePtr out;
         if (!isVideoFxSlot(slot)) out = outStage(stage - 1, t);
-        else out = runFx(slot, frameNumber(t, fps), [&](double f) { return outStage(stage - 1, f / fps); });
+        else out = runFx(slot, frameNumber(t, fps), [&](double f) { return outStage(stage - 1, f / fps); },
+                         stage < (int)p.videoOut.size() && chainNext(p.videoOut[(size_t)stage]));
         memoPut(key, out);
         return out;
     }

@@ -14,6 +14,7 @@
 #include "../media/vegasfiles.h"
 #include "../ofx/ofxhost.h"
 #include "../ofx/vkgpu.h"
+#include "../ofx/gpupick.h"
 #include <QByteArray>
 #include <QDir>
 #include <QGuiApplication>
@@ -110,6 +111,9 @@ inline void applyGpuApi(const std::string& api, bool gpuAccel)
     gpu::setEnabled(api == "vulkan");
 }
 
+// "GPU effects" (Preferences > Video): auto - each effect goes the way that was measured to be quicker on this card (ofx/gpupick.h); gpu - always the card.
+inline void applyGpuPick(const QString& mode) { ofx::builtin::pick::setAuto(mode != "gpu"); }
+
 inline void apply()
 {
     reno::setProcessorLimit(processorLimit());
@@ -126,6 +130,7 @@ inline void apply()
     // GPU acceleration: effects that can render with OpenGL (the host says so when this is on) and built-in effects
     // with Vulkan kernels (GPU API)
     applyGpuApi(vprefs::text("prefs/gpuApi").toStdString(), vprefs::on("prefs/gpuAccel"));
+    applyGpuPick(vprefs::text("prefs/gpuPick"));
     // VEGAS's effects: its own plug-ins when installed, or always Reno's built-in versions (FxRuntime recreates the
     // instances)
     ofx::Host::get().config.preferBuiltinVegasFx = vprefs::text("prefs/vegasFxSource") != "real";

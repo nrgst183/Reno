@@ -3,6 +3,7 @@
 #include "../app/appstate.h"
 #include "../app/prefsapply.h"
 #include "../ofx/vkeffects.h"
+#include "../ofx/gpupick.h"
 #include "../app/builtintext.h"
 #include "../app/logo.h"
 #include "../app/rendertemplates.h"
@@ -168,6 +169,11 @@ const char* kHelp =
     "  --version, -h / --help\n"
     "\n"
     "Profiling the preview:\n"
+    "  reno_cli fxbench [--cpu | --gpu | --both] [--size WxH] [--repeat N] [--only TEXT] [--chain a,b,c] [--device N] [--software] [--float]\n"
+    "                           ms per frame of each built-in effect on the CPU, the card's kernels and the card with transfers, and of a chain\n"
+    "  reno_cli gpupick [--again] [--device N] [--software]\n"
+    "                           times each built-in effect with a Vulkan kernel on the CPU and on the card at 1080p and says which\n"
+    "                           Reno will use (kept per card/driver/version; Reno measures by itself once, behind the splash screen)\n"
     "  reno_cli vkcheck [--only TEXT] [--size WxH] [--repeat N] [--device N] [--software] [--report FILE]\n"
     "                           list the Vulkan devices and render every built-in effect with GPU kernels on the\n"
     "                           CPU and the GPU at several settings, reporting the largest and mean difference and\n"
@@ -1990,6 +1996,29 @@ int main(int argc, char** argv)
     if (!args.empty() && args[0] == "vkcheck") {
         args.erase(args.begin());
         return ofx::builtin::runVkCheck(args);
+    }
+    // fxbench: milliseconds per frame of each built-in effect on the CPU and on the card, and of a chain (no Qt)
+    if (!args.empty() && args[0] == "fxbench") {
+        args.erase(args.begin());
+        return ofx::builtin::runFxBench(args);
+    }
+    // gpupick: measures every built-in effect with a Vulkan kernel on the CPU and on the card and prints which is quicker (Reno does the same behind the
+    // splash screen, once per card; --again measures even if the saved result is for this card)
+    if (!args.empty() && args[0] == "gpupick") {
+        bool again = false;
+        for (size_t k = 1; k < args.size(); ++k) {
+            if (args[k] == "--again") again = true;
+            else if (args[k] == "--device" && k + 1 < args.size()) gpu::selectDevice(std::atoi(args[++k].c_str()));
+            else if (args[k] == "--software") qputenv("RENO_VK_ALLOW_SOFTWARE", "1");
+            else { std::fputs("usage: reno_cli gpupick [--again] [--device N] [--software]\n", stderr); return kUsage; }
+        }
+        gpu::setEnabled(true);
+        const int n = ofx::builtin::pick::runNow(renoVersion(), again, stdout);
+        if (n < 0) { std::puts("No usable graphics card (or only a software Vulkan): every effect uses the CPU or the default."); return 3; }
+        int cpu = 0;
+        for (const auto& e : ofx::builtin::pick::results()) if (!e.gpu) ++cpu;
+        std::printf("%d effects measured, %d of them go to the CPU. Saved for: %s\n", n, cpu, ofx::builtin::pick::deviceKey().c_str());
+        return kOk;
     }
     if (args.empty()) {
         std::fputs(kHelp, stdout);

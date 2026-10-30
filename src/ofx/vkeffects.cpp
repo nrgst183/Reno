@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include "vkeffects.h"
+#include "gpupick.h"
 #include "vegas8.h"
 #include "vkfilters.h"
 #include "vkshaders/push_layouts.h"
@@ -1426,7 +1427,7 @@ std::vector<std::string> gpuEffectIds()
 
 bool gpuRender(const Def& d, Ctx& c, GpuFrame& f)
 {
-    if (!d.gpu || !gpu::enabled()) return false;
+    if (!d.gpu || !gpu::enabled() || !pick::useGpu(d)) return false;
     // (a plan per thread, its vectors kept between frames)
     thread_local gpu::Plan plan;
     plan.begin((uint32_t)c.frameW, (uint32_t)c.frameH, d.id.c_str());
@@ -1445,6 +1446,7 @@ bool gpuRender(const Def& d, Ctx& c, GpuFrame& f)
     io.inSerial = f.inSerial;
     io.outSerial = f.outSerial;
     io.noInput = f.noInput;
+    io.deferOut = f.deferOut;
     return gpu::run(plan, io);
 }
 
@@ -1549,6 +1551,7 @@ bool renderFrameGpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
     io.inSerial = inSerial;
     io.outSerial = outSerial;
     io.noInput = d.generator;
+    io.deferOut = gpu::deferOutputRequested();
     if (gpu::run(plan, io, stats)) {
         tGpuWhy.clear();
         return true;
@@ -1558,5 +1561,16 @@ bool renderFrameGpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
 }
 
 }  // namespace builtin
+}  // namespace ofx
+}  // namespace reno
+
+namespace reno {
+namespace ofx {
+bool builtinGpuChainable(const std::string& id)
+{
+    if (!gpu::enabled()) return false;
+    const builtin::Def* d = builtin::findDef(id);
+    return d && d->gpu && !d->generator && !d->transition && !d->temporal && builtin::pick::useGpu(*d);
+}
 }  // namespace ofx
 }  // namespace reno

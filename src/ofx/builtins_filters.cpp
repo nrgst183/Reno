@@ -492,6 +492,34 @@ double levelsCurve(double t, double gamma)
     return t >= k0 ? std::pow((a + t) * inv, G) : t * slope;
 }
 
+// levelsCurve() with what it works out from the gamma alone (four pow calls) done once: the same values, so the same results.
+struct LevelsCurveFixed {
+    double G = 1.0, k0 = 0, slope = 0, t1 = 0, a = 0, inv = 0;
+    bool identity = true;
+    explicit LevelsCurveFixed(double gamma)
+    {
+        G = 1.0 / gamma;
+        if (std::fabs(gamma - 1.0) < 1e-6) return;
+        identity = false;
+        k0 = std::pow(1.0 / G, -0.9418051973077521) * 0.03818376618407356;
+        slope = std::pow(1.0 / G, 1.8836103946155043);
+        if (G < 1.0) {
+            t1 = std::pow(k0, G);
+            a = (slope * k0 - t1) / (t1 - 1.0);
+        } else {
+            const double u = slope * k0, w = std::pow(u, 1.0 / G);
+            a = (k0 - w) / (w - 1.0);
+            inv = 1.0 / (a + 1.0);
+        }
+    }
+    double operator()(double t) const
+    {
+        if (identity) return t;
+        if (G < 1.0) return t >= k0 ? std::pow(t, G) * (a + 1.0) - a : t * slope;
+        return t >= k0 ? std::pow((a + t) * inv, G) : t * slope;
+    }
+};
+
 void levelsGammaTable(double g, float* lut)
 {
     g = clampd(g, 0.2, 10);
@@ -512,13 +540,14 @@ void levels(Ctx& c)
     double i1 = c.d("InputEnd"), width = i1 - i0;
     if (std::fabs(width) < 0.003921568859368563) { i1 = i0 + 0.003921568859368563; width = 0.003921568859368563; }
     const bool straight = std::fabs(gamma - 1.0) < 1e-6;
+    const LevelsCurveFixed curve(gamma);
     auto f = [&](float v) {
         const double x = v;
         const double xin = i0 > x ? i0 : std::min(i1, x);
         const double t = xin - i0;
         double r;
         if (straight) r = t * (o1 - o0) / width;
-        else r = (o1 - o0) * levelsCurve(t / width, gamma);
+        else r = (o1 - o0) * curve(t / width);
         return (float)(r + o0);
     };
     const int W = c.out.w, H = c.out.h;

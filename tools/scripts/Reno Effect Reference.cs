@@ -90,6 +90,9 @@ public class EntryPoint
             foreach (string pr in presets) Test(track, media, plug, name, "preset", pr, delegate(Effect fx) { fx.Preset = pr; });
             // OpenFX: each setting at its minimum / middle / maximum
             if (ofx) ParamTests(track, media, plug, name);
+            // settings together, where one setting at a time shows nothing (Starburst's single-setting cases run at
+            // Strength 0, so they draw no glow)
+            if (ofx) ComboTests(track, media, plug, name);
             effects.Flush();
             manifest.Flush();
         }
@@ -173,6 +176,52 @@ public class EntryPoint
                     Test(track, media, plug, name, "param", pn + "=" + val, delegate(Effect fx) { SetOfxChoice(fx, pn, val); });
                 }
             }
+        }
+    }
+
+    // One picture with several settings at once ("Name=value" pairs; integers as int, switches as bool).
+    void Combo(VideoTrack track, Media media, PlugInNode plug, string name, params object[] pairs)
+    {
+        StringBuilder what = new StringBuilder();
+        for (int k = 0; k + 1 < pairs.Length; k += 2)
+        {
+            if (what.Length > 0) what.Append(' ');
+            object v = pairs[k + 1];
+            what.Append(pairs[k]).Append('=').Append(v is bool ? ((bool)v ? "1" : "0") : Convert.ToString(v, Inv));
+        }
+        object[] set = pairs;
+        Test(track, media, plug, name, "combo", what.ToString(), delegate(Effect fx)
+        {
+            for (int k = 0; k + 1 < set.Length; k += 2) SetOfx(fx, (string)set[k], set[k + 1]);
+        });
+    }
+
+    void ComboTests(VideoTrack track, Media media, PlugInNode plug, string name)
+    {
+        if (name == "Starburst")
+        {
+            // the star itself: its arms and how they fade
+            foreach (int pts in new int[] { 2, 4, 6 })
+                Combo(track, media, plug, name, "Threshold", 0.0, "Brilliance", 100.0, "Strength", 100.0, "Radius", 10.0, "Points", pts, "Orientation", 0.0);
+            // which way Orientation turns, and Aspect against Orientation
+            foreach (double o in new double[] { 30.0, 330.0 })
+                Combo(track, media, plug, name, "Threshold", 0.0, "Brilliance", 100.0, "Strength", 100.0, "Radius", 30.0, "Points", 3, "Orientation", o, "Aspect", 1.0);
+            foreach (double a in new double[] { 0.5, 2.0 })
+                foreach (double o in new double[] { 0.0, 30.0, 90.0 })
+                    Combo(track, media, plug, name, "Threshold", 0.0, "Brilliance", 100.0, "Strength", 100.0, "Radius", 30.0, "Points", 2, "Orientation", o, "Aspect", a);
+            // Soften edges: a small glow, so the mask shows at the picture's borders
+            foreach (double se in new double[] { 0.0, 50.0, 100.0 })
+                Combo(track, media, plug, name, "Threshold", 0.0, "Brilliance", 100.0, "Strength", 100.0, "Radius", 2.0, "SoftenEdges", se);
+            foreach (bool rf in new bool[] { false, true })
+                Combo(track, media, plug, name, "Threshold", 0.0, "Brilliance", 100.0, "Strength", 100.0, "Radius", 2.0, "ReduceFlicker", rf);
+            foreach (double cb in new double[] { 0.0, 50.0, 100.0 })
+                Combo(track, media, plug, name, "Threshold", 0.0, "Brilliance", 100.0, "Strength", 100.0, "Radius", 30.0, "Points", 4, "CenterBurst", cb, "EffectOnly", true);
+        }
+        else if (name == "Fill Light")
+        {
+            // how wide its blur is against Softness
+            foreach (double sf in new double[] { 10.0, 30.0, 60.0, 100.0 })
+                Combo(track, media, plug, name, "Softness", sf);
         }
     }
 

@@ -16,6 +16,8 @@
 #include "vprefs.h"
 #include "../engine/catalog.h"
 #include "strconv.h"
+#include "logo.h"
+#include "../ofx/gpupick.h"
 #include <QApplication>
 #include <QCheckBox>
 #include <QColorDialog>
@@ -522,6 +524,19 @@ private:
                            "OpenGL: only plug-ins that render with OpenGL use the card. Off: everything on the CPU. "
                            "Plug-in GPU use also needs \"GPU acceleration\" above. \"reno_cli vkcheck\" tests Vulkan.");
         f->addRow("GPU &API:", gpuApi);
+        QComboBox* gpuPick = combo(b, "prefs/gpuPick", "gpuPick", {{"The quicker of card and CPU for each effect (measured)", "auto"}, {"Always the card", "gpu"}});
+        gpuPick->setToolTip("A frame has to be sent to the card and back, so a simple effect can be quicker on the CPU. Reno times each effect both ways, once for each "
+                            "graphics card and driver (behind the splash screen), and uses the quicker. The pictures are the same either way.");
+        QPushButton* gpuMeasure = new QPushButton("Measure again", b);
+        gpuMeasure->setObjectName("gpuMeasure");
+        gpuMeasure->setToolTip("Times the effects on the CPU and on the card again (in the background; \"reno_cli gpupick\" does the same and prints the times).");
+        QObject::connect(gpuMeasure, &QPushButton::clicked, [] { ofx::builtin::pick::startBackground(renoVersion(), true); });
+        QWidget* gpuRow = new QWidget(b);
+        QHBoxLayout* gpuRowL = new QHBoxLayout(gpuRow);
+        gpuRowL->setContentsMargins(0, 0, 0, 0);
+        gpuRowL->addWidget(gpuPick, 1);
+        gpuRowL->addWidget(gpuMeasure);
+        f->addRow("GPU e&ffects:", gpuRow);
         QComboBox* vegasFx = combo(b, "prefs/vegasFxSource", "vegasFxSource",
                                    {{"Reno's built-in versions (ignore the installed ones)", "builtin"}, {"VEGAS's own plug-ins when installed", "real"}});
         vegasFx->setToolTip("VEGAS's own effects (Gaussian Blur, Cookie Cutter, ...) are reproduced in Reno to match VEGAS's output. By default Reno uses its "

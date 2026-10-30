@@ -49,6 +49,7 @@ inline const std::map<QString, QVariant>& defaults()
         // GPU API for video processing: "vulkan" (built-in effects run on the card, plug-ins may use OpenGL),
         // "opengl" (plug-ins only) or "off"
         {"prefs/gpuApi", QString("vulkan")},
+        {"prefs/gpuPick", QString("auto")},
         // VEGAS's own effects: "real" (VEGAS's plug-ins when installed, else Reno's built-in versions) or "builtin"
         // (always Reno's)
         {"prefs/vegasFxSource", QString("builtin")},

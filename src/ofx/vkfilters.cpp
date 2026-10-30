@@ -756,12 +756,16 @@ bool planFillLight(Ctx& c, Plan& p)
         ps.setPush(P::FlMask{p.w, p.h});
     }
     if (su.blur) {
-        const CgBlurCoefs cf = cgBlurCoefs(su.sigma);
-        const int b = p.addBuf(p.w, p.h, 4);
-        p.add("cg_blur", m, b, p.h, 1).setPush(P::CgBlur{p.w, p.h, 0u, cf.gain, cf.c1, cf.c2, cf.c3});
-        p.add("cg_blur", b, b, p.w, 1).setPush(P::CgBlur{p.w, p.h, 1u, cf.gain, cf.c1, cf.c2, cf.c3});
+        // GaussianBlurOCL's recursive Gaussian (oclBlurCoefs() in builtins_cgblur.cpp), rows then columns, each into a new buffer
+        const OclBlurCoefs cf = oclBlurCoefs(oclBlurSigma(su.sigma));
+        const int b = p.addBuf(p.w, p.h, 4), b2 = p.addBuf(p.w, p.h, 4);
+        auto oc = [&](uint32_t vert) {
+            return P::OclBlur{p.w, p.h, vert, (float)cf.n[0], (float)cf.n[1], (float)cf.n[2], (float)cf.d[1], (float)cf.d[2], (float)cf.d[3], (float)cf.t[1], (float)cf.t[2], (float)cf.t[3], (float)cf.gc, (float)cf.ga};
+        };
+        p.add("ocl_blur", m, b, p.h, 1).setPush(oc(0u));
+        p.add("ocl_blur", b, b2, p.w, 1).setPush(oc(1u));
         Pass& ps = p.add("fl_final", 0, 1, p.w, p.h);
-        ps.in1 = b;
+        ps.in1 = b2;
         ps.setPush(P::FlFinal{p.w, p.h, su.fop, 1u});
     } else {
         Pass& ps = p.add("fl_final", 0, 1, p.w, p.h);
@@ -1262,10 +1266,13 @@ void gpuAddDeriche(Plan& p, int from, int to, double sigmaX, double sigmaY, bool
         for (int i = 0; i < 5; ++i) pushDouble(tab, k.n[i] - k.bn[i]);
         for (int i = 0; i < 5; ++i) pushDouble(tab, k.m[i] - k.bm[i]);
         P::Deriche pc = {W, H, pass ? 1u : 0u, pass ? 0u : (levels ? 2u : 1u), pass ? (rawOut ? 0u : (levels ? 2u : 1u)) : 0u, 0u};
-        Pass& ps = p.add("deriche", pass ? mid : from, pass ? to : mid, pass ? W : H, 1);
+        Pass& ps = p.add("deriche", pass ? mid : from, pass ? to : mid, (pass ? W : H) * 4, 1);     // a thread per line and channel
         ps.in1 = state;
         ps.table = p.addTable(std::move(tab));
         ps.setPush(pc);
+        Pass& pk = p.add("deriche_pack", from, pass ? to : mid, W, H);                              // the four channels' words back into the picture
+        pk.in1 = state;
+        pk.setPush(P::DerichePack{W, H});
     }
 }
 

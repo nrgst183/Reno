@@ -530,6 +530,25 @@ int main(int argc, char** argv)
         Project th = rig.filtered(blue, kV + "threshold", ps);
         a = pixel(rig.render(th), 80, 45);
         check(near(a, 0, 0, 0), "Threshold: dark becomes black", pxs(a));
+        // Rays: the Points setting (an integer parameter) changes the star
+        {
+            auto sb = [&](int pts) {
+                Json q = Json::object();
+                q["Strength"] = val({100});
+                q["Threshold"] = val({0});
+                q["Radius"] = val({10});
+                q["Points"] = val({(double)pts});
+                return rig.render(rig.filtered("split:0,0,0,255,255,255", kV + "starburstvelvetmatter", q));
+            };
+            ImagePtr p2 = sb(2), p4 = sb(4), p6 = sb(6);
+            long d24 = 0, d46 = 0;
+            for (int y = 0; y < 90; ++y)
+                for (int x = 0; x < 160; ++x) {
+                    d24 += std::abs(pixel(p2, x, y).g - pixel(p4, x, y).g);
+                    d46 += std::abs(pixel(p4, x, y).g - pixel(p6, x, y).g);
+                }
+            check(d24 > 0 && d46 > 0, "Rays: Points 2, 4 and 6 draw different stars", strfmt("%ld %ld", d24, d46));
+        }
         // keying: the blue half goes, the red half stays
         ps = Json::object();
         ps["color"] = val({0, 0, 1});

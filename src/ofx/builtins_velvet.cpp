@@ -19,9 +19,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <vector>
 #include <complex>
-#include <cstdlib>
 
 namespace reno {
 namespace ofx {
@@ -804,6 +804,38 @@ void addPolygon(std::vector<float>& plane, int w, int h, const std::vector<std::
     }
 }
 
+// What GDI+ makes of FillPath in its 8 x 4 anti-aliased mode on a transparent 32 bit picture whose colour is not premultiplied: every pixel that any of its 8 x 4 samples falls in gets the
+// brush's colour in full (only its alpha follows the coverage), so for the colour channel the shape is a plain yes or no, thin spikes included. Added x weight into a w x h plane.
+void addPolygonGdi(std::vector<float>& plane, int w, int h, const std::vector<std::array<double, 2>>& pts, float weight)
+{
+    if (pts.size() < 3) return;
+    double ymin = 1e300, ymax = -1e300;
+    for (const auto& p : pts) { ymin = std::min(ymin, p[1]); ymax = std::max(ymax, p[1]); }
+    const int sx = 8, sy = 4;
+    std::vector<double> xs;
+    std::vector<char> row((size_t)w);
+    for (int py = std::max(0, (int)std::floor(ymin)); py <= (int)std::ceil(ymax) && py < h; ++py) {
+        std::fill(row.begin(), row.end(), (char)0);
+        for (int sr = 0; sr < sy; ++sr) {
+            const double yy = py + (sr + 0.5) / sy;
+            xs.clear();
+            const size_t n = pts.size();
+            for (size_t i = 0; i < n; ++i) {
+                const auto& a = pts[i];
+                const auto& b = pts[(i + 1) % n];
+                if ((a[1] > yy) != (b[1] > yy)) xs.push_back(a[0] + (yy - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+            }
+            std::sort(xs.begin(), xs.end());
+            for (size_t i = 0; i + 1 < xs.size(); i += 2) {
+                const int k0 = std::max(0, (int)std::ceil(xs[i] * sx - 0.5)), k1 = std::min(w * sx - 1, (int)std::ceil(xs[i + 1] * sx - 0.5) - 1);
+                for (int k = k0; k <= k1; ++k) row[(size_t)(k / sx)] = 1;
+            }
+        }
+        for (int x = 0; x < w; ++x)
+            if (row[(size_t)x]) plane[(size_t)py * w + x] += weight;
+    }
+}
+
 // StarShape.Load's outline in unit coordinates (centre at 0.5): outer points at radius 0.499, notches at 0.499 x inner, Variance moving each
 // outer point but the first by a System.Random draw.
 std::vector<std::array<double, 2>> starOutline(int n, double inner, double variance, int seed)
@@ -1156,9 +1188,11 @@ bool fillLightSetup(Ctx& c, int W, FillLightSetup& o)
     }
     const double diameter = softness * W;
     if (diameter > 0) {
-        const double sigma = sigmaForDiameter(diameter);
+        // Fill Light's GaussianBlur takes VEGAS's OpenCL path (all four channels): the number that path works from is the pixel diameter / 30 (CoreGraphics.Native's GaussianBlurOCL turns it into
+        // the recursive filter's deviation (6 x + 1.5) / sqrt(2 ln 255)); the captures of the real plug-in agree with that for diameters of 11, 160 and 320 pixels (not with the native path's
+        // spline of the deviation, which is much wider)
         o.blur = true;
-        o.sigma = sigma;
+        o.sigma = diameter / 30.0;
     }
     // The mask, blurred in bytes, goes back to floats (m / 255) and CompositeOp 3 (Add) at the opacity adds it to the (float) picture without a limit: colour d + m x op, alpha d + m x op x (1 - d)
     const double op = clampd(strength * 0.5, 0.0, 1.0);
@@ -1186,7 +1220,7 @@ void fillLightVelvet(Ctx& c)
             m[0] = su.lut[l][1]; m[1] = su.lut[l][2]; m[2] = su.lut[l][3]; m[3] = su.lut[l][0];
         }
     if (su.blur) {
-        cgGaussianBlur(mask.data(), W, H, su.sigma, su.sigma);
+        cgOclBlur(mask.data(), W, H, su.sigma, su.sigma);
         for (float& v : mask) v = (float)cgBlurByte(v);
     }
     const float fop = su.fop;
@@ -1195,7 +1229,8 @@ void fillLightVelvet(Ctx& c)
             const float* s0 = c.src.at(x, y);
             float* o = c.out.at(x, y);
             const float* m = &mask[((size_t)y * W + x) * 4];
-            for (int k = 0; k < 3; ++k) o[k] = s0[k] + m[k] * (1.f / 255.f) * fop;
+            // the Add composite works in bytes: floor(mask x opacity) is added to the picture's byte
+            for (int k = 0; k < 3; ++k) o[k] = (byteOf(s0[k]) + (float)std::floor(m[k] * fop)) / 255.f;
             o[3] = s0[3] + m[3] * (1.f / 255.f) * fop * (1.f - s0[3]);
         }
     });
@@ -1362,10 +1397,9 @@ void starburstVelvet(Ctx& c)
     const double threshold = c.d("Threshold") / 100.0, brilliance = c.d("Brilliance") / 100.0, strength = c.d("Strength") / 100.0;
     const double radius = c.d("Radius") / 100.0, centerburst = c.d("CenterBurst") / 100.0, aspect = std::max(0.01, c.d("Aspect"));
     const double orientation = c.d("Orientation") / 360.0, softedges = c.d("SoftenEdges") / 100.0;
-    const int points = (int)(std::max(2.0, c.d("Points")) + 0.5);
+    const int points = std::max(2, c.i("Points"));
     const bool effectOnly = c.b("EffectOnly");
     // the star's weight in the convolution: read off VEGAS's pictures (FFT scaling is native)
-    const double gainK = 0.15;
     if (effectOnly) std::fill(c.out.px.begin(), c.out.px.end(), 0.f);
     else c.out.px = c.src.px;
     if (!(strength >= 0.00392156862745098)) return;
@@ -1413,7 +1447,17 @@ void starburstVelvet(Ctx& c)
             blur3x3(g, W, H);
             for (size_t i = 0; i < g.size(); ++i) img[i * 4 + k] = (float)g[i];
         }
-    for (float& v : img) v = (float)(std::max(0.0, v / 255.0 - threshold) * brilliance);
+    // ThresholdClearNative: every channel (alpha too) below round(Threshold x 255) goes to 0; then the FFT loader's curve, in bytes: above T = Threshold x 255 a value v
+    // becomes v + (v - T) x S with S = (Brilliance x 255 - T) / (255 - T) (no curve at all from a threshold of 254/255 on).
+    if (threshold > 0) {
+        const float ti = std::floor((float)threshold * 255.f + 0.5f);
+        for (float& v : img) if (v < ti) v = 0.f;
+    }
+    if (threshold < 254.0 / 255.0) {
+        const float T = (float)(threshold * 255.0);
+        const float S = (float)((brilliance * 255.0 - (double)T) / (double)(255.0f - T));
+        for (float& v : img) if (v > T) v = v + (v - T) * S;
+    }
     const double rpx = radius * std::max((double)W, (double)H);
     const int R = (int)std::ceil(rpx * std::max(1.0, std::max(1.0 / aspect, aspect))) + 2;
     int P = 8, Q = 8;
@@ -1434,32 +1478,38 @@ void starburstVelvet(Ctx& c)
     };
     const int KS = 2 * R + 1;
     std::vector<float> kern((size_t)KS * KS, 0.f);
-    addPolygon(kern, KS, KS, toKernel(starOutline(points, 0.75 / rpx, 0.0, 0), 1.0), 128.f / 255.f);
+    addPolygonGdi(kern, KS, KS, toKernel(starOutline(points, 0.75 / rpx, 0.0, 0), 1.0), 128.f / 255.f);
     if (centerburst > 0) {
         static const double table[2][5] = {{0.2, 0.3, 0.25, 43341.0, 8.0}, {0.4, 0.75, 0.2, 12345.0, 27.0}};
         for (int b = 0; b < 2; ++b) {
             const double sc = table[b][0];
             std::vector<float> one((size_t)KS * KS, 0.f);
-            addPolygon(one, KS, KS, toKernel(starOutline((int)std::lround(table[b][4]), 0.75 / rpx / sc * 2.0, table[b][1], (int)std::lround(table[b][3])), sc), 1.f);
+            addPolygonGdi(one, KS, KS, toKernel(starOutline((int)std::lround(table[b][4]), 0.75 / rpx / sc * 2.0, table[b][1], (int)std::lround(table[b][3])), sc), 1.f);
             const float op = (float)clampd(table[b][2] * centerburst, 0.0, 1.0);
             for (size_t i = 0; i < kern.size(); ++i) kern[i] = std::min(1.f, kern[i] + one[i] * op);
         }
     }
+    // FFTImage normalises the star to a sum of 1 (the first channel's bytes), so the glow is a weighted average of the bright picture, not a scaled sum
+    double kernSum = 0;
+    for (float kv : kern) kernSum += kv;
+    const double kernNorm = kernSum > 0 ? 1.0 / kernSum : 0.0;
     std::vector<std::complex<double>> K((size_t)P * Q), A((size_t)P * Q), B((size_t)P * Q);
     for (int y = 0; y < KS; ++y)
         for (int x = 0; x < KS; ++x) {
             const int ky = ((y - R) % Q + Q) % Q, kx = ((x - R) % P + P) % P;
-            K[(size_t)ky * P + kx] += kern[(size_t)y * KS + x] * gainK;
+            K[(size_t)ky * P + kx] += kern[(size_t)y * KS + x] * kernNorm;
         }
-    for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x) {
-            const float* v = &img[((size_t)y * W + x) * 4];
+    // the tiles read the picture with the coordinates held to its edges (the edge pixels go on outwards), so the picture sits R pixels in from the corner of the working area
+    for (int y = 0; y < H + 2 * R; ++y)
+        for (int x = 0; x < W + 2 * R; ++x) {
+            const int sy = y - R, sx = x - R;
+            const float* v = &img[((size_t)std::min(H - 1, std::max(0, sy)) * W + std::min(W - 1, std::max(0, sx))) * 4];
             A[(size_t)y * P + x] = std::complex<double>(v[0], v[1]);
             B[(size_t)y * P + x] = std::complex<double>(v[2], v[3]);
         }
     std::vector<char> zeroK((size_t)Q, 1), zeroImg((size_t)Q, 1);
     for (int y = 0; y < KS; ++y) zeroK[(size_t)(((y - R) % Q + Q) % Q)] = 0;
-    for (int y = 0; y < H; ++y) zeroImg[(size_t)y] = 0;
+    for (int y = 0; y < H + 2 * R; ++y) zeroImg[(size_t)y] = 0;
     fft2(K, P, Q, false, &zeroK, P);
     fft2(A, P, Q, false, &zeroImg, P);
     fft2(B, P, Q, false, &zeroImg, P);
@@ -1471,17 +1521,18 @@ void starburstVelvet(Ctx& c)
             B[i] = std::complex<double>(br * kr - bi * ki, br * ki + bi * kr);
         }
     });
-    fft2(A, P, Q, true, nullptr, W);
-    fft2(B, P, Q, true, nullptr, W);
+    fft2(A, P, Q, true, nullptr, W + R);
+    fft2(B, P, Q, true, nullptr, W + R);
     const double norm = 1.0 / ((double)P * Q);
     const double op = clampd(strength, 0.0, 1.0);
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
-            const std::complex<double> a = A[(size_t)y * P + x] * norm, b = B[(size_t)y * P + x] * norm;
+            const std::complex<double> a = A[(size_t)(y + R) * P + x + R] * norm, b = B[(size_t)(y + R) * P + x + R] * norm;
             const double cv[4] = {a.real(), a.imag(), b.real(), b.imag()};
             float* o = c.out.at(x, y);
             for (int k = 0; k < 4; ++k) {
-                const double s = std::floor(clampd(cv[k], 0.0, 1.0) * 255.0 + 0.5) / 255.0 * op;
+                // FFT_Inverse's store: round to nearest (ties to even), held to 0..255
+                const double s = std::nearbyint(clampd(cv[k] + 1.5e-8, 0.0, 255.0)) / 255.0 * op;
                 o[k] = (float)(o[k] + s - o[k] * s);
             }
         }

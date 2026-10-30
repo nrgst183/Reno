@@ -6,6 +6,7 @@
 #pragma once
 #include "vkplan.h"
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -69,18 +70,45 @@ struct FrameIO {
     // - the caller vouches for that), it is not sent again.
     uint64_t inSerial = 0, outSerial = 0;
     bool noInput = false;               // a generator: there is no input frame (buffer 0 of the plan is not filled)
+    // Leave the download out: the result stays on the card, registered under outSerial (which must not be 0), and 'out' is NOT written. The caller must
+    // then hold pendingHold(outSerial) with the frame, and call materialize() before anything reads 'out'. The next run() whose inSerial is that number
+    // takes the frame from the card (the same 8-bit values the download would have given, so a chain gives the pictures one-by-one running gives).
+    // Ignored (the frame is downloaded as usual) when too many frames are waiting.
+    bool deferOut = false;
 };
 struct RunStats {
     double gpuMs = 0;
     double totalMs = 0;
     bool inputStayed = false;
+    bool deferred = false;              // FrameIO::deferOut was done
     int passes = 0;
 };
 // Runs the plan on the frame. False: could not (nothing was written to 'out'); the caller then does it on the CPU.
 bool run(const Plan& plan, FrameIO& io, RunStats* stats = nullptr);
 // How many runs went to the card, how many of those found their input already there (chains), how many could not be done.
-struct Counters { uint64_t runs = 0, inputsStayed = 0, failed = 0; };
+struct Counters { uint64_t runs = 0, inputsStayed = 0, failed = 0, deferred = 0; };
+// Whether chained built-in effects may leave frames on the card (FrameIO::deferOut). On unless RENO_VK_NO_DEFER is set; the tests switch it to compare.
+void setChainDeferral(bool on);
 Counters counters();
+// ---- frames left on the card (FrameIO::deferOut)
+// While one of these lives on a thread, the built-in effect rendered on that thread (builtins.cpp's gpuRender) is asked to leave its download out. The host
+// sets it around an effect's render when the next effect of the chain takes the frame from the card.
+class DeferOutput {
+public:
+    explicit DeferOutput(bool on);
+    ~DeferOutput();
+    DeferOutput(const DeferOutput&) = delete;
+    DeferOutput& operator=(const DeferOutput&) = delete;
+private:
+    bool prev_;
+};
+bool deferOutputRequested();
+bool isPending(uint64_t serial);
+// A holder to keep with the frame (Image::gpuHold): the card's copy is freed when the last reference goes. Null if nothing waits under that number.
+std::shared_ptr<void> pendingHold(uint64_t serial);
+// Downloads the frame waiting under 'serial' into dst (rows rowBytes apart, as the frame was given as 'out'). False when there is none or the card fails.
+bool materialize(uint64_t serial, uint8_t* dst, size_t rowBytes);
+
 // Forgets the frame kept on the card for chains (a different frame size, a project closed...).
 void dropResident();
 

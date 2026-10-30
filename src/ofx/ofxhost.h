@@ -197,6 +197,9 @@ struct RenderOptions {
     // The frames are width x height whatever the project's size, for any effect: a clip's own size (a pre-pan/crop effect works on the media
     // as it is). The effect is told the project is that size at render scale 1, with canonical coordinates scaled to it as for a preview.
     bool mediaSize = false;
+    // The next effect of the chain is a built-in one that takes this frame from the graphics card (Instance::gpuChainable()): a built-in effect that renders
+    // on the card may then leave the frame there (Image::gpuHold) instead of downloading it. Whoever reads the pixels calls Image::sync() first.
+    bool deferGpuOutput = false;
 };
 
 class Instance : public EffectBase {
@@ -204,6 +207,8 @@ public:
     ~Instance() override;
 
     const std::string& context() const { return context_; }
+    // A built-in filter with Vulkan kernels that is to be tried on the card now (builtins.h builtinGpuChainable): it can take its input frame from the card.
+    bool gpuChainable() const;
     bool scalable() const;
     void setProjectSizeProps(int w, int h);
     double renderScale[2] = {1.0, 1.0};

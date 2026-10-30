@@ -148,6 +148,8 @@ struct Ctx {
     std::string s(const char* name) const;
     const void* instance = nullptr;
     std::function<bool(double time, Buf& into)> fetch;
+    // The source clip's frame range as the host states it (kOfxImageEffectPropFrameRange; 0, 0 when not known); set for effects that fetch other frames.
+    double clipFirst = 0, clipLast = 0;
 };
 
 // What a Def::changed function is given when a setting changes (a button pressed or a value edited): the setting's name, the time, and ways to read and

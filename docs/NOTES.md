@@ -31,6 +31,34 @@ Details worth knowing:
   `vkcheck` is `reno_cli vkcheck`. The kernels are written in Python (`tools/gpukernels.py`), compiled to SPIR-V by
   `tools/spvdsl.py`; `tools/build_shaders.sh` regenerates `vkshaders/*.spv.h`, which are committed. Preferences >
   Video > GPU API picks Vulkan, OpenGL or off; any failure falls back to the CPU.
+- Speed of the Vulkan path (`vkdevice.cpp`, `gpupick.*`, `fxbench.cpp`):
+  - A frame goes up as bytes (8-bit pictures are unpacked on the card) and comes back as bytes. A chain of built-in
+    effects on one event, track or output keeps the frame on the card: `Engine::runFx` tells the effect before the last
+    one of the chain (`RenderOptions::deferGpuOutput`) to leave its download out, and the frame is then marked
+    `Image::gpuHold` (its pixels are only on the card). The next built-in effect finds it by `Image::serial`
+    (`gpu::FrameIO::inSerial`). Anything else that reads the pixels calls `Image::sync()` first (`clone`, `converted`,
+    `stretchImage`, `fxClipGetImage` for anything but a built-in GPU filter, the CPU path of the built-ins), which
+    downloads the frame (`gpu::materialize`). The values that stay on the card are the packed 8-bit ones, so a chain
+    gives the same bytes as running the effects one by one (vkchain_test compares them). `RENO_VK_NO_DEFER=1` turns it off.
+  - Descriptor sets, pipeline lookups, staging and device buffers, the command pool and the pipeline cache (on disk)
+    are kept between frames.
+  - `reno_cli gpupick` (and Preferences > Video > GPU effects, run behind the splash screen once per card + driver +
+    Reno version) times every built-in effect on the CPU and on the card and keeps the quicker, in `gpu_pick.txt` in
+    the data folder. An effect whose GPU picture differs from the CPU's in that measurement goes to the CPU. "Always the
+    card" or GPU API "Off" overrides it.
+  - `reno_cli fxbench [--cpu|--gpu|--both] [--size WxH] [--chain a,b,c]` prints milliseconds per frame per effect (CPU,
+    GPU kernels only, GPU with transfers) and a chain four ways (CPU; card one by one; card with the frame kept there
+    but downloaded; card with one upload and one download). `tests/perf/fxbench.cpp` is a different program: it
+    hashes the CPU effects' output to compare two builds byte for byte.
+    `tests/perf/afxbench.cpp` does the same for the built-in audio effects (sample hashes, `--time`). For instruction
+    counts use `valgrind --tool=callgrind` on these programs with a small size / `--secs 1`.
+  - CPU speed-ups keep the output byte for byte: tables of pure functions of a byte, constants hoisted, the same operation
+    order (no FMA), AVX2 versions picked at run time (`src/core/cpufeat.h`, `RENO_NO_AVX2=1` turns them off) only where
+    the arithmetic is the same operation for operation (the blur rows and columns, the Deriche loops).
+  - Kernels: the Deriche Gaussian runs one thread per line and channel (the channels never mix), `deriche_pack` gathers
+    them. The kernels' doubles are emulated in 32-bit integer ops (`tools/sf64.py`), because SwiftShader (the only card
+    the tests can use) has no float64, and hardware doubles run at 1/32-1/64 rate on GeForce cards; a different order or
+    precision would change bits, so those kernels keep their arithmetic and gain only parallelism.
 - The interface uses Qt without moc: no `Q_OBJECT`, no signal/slot declarations. Use lambdas with `QObject::connect`
   and `std::function` callbacks.
 - The engine works on copies of the `Project`, a plain value. `AppState` (`src/app/appstate.*`) owns the live

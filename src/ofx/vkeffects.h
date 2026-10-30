@@ -21,6 +21,7 @@ struct GpuFrame {
     bool isFloat = false, bgra = true;
     uint64_t inSerial = 0, outSerial = 0;
     bool noInput = false;       // a generator
+    bool deferOut = false;      // leave the download out (gpu::FrameIO::deferOut)
 };
 
 // Renders effect 'd' (its Def::gpu) on the GPU: false when it cannot (the GPU is off or absent, the settings need the CPU,
@@ -100,6 +101,8 @@ bool extraGpuFloatTolerance(const std::string& fullId, double& tol);
 
 // reno_cli vkcheck (vkcheck.cpp): args are the words after "vkcheck". Returns the program's exit code.
 int runVkCheck(const std::vector<std::string>& args);
+// reno_cli fxbench (fxbench.cpp): per-effect and chain timings, CPU and GPU.
+int runFxBench(const std::vector<std::string>& args);
 
 }  // namespace builtin
 }  // namespace ofx

@@ -426,11 +426,33 @@ static void labAdjust8(Ctx& c)
         if (e > 1.0) return 1.0;
         return e;
     };
+    // lin() of the 256 levels, once
+    double linTab[256];
+    for (int i = 0; i < 256; ++i) linTab[i] = lin((double)i * k255);
+    // The last step, (int)(back(v) * 255.0), is a staircase in v (back() rises with v): thrTab[n - 1] is the smallest v that gives n or more. A v well away from a
+    // step takes its level from the table; one within 1e-12 of a step (or not a plain number) is worked out as before, so the result is the same either way.
+    double thrTab[255];
+    for (int n = 1; n <= 255; ++n) {
+        double lo = 0.0, hi = 2.0;                  // (back(lo) * 255 < n <= back(hi) * 255: 0 gives 0, 2 is clamped to 1 and gives 255)
+        for (int it = 0; it < 120; ++it) {
+            const double mid = lo + (hi - lo) * 0.5;
+            if (mid <= lo || mid >= hi) break;
+            if ((int)(back(mid) * 255.0) >= n) hi = mid; else lo = mid;
+        }
+        thrTab[n - 1] = hi;
+    }
+    auto outLevel = [&](double v) {
+        if (v > 0.0 && v < 2.0) {
+            const int k = (int)(std::upper_bound(thrTab, thrTab + 255, v) - thrTab);      // the steps at or below v
+            if (!((k > 0 && v - thrTab[k - 1] < 1e-12) || (k < 255 && thrTab[k] - v < 1e-12))) return k;
+        }
+        return (int)(back(v) * 255.0);
+    };
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const float* q = c.src.at(x, y);
             const int r8 = v8::toLevel(q[0]), g8 = v8::toLevel(q[1]), b8 = v8::toLevel(q[2]), a8 = v8::toLevel(q[3]);
-            const double rl = lin((double)r8 * k255), gl = lin((double)g8 * k255), bl = lin((double)b8 * k255);
+            const double rl = linTab[r8], gl = linTab[g8], bl = linTab[b8];
             const double X = ((rl * 0.4124 + gl * 0.3576) + bl * 0.1805) / 0.95047;
             const double Y = (gl * 0.7152 + rl * 0.2126) + bl * 0.0722;
             const double Z = ((rl * 0.0193 + gl * 0.1192) + bl * 0.9505) / 1.08883;
@@ -444,7 +466,7 @@ static void labAdjust8(Ctx& c)
             const double cr = (xr * 3.2406 - yr * 1.5372) - zr * 0.4986;
             const double cg = (yr * 1.8758 - xr * 0.9689) + zr * 0.0415;
             const double cb = (xr * 0.0557 - yr * 0.204) + zr * 1.057;
-            const int R = std::min((int)(back(cr) * 255.0), a8), G = std::min((int)(back(cg) * 255.0), a8), Bl = std::min((int)(back(cb) * 255.0), a8);
+            const int R = std::min(outLevel(cr), a8), G = std::min(outLevel(cg), a8), Bl = std::min(outLevel(cb), a8);
             float* o = c.out.at(x, y);
             o[0] = v8::fromLevel(R); o[1] = v8::fromLevel(G); o[2] = v8::fromLevel(Bl); o[3] = v8::fromLevel(a8);
         }

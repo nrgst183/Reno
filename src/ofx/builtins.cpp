@@ -4,6 +4,7 @@
 #include "vegas_ext.h"
 #include "../core/base.h"
 #include "../core/pixrows.h"
+#include "../core/cpufeat.h"
 #include "vkeffects.h"
 #include "ofxProperty.h"
 #include <algorithm>
@@ -375,10 +376,18 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
     if (d.transition) {
         OfxImageClipHandle fromClip = nullptr, toClip = nullptr;
         PS fromImg = nullptr, toImg = nullptr;
-        if (gEff->clipGetHandle(effect, kOfxImageEffectTransitionSourceFromClipName, &fromClip, nullptr) == kOfxStatOK && fromClip)
-            gEff->clipGetImage(fromClip, c.time, nullptr, &fromImg);
-        if (gEff->clipGetHandle(effect, kOfxImageEffectTransitionSourceToClipName, &toClip, nullptr) == kOfxStatOK && toClip)
-            gEff->clipGetImage(toClip, c.time, nullptr, &toImg);
+        // A temporal transition (Warp Flow) works from the outgoing clip's first frame and the incoming clip's last one (their frame ranges), not the frame at this time
+        double fromT = c.time, toT = c.time;
+        const bool haveFrom = gEff->clipGetHandle(effect, kOfxImageEffectTransitionSourceFromClipName, &fromClip, nullptr) == kOfxStatOK && fromClip;
+        const bool haveTo = gEff->clipGetHandle(effect, kOfxImageEffectTransitionSourceToClipName, &toClip, nullptr) == kOfxStatOK && toClip;
+        if (d.temporal) {
+            PS cp = nullptr;
+            if (haveFrom && gEff->clipGetPropertySet(fromClip, &cp) == kOfxStatOK && cp) fromT = propDouble(cp, kOfxImageEffectPropFrameRange, 0, c.time);
+            cp = nullptr;
+            if (haveTo && gEff->clipGetPropertySet(toClip, &cp) == kOfxStatOK && cp) toT = propDouble(cp, kOfxImageEffectPropFrameRange, 1, c.time);
+        }
+        if (haveFrom) gEff->clipGetImage(fromClip, fromT, nullptr, &fromImg);
+        if (haveTo) gEff->clipGetImage(toClip, toT, nullptr, &toImg);
         c.progress = clampd(c.d(kOfxImageEffectTransitionParamName), 0, 1);
         // On the GPU (Vulkan) when the transition has a kernel and both frames are of one kind covering the whole frame: the outgoing frame goes up
         // as is, the incoming one as floats with the plan (see vkeffects.cpp); else the CPU below
@@ -426,11 +435,17 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
             gf.bgra = sv.bgra;
             gf.inSerial = (uint64_t)propDouble(srcImg, "RenoImageSerial");
             gf.outSerial = (uint64_t)propDouble(outImg, "RenoImageSerial");
+            gf.deferOut = gpu::deferOutputRequested();
             if (sv.rowBytes > 0 && ov.rowBytes > 0 && gpuRender(d, c, gf)) {
                 if (srcImg) gEff->clipReleaseImage(srcImg);
                 gEff->clipReleaseImage(outImg);
                 return kOfxStatOK;
             }
+        }
+        // the GPU did not take it: if the frame is only on the card (the effect before left it there), it comes down now
+        if (sv.ok() && srcImg) {
+            const uint64_t ser = (uint64_t)propDouble(srcImg, "RenoImageSerial");
+            if (ser != 0 && gpu::isPending(ser)) gpu::materialize(ser, const_cast<uint8_t*>(sv.data), (size_t)sv.rowBytes);
         }
         if (d.rows && sv.ok() && !sv.isFloat && !ov.isFloat && sv.x1 <= fx1 && sv.x2 >= fx1 + c.frameW && sv.y1 <= fy1 && sv.y2 >= fy1 + c.frameH) {
             RowFn rowFn;
@@ -458,6 +473,13 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
         if (srcImg) gEff->clipReleaseImage(srcImg);
         if (d.temporal) {
             c.instance = effect;
+            {
+                PS cp = nullptr;
+                if (srcClip && gEff->clipGetPropertySet(srcClip, &cp) == kOfxStatOK && cp) {
+                    c.clipFirst = propDouble(cp, kOfxImageEffectPropFrameRange, 0, 0);
+                    c.clipLast = propDouble(cp, kOfxImageEffectPropFrameRange, 1, 0);
+                }
+            }
             const int W = c.frameW, H = c.frameH;
             c.fetch = [srcClip, W, H, fx1, fy1](double t, Buf& into) {
                 PS img = nullptr;
@@ -652,18 +674,40 @@ const Def* findDef(const std::string& id)
     return nullptr;
 }
 
+// The parameter's own type: integer, choice and boolean parameters hold an int, double parameters a double; reading one as the other writes the wrong number of bytes
+static bool paramIsDouble(OfxParamHandle h)
+{
+    PS props = nullptr;
+    gParam->paramGetPropertySet(h, &props);
+    const std::string type = propString(props, kOfxParamPropType);
+    return !(type == kOfxParamTypeInteger || type == kOfxParamTypeBoolean || type == kOfxParamTypeChoice);
+}
+
 double Ctx::d(const char* name) const
 {
     double v = 0;
     if (const auto* t = testValue(*this, name)) return std::isfinite((*t)[0]) ? (*t)[0] : 0.0;
-    if (OfxParamHandle h = handleOf(params, name)) gParam->paramGetValueAtTime(h, time, &v);
+    if (OfxParamHandle h = handleOf(params, name)) {
+        if (paramIsDouble(h)) gParam->paramGetValueAtTime(h, time, &v);
+        else {
+            int iv = 0;
+            gParam->paramGetValueAtTime(h, time, &iv);
+            v = iv;
+        }
+    }
     return std::isfinite(v) ? v : 0.0;
 }
 int Ctx::i(const char* name) const
 {
     int v = 0;
     if (const auto* t = testValue(*this, name)) return (int)std::lround((*t)[0]);
-    if (OfxParamHandle h = handleOf(params, name)) gParam->paramGetValueAtTime(h, time, &v);
+    if (OfxParamHandle h = handleOf(params, name)) {
+        if (paramIsDouble(h)) {
+            double dv = 0;
+            gParam->paramGetValueAtTime(h, time, &dv);
+            v = std::isfinite(dv) ? (int)std::lround(dv) : 0;
+        } else gParam->paramGetValueAtTime(h, time, &v);
+    }
     return v;
 }
 Color Ctx::color(const char* name) const
@@ -860,6 +904,31 @@ static inline const float* tapAt(const std::vector<float>& kb, int k)
     return kb.data() + (size_t)k * 4;
 }
 
+#ifdef RENO_HAVE_AVX2_CODE
+// 32 outputs of a blur at once with AVX2 (four vectors of eight): out[0..31] = mid[0..31] * w0 + the sum over taps k = 1..r of (a_k[0..31] + b_k[0..31]) * w_k, in the
+// order blurLine adds them (no fused multiply-add), so each value is the very sum the SSE2 code gives it. The taps' rows are base - k * step and base + k * step, or
+// ups[k] and downs[k] when those are given.
+RENO_AVX2_FN static void blurBlock32Avx2(const float* mid, const float* base, ptrdiff_t step, const float* const* ups, const float* const* downs, int r, const float* kb, float* out)
+{
+    const __m256 k0 = _mm256_broadcast_ss(kb);
+    __m256 s0 = _mm256_mul_ps(_mm256_loadu_ps(mid), k0), s1 = _mm256_mul_ps(_mm256_loadu_ps(mid + 8), k0);
+    __m256 s2 = _mm256_mul_ps(_mm256_loadu_ps(mid + 16), k0), s3 = _mm256_mul_ps(_mm256_loadu_ps(mid + 24), k0);
+    for (int k = 1; k <= r; ++k) {
+        const float* pa = ups ? ups[k] : base - (ptrdiff_t)k * step;
+        const float* pb = downs ? downs[k] : base + (ptrdiff_t)k * step;
+        const __m256 w = _mm256_broadcast_ss(kb + (size_t)k * 4);
+        s0 = _mm256_add_ps(s0, _mm256_mul_ps(_mm256_add_ps(_mm256_loadu_ps(pa), _mm256_loadu_ps(pb)), w));
+        s1 = _mm256_add_ps(s1, _mm256_mul_ps(_mm256_add_ps(_mm256_loadu_ps(pa + 8), _mm256_loadu_ps(pb + 8)), w));
+        s2 = _mm256_add_ps(s2, _mm256_mul_ps(_mm256_add_ps(_mm256_loadu_ps(pa + 16), _mm256_loadu_ps(pb + 16)), w));
+        s3 = _mm256_add_ps(s3, _mm256_mul_ps(_mm256_add_ps(_mm256_loadu_ps(pa + 24), _mm256_loadu_ps(pb + 24)), w));
+    }
+    _mm256_storeu_ps(out, s0);
+    _mm256_storeu_ps(out + 8, s1);
+    _mm256_storeu_ps(out + 16, s2);
+    _mm256_storeu_ps(out + 24, s3);
+}
+#endif
+
 // blurLine over a row of 'n' RGBA pixels, four channels at once; each channel gets exactly the sums blurLine gives it.
 static void blurRowRGBA(const float* in, float* out, int n, const std::vector<float>& kern, const std::vector<float>& kb)
 {
@@ -881,6 +950,10 @@ static void blurRowRGBA(const float* in, float* out, int n, const std::vector<fl
     };
     int i = 0;
     for (; i < n && i < r; ++i) one(i);
+#ifdef RENO_HAVE_AVX2_CODE
+    if (cpuHasAvx2())
+        for (; i + 7 + r <= n - 1; i += 8) blurBlock32Avx2(in + (size_t)i * 4, in + (size_t)i * 4, 4, nullptr, nullptr, r, kb.data(), out + (size_t)i * 4);
+#endif
     for (; i + 3 + r <= n - 1; i += 4) {
         __m128 s0 = _mm_mul_ps(_mm_loadu_ps(in + (size_t)i * 4), k0), s1 = _mm_mul_ps(_mm_loadu_ps(in + (size_t)(i + 1) * 4), k0);
         __m128 s2 = _mm_mul_ps(_mm_loadu_ps(in + (size_t)(i + 2) * 4), k0), s3 = _mm_mul_ps(_mm_loadu_ps(in + (size_t)(i + 3) * 4), k0);
@@ -908,6 +981,13 @@ static void blurRowPlane(const float* in, float* out, int n, const std::vector<f
     int i = 0;
     const __m128 k0 = _mm_loadu_ps(tapAt(kb, 0));
     for (; i < n; ) {
+#ifdef RENO_HAVE_AVX2_CODE
+        if (i >= r && i + 31 + r <= n - 1 && cpuHasAvx2()) {
+            blurBlock32Avx2(in + i, in + i, 1, nullptr, nullptr, r, kb.data(), out + i);
+            i += 32;
+            continue;
+        }
+#endif
         if (i >= r && i + 15 + r <= n - 1) {
             // sixteen outputs at a time (four sums that do not wait for each other)
             __m128 s0 = _mm_mul_ps(_mm_loadu_ps(in + i), k0), s1 = _mm_mul_ps(_mm_loadu_ps(in + i + 4), k0);
@@ -954,6 +1034,10 @@ static void blurRowsDown(const float* in, float* out, int len, int h, const std:
         const __m128 k0 = _mm_loadu_ps(tapAt(kb, 0));
         const float* mid = in + (size_t)y * len;
         std::vector<const float*> up((size_t)r + 1), down((size_t)r + 1);
+#ifdef RENO_HAVE_AVX2_CODE
+        const bool avx2 = cpuHasAvx2();
+        std::vector<const float*> upPtrs, downPtrs;
+#endif
         for (int k = 1; k <= r; ++k) {
             up[(size_t)k] = in + (size_t)std::max(0, y - k) * len;
             down[(size_t)k] = in + (size_t)std::min(h - 1, y + k) * len;
@@ -961,6 +1045,16 @@ static void blurRowsDown(const float* in, float* out, int len, int h, const std:
         for (int x0 = 0; x0 < len; x0 += 256) {
             const int x1 = std::min(len, x0 + 256);
             int x = x0;
+#ifdef RENO_HAVE_AVX2_CODE
+            if (avx2) {
+                if (upPtrs.empty()) { upPtrs.resize((size_t)r + 1); downPtrs.resize((size_t)r + 1); }
+                for (int k = 1; k <= r; ++k) { upPtrs[(size_t)k] = up[(size_t)k] + x0; downPtrs[(size_t)k] = down[(size_t)k] + x0; }
+                for (; x + 32 <= x1; x += 32) {
+                    blurBlock32Avx2(mid + x, nullptr, 0, upPtrs.data(), downPtrs.data(), r, kb.data(), o + x);
+                    for (int k = 1; k <= r; ++k) { upPtrs[(size_t)k] += 32; downPtrs[(size_t)k] += 32; }
+                }
+            }
+#endif
             // sixteen values at a time (four sums that do not wait for each other; each is the plain sum of its values)
             for (; x + 16 <= x1; x += 16) {
                 __m128 s0 = _mm_mul_ps(_mm_loadu_ps(mid + x), k0), s1 = _mm_mul_ps(_mm_loadu_ps(mid + x + 4), k0);

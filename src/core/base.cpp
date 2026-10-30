@@ -1,4 +1,5 @@
 #include "base.h"
+#include "cpufeat.h"
 #include "pixrows.h"
 #include <cstdio>
 #include <cstdlib>
@@ -35,6 +36,47 @@
 namespace fs = std::filesystem;
 
 namespace reno {
+
+#if defined(RENO_HAVE_AVX2_CODE) && defined(_MSC_VER)
+// The OS's saved register state (XCR0); clang-cl by instruction (its _xgetbv needs the xsave target and header).
+static unsigned long long readXcr0()
+{
+#  if defined(__clang__)
+    unsigned eax = 0, edx = 0;
+    __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
+    return ((unsigned long long)edx << 32) | eax;
+#  else
+    return _xgetbv(0);
+#  endif
+}
+#endif
+
+bool cpuHasAvx2()
+{
+    static const bool has = [] {
+        if (std::getenv("RENO_NO_AVX2")) return false;
+#if defined(RENO_HAVE_AVX2_CODE)
+#  if defined(_MSC_VER)
+        // MSVC and clang-cl: cpuid directly (__builtin_cpu_supports needs clang's runtime library, not linked on Windows)
+        int r[4];
+        __cpuid(r, 0);
+        if (r[0] < 7) return false;
+        __cpuid(r, 1);
+        if (!((r[2] >> 27) & 1) || !((r[2] >> 28) & 1)) return false;       // OSXSAVE, AVX
+        if ((readXcr0() & 6) != 6) return false;                            // the OS saves XMM and YMM
+        __cpuidex(r, 7, 0);
+        return ((r[1] >> 5) & 1) != 0;
+#  else
+        __builtin_cpu_init();
+        return __builtin_cpu_supports("avx2") != 0;
+#  endif
+#else
+        return false;
+#endif
+    }();
+    return has;
+}
+
 
 // ---------------------------------------------------------------- logging
 static std::mutex gLogMutex;
@@ -340,8 +382,17 @@ void Image::clear()
     if (data) std::memset(data.get(), 0, byteSize());
 }
 
+void (*gImageSyncHook)(const Image&) = nullptr;
+
+void Image::syncFromGpu() const
+{
+    if (gImageSyncHook) gImageSyncHook(*this);
+    gpuHold.reset();
+}
+
 ImagePtr Image::clone() const
 {
+    sync();
     ImagePtr c = make(w, h, depth, false);
     if (c) std::memcpy(c->data.get(), data.get(), byteSize());
     return c;
@@ -349,6 +400,7 @@ ImagePtr Image::clone() const
 
 ImagePtr Image::converted(PixelDepth d) const
 {
+    sync();
     if (d == depth) return clone();
     ImagePtr c = make(w, h, d, false);
     if (!c) return nullptr;

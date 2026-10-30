@@ -78,7 +78,7 @@ static void bbfSample(const std::vector<uint8_t>& s, std::vector<uint8_t>& o, in
 {
     o.assign((size_t)W * H * 4, 0);
     const float lo = -0.4f, hiX = (float)W - 0.6f, hiY = (float)H - 0.6f;
-    for (int j = 0; j < H; ++j) {
+    forRows(H, W * 16, [&](int j) {
         const float yf = (float)j;
         const float x9 = yf * m[1] + m[2], x7 = yf * m[4] + m[5], x5 = yf * m[7] + m[8];
         for (int i = 0; i < W; ++i) {
@@ -103,7 +103,7 @@ static void bbfSample(const std::vector<uint8_t>& s, std::vector<uint8_t>& o, in
                 o[((size_t)j * W + i) * 4 + k] = (uint8_t)((p11 * w11 + p01 * w01 + p10 * w10 + p00 * w00) >> 10);
             }
         }
-    }
+    });
 }
 void bbf8Setup(Ctx& c, int W, int H, Bbf8Setup& o)
 {
@@ -133,11 +133,12 @@ static void blackBarFill8(Ctx& c)
     bbfTable(tab);
     // the frame's levels, bottom row first
     std::vector<uint8_t> src((size_t)W * H * 4);
-    for (int y = 0; y < H; ++y)
+    forRows(H, W * 4, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const float* q = c.src.at(x, y);
             for (int k = 0; k < 4; ++k) src[((size_t)(H - 1 - y) * W + x) * 4 + k] = (uint8_t)v8::toLevel(q[k]);
         }
+    });
     float m[9];
     std::vector<uint8_t> bg, fg;
     bbfMatrix(m, W, H, bx, by, bs);
@@ -146,9 +147,9 @@ static void blackBarFill8(Ctx& c)
     if (bsize != 0.0) {
         Buf t;
         t.resize(W, H);
-        for (size_t i = 0; i < bg.size(); ++i) t.px[i] = v8::fromLevel(bg[i]);
+        forRows(H, W * 4, [&](int y) { for (size_t i = (size_t)y * W * 4; i < (size_t)(y + 1) * W * 4; ++i) t.px[i] = v8::fromLevel(bg[i]); });
         vegasDericheBlur(t, bsize, bsize, true);
-        for (size_t i = 0; i < bg.size(); ++i) bg[i] = (uint8_t)v8::toLevel(t.px[i]);
+        forRows(H, W * 4, [&](int y) { for (size_t i = (size_t)y * W * 4; i < (size_t)(y + 1) * W * 4; ++i) bg[i] = (uint8_t)v8::toLevel(t.px[i]); });
     }
     bbfMatrix(m, W, H, fx, fy, fs);
     bbfSample(src, fg, W, H, m);
@@ -156,16 +157,19 @@ static void blackBarFill8(Ctx& c)
     const float s8 = (float)sb * 0.6f;
     Buf pl;
     pl.resize(W, H);
-    for (int i = 0; i < W * H; ++i) {
-        float* o = &pl.px[(size_t)i * 4];
-        o[0] = o[1] = o[2] = 0.f;
-        o[3] = tab[fg[(size_t)i * 4 + 3]] * 1.0f;
-    }
+    forRows(H, W * 4, [&](int y) {
+        for (int i = y * W; i < (y + 1) * W; ++i) {
+            float* o = &pl.px[(size_t)i * 4];
+            o[0] = o[1] = o[2] = 0.f;
+            o[3] = tab[fg[(size_t)i * 4 + 3]] * 1.0f;
+        }
+    });
     if (s8 > 0.f) {
         const double size = (double)((s8 * 1.0f) * (float)std::max(W, H)) * 0.125;
         vegasDericheBlur(pl, size, size, false);
     }
-    for (int i = 0; i < W * H; ++i) {
+    forRows(H, W * 24, [&](int y) {
+      for (int i = y * W; i < (y + 1) * W; ++i) {
         const float Fa = pl.px[(size_t)i * 4 + 3], Fc[3] = {pl.px[(size_t)i * 4], pl.px[(size_t)i * 4 + 1], pl.px[(size_t)i * 4 + 2]};
         const uint8_t* f = &fg[(size_t)i * 4];
         const float x0 = 1.0f * Fa, x1 = 1.0f * tab[f[3]];
@@ -195,13 +199,15 @@ static void blackBarFill8(Ctx& c)
             d[k] = (uint8_t)(v > 255 ? 255 : v);
         }
         d[3] = std::max(lay[3], d[3]);
-    }
-    for (int y = 0; y < H; ++y)
+      }
+    });
+    forRows(H, W * 4, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const uint8_t* d = &bg[((size_t)(H - 1 - y) * W + x) * 4];
             float* o = c.out.at(x, y);
             for (int k = 0; k < 4; ++k) o[k] = v8::fromLevel(d[k]);
         }
+    });
 }
 
 void blackBarFill(Ctx& c)

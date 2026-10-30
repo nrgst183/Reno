@@ -4,6 +4,7 @@
 #include "prefsapply.h"
 #include "appstate.h"
 #include "logo.h"
+#include "../ofx/gpupick.h"
 #include "mainwindow.h"
 #include "timeline.h"
 #include "../engine/catalog.h"
@@ -281,6 +282,12 @@ MainWindow* runStartup(const StartupOptions& o)
     splash->setStatus("Creating plug-in factory...");
     QCoreApplication::processEvents();
     prefsapply::apply();
+    // which built-in effects are quicker on the card and which on the CPU: measured (or the saved result read) on a thread while the rest of start-up goes on;
+    // effects use the card until it is done
+    if (vprefs::text("prefs/gpuApi") == "vulkan" && vprefs::text("prefs/gpuPick") != "gpu") {
+        ofx::builtin::pick::startBackground(renoVersion(), false);
+        splash->setStatus("Creating plug-in factory...", QString::fromStdString(ofx::builtin::pick::statusLine()));
+    }
     const bool haveCache = Catalog::get().loadCache();
 
     // new or changed plug-in files are tried (each in its own reno_cli, on the scan's thread), all of them the first

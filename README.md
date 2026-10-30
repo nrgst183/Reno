@@ -98,6 +98,11 @@ Rendering from the command line:
     reno_cli project.veg -o out.mp4 -t "MAGIX AVC/AAC MP4/Internet HD 1080p 29.97 fps" -y
     reno_cli --help
 
+How fast the built-in effects are on your processor and graphics card (milliseconds per frame, and a chain of effects):
+
+    reno_cli fxbench --both --size 1920x1080
+    reno_cli gpupick --again        (which of the two Reno will use for each effect; it measures this by itself once per card)
+
 ## Tests
 
 Tests are in `tests/`, one program per `.cpp`; each file's header says how to build and run it. Tests that need

@@ -179,7 +179,12 @@ int main()
         const gpu::Counters before = gpu::counters();
         ImagePtr gp = rig.render(p);
         const gpu::Counters after = gpu::counters();
-        const uint64_t runs = after.runs - before.runs, stayed = after.inputsStayed - before.inputsStayed;
+        const uint64_t runs = after.runs - before.runs, stayed = after.inputsStayed - before.inputsStayed, deferred = after.deferred - before.deferred;
+        // the same chain with every frame downloaded between the effects (no deferral): the pictures must be the very same bytes
+        gpu::setChainDeferral(false);
+        gpu::dropResident();
+        ImagePtr gp2 = rig.render(p);
+        gpu::setChainDeferral(true);
         const std::string n = cs.name;
         check(cpu && cpu2 && gp && cpu->w == gp->w && cpu->h == gp->h, n + ": rendered");
         if (!cpu || !gp || cpu->w != gp->w || cpu->h != gp->h) continue;
@@ -188,7 +193,32 @@ int main()
         const int w = worst(cpu, gp, &mean);
         check(w <= 3, n + ": Vulkan picture within 3 levels of the CPU's", strfmt("worst %d, mean %.4f", w, mean));
         check(runs == (uint64_t)cs.fx.size(), n + ": every effect ran on the card", strfmt("%d runs for %d effects", (int)runs, (int)cs.fx.size()));
+        check(gp2 && gp2->w == gp->w && gp2->h == gp->h && std::memcmp(gp->row(0), gp2->row(0), (size_t)gp->w * 4 * gp->h) == 0, n + ": chained without downloads == downloaded one by one, byte for byte");
+        check(deferred + 1 == (uint64_t)cs.fx.size() || cs.fx.size() < 2, n + ": downloads left out between the effects", strfmt("%d deferred for %d effects", (int)deferred, (int)cs.fx.size()));
         check(cs.fx.size() < 2 || stayed + 1 == (uint64_t)cs.fx.size(), n + ": the frames stayed on the card between effects", strfmt("%d inputs stayed of %d runs", (int)stayed, (int)runs));
+    }
+
+    // a chain with a bypassed effect in the middle, an effect that is not a built-in one with kernels, and a pan/crop-free event with a mask: the frame left on the card
+    // by an effect must reach the next one that runs, or come down for whatever else reads it
+    {
+        Project p = rig.chain({{"invert", Json()}, {"hsladjust", hue}, {"sharpen", Json()}, {"brightnessandcontrast", bc}}, false);
+        p.tracks[0].events[0].fx[1].bypass = true;
+        gpu::setEnabled(false);
+        ImagePtr cpu = rig.render(p);
+        gpu::setEnabled(true);
+        gpu::dropResident();
+        ImagePtr gp = rig.render(p);
+        double mean = 0;
+        check(cpu && gp && worst(cpu, gp, &mean) <= 3, "a bypassed effect in the middle of a chain", strfmt("mean %.4f", mean));
+        Project q = rig.chain({{"invert", Json()}, {"sharpen", Json()}}, false);
+        q.tracks[0].events[0].fx.push_back(slot(q, "com.vegascreativesoftware:nosucheffect"));
+        q.tracks[0].events[0].fx.push_back(slot(q, kV + "invert"));
+        gpu::setEnabled(false);
+        cpu = rig.render(q);
+        gpu::setEnabled(true);
+        gpu::dropResident();
+        gp = rig.render(q);
+        check(cpu && gp && worst(cpu, gp, &mean) <= 3, "an effect that cannot run in the middle of a chain", strfmt("mean %.4f", mean));
     }
 
     // GPU off: nothing runs on the card

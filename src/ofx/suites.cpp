@@ -601,6 +601,8 @@ static OfxStatus fxClipGetImage(OfxImageClipHandle h, OfxTime time, const OfxRec
     else if (c->source) {
         img = c->source(time);
         if (img && img->depth != inst->depth()) img = img->converted(inst->depth());
+        // a frame only on the card (Image::gpuHold) goes on to a built-in effect that takes it from there; anything else reads the pixels
+        if (img && img->gpuHold && (c->isOutput || !inst->gpuChainable())) img->sync();
     }
     if (!img) return kOfxStatFailed;
     std::unique_ptr<ImageHandle> ih(new ImageHandle());

@@ -690,15 +690,16 @@ DER_N, DER_M, DER_D, DER_EN, DER_EM = 0, 4, 8, 12, 17
 @kernel("deriche", WH + [('vert', 'u'), ('inlv', 'u'), ('outlv', 'u'), ('pad', 'u')], [PIC_IN, (1, 'st', 'u', 'rw'), PIC_OUT, TABLE], local=(64, 1))
 def deriche(S):
     """One line (a row, or a column with vert) of VEGAS's Deriche Gaussian, vegasDericheBlurSigma() / dericheLanes() in builtins_deriche.cpp, in doubles
-    in the CPU's order of operations, one invocation per line, each channel in turn: the causal half (the first five values from the edge terms) into the
+    in the CPU's order of operations, one invocation per line and channel (gx = line * 4 + channel, deriche_pack gathers the channels): the causal half (the first five values from the edge terms) into the
     state buffer (the double's two words, 8 words a pixel), then the anti-causal half added to it. inlv: the input is a picture (0..1) taken to levels
     (1; 2: whole ones); 0: it is levels already (the middle plane). outlv: the result back to 0..1 (1; 2: rounded to whole levels first); 0: as it is."""
     P = S.p
     vert = S.ne(P.vert, 0)
     n = S.select(vert, P.h, P.w)
     lines = S.select(vert, P.w, P.h)
-    with S.if_(S.gx < lines):
-        line = S.gx
+    with S.if_(S.gx < lines * 4):
+        line = S.gx >> 2
+        ch0 = S.gx & 3
         tab = S.buf('table')
         st = S.buf('st')
         src = S.buf('in0')
@@ -721,7 +722,7 @@ def deriche(S):
             return SF.sel(S, S.eq(P.inlv, 0), f, SF.sel(S, S.eq(P.inlv, 1), sc, r))
         def ld(pix, ch, w):
             return st.load(pix * 8 + ch * 2 + w)
-        with S.for_(0, 4) as ch:
+        with S.for_(ch0, ch0 + 1) as ch:
             # ---- causal
             xL = get(pos(S.u(0)), ch)
             x1, x2, x3 = SFVar(S, zero), SFVar(S, zero), SFVar(S, zero)
@@ -783,10 +784,16 @@ def deriche(S):
                 st.store(pix * 8 + ch * 2, S.f_to_bits(v.to_f32()))
                 a4.set(a3.get()); a3.set(a2.get()); a2.set(a1.get()); a1.set(x0)
                 z4.set(z3.get()); z3.set(z2.get()); z2.set(z1.get()); z1.set(z)
-        with S.for_(0, n) as t:
-            pix = idx(t)
-            def fv(ch): return S.bits_to_f(st.load(pix * 8 + ch * 2))
-            out.store(pix, S.vec4(fv(0), fv(1), fv(2), fv(3)))
+
+@kernel("deriche_pack", WH, [PIC_IN, (1, 'st', 'u', 'rw'), PIC_OUT])
+def deriche_pack(S):
+    """The result words of "deriche" (channel ch of a pixel in word ch * 2 of its 8) as the picture."""
+    P = S.p
+    with S.in_range(P.w, P.h):
+        pix = S.gy * P.w + S.gx
+        st = S.buf('st')
+        def fv(ch): return S.bits_to_f(st.load(pix * 8 + ch * 2))
+        S.buf('out').store(pix, S.vec4(fv(0), fv(1), fv(2), fv(3)))
 
 @kernel("unsharp_mix", WH + dpush('amount') + [('thr', 'f'), ('lv', 'u')], [PIC_IN, PIC_IN1, PIC_OUT])
 def unsharp_mix(S):
@@ -3196,6 +3203,72 @@ def cg_blur(S):
             out.store(q, S.vec4(ys[0], ys[1], ys[2], ys[3]))
 
 
+@kernel("ocl_blur", WH + [('vert', 'u'), ('n0', 'f'), ('n1', 'f'), ('n2', 'f'), ('d1', 'f'), ('d2', 'f'), ('d3', 'f'), ('t1', 'f'), ('t2', 'f'), ('t3', 'f'), ('gc', 'f'), ('ga', 'f')],
+        [PIC_IN, PIC_OUT], local=(64, 1))
+def ocl_blur(S):
+    """oclLine() in builtins_cgblur.cpp (GaussianBlurOCL's recursive Gaussian): one line (a row, or a column with vert), the four channels together, floats in the CPU's order;
+    the causal half goes into the output, the anticausal half is added to it. Not in place (the anticausal half reads the input again)."""
+    P = S.p
+    vert = S.ne(P.vert, 0)
+    n = S.select(vert, P.h, P.w)
+    lines = S.select(vert, P.w, P.h)
+    with S.if_(S.gx < lines):
+        line = S.gx
+        src = S.buf('in0')
+        out = S.buf('out')
+        def idx(q): return S.select(vert, q * P.w + line, line * P.w + q)
+        x0 = src.load(idx(S.u(0)))
+        x0c = (x0.x, x0.y, x0.z, x0.w)
+        xm = [[S.var('f', v) for v in x0c] for _ in range(2)]
+        yh = [[S.var('f', P.gc * v) for v in x0c] for _ in range(3)]
+        with S.for_(0, n) as i:
+            xi = src.load(idx(i))
+            xc = (xi.x, xi.y, xi.z, xi.w)
+            ys = []
+            for k in range(4):
+                acc = P.n0 * xc[k]
+                acc = acc + P.n1 * xm[0][k].get()
+                acc = acc + P.n2 * xm[1][k].get()
+                acc = acc - P.d1 * yh[0][k].get()
+                acc = acc - P.d2 * yh[1][k].get()
+                acc = acc - P.d3 * yh[2][k].get()
+                ys.append(acc)
+            out.store(idx(i), S.vec4(ys[0], ys[1], ys[2], ys[3]))
+            for k in range(4):
+                xm[1][k].set(xm[0][k].get())
+                xm[0][k].set(xc[k])
+                yh[2][k].set(yh[1][k].get())
+                yh[1][k].set(yh[0][k].get())
+                yh[0][k].set(ys[k])
+        xl = src.load(idx(n - 1))
+        xlc = (xl.x, xl.y, xl.z, xl.w)
+        xp = [[S.var('f', v) for v in xlc] for _ in range(3)]
+        zh = [[S.var('f', P.ga * v) for v in xlc] for _ in range(3)]
+        with S.for_(0, n) as t:
+            q = idx(n - 1 - t)
+            yi = out.load(q)
+            yc = (yi.x, yi.y, yi.z, yi.w)
+            xi = src.load(q)
+            xc = (xi.x, xi.y, xi.z, xi.w)
+            zs = []
+            for k in range(4):
+                acc = P.t1 * xp[0][k].get()
+                acc = acc + P.t2 * xp[1][k].get()
+                acc = acc + P.t3 * xp[2][k].get()
+                acc = acc - P.d1 * zh[0][k].get()
+                acc = acc - P.d2 * zh[1][k].get()
+                acc = acc - P.d3 * zh[2][k].get()
+                zs.append(acc)
+            out.store(q, S.vec4(yc[0] + zs[0], yc[1] + zs[1], yc[2] + zs[2], yc[3] + zs[3]))
+            for k in range(4):
+                xp[2][k].set(xp[1][k].get())
+                xp[1][k].set(xp[0][k].get())
+                xp[0][k].set(xc[k])
+                zh[2][k].set(zh[1][k].get())
+                zh[1][k].set(zh[0][k].get())
+                zh[0][k].set(zs[k])
+
+
 def sf_byte(S, v):
     """byteOf() in builtins_velvet.cpp: (int)clamp(floor((double)(v * 255.f) + 0.5), 0, 255); a float"""
     t = SF.from_f32(S, v * 255.0) + 0.5
@@ -3219,7 +3292,7 @@ def fl_mask(S):
 
 @kernel("fl_final", WH + [('fop', 'f'), ('rnd', 'u')], [PIC_IN, PIC_IN1, PIC_OUT])
 def fl_final(S):
-    # fillLightVelvet(): the (blurred) mask back to bytes (cgBlurByte, when it was blurred), then the Add at the opacity on the float picture
+    # fillLightVelvet(): the (blurred) mask back to bytes (cgBlurByte, when it was blurred), then the Add in bytes: the picture's byte + floor(mask x opacity), over 255
     P = S.p
     with S.in_range(P.w, P.h):
         i = S.gy * P.w + S.gx
@@ -3232,7 +3305,8 @@ def fl_final(S):
             return S.select(S.ne(P.rnd, 0), S.to_f(sf_nearbyint(S, t)), v)
         k = S.f(1.0 / 255.0)
         mm = [mb(m.x), mb(m.y), mb(m.z), mb(m.w)]
-        o = [s0.x + mm[0] * k * P.fop, s0.y + mm[1] * k * P.fop, s0.z + mm[2] * k * P.fop]
+        c255 = S.f(255.0)
+        o = [(sf_byte(S, s0.x) + S.floor(mm[0] * P.fop)) / c255, (sf_byte(S, s0.y) + S.floor(mm[1] * P.fop)) / c255, (sf_byte(S, s0.z) + S.floor(mm[2] * P.fop)) / c255]
         a = s0.w + mm[3] * k * P.fop * (S.f(1.0) - s0.w)
         S.buf('out').store(i, S.vec4(o[0], o[1], o[2], a))
 

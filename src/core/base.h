@@ -55,6 +55,10 @@ struct Image {
     // A number no other frame made by make() has (0: none). The Vulkan path (ofx/vkgpu.h) uses it to know that the
     // frame an effect is given is the one the effect before it made and left on the card.
     uint64_t serial = 0;
+    // Set while this frame's pixels are only on the graphics card (the Vulkan path left the download out because the next built-in effect of the chain
+    // takes the frame from there; ofx/vkgpu.h). Anything that reads 'data' must call sync() first; the holder frees the card's copy when the frame goes.
+    mutable std::shared_ptr<void> gpuHold;
+    void sync() const { if (gpuHold) syncFromGpu(); }
 
     static std::shared_ptr<Image> make(int w, int h, PixelDepth d = PixelDepth::Byte, bool clear = true);
     size_t pixelBytes() const { return depth == PixelDepth::Byte ? 4 : 16; }
@@ -64,7 +68,11 @@ struct Image {
     std::shared_ptr<Image> clone() const;
     std::shared_ptr<Image> converted(PixelDepth d) const;                            // Byte BGRA <-> Float RGBA
     void clear();
+private:
+    void syncFromGpu() const;
 };
+// Set by the Vulkan path: brings a frame whose pixels are only on the card into 'data' (and lets the card's copy go).
+extern void (*gImageSyncHook)(const Image&);
 using ImagePtr = std::shared_ptr<Image>;
 
 // dst = src over dst, both premultiplied, same size and depth (Byte). 'opacity' 0..1 scales src.

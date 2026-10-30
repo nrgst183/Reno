@@ -2,6 +2,7 @@
 #include "ofxinternal.h"
 #include "builtins.h"
 #include "gpurender.h"
+#include "vkgpu.h"
 #include "../engine/profile.h"
 #include <chrono>
 #include <cstring>
@@ -898,6 +899,11 @@ void Instance::endEdit()
     props.setInt(kOfxPropIsInteractive, 0);
 }
 
+bool Instance::gpuChainable() const
+{
+    return plugin && plugin->binary && plugin->binary->builtin && builtinGpuChainable(plugin->info.id);
+}
+
 ImagePtr Instance::render(double time, const RenderOptions& opt, std::string* error)
 {
     RenderGate::Hold global;
@@ -915,6 +921,7 @@ ImagePtr Instance::render(double time, const RenderOptions& opt, std::string* er
     std::lock_guard<std::recursive_mutex> lk(mutex);
     auto fail = [&](const std::string& m) -> ImagePtr {
         if (error) *error = m;
+        if (outputImage) outputImage->gpuHold = gpu::pendingHold(outputImage->serial);      // (a frame left on the card by a render that then failed: let it go)
         dropImages(this);
         outputImage.reset();
         return nullptr;
@@ -998,6 +1005,7 @@ ImagePtr Instance::render(double time, const RenderOptions& opt, std::string* er
             ClipInst* c = findClip(out.getString(kOfxPropName));
             if (c && c->source) {
                 ImagePtr img = c->source(out.getDouble(kOfxPropTime, 0, time));
+                if (img) img->sync();
                 dropImages(this);
                 if (img && img->depth != opt.depth) img = img->converted(opt.depth);
                 if (img) return img;
@@ -1076,7 +1084,12 @@ ImagePtr Instance::render(double time, const RenderOptions& opt, std::string* er
             failMsg.clear();
         }
     }
-    if (!rendered && !runActions(false)) return fail(failMsg);
+    if (!rendered) {
+        // (a built-in effect may leave its picture on the card for the next one: then the host's frame is stale until Image::sync())
+        gpu::DeferOutput deferOut(opt.deferGpuOutput && gpuChainable());
+        if (!runActions(false)) return fail(failMsg);
+    }
+    if (outputImage && gpu::isPending(outputImage->serial)) outputImage->gpuHold = gpu::pendingHold(outputImage->serial);
 
     ImagePtr result = outputImage;
     outputImage.reset();

@@ -132,6 +132,121 @@ void cgGaussianBlur(float* px, int w, int h, double sigmaX, double sigmaY) { blu
 // The same for a picture of one channel (a plane of w x h floats): what the native does to every channel of a grey picture.
 void cgGaussianBlurPlane(float* px, int w, int h, double sigmaX, double sigmaY) { blurPicture<1>(px, w, h, sigmaX, sigmaY); }
 
+
+// ---- GaussianBlurOCL: the OpenCL path VEGAS takes when an OpenCL device is there (CoreGraphics.Native's GaussianBlurOCL and its coefficient builder). A recursive Gaussian of
+// three poles (two for a deviation above 100): a causal pass y[i] = n0 x[i] + n1 x[i-1] + n2 x[i-2] - d1 y[i-1] - d2 y[i-2] - d3 y[i-3] and an anticausal pass with the tail numerators
+// t[k] = n[k] - d[k] n0, both started from the edge value (state G x[0], G the pass's DC gain), summed. The number it gets is (6 sigma + 1.5) / sqrt(2 ln 255), not the deviation itself.
+OclBlurCoefs oclBlurCoefs(double sigmaIn)
+{
+    OclBlurCoefs c;
+    for (int k = 0; k < 5; ++k) c.n[k] = c.d[k] = c.t[k] = 0.0;
+    const double s = std::max(sigmaIn, 0.001);
+    double n[5] = {0, 0, 0, 0, 0}, d[5] = {0, 0, 0, 0, 0};
+    if (s <= 100.0) {
+        const double a = 1.475 / s;
+        const double sa = std::sin(a), ca = std::cos(a);
+        const double e1 = std::exp(-1.512 / s), e2 = std::exp(-1.556 / s), e3 = std::exp(-3.024 / s), e4 = std::exp(-3.068 / s);
+        const double x8 = sa * 1.021;
+        double x11 = e1 * x8 - (ca * 3.796) * e1;
+        x11 = x11 + e2 * 0.8929 + e1 * (ca * 0.8929);
+        const double x1 = e4 * (ca * 0.8929) + e4 * x8;
+        const double x5 = e3 * 1.898 - x1;
+        const double d1 = -e2 - (2.0 * ca) * e1;
+        const double d2 = (2.0 * e2 * ca) * e1 + e3;
+        const double d3 = -(e2 * e3);
+        const double sumN = 1.0051 + x11 + x5;
+        const double dsum = d1 + 1.0 + d2 + d3;
+        const double k = 2.0 * sumN / dsum - 1.0051;
+        n[0] = 1.0051 / k; n[1] = x11 / k; n[2] = x5 / k;
+        d[1] = d1; d[2] = d2; d[3] = d3;
+    } else {
+        const double a = 0.8448 / s;
+        const double cs = std::cos(a), sn = std::sin(a);
+        const double e = std::exp(-1.26 / s);
+        double x9 = cs * 0.9629 * e - sn * 1.942 * e;
+        double x10 = (cs + cs) * e;
+        x9 = -x9; x10 = -x10;
+        const double e2 = std::exp(-2.52 / s);
+        const double k = 2.0 * (x9 + 0.9629) / (x10 + 1.0 + e2) - 0.9629;
+        n[0] = 0.9629 / k; n[1] = x9 / k;
+        d[1] = x10; d[2] = e2;
+    }
+    double sn = 0, sd = 1.0, st = 0;
+    for (int i = 0; i < 5; ++i) { c.n[i] = n[i]; c.d[i] = d[i]; c.t[i] = i == 0 ? 0.0 : n[i] - d[i] * n[0]; sn += n[i]; sd += d[i]; st += c.t[i]; }
+    c.gc = (sd > 1e-17 || -sd > 1e-17) ? sn / sd : 1.0;
+    c.ga = (sd > 1e-17 || -sd > 1e-17) ? st / sd : 1.0;
+    // (the machine code divides by the sum of the d's plus one only when it is not nearly zero)
+    return c;
+}
+
+namespace {
+void oclLine(const OclBlurCoefs& c, float* v, ptrdiff_t stride, int n, int nc, std::vector<float>& tmp)
+{
+    if (n <= 0) return;
+    const float n0 = (float)c.n[0], n1 = (float)c.n[1], n2 = (float)c.n[2], d1 = (float)c.d[1], d2 = (float)c.d[2], d3 = (float)c.d[3];
+    const float t1 = (float)c.t[1], t2 = (float)c.t[2], t3 = (float)c.t[3];
+    const float gc = (float)c.gc, ga = (float)c.ga;
+    tmp.assign((size_t)n * nc, 0.f);
+    for (int k = 0; k < nc; ++k) {
+        float* y = tmp.data();
+        float xm1 = v[k], xm2 = v[k];
+        float y1 = gc * v[k], y2 = y1, y3 = y1;
+        for (int i = 0; i < n; ++i) {
+            const float x = v[(ptrdiff_t)i * stride + k];
+            float acc = n0 * x;
+            acc = acc + n1 * xm1;
+            acc = acc + n2 * xm2;
+            acc = acc - d1 * y1;
+            acc = acc - d2 * y2;
+            acc = acc - d3 * y3;
+            y[(size_t)i * nc + k] = acc;
+            xm2 = xm1; xm1 = x;
+            y3 = y2; y2 = y1; y1 = acc;
+        }
+        const float xl = v[(ptrdiff_t)(n - 1) * stride + k];
+        float xp1 = xl, xp2 = xl, xp3 = xl;
+        float z1 = ga * xl, z2 = z1, z3 = z1;
+        for (int i = n - 1; i >= 0; --i) {
+            float acc = t1 * xp1;
+            acc = acc + t2 * xp2;
+            acc = acc + t3 * xp3;
+            acc = acc - d1 * z1;
+            acc = acc - d2 * z2;
+            acc = acc - d3 * z3;
+            y[(size_t)i * nc + k] += acc;
+            xp3 = xp2; xp2 = xp1; xp1 = v[(ptrdiff_t)i * stride + k];
+            z3 = z2; z2 = z1; z1 = acc;
+        }
+    }
+    for (int i = 0; i < n; ++i)
+        for (int k = 0; k < nc; ++k) v[(ptrdiff_t)i * stride + k] = tmp[(size_t)i * nc + k];
+}
+}  // namespace
+
+double oclBlurSigma(double p)
+{
+    const float s = (float)p;
+    float x = s * 6.0f + 1.5f;
+    x = x * x;
+    const float den = (float)(2.0 * std::log((double)(1.0f / 255.0f)));
+    const float q = -(x / den);
+    return (double)(float)std::sqrt((double)q);
+}
+
+void cgOclBlur(float* px, int w, int h, double sigmaX, double sigmaY)
+{
+    if (!px || w <= 0 || h <= 0) return;
+    const OclBlurCoefs cx = oclBlurCoefs(oclBlurSigma(sigmaX)), cy = oclBlurCoefs(oclBlurSigma(sigmaY));
+    parallelRows(h, (size_t)w * 4 * 8, [&](int ya, int yb) {
+        std::vector<float> tmp;
+        for (int y = ya; y < yb; ++y) oclLine(cx, px + (size_t)y * w * 4, 4, w, 4, tmp);
+    });
+    parallelRows(w, (size_t)h * 4 * 8, [&](int xa, int xb) {
+        std::vector<float> tmp;
+        for (int x = xa; x < xb; ++x) oclLine(cy, px + (size_t)x * 4, (ptrdiff_t)w * 4, h, 4, tmp);
+    });
+}
+
 }  // namespace builtin
 }  // namespace ofx
 }  // namespace reno

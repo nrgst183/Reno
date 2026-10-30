@@ -87,6 +87,7 @@ struct Mirror8 { uint32_t w; uint32_t h; float sx; float isx; float isy; float c
 struct PixelateBlocks { uint32_t w; uint32_t h; uint32_t nbx; uint32_t nby; uint32_t kx; uint32_t ky; uint32_t lv; uint32_t copy_only; };
 struct Spherize { uint32_t w; uint32_t h; uint32_t kx_h; uint32_t kx_l; uint32_t ky_h; uint32_t ky_l; uint32_t amount_h; uint32_t amount_l; int32_t cxp; int32_t cyp; uint32_t q8; uint32_t pad; };
 struct Deriche { uint32_t w; uint32_t h; uint32_t vert; uint32_t inlv; uint32_t outlv; uint32_t pad; };
+struct DerichePack { uint32_t w; uint32_t h; };
 struct UnsharpMix { uint32_t w; uint32_t h; uint32_t amount_h; uint32_t amount_l; float thr; uint32_t lv; };
 struct Quickblur { uint32_t w; uint32_t h; int32_t wb; float wf; uint32_t lv; uint32_t pad; };
 struct MaskMix { uint32_t w; uint32_t h; uint32_t mask; uint32_t pad; };
@@ -168,6 +169,7 @@ struct HistDraw { uint32_t w; uint32_t h; int32_t x0; int32_t y0; int32_t bw; in
 struct BzApply { uint32_t w; uint32_t h; uint32_t invert; float blend; };
 struct Lens { uint32_t w; uint32_t h; uint32_t lv; uint32_t pad; float cxp; float cyp; float d; float x14; float x3; float x13; float s; float iw; float ih; };
 struct CgBlur { uint32_t w; uint32_t h; uint32_t vert; float gain; float c1; float c2; float c3; };
+struct OclBlur { uint32_t w; uint32_t h; uint32_t vert; float n0; float n1; float n2; float d1; float d2; float d3; float t1; float t2; float t3; float gc; float ga; };
 struct FlMask { uint32_t w; uint32_t h; };
 struct FlFinal { uint32_t w; uint32_t h; float fop; uint32_t rnd; };
 struct ScStretch { uint32_t w; uint32_t h; };

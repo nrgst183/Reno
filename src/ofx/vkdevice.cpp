@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 #include <vector>
 #include <memory>
 #include <mutex>
@@ -65,7 +66,42 @@ uint64_t sampleHash(const uint8_t* base, size_t rowBytes, uint32_t w, uint32_t h
     return hv;
 }
 
+// A frame the last effect left on the card (FrameIO::deferOut), waiting for the next effect of the chain or for materialize().
+struct PendingFrame {
+    Buffer buf;
+    uint32_t w = 0, h = 0;
+    bool isFloat = false, bgra = true;
+};
+const size_t kMaxPending = 8;
+
+// What a pass binds: the buffers (and the part of the table buffer) of its descriptor set. The same sizes come from the buffer pool frame after frame, so the
+// same sets are asked for again and again; a thread keeps the sets it made (until a buffer is destroyed).
+struct DescKey {
+    VkBuffer buf[kBindings];
+    VkDeviceSize off[kBindings];
+    VkDeviceSize range[kBindings];
+    bool operator==(const DescKey& o) const
+    {
+        for (int k = 0; k < kBindings; ++k)
+            if (buf[k] != o.buf[k] || off[k] != o.off[k] || range[k] != o.range[k]) return false;
+        return true;
+    }
+};
+struct DescHash {
+    size_t operator()(const DescKey& k) const
+    {
+        uint64_t h = 1469598103934665603ull;
+        auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; h ^= h >> 29; };
+        for (int j = 0; j < kBindings; ++j) { mix((uint64_t)(uintptr_t)k.buf[j]); mix((uint64_t)k.off[j]); mix((uint64_t)k.range[j]); }
+        return (size_t)h;
+    }
+};
+struct PipeInfo { VkPipeline pipe = VK_NULL_HANDLE; uint32_t lx = 1, ly = 1; };
+
 struct ThreadState {
+    std::unordered_map<DescKey, VkDescriptorSet, DescHash> sets;
+    std::unordered_map<std::string, PipeInfo> pipes;       // (pipelines live as long as the device)
+    uint64_t setsGen = 0;                                   // Core::bufGen when the sets were made
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cb = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -101,6 +137,8 @@ struct Core {
     std::multimap<std::pair<int, size_t>, Buffer> freeBuffers;
     size_t freeBytes = 0;
     std::vector<std::unique_ptr<ThreadState>> states;
+    std::map<uint64_t, PendingFrame> pending;      // (under mu)
+    std::atomic<uint64_t> bufGen{1};        // counts destroyed buffers: descriptor sets naming a destroyed buffer must not be used again
     std::atomic<bool> lost{false};
     std::atomic<int> oomCount{0};
     uint64_t id = 0;
@@ -308,6 +346,7 @@ bool findMemoryType(const Core& c, uint32_t bits, VkMemoryPropertyFlags want, Vk
 
 void destroyBuffer(Core& c, Buffer& b)
 {
+    if (b.buf) c.bufGen++;
     if (b.mapped) c.api.vkUnmapMemory(c.dev, b.mem);
     if (b.buf) c.api.vkDestroyBuffer(c.dev, b.buf, nullptr);
     if (b.mem) c.api.vkFreeMemory(c.dev, b.mem, nullptr);
@@ -539,6 +578,8 @@ void destroyCore(Core& c)
             if (st->pool) c.api.vkDestroyCommandPool(c.dev, st->pool, nullptr);
         }
         c.states.clear();
+        for (auto& kv : c.pending) destroyBuffer(c, kv.second.buf);
+        c.pending.clear();
         for (auto& kv : c.freeBuffers) destroyBuffer(c, kv.second);
         c.freeBuffers.clear();
         destroyBuffer(c, c.dummy);
@@ -884,7 +925,8 @@ void dropResident()
 
 // ---------------------------------------------------------------------------------------------------- public: run
 namespace {
-std::atomic<uint64_t> gRuns(0), gStayed(0), gFailed(0);
+std::atomic<uint64_t> gRuns(0), gStayed(0), gFailed(0), gDeferred(0);
+std::atomic<int> gChainDefer(-1);      // -1: not asked yet
 bool runInner(const Plan& plan, FrameIO& io, RunStats* stats);
 // Why the last run() on this thread failed (for reno_cli vkcheck): the check that stopped it.
 thread_local std::string tRunWhy;
@@ -895,12 +937,15 @@ bool runFailed(const char* why)
 }
 }
 
+void setChainDeferral(bool on) { gChainDefer = on ? 1 : 0; }
+
 Counters counters()
 {
     Counters c;
     c.runs = gRuns.load();
     c.inputsStayed = gStayed.load();
     c.failed = gFailed.load();
+    c.deferred = gDeferred.load();
     return c;
 }
 
@@ -915,6 +960,7 @@ bool run(const Plan& plan, FrameIO& io, RunStats* stats)
     if (ok) {
         gRuns++;
         if (st->inputStayed) gStayed++;
+        if (st->deferred) gDeferred++;
     } else {
         gFailed++;
     }
@@ -963,12 +1009,31 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         }
     } release{c, held, stageUp, stageDown, tableBuf, haveStageUp, haveStageDown, haveTable};
 
-    const bool reuseInput = !io.noInput && io.inSerial != 0 && ts->resident.serial == io.inSerial && ts->resident.epoch == c.residentEpoch.load() && ts->resident.buf.buf && ts->resident.w == io.w &&
+    // a frame the previous effect of the chain left on the card without downloading it (FrameIO::deferOut)
+    Buffer pendIn;
+    bool usePending = false;
+    if (!io.noInput && io.inSerial != 0) {
+        std::lock_guard<std::mutex> lk(c.mu);
+        const auto it = c.pending.find(io.inSerial);
+        if (it != c.pending.end() && it->second.w == io.w && it->second.h == io.h && it->second.isFloat == io.isFloat && it->second.bgra == io.bgra) {
+            pendIn = it->second.buf;
+            usePending = true;
+        }
+    }
+    bool defer = false;
+    if (gChainDefer.load() < 0) gChainDefer = std::getenv("RENO_VK_NO_DEFER") ? 0 : 1;
+    if (io.deferOut && io.outSerial != 0 && gChainDefer.load() == 1) {
+        std::lock_guard<std::mutex> lk(c.mu);
+        defer = c.pending.size() < kMaxPending;
+    }
+    const bool reuseInput = usePending || (!io.noInput && io.inSerial != 0 && ts->resident.serial == io.inSerial && ts->resident.epoch == c.residentEpoch.load() && ts->resident.buf.buf && ts->resident.w == io.w &&
                             ts->resident.h == io.h && ts->resident.isFloat == io.isFloat && ts->resident.bgra == io.bgra &&
-                            ts->resident.hash == sampleHash(io.in, io.inRowBytes, io.w, io.h, bpp);
+                            ts->resident.hash == sampleHash(io.in, io.inRowBytes, io.w, io.h, bpp));
     Buffer rawIn;
     bool rawInIsResident = false;
-    if (reuseInput) {
+    if (usePending) {
+        rawIn = pendIn;
+    } else if (reuseInput) {
         rawIn = ts->resident.buf;
         rawInIsResident = true;
     } else {
@@ -999,7 +1064,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     const bool needFrameUpload = !reuseInput && !io.noInput;
     const size_t upBytes = (needFrameUpload ? rawBytes : 0) + tableBytes;
     if (okAlloc && upBytes) { okAlloc = takeBuffer(c, upBytes, Kind::StageUp, stageUp); haveStageUp = okAlloc; }
-    if (okAlloc) { okAlloc = takeBuffer(c, rawBytes, Kind::StageDown, stageDown); haveStageDown = okAlloc; }
+    if (okAlloc && !defer) { okAlloc = takeBuffer(c, rawBytes, Kind::StageDown, stageDown); haveStageDown = okAlloc; }
     if (!okAlloc) {
         giveBuffer(c, rawOut);
         if (rawInIsResident) { giveBuffer(c, ts->resident.buf); ts->resident = Resident(); }
@@ -1071,13 +1136,25 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     std::vector<VkPipeline> pipes(bound.size());
     std::vector<std::pair<uint32_t, uint32_t>> locals(bound.size());
     for (size_t k = 0; k < bound.size(); ++k) {
+        const auto cached = ts->pipes.find(bound[k].shader);
+        if (cached != ts->pipes.end()) {
+            pipes[k] = cached->second.pipe;
+            locals[k] = std::make_pair(cached->second.lx, cached->second.ly);
+            continue;
+        }
         pipes[k] = pipelineFor(c, bound[k].shader, locals[k].first, locals[k].second);
+        if (pipes[k]) ts->pipes[bound[k].shader] = PipeInfo{pipes[k], locals[k].first, locals[k].second};
         if (!pipes[k]) { if (c.lost) return runFailed("!pipes[k]) { if (c.lost"); return runFailed("!pipes[k]) { if (c.lost"); }
     }
 
     // ---- record
     a.vkResetCommandPool(c.dev, ts->pool, 0);
-    a.vkResetDescriptorPool(c.dev, ts->dpool, 0);
+    // descriptor sets are kept from frame to frame (same buffers, same sets); a destroyed buffer, or a pool that would run out, starts them afresh
+    if (ts->setsGen != c.bufGen.load() || ts->sets.size() + bound.size() > kMaxPasses) {
+        a.vkResetDescriptorPool(c.dev, ts->dpool, 0);
+        ts->sets.clear();
+        ts->setsGen = c.bufGen.load();
+    }
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1102,25 +1179,33 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     bool recordOk = true;
     for (size_t k = 0; k < bound.size() && recordOk; ++k) {
         const Bound& b = bound[k];
-        VkDescriptorSetAllocateInfo ai = {};
-        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        ai.descriptorPool = ts->dpool;
-        ai.descriptorSetCount = 1;
-        ai.pSetLayouts = &c.dsl;
+        DescKey dk;
+        for (int j = 0; j < kBindings; ++j) { dk.buf[j] = b.buf[j]; dk.off[j] = b.off[j]; dk.range[j] = b.range[j]; }
         VkDescriptorSet set = VK_NULL_HANDLE;
-        if (a.vkAllocateDescriptorSets(c.dev, &ai, &set) != VK_SUCCESS) { recordOk = false; break; }
-        VkDescriptorBufferInfo infos[kBindings];
-        VkWriteDescriptorSet wr[kBindings] = {};
-        for (int j = 0; j < kBindings; ++j) {
-            infos[j] = {b.buf[j], b.off[j], b.range[j]};
-            wr[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            wr[j].dstSet = set;
-            wr[j].dstBinding = (uint32_t)j;
-            wr[j].descriptorCount = 1;
-            wr[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            wr[j].pBufferInfo = &infos[j];
+        const auto have = ts->sets.find(dk);
+        if (have != ts->sets.end()) {
+            set = have->second;
+        } else {
+            VkDescriptorSetAllocateInfo ai = {};
+            ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            ai.descriptorPool = ts->dpool;
+            ai.descriptorSetCount = 1;
+            ai.pSetLayouts = &c.dsl;
+            if (a.vkAllocateDescriptorSets(c.dev, &ai, &set) != VK_SUCCESS) { recordOk = false; break; }
+            VkDescriptorBufferInfo infos[kBindings];
+            VkWriteDescriptorSet wr[kBindings] = {};
+            for (int j = 0; j < kBindings; ++j) {
+                infos[j] = {b.buf[j], b.off[j], b.range[j]};
+                wr[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                wr[j].dstSet = set;
+                wr[j].dstBinding = (uint32_t)j;
+                wr[j].descriptorCount = 1;
+                wr[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                wr[j].pBufferInfo = &infos[j];
+            }
+            a.vkUpdateDescriptorSets(c.dev, kBindings, wr, 0, nullptr);
+            ts->sets.emplace(dk, set);
         }
-        a.vkUpdateDescriptorSets(c.dev, kBindings, wr, 0, nullptr);
         a.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipes[k]);
         a.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c.layout, 0, 1, &set, 0, nullptr);
         if (b.pushSize) a.vkCmdPushConstants(cb, c.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, b.pushSize, b.push);
@@ -1131,12 +1216,12 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     }
     if (!recordOk) { a.vkEndCommandBuffer(cb); return runFailed("!recordOk"); }
     if (useTs) a.vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, ts->queries, 1);
-    barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-    {
+    if (!defer) {
+        barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
         VkBufferCopy cr = {0, 0, rawBytes};
         a.vkCmdCopyBuffer(cb, rawOut.buf, stageDown.buf, 1, &cr);
+        barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
     }
-    barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
     if (a.vkEndCommandBuffer(cb) != VK_SUCCESS) return runFailed("a.vkEndCommandBuffer(cb) != VK_SUCCESS");
 
     // ---- go
@@ -1161,11 +1246,11 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         c.lost = true;
         return runFailed("line 1121");
     }
-    if (!stageDown.coherent) {
+    if (!defer && !stageDown.coherent) {
         VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, nullptr, stageDown.mem, 0, VK_WHOLE_SIZE};
         a.vkInvalidateMappedMemoryRanges(c.dev, 1, &mr);
     }
-    {
+    if (!defer) {
         const uint8_t* src = (const uint8_t*)stageDown.mapped;
         const size_t rb = (size_t)io.w * bpp;
         if (io.outRowBytes == rb) std::memcpy(io.out, src, rb * io.h);
@@ -1179,6 +1264,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
                 stats->gpuMs = (double)(t[1] - t[0]) * c.timestampPeriod * 1e-6;
         }
         stats->inputStayed = reuseInput;
+        stats->deferred = defer;
         stats->passes = (int)bound.size();
     }
 
@@ -1190,7 +1276,18 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         giveBuffer(c, ts->resident.buf);
         ts->resident = Resident();
     }
-    if (io.outSerial != 0) {
+    if (defer) {
+        // the card's copy is the frame now; whoever holds pendingHold(outSerial) frees it
+        PendingFrame pf;
+        pf.buf = rawOut;
+        pf.w = io.w; pf.h = io.h; pf.isFloat = io.isFloat; pf.bgra = io.bgra;
+        {
+            std::lock_guard<std::mutex> lk(c.mu);
+            c.pending[io.outSerial] = pf;
+        }
+        outRelease.keep = true;
+        rawOut = Buffer();
+    } else if (io.outSerial != 0) {
         ts->resident.buf = rawOut;
         ts->resident.serial = io.outSerial;
         ts->resident.epoch = c.residentEpoch.load();
@@ -1207,6 +1304,102 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------------------------------- frames left on the card
+namespace {
+thread_local bool tDefer = false;
+std::shared_ptr<Core> currentCore()
+{
+    Global& g = G();
+    std::lock_guard<std::mutex> lk(g.mu);
+    return g.core;
+}
+void syncHook(const Image& im) { materialize(im.serial, const_cast<uint8_t*>(im.data.get()), im.rowBytes); }
+struct HookInit { HookInit() { gImageSyncHook = &syncHook; } } gHookInit;
+}  // namespace
+
+DeferOutput::DeferOutput(bool on) : prev_(tDefer) { tDefer = on; }
+DeferOutput::~DeferOutput() { tDefer = prev_; }
+bool deferOutputRequested() { return tDefer; }
+
+bool isPending(uint64_t serial)
+{
+    std::shared_ptr<Core> cp = currentCore();
+    if (!cp || serial == 0) return false;
+    std::lock_guard<std::mutex> lk(cp->mu);
+    return cp->pending.count(serial) != 0;
+}
+
+std::shared_ptr<void> pendingHold(uint64_t serial)
+{
+    std::shared_ptr<Core> cp = currentCore();
+    if (!cp || !isPending(serial)) return nullptr;
+    return std::shared_ptr<void>(new uint64_t(serial), [cp](void* p) {
+        const uint64_t s = *(uint64_t*)p;
+        delete (uint64_t*)p;
+        PendingFrame pf;
+        {
+            std::lock_guard<std::mutex> lk(cp->mu);
+            const auto it = cp->pending.find(s);
+            if (it == cp->pending.end()) return;
+            pf = it->second;
+            cp->pending.erase(it);
+        }
+        giveBuffer(*cp, pf.buf);
+    });
+}
+
+bool materialize(uint64_t serial, uint8_t* dst, size_t rowBytes)
+{
+    std::shared_ptr<Core> cp = currentCore();
+    if (!cp || !dst || serial == 0) return false;
+    Core& c = *cp;
+    const VkApi& a = c.api;
+    PendingFrame pf;
+    {
+        std::lock_guard<std::mutex> lk(c.mu);
+        const auto it = c.pending.find(serial);
+        if (it == c.pending.end()) return false;
+        pf = it->second;
+    }
+    if (c.lost) return false;
+    ThreadState* ts = stateFor(c);
+    if (!ts) return false;
+    const size_t bpp = pf.isFloat ? 16 : 4, rb = (size_t)pf.w * bpp, bytes = rb * pf.h;
+    Buffer down;
+    if (!takeBuffer(c, bytes, Kind::StageDown, down)) return false;
+    struct Give { Core& c; Buffer& b; ~Give() { giveBuffer(c, b); } } give{c, down};
+    a.vkResetCommandPool(c.dev, ts->pool, 0);
+    VkCommandBufferBeginInfo bi = {};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (a.vkBeginCommandBuffer(ts->cb, &bi) != VK_SUCCESS) return false;
+    VkBufferCopy cr = {0, 0, bytes};
+    a.vkCmdCopyBuffer(ts->cb, pf.buf.buf, down.buf, 1, &cr);
+    VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
+    a.vkCmdPipelineBarrier(ts->cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+    if (a.vkEndCommandBuffer(ts->cb) != VK_SUCCESS) return false;
+    a.vkResetFences(c.dev, 1, &ts->fence);
+    VkSubmitInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &ts->cb;
+    VkResult r;
+    {
+        std::lock_guard<std::mutex> lk(c.queueMu);
+        r = a.vkQueueSubmit(c.queue, 1, &si, ts->fence);
+    }
+    if (r != VK_SUCCESS) { if (r == VK_ERROR_DEVICE_LOST) c.lost = true; return false; }
+    if (a.vkWaitForFences(c.dev, 1, &ts->fence, VK_TRUE, (uint64_t)20 * 1000 * 1000 * 1000) != VK_SUCCESS) { c.lost = true; return false; }
+    if (!down.coherent) {
+        VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, nullptr, down.mem, 0, VK_WHOLE_SIZE};
+        a.vkInvalidateMappedMemoryRanges(c.dev, 1, &mr);
+    }
+    const uint8_t* src = (const uint8_t*)down.mapped;
+    if (rowBytes == rb) std::memcpy(dst, src, bytes);
+    else for (uint32_t y = 0; y < pf.h; ++y) std::memcpy(dst + rowBytes * y, src + rb * y, rb);
+    return true;
+}
 
 }  // namespace gpu
 }  // namespace reno
