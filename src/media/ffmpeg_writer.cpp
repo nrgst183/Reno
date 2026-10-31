@@ -906,7 +906,7 @@ bool FFWriter::open(const EncodeSettings& settings, std::string* error)
         // The frame converter: the caller's BGRA to what the encoder takes.
         const AVPixelFormat pixFmt = venc_->pix_fmt;
         if (!madeHere(pixFmt))
-            sws_.reset(sws_getContext(encW_, encH_, AV_PIX_FMT_BGRA, encW_, encH_, pixFmt, SWS_BILINEAR | SWS_ACCURATE_RND, nullptr, nullptr, nullptr));
+            sws_.reset(sws_getContext(encW_, encH_, AV_PIX_FMT_BGRA, encW_, encH_, pixFmt, s_.quickConvert ? SWS_FAST_BILINEAR : SWS_BILINEAR | SWS_ACCURATE_RND, nullptr, nullptr, nullptr));
         if (!sws_ && !madeHere(pixFmt)) {
             setError(error, strfmt("Cannot convert frames to %s for the %s encoder.", av_get_pix_fmt_name(pixFmt), venc_->codec->name));
             return false;

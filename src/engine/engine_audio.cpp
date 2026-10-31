@@ -623,9 +623,65 @@ bool AudioEngine::readResampledEvent(const Event& e, const MediaItem& m, int rat
     const double p0 = (double)first * ratio + shift, p1 = (double)(first + n - 1) * ratio + shift;
     const int64_t lo = std::max<int64_t>(0, (int64_t)std::floor(p0) - kTaps / 2 + 1), hi = (int64_t)std::floor(p1) + kTaps / 2;
     const int cnt = (int)(hi - lo + 1);
-    std::vector<float> xl((size_t)cnt), xr((size_t)cnt);
     const int64_t period = (e.loop && m.info.duration > 0) ? std::max<int64_t>(1, (int64_t)std::llround(m.info.duration * fileRate)) : 0;
-    if (!readForward(pool_, e, m, fileRate, period, o + lo, cnt, xl.data(), xr.data())) return false;
+    // Consecutive blocks need overlapping file samples (the sinc's width): the ones the last block of this event read on
+    // this thread are kept, so only the new ones are read and the file is read straight on. Reading the overlap again
+    // made every block a seek - for a file that cannot seek (a bare MP3) a read from its start each time.
+    struct Kept {
+        const AudioEngine* engine = nullptr;
+        uint64_t event = 0, media = 0;
+        std::string path;
+        int fileRate = 0;
+        int64_t period = 0, offset = 0, lo = 0;
+        std::vector<float> l, r;
+        uint64_t used = 0;
+    };
+    thread_local std::vector<Kept> kept;
+    thread_local uint64_t keptTick = 0;
+    Kept* k = nullptr;
+    for (Kept& x : kept)
+        if (x.engine == this && x.event == e.id) k = &x;
+    if (!k) {
+        if (kept.size() < 16) kept.emplace_back();
+        k = &kept[0];
+        for (Kept& x : kept)
+            if (x.engine == nullptr || x.used < k->used) k = &x;
+        k->engine = this;
+        k->event = e.id;
+        k->l.clear();
+        k->r.clear();
+    }
+    k->used = ++keptTick;
+    if (k->media != m.id || k->path != m.path || k->fileRate != fileRate || k->period != period || k->offset != o) {
+        k->media = m.id;
+        k->path = m.path;
+        k->fileRate = fileRate;
+        k->period = period;
+        k->offset = o;
+        k->l.clear();
+        k->r.clear();
+    }
+    std::vector<float> xl((size_t)cnt), xr((size_t)cnt);
+    const int64_t keptEnd = k->lo + (int64_t)k->l.size();
+    int reuse = 0;                                                  // samples [lo, lo + reuse) taken from what was kept
+    if (!k->l.empty() && lo >= k->lo && lo < keptEnd) reuse = (int)std::min<int64_t>(cnt, keptEnd - lo);
+    if (reuse > 0) {
+        std::memcpy(xl.data(), k->l.data() + (lo - k->lo), (size_t)reuse * sizeof(float));
+        std::memcpy(xr.data(), k->r.data() + (lo - k->lo), (size_t)reuse * sizeof(float));
+    }
+    if (reuse < cnt && !readForward(pool_, e, m, fileRate, period, o + lo + reuse, cnt - reuse, xl.data() + reuse, xr.data() + reuse)) {
+        if (reuse == 0) {
+            k->l.clear();
+            k->r.clear();
+            return false;
+        }
+        // (the new part is silent: nothing more in the file)
+    }
+    // keeps the last kTaps samples read (enough for the next block's overlap)
+    const int keep = std::min(cnt, kTaps);
+    k->lo = hi + 1 - keep;
+    k->l.assign(xl.end() - keep, xl.end());
+    k->r.assign(xr.end() - keep, xr.end());
     for (int i = 0; i < n; ++i) {
         const double p = (double)(first + i) * ratio + shift;
         const double fl = std::floor(p);

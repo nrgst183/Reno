@@ -6,7 +6,10 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
+#include <thread>
 
 namespace reno {
 
@@ -146,6 +149,7 @@ bool createVideoProxy(const std::string& mediaPath, const VideoProxyOptions& opt
     es.encoderOptions = opt.encoderOptions;
     if (opt.encoderThreads > 0) es.encoderOptions += (es.encoderOptions.empty() ? "" : " ") + strfmt("threads=%d", opt.encoderThreads);
     es.stretch = true;
+    es.quickConvert = true;             // a preview: the quick colour conversion (it took as long as decoding)
     // H.264 from the processor first (libx264 / OpenH264).
     std::unique_ptr<MediaWriter> out = createMediaWriter(es, &err);
     if (!out) {
@@ -167,6 +171,40 @@ bool createVideoProxy(const std::string& mediaPath, const VideoProxyOptions& opt
     const int64_t frames = std::max<int64_t>(1, (int64_t)std::floor(to * rate + 1e-6) - first);
     bool ok = true, stopped = false;
     ImagePtr last;
+    // The frames are encoded on a thread of their own while the next ones are decoded (one after the other, the
+    // encoding took about as long again as the decoding).
+    std::mutex qm;
+    std::condition_variable qcv;
+    std::deque<ImagePtr> queue;
+    bool noMore = false, writeFailed = false;
+    std::thread encoder([&] {
+        for (;;) {
+            ImagePtr img;
+            {
+                std::unique_lock<std::mutex> lk(qm);
+                qcv.wait(lk, [&] { return !queue.empty() || noMore; });
+                if (queue.empty()) return;
+                img = queue.front();
+                queue.pop_front();
+            }
+            qcv.notify_all();
+            if (!out->writeVideo(*img)) {
+                std::lock_guard<std::mutex> lk(qm);
+                writeFailed = true;
+                queue.clear();
+                qcv.notify_all();
+                return;
+            }
+        }
+    });
+    auto put = [&](const ImagePtr& img) {
+        std::unique_lock<std::mutex> lk(qm);
+        qcv.wait(lk, [&] { return queue.size() < 4 || writeFailed; });
+        if (writeFailed) return false;
+        queue.push_back(img);
+        qcv.notify_all();
+        return true;
+    };
     // frame by frame in order from the first: the reader decodes straight through, it never seeks after the first frame.
     for (int64_t f = 0; f < frames; ++f) {
         // the middle of each frame, as the engine asks for frames
@@ -192,9 +230,17 @@ bool createVideoProxy(const std::string& mediaPath, const VideoProxyOptions& opt
             img = fit;
         }
         last = img;
-        if (!out->writeVideo(*img)) { ok = false; err = "Writing the proxy failed."; break; }
+        if (!put(img)) { ok = false; err = "Writing the proxy failed."; break; }
         if (progress && (f % 8 == 0 || f + 1 == frames) && !progress((double)(f + 1) / frames)) { stopped = true; break; }
     }
+    {
+        std::lock_guard<std::mutex> lk(qm);
+        noMore = true;
+        if (stopped) queue.clear();
+    }
+    qcv.notify_all();
+    encoder.join();
+    if (writeFailed && ok) { ok = false; err = "Writing the proxy failed."; }
     std::string ferr;
     const bool finished = out->finish(&ferr);
     out.reset();

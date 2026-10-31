@@ -511,6 +511,14 @@ int main(int argc, char** argv)
         uitest::settle(300);
         const int after = bodyLight();
         check(after > before + 30, "reverse event background: an audio event's background is lighter", std::to_string(before) + " -> " + std::to_string(after));
+        {
+            // VEGAS's colours: light grey (selected: light pink), the waveform in the track's colour
+            const QRect r = tl->eventRectOf(audioEvent);
+            const QImage img = tl->grab().toImage();
+            const QColor c = img.pixelColor(std::min(img.width() - 1, r.left() + 3), std::min(img.height() - 1, r.bottom() - 3));
+            check(c == QColor(216, 216, 216) || c == QColor(221, 176, 176), "reverse event background: VEGAS's light grey (or pink when selected)",
+                  c.name().toStdString());
+        }
         prefs(*w, [](QDialog* d) { setCheck(d, "reverseEventBg", false); });
         uitest::settle(300);
         check(bodyLight() == before, "reverse event background: cleared - as before");

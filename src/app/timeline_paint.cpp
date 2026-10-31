@@ -998,11 +998,11 @@ TimelineWidget::Impl::RowLook TimelineWidget::Impl::rowLook(const Row& row) cons
     l.body = row.video ? mix(l.tc, QColor(16, 16, 16), 0.55) : l.tc;
     l.title = mix(l.tc, QColor(0, 0, 0), 0.25);
     l.wave = mix(l.tc, QColor(255, 255, 255), 0.62);
-    // Preferences > Display, "Reverse Event Background Color": a light event with a dark waveform instead of a dark one
-    // with a light waveform
+    // Preferences > Display, "Reverse Event Background Color": VEGAS's light grey event with the waveform in the track's
+    // colour instead of a track-coloured event with a light waveform (selected events: kReversedSelected, drawEvent)
     if (!row.video && vprefs::on("prefs/reverseEventBg")) {
-        l.body = mix(l.tc, QColor(255, 255, 255), 0.55);
-        l.wave = mix(l.tc, QColor(0, 0, 0), 0.7);
+        l.body = QColor(216, 216, 216);
+        l.wave = l.tc;
     }
     return l;
 }
@@ -1030,7 +1030,9 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     if (r.right() < c.left() - 2 || r.left() > c.right() + 2) return;
     const MediaItem* m = mediaOf(e.mediaId);
     const bool selected = app.selection().count(e.id) != 0;
-    const QColor body = look.body;
+    // reversed audio events (rowLook): a selected one is VEGAS's light pink rather than lit up by drawEventOutline
+    const bool reversed = !row.video && vprefs::on("prefs/reverseEventBg");
+    const QColor body = reversed && selected ? QColor(221, 176, 176) : look.body;
     // Only the part in view is drawn: zoomed far in, an event can be a very long way wide. It is the part in the
     // whole view, not just in what this paint covers, so a part painted on its own looks exactly as in a whole
     // repaint (its name elided at the same place and so on).
@@ -1040,7 +1042,7 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
         const qreal opacity = p.opacity();
         if (e.mute) p.setOpacity(0.42);
         p.fillRect(v, row.video ? look.tc : body);
-        if (selected) p.fillRect(v, QColor(255, 255, 255, 80));
+        if (selected && !reversed) p.fillRect(v, QColor(255, 255, 255, 80));
         if (e.mute) p.setOpacity(opacity);
         return;
     }
@@ -1246,7 +1248,7 @@ void TimelineWidget::Impl::drawEventOutline(QPainter& p, const EventPaint& ev)
     const bool selected = ev.selected, narrow = ev.narrow;
     p.setRenderHint(QPainter::Antialiasing, false);
     if (selected) {
-        p.fillRect(vd, QColor(255, 255, 255, 58));
+        if (ev.row.video || !vprefs::on("prefs/reverseEventBg")) p.fillRect(vd, QColor(255, 255, 255, 58));
         p.setPen(QColor(236, 236, 236));
         p.setBrush(Qt::NoBrush);
         p.drawRect(vd.adjusted(0, 0, -1, -1));

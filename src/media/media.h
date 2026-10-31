@@ -214,6 +214,9 @@ struct EncodeSettings {
     double mdRed[2] = {0.708, 0.292}, mdGreen[2] = {0.170, 0.797}, mdBlue[2] = {0.131, 0.046}, mdWhite[2] = {0.3127, 0.3290};
     double mdMaxNits = 1000.0, mdMinNits = 0.005;
     int maxCll = 0, maxFall = 0;
+    // The frames' conversion to the encoder's pixel format done the quick way (SIMD, rounding to within a level) rather
+    // than rounded exactly: for preview proxies, never for a render.
+    bool quickConvert = false;
 };
 
 // One way of making a kind of frame compression (EncodeSettings::videoFamily) with this FFmpeg: for Render As's
