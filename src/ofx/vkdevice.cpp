@@ -276,7 +276,8 @@ void describeDevices(VkApi& api, VkInstance inst, std::vector<VkPhysicalDevice>&
             const bool forced = force && force[0] && force[0] != '0';
             d.fcUseRte = d.fcRteF32 || forced;
             d.fcUseDenorm = d.fcDenormPreserveF32 || forced;
-            d.floatControlsUsed = (d.fcUseRte || d.fcUseDenorm) && !(off && off[0] && off[0] != '0');
+            d.fcUseSzinf = d.fcSignedZeroInfNanF32 || forced;       // (the kernels test for NaN and infinity and rely on the sign of zero)
+            d.floatControlsUsed = (d.fcUseRte || d.fcUseDenorm || d.fcUseSzinf) && !(off && off[0] && off[0] != '0');
         }
         d.maxStorageRange = pr.limits.maxStorageBufferRange;
         d.maxPushConstants = pr.limits.maxPushConstantsSize;
@@ -455,25 +456,33 @@ void giveBuffer(Core& c, Buffer& b)
 // ---------------------------------------------------------------------------------------------------- pipelines
 // The kernel with the 32-bit float controls the driver has added: capabilities DenormPreserve and/or RoundingModeRTE (with the SPV_KHR_float_controls extension, which a SPIR-V 1.0 module needs)
 // and, for every entry point, the execution modes DenormPreserve 32 and RoundingModeRTE 32.
-std::vector<uint32_t> withFloatControls(const uint32_t* w, size_t n, bool rte, bool denorm)
+std::vector<uint32_t> withFloatControls(const uint32_t* w, size_t n, bool rte, bool denorm, bool szinf)
 {
     std::vector<uint32_t> out;
     if (n < 5) return out;
     size_t capEnd = 5, modeEnd = 0;
     std::vector<uint32_t> entries;
+    bool testsNan = false;
     for (size_t i = 5; i < n;) {
         const uint32_t len = w[i] >> 16, op = w[i] & 0xffff;
         if (len == 0 || i + len > n) return std::vector<uint32_t>();
         if (op == 17 && capEnd == i) capEnd = i + len;
         if (op == 15) { entries.push_back(w[i + 2]); modeEnd = i + len; }
         if (op == 16) modeEnd = i + len;
+        // OpIsNan, OpIsInf, OpOrdered, OpUnordered, the unordered float comparisons
+        if (op == 156 || op == 157 || op == 162 || op == 163 || (op >= 181 && op <= 191 && (op & 1))) testsNan = true;
         i += len;
     }
+    // SignedZeroInfNanPreserve only for the kernels that test for NaN or infinity (tools/spvlint.py's rule): the rest do not
+    // need it, and some drivers compile far slower with it (SwiftShader needs gigabytes for the Iris transition's kernels)
+    szinf = szinf && testsNan;
+    if (!rte && !denorm && !szinf) return std::vector<uint32_t>();
     if (entries.empty() || modeEnd == 0) return std::vector<uint32_t>();
     out.reserve(n + 16 + entries.size() * 8);
     out.insert(out.end(), w, w + capEnd);
     if (denorm) { out.push_back((2u << 16) | 17u); out.push_back(4464u); }      // DenormPreserve
     if (rte) { out.push_back((2u << 16) | 17u); out.push_back(4467u); }         // RoundingModeRTE
+    if (szinf) { out.push_back((2u << 16) | 17u); out.push_back(4466u); }       // SignedZeroInfNanPreserve
     const char* ext = "SPV_KHR_float_controls";
     std::vector<uint32_t> str((std::strlen(ext) + 1 + 3) / 4, 0u);
     std::memcpy(str.data(), ext, std::strlen(ext));
@@ -483,6 +492,7 @@ std::vector<uint32_t> withFloatControls(const uint32_t* w, size_t n, bool rte, b
     for (uint32_t id : entries) {
         if (denorm) { out.push_back((4u << 16) | 16u); out.push_back(id); out.push_back(4459u); out.push_back(32u); }     // DenormPreserve 32
         if (rte) { out.push_back((4u << 16) | 16u); out.push_back(id); out.push_back(4462u); out.push_back(32u); }        // RoundingModeRTE 32
+        if (szinf) { out.push_back((4u << 16) | 16u); out.push_back(id); out.push_back(4461u); out.push_back(32u); }      // SignedZeroInfNanPreserve 32
     }
     out.insert(out.end(), w + modeEnd, w + n);
     return out;
@@ -507,7 +517,7 @@ VkPipeline pipelineFor(Core& c, const std::string& name, uint32_t& lx, uint32_t&
     bool triedFc = false;
     for (int attempt = 0; attempt < 2 && !pipe; ++attempt) {
         std::vector<uint32_t> fcWords;
-        if (attempt == 0 && c.info.floatControlsUsed) { fcWords = withFloatControls(blob->words, blob->count, c.info.fcUseRte, c.info.fcUseDenorm); triedFc = !fcWords.empty(); }
+        if (attempt == 0 && c.info.floatControlsUsed) { fcWords = withFloatControls(blob->words, blob->count, c.info.fcUseRte, c.info.fcUseDenorm, c.info.fcUseSzinf); triedFc = !fcWords.empty(); }
         if (attempt == 1 && !triedFc) break;
         VkShaderModuleCreateInfo mi = {};
         mi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -757,7 +767,7 @@ ThreadState* stateFor(Core& c)
         VkQueryPoolCreateInfo qi = {};
         qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
         qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
-        qi.queryCount = 2;
+        qi.queryCount = 4;
         if (c.api.vkCreateQueryPool(c.dev, &qi, nullptr, &st->queries) != VK_SUCCESS) st->queries = VK_NULL_HANDLE;
     }
     ThreadState* raw = st.get();
@@ -1055,14 +1065,27 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     std::vector<size_t> tableOff(plan.tables.size(), 0);
     for (size_t k = 0; k < plan.tables.size(); ++k) {
         tableOff[k] = tableBytes;
-        tableBytes += alignUp(std::max<size_t>(plan.tables[k].size() * sizeof(float), 16), kAlign);
+        tableBytes += alignUp(std::max<size_t>(plan.tableFloats(k) * sizeof(float), 16), kAlign);
+    }
+    // a frame table's 8-bit frame goes up compactly, after the tables' own floats; the card turns it into the table's first floats
+    int frameTab = -1;
+    for (size_t k = 0; k < plan.tables.size(); ++k) if (plan.tableFrames[k].bytes) frameTab = (int)k;
+    const size_t frame8Bytes = frameTab >= 0 ? (size_t)io.w * io.h * 4 : 0;
+    if (frameTab >= 0 && !(hasShader("unpack_u8"))) return runFailed("no unpack_u8");
+    std::vector<size_t> tailOff(plan.tables.size(), 0);          // where a table's own floats are in the staging memory
+    size_t tailBytes = 0;
+    for (size_t k = 0; k < plan.tables.size(); ++k) {
+        tailOff[k] = tailBytes;
+        tailBytes += alignUp(plan.tables[k].size() * sizeof(float), 16);
     }
     if (okAlloc && tableBytes) {
         okAlloc = tableBytes <= c.info.maxStorageRange && takeBuffer(c, tableBytes, Kind::Device, tableBuf);
         haveTable = okAlloc;
     }
     const bool needFrameUpload = !reuseInput && !io.noInput;
-    const size_t upBytes = (needFrameUpload ? rawBytes : 0) + tableBytes;
+    const size_t upBytes = (needFrameUpload ? rawBytes : 0) + tailBytes + frame8Bytes;
+    Buffer frame8Dev;
+    if (okAlloc && frameTab >= 0) { okAlloc = takeBuffer(c, frame8Bytes, Kind::Device, frame8Dev); if (okAlloc) held.push_back(frame8Dev); }
     if (okAlloc && upBytes) { okAlloc = takeBuffer(c, upBytes, Kind::StageUp, stageUp); haveStageUp = okAlloc; }
     if (okAlloc && !defer) { okAlloc = takeBuffer(c, rawBytes, Kind::StageDown, stageDown); haveStageDown = okAlloc; }
     if (!okAlloc) {
@@ -1073,22 +1096,32 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     struct OutRelease { Core& c; Buffer& b; bool keep; ~OutRelease() { if (!keep) giveBuffer(c, b); } } outRelease{c, rawOut, false};
 
     // ---- fill the staging memory
+    const Clock::time_point tFill = Clock::now();
     if (needFrameUpload) {
         uint8_t* dst = (uint8_t*)stageUp.mapped;
         const size_t rb = (size_t)io.w * bpp;
         if (io.inRowBytes == rb) std::memcpy(dst, io.in, rb * io.h);
         else for (uint32_t y = 0; y < io.h; ++y) std::memcpy(dst + rb * y, io.in + io.inRowBytes * y, rb);
     }
+    const size_t tailBase = needFrameUpload ? rawBytes : 0;
     {
-        uint8_t* base = (uint8_t*)stageUp.mapped + (needFrameUpload ? rawBytes : 0);
+        uint8_t* base = (uint8_t*)stageUp.mapped + tailBase;
         for (size_t k = 0; k < plan.tables.size(); ++k)
-            if (!plan.tables[k].empty()) std::memcpy(base + tableOff[k], plan.tables[k].data(), plan.tables[k].size() * sizeof(float));
+            if (!plan.tables[k].empty()) std::memcpy(base + tailOff[k], plan.tables[k].data(), plan.tables[k].size() * sizeof(float));
+        if (frameTab >= 0) {
+            const Plan::FrameTable& ft = plan.tableFrames[(size_t)frameTab];
+            uint8_t* d8 = base + tailBytes;
+            const size_t rb = (size_t)io.w * 4;
+            if (ft.rowBytes == rb) std::memcpy(d8, ft.bytes, rb * io.h);
+            else for (uint32_t y = 0; y < io.h; ++y) std::memcpy(d8 + rb * y, ft.bytes + ft.rowBytes * y, rb);
+        }
     }
     if (haveStageUp && !stageUp.coherent) {
         VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, nullptr, stageUp.mem, 0, VK_WHOLE_SIZE};
         a.vkFlushMappedMemoryRanges(c.dev, 1, &mr);
     }
 
+    const Clock::time_point tFilled = Clock::now();
     // ---- the passes, with the buffers they use
     std::vector<Bound> bound;
     auto dummyInfo = [&](Bound& b, int k) { b.buf[k] = c.dummy.buf; b.off[k] = 0; b.range[k] = c.dummy.size; };
@@ -1104,6 +1137,18 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         u.tx = io.w; u.ty = io.h;
         bound.push_back(u);
     }
+    if (frameTab >= 0) {
+        Bound u;
+        u.shader = "unpack_u8";
+        for (int k = 0; k < kBindings; ++k) dummyInfo(u, k);
+        u.buf[0] = frame8Dev.buf; u.range[0] = frame8Bytes;
+        u.buf[2] = tableBuf.buf; u.off[2] = tableOff[(size_t)frameTab]; u.range[2] = (VkDeviceSize)io.w * io.h * 16;
+        UnpackPush up = {io.w, io.h, plan.tableFrames[(size_t)frameTab].bgra ? 1u : 0u, 0};
+        std::memcpy(u.push, &up, sizeof up);
+        u.pushSize = sizeof up;
+        u.tx = io.w; u.ty = io.h;
+        bound.push_back(u);
+    }
     for (const Pass& p : plan.passes) {
         Bound b;
         b.shader = p.shader;
@@ -1114,7 +1159,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         if (p.table >= 0) {
             b.buf[3] = tableBuf.buf;
             b.off[3] = tableOff[(size_t)p.table];
-            b.range[3] = alignUp(std::max<size_t>(plan.tables[(size_t)p.table].size() * sizeof(float), 16), kAlign);
+            b.range[3] = alignUp(std::max<size_t>(plan.tableFloats((size_t)p.table) * sizeof(float), 16), kAlign);
         }
         std::memcpy(b.push, p.push, p.pushSize);
         b.pushSize = p.pushSize;
@@ -1161,7 +1206,8 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
     if (a.vkBeginCommandBuffer(ts->cb, &bi) != VK_SUCCESS) return runFailed("a.vkBeginCommandBuffer(ts->cb, &bi) != VK_SUCCESS");
     VkCommandBuffer cb = ts->cb;
     const bool useTs = ts->queries != VK_NULL_HANDLE;
-    if (useTs) a.vkCmdResetQueryPool(cb, ts->queries, 0, 2);
+    if (useTs) a.vkCmdResetQueryPool(cb, ts->queries, 0, 4);
+    if (useTs) a.vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, ts->queries, 2);
     auto barrier = [&](VkPipelineStageFlags from, VkPipelineStageFlags to, VkAccessFlags src, VkAccessFlags dst) {
         VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, src, dst};
         a.vkCmdPipelineBarrier(cb, from, to, 0, 1, &mb, 0, nullptr, 0, nullptr);
@@ -1171,8 +1217,17 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         a.vkCmdCopyBuffer(cb, stageUp.buf, rawIn.buf, 1, &cr);
     }
     if (haveTable) {
-        VkBufferCopy cr = {needFrameUpload ? rawBytes : 0, 0, tableBytes};
-        a.vkCmdCopyBuffer(cb, stageUp.buf, tableBuf.buf, 1, &cr);
+        // each table's own floats to its place (after the frame floats the card makes, for a frame table)
+        std::vector<VkBufferCopy> crs;
+        for (size_t k = 0; k < plan.tables.size(); ++k) {
+            if (plan.tables[k].empty()) continue;
+            crs.push_back(VkBufferCopy{tailBase + tailOff[k], tableOff[k] + plan.frameFloats(k) * sizeof(float), plan.tables[k].size() * sizeof(float)});
+        }
+        if (!crs.empty()) a.vkCmdCopyBuffer(cb, stageUp.buf, tableBuf.buf, (uint32_t)crs.size(), crs.data());
+    }
+    if (frameTab >= 0) {
+        VkBufferCopy cr = {tailBase + tailBytes, 0, frame8Bytes};
+        a.vkCmdCopyBuffer(cb, stageUp.buf, frame8Dev.buf, 1, &cr);
     }
     barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     if (useTs) a.vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, ts->queries, 0);
@@ -1222,7 +1277,9 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         a.vkCmdCopyBuffer(cb, rawOut.buf, stageDown.buf, 1, &cr);
         barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
     }
+    if (useTs) a.vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, ts->queries, 3);
     if (a.vkEndCommandBuffer(cb) != VK_SUCCESS) return runFailed("a.vkEndCommandBuffer(cb) != VK_SUCCESS");
+    const Clock::time_point tRecorded = Clock::now();
 
     // ---- go
     a.vkResetFences(c.dev, 1, &ts->fence);
@@ -1246,6 +1303,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         c.lost = true;
         return runFailed("line 1121");
     }
+    const Clock::time_point tWaited = Clock::now();
     if (!defer && !stageDown.coherent) {
         VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, nullptr, stageDown.mem, 0, VK_WHOLE_SIZE};
         a.vkInvalidateMappedMemoryRanges(c.dev, 1, &mr);
@@ -1256,12 +1314,21 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         if (io.outRowBytes == rb) std::memcpy(io.out, src, rb * io.h);
         else for (uint32_t y = 0; y < io.h; ++y) std::memcpy(io.out + io.outRowBytes * y, src + rb * y, rb);
     }
+    const Clock::time_point tRead = Clock::now();
     if (stats) {
         stats->gpuMs = 0;
+        stats->copyUpMs = stats->copyDownMs = 0;
+        stats->fillMs = std::chrono::duration<double, std::milli>(tFilled - tFill).count();
+        stats->recordMs = std::chrono::duration<double, std::milli>(tRecorded - tFilled).count();
+        stats->waitMs = std::chrono::duration<double, std::milli>(tWaited - tRecorded).count();
+        stats->readMs = std::chrono::duration<double, std::milli>(tRead - tWaited).count();
         if (useTs) {
-            uint64_t t[2] = {0, 0};
-            if (a.vkGetQueryPoolResults(c.dev, ts->queries, 0, 2, sizeof t, t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS && t[1] >= t[0])
+            uint64_t t[4] = {0, 0, 0, 0};
+            if (a.vkGetQueryPoolResults(c.dev, ts->queries, 0, 4, sizeof t, t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS && t[1] >= t[0]) {
                 stats->gpuMs = (double)(t[1] - t[0]) * c.timestampPeriod * 1e-6;
+                if (t[0] >= t[2]) stats->copyUpMs = (double)(t[0] - t[2]) * c.timestampPeriod * 1e-6;
+                if (t[3] >= t[1]) stats->copyDownMs = (double)(t[3] - t[1]) * c.timestampPeriod * 1e-6;
+            }
         }
         stats->inputStayed = reuseInput;
         stats->deferred = defer;

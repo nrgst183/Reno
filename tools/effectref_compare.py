@@ -105,7 +105,7 @@ def main():
     os.makedirs(tmp, exist_ok=True)
     if o.png:
         os.makedirs(o.png, exist_ok=True)
-    print("%-4s %-14s %-26s %8s %7s %7s" % ("idx", "effect", "test", "mean", "max", "%>2"))
+    print("%-4s %-14s %-48s %8s %7s %7s" % ("idx", "effect", "test", "mean", "max", "%>2"))
     for eff, eid in EFFECTS.items():
         mine = [r for r in rows if r["effect"] == eff]
         if not mine:
@@ -116,6 +116,11 @@ def main():
             s = {"name": r["what"] or "default", "kind": r["kind"], "frames": 1, "set": {}}
             if r["kind"] == "preset" and r["what"] in presets:
                 s["set"] = presets[r["what"]]
+            elif r["kind"] == "combo":   # "Name=value Name=value ..." (the capture's several-settings cases)
+                for kv in r["what"].split():
+                    if "=" in kv:
+                        k, v = kv.split("=", 1)
+                        s["set"][k] = [float(v)]
             elif r["kind"] == "preset" and r["what"] != "(Default)":
                 s["name"] += " (not in Reno's preset package: defaults)"
             scen.append(s)
@@ -125,11 +130,19 @@ def main():
             ref = np.array(Image.open(os.path.join(o.ref, r["png"])).convert("RGBA")).astype(np.float64)
             got = read_bgra(os.path.join(tmp, "%s_%d_0.bgra" % (tag, k)))
             label = r["what"] or "default"
+            # a combo whose VEGAS picture is byte for byte the input picture (the settings did not take, e.g. Points=4 is the default and the case came out blank) is not a target
+            if r["kind"] == "combo":
+                src = os.path.join(o.ref, "reno_test_picture.png")
+                if os.path.exists(src) and np.array_equal(ref, np.array(Image.open(src).convert("RGBA")).astype(np.float64)):
+                    print("%-4d %-14s %-48s  (VEGAS picture = the input: skipped)" % (r["index"], eff, label.replace("Threshold=0 Brilliance=100 Strength=100 ", "")[:48]))
+                    continue
+            if r["kind"] == "combo":
+                label = label.replace("Threshold=0 Brilliance=100 Strength=100 ", "")
             if got is None:
-                print("%-4d %-14s %-26s  (no picture from Reno)" % (r["index"], eff, label))
+                print("%-4d %-14s %-48s  (no picture from Reno)" % (r["index"], eff, label))
                 continue
             d = np.abs(ref - got)
-            print("%-4d %-14s %-26s %8.3f %7.0f %6.1f%%" % (r["index"], eff, label[:26], d.mean(), d.max(), 100.0 * (d.max(axis=2) > 2).mean()))
+            print("%-4d %-14s %-48s %8.3f %7.0f %6.1f%%" % (r["index"], eff, label[:48], d.mean(), d.max(), 100.0 * (d.max(axis=2) > 2).mean()))
             if o.png:
                 diff = np.minimum(255, d[..., :3] * 4)
                 panel = np.concatenate([ref[..., :3], got[..., :3], diff], axis=1).astype(np.uint8)

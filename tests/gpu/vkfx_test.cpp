@@ -42,9 +42,10 @@ int main(int argc, char** argv)
         if (!d || !d->gpu) { std::printf("FAIL %s: no Def with a GPU plan\n", id.c_str()); ++gFail; continue; }
         for (const GpuCheckCase& cs : gpuCheckCases(*d)) {
             if (std::getenv("VKCASE") && cs.name != std::getenv("VKCASE")) continue;
-            for (int mode = 0; mode < 3; ++mode) {            // 8-bit BGRA, 8-bit RGBA, float
-                const bool isFloat = mode == 2, bgra = mode != 1;
-                for (const auto& sz : sizes) {
+            // (the size is the outer loop: the 8-bit and the float run of the same settings and size follow one another, which finds a cache that forgets the format)
+            for (const auto& sz : sizes) {
+                for (int mode = 0; mode < 3; ++mode) {            // 8-bit BGRA, 8-bit RGBA, float
+                    const bool isFloat = mode == 2, bgra = mode != 1;
                     const int w = sz[0], h = sz[1];
                     const size_t bpp = isFloat ? 16 : 4, stride = (size_t)w * bpp;
                     std::vector<uint8_t> in(stride * h), a(stride * h, 0), b(stride * h, 0);
@@ -93,6 +94,9 @@ int main(int argc, char** argv)
             }
         }
         std::printf("  %s done\n", id.c_str());
+        // the device is made afresh for the next effect: a software device (SwiftShader) keeps every compiled kernel in
+        // memory, and the whole list of them no longer fits in a test machine's memory
+        gpu::shutdown();
     }
     std::printf("vkfx_test: %d comparisons, %d failures, %d 8-bit pictures declined to the CPU\n", gChecks, gFail, gDeclined);
     return gFail ? 1 : 0;

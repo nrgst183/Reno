@@ -30,6 +30,7 @@ bool gpuRender(const Def& d, Ctx& c, GpuFrame& f);
 
 // builtins_magix.cpp: the three 1024-value tables of Color Curves (the master curve folded in), as its row function looks them up.
 bool colorCurvesGpuTables(Ctx& c, std::vector<float>& out);
+void levelsLut256(Ctx& c, float* lut);                       // (levels(): its curve for the 256 byte levels' floats)
 bool colorCurves8GpuTables(Ctx& c, std::vector<float>& out);   // (8-bit pictures: the 768 byte-table entries)
 
 // builtins_gen.cpp: what the generators work out in double precision for their kernels

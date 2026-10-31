@@ -31,6 +31,7 @@ std::string fullId(const char* id) { return std::strchr(id, ':') ? std::string(i
 // The incoming frame goes up with the plan as a table of w * h * 4 floats (top row first), as Ctx::src2 holds it.
 int toTable(Ctx& c, Plan& p)
 {
+    if (c.src2Bytes) return p.addFrameTable(c.src2Bytes, c.src2RowBytes, c.src2Bgra);
     if (c.src2.px.size() != (size_t)p.w * p.h * 4) return -1;
     return p.addTable(std::move(c.src2.px));
 }
@@ -292,8 +293,11 @@ bool planPortals(Ctx& c, Plan& p)
 // the incoming frame as a table, then doubles after it (the kernels read them with ld_sf)
 int toTableDoubles(Ctx& c, Plan& p, const std::vector<double>& ds)
 {
-    if (c.src2.px.size() != (size_t)p.w * p.h * 4) return -1;
-    std::vector<float> t = std::move(c.src2.px);
+    std::vector<float> t;
+    if (!c.src2Bytes) {
+        if (c.src2.px.size() != (size_t)p.w * p.h * 4) return -1;
+        t = std::move(c.src2.px);
+    }
     for (double d : ds) {
         uint64_t b;
         std::memcpy(&b, &d, 8);
@@ -303,6 +307,7 @@ int toTableDoubles(Ctx& c, Plan& p, const std::vector<double>& ds)
         t.push_back(f[0]);
         t.push_back(f[1]);
     }
+    if (c.src2Bytes) return p.addFrameTable(c.src2Bytes, c.src2RowBytes, c.src2Bgra, std::move(t));
     return p.addTable(std::move(t));
 }
 
@@ -445,13 +450,14 @@ bool planStarWipe(Ctx& c, Plan& p)
 {
     static StarCache cache;
     const int W = p.w, H = p.h;
-    if (c.src2.px.size() != (size_t)W * H * 4) return false;
+    if (!c.src2Bytes && c.src2.px.size() != (size_t)W * H * 4) return false;
     double cxd, cyd;
     c.xy("Center", cxd, cyd);
     std::vector<double> key = {(double)W, (double)H, c.levels ? 1.0 : 0.0, (double)c.i("Arms"), (double)c.i("Cycles"), c.d("Ratio"), c.d("Angle"), cxd, cyd,
                                c.b("HorizontalFlip") ? 1.0 : 0.0, c.b("VerticalFlip") ? 1.0 : 0.0, c.b("HorizontalMirror") ? 1.0 : 0.0, c.b("VerticalMirror") ? 1.0 : 0.0,
                                (double)c.i("Waveform"), (double)c.i("Direction")};
-    std::vector<float> tab = std::move(c.src2.px);
+    std::vector<float> tab;
+    if (!c.src2Bytes) tab = std::move(c.src2.px);
     std::lock_guard<std::mutex> lock(cache.m);
     if (cache.key != key) {
         cache.key.clear();
@@ -496,7 +502,8 @@ bool planStarWipe(Ctx& c, Plan& p)
         } else {
             s8.mode = 0;
         }
-        const int t = p.addTable(std::move(tab));
+        const int t = c.src2Bytes ? p.addFrameTable(c.src2Bytes, c.src2RowBytes, c.src2Bgra, std::move(tab)) : p.addTable(std::move(tab));
+        if (t < 0) return false;
         Pass& ps = p.add("star8", 0, 1, W, H);
         ps.table = t;
         ps.setPush(s8);
@@ -525,7 +532,8 @@ bool planStarWipe(Ctx& c, Plan& p)
     std::memset(&pc, 0, sizeof(pc));
     pc.w = W; pc.h = H; pc.rev = rev; pc.hasf = fv > 0; pc.hasw = hw > 0;
     std::memcpy(&pc.q0, q.q, 18 * 4);
-    const int t = p.addTable(std::move(tab));
+    const int t = c.src2Bytes ? p.addFrameTable(c.src2Bytes, c.src2RowBytes, c.src2Bgra, std::move(tab)) : p.addTable(std::move(tab));
+    if (t < 0) return false;
     Pass& ps = p.add("star_f", 0, 1, W, H);
     ps.table = t;
     ps.setPush(pc);

@@ -529,6 +529,26 @@ void levelsGammaTable(double g, float* lut)
     }
 }
 
+// The 256 answers of levels()'s curve for the floats of the byte levels (level * 1/255f), for the GPU (kernel "levels"): the same arithmetic as levels() below.
+void levelsLut256(Ctx& c, float* lut)
+{
+    const double i0 = c.d("InputStart"), o0 = c.d("OutputStart"), o1 = c.d("OutputEnd"), gamma = c.d("Gamma");
+    double i1 = c.d("InputEnd"), width = i1 - i0;
+    if (std::fabs(width) < 0.003921568859368563) { i1 = i0 + 0.003921568859368563; width = 0.003921568859368563; }
+    const bool straight = std::fabs(gamma - 1.0) < 1e-6;
+    const LevelsCurveFixed curve(gamma);
+    for (int k = 0; k < 256; ++k) {
+        const float v = (float)k * (1.f / 255.f);
+        const double x = v;
+        const double xin = i0 > x ? i0 : std::min(i1, x);
+        const double t = xin - i0;
+        double r;
+        if (straight) r = t * (o1 - o0) / width;
+        else r = (o1 - o0) * curve(t / width);
+        lut[k] = (float)(r + o0);
+    }
+}
+
 namespace {
 
 // Levels. VEGAS uses a 256-entry table: input clipped to Input Start..End (at least 1/255 apart), scaled to 0..1, gamma-curved, mapped to

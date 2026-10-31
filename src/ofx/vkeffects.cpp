@@ -136,7 +136,11 @@ bool planLevels(Ctx& c, Plan& p)
     const D2 I0 = d2(i0), I1 = d2(i1), O0 = d2(o0), DO = d2(o1 - o0), WI = d2(width), K0 = d2(k0), SL = d2(slope), A1 = d2(a + 1.0), A = d2(a), IN = d2(inv), GG = d2(G);
     P::Levels pc = {p.w, p.h, u32(c.i("Channel")), straight ? 1u : 0u, G < 1.0 ? 1u : 0u, I0.h, I0.l, I1.h, I1.l, O0.h, O0.l, DO.h, DO.l, WI.h, WI.l, K0.h, K0.l, SL.h, SL.l,
                     A1.h, A1.l, A.h, A.l, IN.h, IN.l, GG.h, GG.l};
-    p.add("levels", 0, 1, p.w, p.h).setPush(pc);
+    std::vector<float> lut(256);
+    levelsLut256(c, lut.data());
+    Pass& ps = p.add("levels", 0, 1, p.w, p.h);
+    ps.table = p.addTable(std::move(lut));
+    ps.setPush(pc);
     return true;
 }
 
@@ -331,8 +335,11 @@ bool planMirror(Ctx& c, Plan& p)
         }
         if (!straight) return false;            // (a line within half a degree of an axis, but not on it: the CPU's double code)
     }
-    P::Mirror pc = {p.w, p.h, (float)kx, (float)ky, (float)(cx * p.w), (float)((1 - cy) * p.h), bgPix[0], bgPix[1], bgPix[2], bgPix[3],
-                    (float)(0.4 * c.scale * kx * std::fabs(ky)), (float)(0.4 * c.scale * ky * std::fabs(kx)), (float)(0.5 * (kx + ky)), straight ? 1u : 0u};
+    // (the CPU's distances and positions are doubles: the kernel gets them as doubles)
+    const double px0 = cx * (double)p.w, py0 = (1 - cy) * (double)p.h;
+    const double ex = 0.4 * c.scale * kx * std::fabs(ky), ey = 0.4 * c.scale * ky * std::fabs(kx), tieShift = 0.5 * (kx + ky);
+    const D2 dkx = d2(kx), dky = d2(ky), dpx = d2(px0), dpy = d2(py0), dex = d2(ex), dey = d2(ey), dtie = d2(tieShift);
+    P::Mirror pc = {p.w, p.h, dkx.h, dkx.l, dky.h, dky.l, dpx.h, dpx.l, dpy.h, dpy.l, dex.h, dex.l, dey.h, dey.l, dtie.h, dtie.l, bgPix[0], bgPix[1], bgPix[2], bgPix[3], straight ? 1u : 0u};
     p.add("mirror", 0, 1, p.w, p.h).setPush(pc);
     return true;
 }
@@ -648,6 +655,7 @@ bool planChromaBlur(Ctx& c, Plan& p)
 // (builtins.cpp loads it for the plan, which takes it over). Each planner reads the settings as its function in builtins_trans.cpp does.
 int toTable(Ctx& c, Plan& p)
 {
+    if (c.src2Bytes) return p.addFrameTable(c.src2Bytes, c.src2RowBytes, c.src2Bgra);
     if (c.src2.px.size() != (size_t)p.w * p.h * 4) return -1;
     return p.addTable(std::move(c.src2.px));
 }
@@ -911,11 +919,11 @@ bool planColorMatch(Ctx& c, Plan& p)
         addCopy(p, 0, 1);
         return true;
     }
-    const int part = p.addBuf(2, 90, 4), params = p.addBuf(4, 1, 4);
+    const int part = p.addBuf(160, 90, 4), params = p.addBuf(4, 1, 4);
     const int tRows = p.addTable(std::move(g.rowsTable)), tParams = p.addTable(std::move(g.paramTable));
     {
         P::ColormatchRows pc = {p.w, p.h};
-        Pass& ps = p.add("colormatch_rows", 0, part, 1, 90);
+        Pass& ps = p.add("colormatch_rows", 0, part, 160, 90);
         ps.table = tRows;
         ps.setPush(pc);
     }
@@ -1000,20 +1008,29 @@ bool planTvSimulator(Ctx& c, Plan& p)
         h = (h ^ (h >> 13)) * 1274126177u;
         return ((h ^ (h >> 16)) & 0xFFFF) / 65535.f;
     };
-    std::vector<float> tab((size_t)H * 2);
+    // the table: per row the wobble (a double as two words), the band (a float), the sample y (a double); per column the sample x without the wobble (a double)
+    std::vector<float> tab((size_t)H * 5 + (size_t)W * 2);
+    auto putD = [&](size_t at, double v) {
+        const D2 b = d2(v);
+        std::memcpy(&tab[at], &b.h, 4);
+        std::memcpy(&tab[at + 1], &b.l, 4);
+    };
+    const double roll = (1.0 - vSync) * H * std::fmod(t * 0.07, 1.0);
     for (int y = 0; y < H; ++y) {
         const double yFull = y / c.scale;
         const double wob = (1.0 - lineSync) * 0.03 * W * std::sin(yFull * 0.07 + t * 0.9) * (rnd((uint32_t)yFull, (uint32_t)t) > 0.8 ? 3 : 1);
-        tab[(size_t)y] = (float)wob;
-        tab[(size_t)H + (size_t)y] = 1.f - (float)scan * 0.25f * (0.5f + 0.5f * (float)std::sin(yFull * 0.02 - t * 0.4));
+        putD((size_t)y * 2, wob);
+        tab[(size_t)H * 2 + (size_t)y] = 1.f - (float)scan * 0.25f * (0.5f + 0.5f * (float)std::sin(yFull * 0.02 - t * 0.4));
+        const double sy = std::fmod(y + roll, (double)H);
+        putD((size_t)H * 3 + (size_t)y * 2, (sy + 0.5 - H * 0.5) / zoom + H * 0.5);
     }
-    const double roll = (1.0 - vSync) * H * std::fmod(t * 0.07, 1.0);
+    for (int x = 0; x < W; ++x) putD((size_t)H * 5 + (size_t)x * 2, (x + 0.5 - W * 0.5) / zoom + W * 0.5);
     int glow = 0;
     if (phos > 0.01) {
         const double sig = 2.0 * (std::max(1.0, (double)H) / 1080.0) + c.px(1);
         glow = addBlur(p, 0, p.addBuf(p.w, p.h, 4), sig, sig, 15u, false);
     }
-    P::Tvsimulator pc = {p.w, p.h, (float)zoom, (float)roll, (float)phos, (float)grill, (float)inter, (float)scan, (float)stat, (float)c.scale, c.scale >= 0.999 ? 1u : 0u, (uint32_t)(t * 7)};
+    P::Tvsimulator pc = {p.w, p.h, (float)phos, (float)grill, (float)inter, (float)scan, (float)stat, (float)c.scale, c.scale >= 0.999 ? 1u : 0u, (uint32_t)(t * 7)};
     Pass& ps = p.add("tvsimulator", 0, 1, p.w, p.h);
     ps.in1 = glow;
     ps.table = p.addTable(std::move(tab));
@@ -1346,8 +1363,8 @@ static bool gpuDeclinedForExactness(const std::string& id)
 double gpuFloatTolerance(const Def& d)
 {
     { double t; if (extraGpuFloatTolerance(d.id, t)) return t; }      // (the transitions and generators: vktrans.cpp)
-    static const char* const ulp[] = {"colorcorrector", "colorgrading", "colormatch", "tvsimulator", "mirror", "clockwipe",
-                                      "linearwipe", "push", "barndoor", "broadcastcolors", "lensflare", "colorcorrectorsecondary"};
+    static const char* const ulp[] = {"colorcorrector", "colorgrading", "clockwipe",
+                                      "linearwipe", "push", "barndoor", "broadcastcolors", "colorcorrectorsecondary"};
     for (const char* n : ulp)
         if (d.id == fullId(n)) return 5e-5;
     for (const FilterGpuEntry& e : filterGpuEntries())
@@ -1529,7 +1546,30 @@ bool renderFrameGpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
     if (!d.gpu || !gpu::enabled() || w < 1 || h < 1) return false;
     c.frameW = w;
     c.frameH = h;
-    if (d.transition) secondPicture(c, w, h, isFloat, bgra, in, inStride);
+    if (d.transition) {
+        if (isFloat) {
+            secondPicture(c, w, h, isFloat, bgra, in, inStride);
+        } else {
+            // the same incoming picture as secondPicture() makes (the outgoing one turned half way round), as the 8-bit frame the host would give; made once for a Ctx
+            // that renders again, so the time of a render is the render's
+            if (c.src2Store.size() != (size_t)w * h * 4 || c.src2StoreKey != in) {
+                c.src2Store.resize((size_t)w * h * 4);
+                for (int y = 0; y < h; ++y) {
+                    const uint32_t* srow = (const uint32_t*)(in + (size_t)(h - 1 - y) * inStride);
+                    uint32_t* drow = (uint32_t*)(c.src2Store.data() + (size_t)y * w * 4);
+                    for (int x = 0; x < w; ++x) drow[x] = srow[w - 1 - x];
+                }
+                c.src2StoreKey = in;
+            }
+            c.src2.px.clear();
+            c.src2Bytes = c.src2Store.data();
+            c.src2RowBytes = (size_t)w * 4;
+            c.src2Bgra = bgra;
+            c.progress = 0.5;
+            const auto it = c.testParams ? c.testParams->find("Transition") : std::map<std::string, std::vector<double>>::const_iterator();
+            if (c.testParams && it != c.testParams->end() && !it->second.empty()) c.progress = clampd(it->second[0], 0, 1);
+        }
+    }
     c.levels = !isFloat;
     gpu::Plan plan;
     plan.begin((uint32_t)w, (uint32_t)h, d.id.c_str());

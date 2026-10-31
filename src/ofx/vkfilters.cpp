@@ -675,6 +675,8 @@ bool planBezierMasking(Ctx& c, Plan& p)
     static std::string cached;
     static std::vector<float> total;
     std::lock_guard<std::mutex> lock(m);
+    // (the masks' total is cut to whole levels in an 8-bit picture and left as it is in a float one: the same settings give two totals)
+    key += c.levels ? "|8" : "|f";
     if (cached != key || total.size() != (size_t)p.w * p.h) {
         cached.clear();
         int md; bool inv; float bl; std::string k2;
@@ -1028,7 +1030,10 @@ bool planLightRays(Ctx& c, Plan& p)
     PolarGpu g;
     if (!polarGeomGpu(W, H, su.px0, su.py0, 0.35, g)) return false;
     if ((size_t)g.nT * (size_t)g.rN > (size_t)24 * 1024 * 1024) return false;
-    const uint32_t nT = (uint32_t)g.nT, rN = (uint32_t)g.rN, chunk = 128u;
+    const uint32_t nT = (uint32_t)g.nT, rN = (uint32_t)g.rN;
+    // as many rays a pass as the scratch buffer (96 MB, under the 128 MB every device allows) holds: a pass of a few rays leaves the card idle
+    const size_t wordsPerRay = ((size_t)rN + 8) * 4 + ((size_t)rN + 9) * 12;
+    const uint32_t chunk = (uint32_t)std::max<size_t>(1, std::min<size_t>(nT, ((size_t)24 << 20) / wordsPerRay));
     std::vector<float> tab;
     tab.insert(tab.end(), g.cs.begin(), g.cs.end());
     tab.insert(tab.end(), g.sn.begin(), g.sn.end());
@@ -1041,10 +1046,24 @@ bool planLightRays(Ctx& c, Plan& p)
     const D2 sp = d2(span), fm = d2(fmin);
     const float cx = (float)g.px0 - 0.5f, cy = (float)g.py0 - 0.5f;
     for (uint32_t t0 = 0; t0 < nT; t0 += chunk) {
+        const P::LrRay pc{p.w, p.h, nT, rN, t0, chunk, cx, cy, su.sensF, 0u, sp.h, sp.l, fm.h, fm.l};
         Pass& ps = p.add("lr_ray", 0, res, chunk, 1);
         ps.in1 = st;
         ps.table = tb;
-        ps.setPush(P::LrRay{p.w, p.h, nT, rN, t0, chunk, cx, cy, su.sensF, 0u, sp.h, sp.l, fm.h, fm.l});
+        ps.setPush(pc);
+        // the sums (a thread to each ray, channel and sum), then every radius' value (a thread each)
+        Pass& pz = p.add("lr_sum", 0, res, chunk * 6, 1);
+        pz.in1 = st;
+        pz.table = tb;
+        P::LrSum pcs;
+        std::memcpy(&pcs, &pc, sizeof pc);
+        pz.setPush(pcs);
+        Pass& pv = p.add("lr_val", 0, res, rN, chunk);
+        pv.in1 = st;
+        pv.table = tb;
+        P::LrVal pcv;
+        std::memcpy(&pcv, &pc, sizeof pc);
+        pv.setPush(pcv);
     }
     const D2 px = d2(g.px0), py = d2(g.py0);
     Pass& ps = p.add("lr_read", 0, 1, p.w, p.h);
@@ -1256,7 +1275,7 @@ void gpuAddDeriche(Plan& p, int from, int to, double sigmaX, double sigmaY, bool
 {
     const uint32_t W = p.bufs[(size_t)from].w, H = p.bufs[(size_t)from].h;
     const int mid = p.addBuf(W, H, 4);
-    const int state = p.addBuf(W * 2, H, 4);        // the causal half's doubles: 8 words a pixel
+    const int state = p.addBuf(W * 4, H, 4);        // the causal half's doubles, then the anti-causal half's: 16 words a pixel
     for (int pass = 0; pass < 2; ++pass) {
         const DericheCoefs k = vegasDericheCoefs(pass ? sigmaY : sigmaX);
         std::vector<float> tab;                       // n0..n3, m1..m4, d1..d4, n - bn (5), m - bm (5): the kernel's DER_* order
@@ -1266,13 +1285,13 @@ void gpuAddDeriche(Plan& p, int from, int to, double sigmaX, double sigmaY, bool
         for (int i = 0; i < 5; ++i) pushDouble(tab, k.n[i] - k.bn[i]);
         for (int i = 0; i < 5; ++i) pushDouble(tab, k.m[i] - k.bm[i]);
         P::Deriche pc = {W, H, pass ? 1u : 0u, pass ? 0u : (levels ? 2u : 1u), pass ? (rawOut ? 0u : (levels ? 2u : 1u)) : 0u, 0u};
-        Pass& ps = p.add("deriche", pass ? mid : from, pass ? to : mid, (pass ? W : H) * 4, 1);     // a thread per line and channel
+        Pass& ps = p.add("deriche", pass ? mid : from, pass ? to : mid, (pass ? W : H) * 8, 1);     // a thread per line, channel and half (the causal and the anti-causal half do not depend on each other)
         ps.in1 = state;
         ps.table = p.addTable(std::move(tab));
         ps.setPush(pc);
-        Pass& pk = p.add("deriche_pack", from, pass ? to : mid, W, H);                              // the four channels' words back into the picture
+        Pass& pk = p.add("deriche_join", from, pass ? to : mid, W, H);                              // the two halves added, back into the picture
         pk.in1 = state;
-        pk.setPush(P::DerichePack{W, H});
+        pk.setPush(P::DericheJoin{W, H, pass ? (rawOut ? 0u : (levels ? 2u : 1u)) : 0u, 0u});
     }
 }
 

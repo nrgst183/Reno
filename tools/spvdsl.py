@@ -23,7 +23,7 @@ OP = dict(
     LogicalAnd=167, LogicalNot=168, IEqual=170, INotEqual=171, UGreaterThan=172, SGreaterThan=173, UGreaterThanEqual=174,
     SGreaterThanEqual=175, ULessThan=176, SLessThan=177, ULessThanEqual=178, SLessThanEqual=179, FOrdEqual=180, FUnordNotEqual=183,
     FOrdLessThan=184, FOrdGreaterThan=186, FOrdLessThanEqual=188, FOrdGreaterThanEqual=190, ShiftRightLogical=194,
-    AtomicIAdd=234, ShiftRightArithmetic=195, ShiftLeftLogical=196, BitwiseOr=197, BitwiseXor=198, BitwiseAnd=199, Not=200)
+    AtomicIAdd=234, ShiftRightArithmetic=195, ShiftLeftLogical=196, BitwiseOr=197, BitwiseXor=198, BitwiseAnd=199, Not=200, BitCount=205)
 
 GLSL = dict(Round=1, RoundEven=2, Trunc=3, FAbs=4, SAbs=5, FSign=6, Floor=8, Ceil=9, Fract=10, Sin=13, Cos=14, Tan=15, Asin=16, Acos=17,
             Atan=18, Atan2=25, Pow=26, Exp=27, Log=28, Exp2=29, Log2=30, Sqrt=31, InverseSqrt=32, FMin=37, UMin=38, SMin=39, FMax=40,
@@ -462,6 +462,7 @@ class Shader:
     def fract(self, x): return self._f1("Fract", x)
     def trunc(self, x): return self._f1("Trunc", x)
     def atan2_f(self, y, x): return self._ext("Atan2", 'f', self.conv(y, 'f'), self.conv(x, 'f'))      # the driver's own (only a starting guess for sf64)
+    def bit_count(self, x): return self._v("BitCount", 'u', x.id)      # (the number of set bits of a uint)
     def find_umsb(self, x): return self._ext("FindUMsb", 'u', x)      # (the index of the highest set bit; every bit of -1 for 0)
     def round_even(self, x): return self._f1("RoundEven", x)       # (lrintf)
     # The elementary functions are worked out in the software double (sf64) and rounded to a float, not by the driver's Exp/Log/Sin/Cos/Atan2/Pow (Vulkan
@@ -504,7 +505,7 @@ class Shader:
         r = self.select(r >= ay, op("FSub", r, ay), r)
         res = self.select(x < 0.0, self._v("FNegate", 'f', r.id), r)
         ok = (ay > 1e-18) & (ay < 1e18) & (ax < 8388608.0 * ay) & (ax < 1e18)
-        return self.select(ok, res, self._v("FRem", 'f', x.id, y.id))
+        return self.select(ok, res, self._nc(self._v("FRem", 'f', x.id, y.id)))
     def abs(self, x):
         if not isinstance(x, V): x = self.f(x)
         return self._ext("SAbs" if x.ty == 'i' else "FAbs", x.ty, x)
@@ -589,15 +590,19 @@ class Shader:
         obj = ConstArray(self, var, self._ptr(6, self.tid['u']))
         self.cache[key] = obj
         return obj
-    def local_array(self, n, ty='f'):
-        """an array of n values (ty 'f', 'u' or 'i') private to the invocation, all zero at the start"""
+    def local_array(self, n, ty='f', init=True):
+        """an array of n values (ty 'f', 'u' or 'i') private to the invocation, all zero at the start (init=False: nothing is said about what it holds, for an array
+        whose every value is written before it is read)"""
         key = ("larr", n, ty)
         cnt = self._const('u', n)
         arr = self._type(("arrty", n, ty), "TypeArray", self.tid[ty], cnt)
-        null = self._newid()
-        self._emit_sec("types", "ConstantNull", arr, null)
         var = self._newid()
-        self._emit_sec("types", "Variable", self._ptr(6, arr), var, 6, null)
+        if init:
+            null = self._newid()
+            self._emit_sec("types", "ConstantNull", arr, null)
+            self._emit_sec("types", "Variable", self._ptr(6, arr), var, 6, null)
+        else:
+            self._emit_sec("types", "Variable", self._ptr(6, arr), var, 6)
         # (a private variable is a separate one each time it is asked for)
         return LocalArray(self, var, self._ptr(6, self.tid[ty]), ty)
     def buf(self, name): return self.buffers[name]

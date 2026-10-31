@@ -210,7 +210,7 @@ int runVkCheck(const std::vector<std::string>& args)
     {
         const gpu::DeviceInfo cur = gpu::currentDevice();
         if (cur.floatControlsUsed)
-            rep.line("float controls in every kernel (32-bit): RoundingModeRTE %s, DenormPreserve %s", cur.fcUseRte ? "ON" : "off (not offered)", cur.fcUseDenorm ? "ON" : "off (not offered)");
+            rep.line("float controls in every kernel (32-bit): RoundingModeRTE %s, DenormPreserve %s, SignedZeroInfNanPreserve %s", cur.fcUseRte ? "ON" : "off (not offered)", cur.fcUseDenorm ? "ON" : "off (not offered)", cur.fcUseSzinf ? "ON" : "off (not offered)");
         else
             rep.line("float controls in every kernel (32-bit): %s", cur.fcKnown ? "off (the driver offers neither RTE nor denorm preserve for 32-bit floats, or RENO_VK_NO_FLOAT_CONTROLS is set)" : "off (below Vulkan 1.2: the driver's default rounding and denormal handling apply)");
     }

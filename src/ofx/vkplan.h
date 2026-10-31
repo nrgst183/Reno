@@ -42,6 +42,10 @@ struct Plan {
     uint32_t w = 0, h = 0;              // the frame
     std::vector<BufDesc> bufs;
     std::vector<std::vector<float>> tables;
+    // A table that starts with the frame as w * h * 4 floats (top row first) made on the card from an 8-bit frame of the host's (4x less to send than the floats):
+    // tables[k] then holds only what follows those floats. bytes == nullptr for the other tables. The bytes must stay valid until run() returns.
+    struct FrameTable { const uint8_t* bytes = nullptr; size_t rowBytes = 0; bool bgra = true; };
+    std::vector<FrameTable> tableFrames;
     std::vector<Pass> passes;
     std::string name;                   // for the log
     Plan() {}
@@ -50,6 +54,7 @@ struct Plan {
         w = W; h = H; name = what;
         bufs.assign(2, BufDesc{W, H, 4});
         tables.clear();
+        tableFrames.clear();
         passes.clear();
     }
     int addBuf(uint32_t bw, uint32_t bh, uint32_t comps = 4)
@@ -60,8 +65,21 @@ struct Plan {
     int addTable(std::vector<float> t)
     {
         tables.push_back(std::move(t));
+        tableFrames.emplace_back();
         return (int)tables.size() - 1;
     }
+    // A table of the 8-bit frame 'bytes' (rows bottom first, 'rowBytes' apart) as floats, then 'tail'. -1 when the plan has such a table already.
+    int addFrameTable(const uint8_t* bytes, size_t rowBytes, bool bgra, std::vector<float> tail = std::vector<float>())
+    {
+        for (const FrameTable& f : tableFrames) if (f.bytes) return -1;
+        const int k = addTable(std::move(tail));
+        tableFrames[(size_t)k].bytes = bytes;
+        tableFrames[(size_t)k].rowBytes = rowBytes;
+        tableFrames[(size_t)k].bgra = bgra;
+        return k;
+    }
+    size_t frameFloats(size_t k) const { return tableFrames[k].bytes ? (size_t)w * h * 4 : 0; }
+    size_t tableFloats(size_t k) const { return frameFloats(k) + tables[k].size(); }
     Pass& add(const char* shader, int in0, int out, uint32_t tx, uint32_t ty)
     {
         passes.emplace_back();

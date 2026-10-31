@@ -111,6 +111,8 @@ bool measureAll(std::vector<Entry>& out, FILE* log)
         e.id = id;
         bool allCpuWins = true;
         int cases = 0;
+        double worstGpu = 0;
+        char worstParts[160] = "";
         const std::vector<GpuCheckCase> all = gpuCheckCases(*d);
         for (size_t k = 0; k < all.size() && cases < kMaxCases; ++k) {
             if (gCancel.load() || !gpu::enabled()) return false;
@@ -126,11 +128,16 @@ bool measureAll(std::vector<Entry>& out, FILE* log)
                 return false;
             }
             double gpuBest = 1e30;
-            for (int r = 0; r < 2; ++r) {
+            gpu::RunStats bestSt;
+            // (best of four back to back: the first of a burst can find the card at its idle clocks)
+            double bestPlan = 0;
+            for (int r = 0; r < 4; ++r) {
                 const Clock::time_point t0 = Clock::now();
                 if (!renderFrameGpu(*d, c2, kW, kH, false, true, in.data(), stride, b.data(), stride, &st)) return false;
-                gpuBest = std::min(gpuBest, msSince(t0));
+                const double wall = msSince(t0);
+                if (wall < gpuBest) { gpuBest = wall; bestSt = st; bestPlan = std::max(0.0, wall - st.totalMs); }
             }
+            if (gpuBest >= worstGpu) { worstGpu = gpuBest; std::snprintf(worstParts, sizeof worstParts, "plan %.1f fill %.1f up %.1f kernels %.1f down %.1f sync %.1f read %.1f", bestPlan, bestSt.fillMs, bestSt.copyUpMs, bestSt.gpuMs, bestSt.copyDownMs, std::max(0.0, bestSt.waitMs - bestSt.copyUpMs - bestSt.gpuMs - bestSt.copyDownMs), bestSt.readMs); }
             double cpuBest = 1e30;
             for (int r = 0; r < 3; ++r) {
                 const Clock::time_point t0 = Clock::now();
@@ -149,7 +156,7 @@ bool measureAll(std::vector<Entry>& out, FILE* log)
         if (cases == 0) continue;
         e.gpu = !(allCpuWins || e.differs);
         if (log)
-            std::fprintf(log, "%-52s CPU %8.2f ms  GPU %8.2f ms  -> %s%s\n", id.c_str(), e.cpuMs, e.gpuMs, e.gpu ? "GPU" : "CPU", e.differs ? "  (GPU picture differs from the CPU's)" : "");
+            std::fprintf(log, "%-52s CPU %8.2f ms  GPU %8.2f ms  -> %s%s    [GPU ms: %s]\n", id.c_str(), e.cpuMs, e.gpuMs, e.gpu ? "GPU" : "CPU", e.differs ? "  (GPU picture differs from the CPU's)" : "", worstParts);
         out.push_back(e);
     }
     return true;

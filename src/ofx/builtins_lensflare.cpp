@@ -190,7 +190,7 @@ bool shape(int type, float u, float v, float d, float I, const float* col, const
     }
     default: {
         if (!(d < 1.f)) return false;
-        const float ang = std::atan2(v, u);
+        const float ang = (float)std::atan2((double)v, (double)u);      // (the double function rounded to a float: the same on every C library, and what the GPU kernel works out)
         double a = (double)(float)((double)ang + 3.141592653589793);
         a = a / 6.283185307179586 * 3.0;
         a = a * 60.0;

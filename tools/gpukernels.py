@@ -155,6 +155,18 @@ def ld_sf(S, tab, i):
     """a double from two table words (the bits of its high and low halves held in floats)"""
     return SF(S, S.f_to_bits(tab.load(i)), S.f_to_bits(tab.load(i + 1)))
 
+class SFVar:
+    """a double kept in two uint variables (for sums in a loop): get() / set()"""
+    def __init__(self, S, init=0.0):
+        self.S = S
+        init = SF.of(S, init)
+        self.hv, self.lv = S.var('u', init.hi), S.var('u', init.lo)
+    def set(self, v):
+        self.hv.set(v.hi)
+        self.lv.set(v.lo)
+    def get(self):
+        return SF(self.S, self.hv.get(), self.lv.get())
+
 def sdiv_pos(S, a, b):
     """a / b for ints with b >= 0 (0 where b is 0), like the CPU's guarded integer division"""
     return S.select(S.ne(b, 0), a / S.max(b, S.i(1)), S.i(0))
@@ -314,10 +326,13 @@ def hsladjust(S):
         return hsl_to_rgb(S, h + P.hue, clamp01(S, s * P.sat), clamp01(S, l * P.lum))
     pixel_row(S, body)
 
-@kernel("levels", WH + [('channel', 'u'), ('straight', 'u'), ('glt1', 'u')] + dpush('i0', 'i1', 'o0', 'domain', 'width', 'k0', 'slope', 'a1', 'a', 'inv', 'G'), [PIC_IN, PIC_OUT])
+@kernel("levels", WH + [('channel', 'u'), ('straight', 'u'), ('glt1', 'u')] + dpush('i0', 'i1', 'o0', 'domain', 'width', 'k0', 'slope', 'a1', 'a', 'inv', 'G'), [PIC_IN, PIC_OUT, TABLE])
 def levels(S):
-    # levels() in builtins_filters.cpp: the straight colour (0 where alpha is tiny), the chosen channels through the curve (in doubles, as the CPU does), premultiplied again
+    # levels() in builtins_filters.cpp: the straight colour (0 where alpha is tiny), the chosen channels through the curve (in doubles, as the CPU does), premultiplied again.
+    # A value that is exactly a byte level's float (level * the float 1/255: any 8-bit picture's opaque pixel) takes the CPU's own answer for that value from the table
+    # (levelsLut256 in builtins_filters.cpp, the same function); only the other values (alpha below 1, floats) take the emulated doubles.
     P = S.p
+    tab = S.buf('table')
     from sf64 import sf_pow
     with S.in_range(P.w, P.h):
         i = S.gy * P.w + S.gx
@@ -351,7 +366,12 @@ def levels(S):
 
         def per_channel(c):
             v = S.select(S.eq(c, 0), r, S.select(S.eq(c, 1), g, S.select(S.eq(c, 2), b, a)))
-            fv = f(v)
+            lvl = to_level(S, v)
+            fast = S.eq(S.f_to_bits(v), S.f_to_bits(from_level(S, lvl)))
+            fvv = S.var('f', tab.load(S.to_u(lvl)))
+            with S.if_(~fast):
+                fvv.set(f(v))
+            fv = fvv.get()
             rgb = S.eq(ch, 0) | S.eq(ch, 4) | S.eq(ch, c + 1)
             use = S.select(S.eq(c, 3), S.eq(ch, 4), rgb)
             nv = S.select(S.eq(c, 3), clamp01(S, fv), fv)
@@ -667,29 +687,60 @@ def sample_on_bg(S, buf, w, h, x, y, bg):
     acc = acc + taps[2] * wt[2]
     return acc + taps[3] * wt[3]
 
-@kernel("mirror", WH + [('kx', 'f'), ('ky', 'f'), ('px0', 'f'), ('py0', 'f'), ('bgr', 'f'), ('bgg', 'f'), ('bgb', 'f'), ('bga', 'f'),
-                        ('ex', 'f'), ('ey', 'f'), ('tie', 'f'), ('straight', 'u')], [PIC_IN, PIC_OUT])
+def sf_nonfinite(S, x):
+    return S.eq(x.hi & 0x7ff00000, 0x7ff00000)
+
+def sample_on_bg_d(S, buf, w, h, x, y, bg):
+    """sampleOnBg() in builtins_filters.cpp with the position in doubles (x, y are SF): bilinear, the taps outside the frame are the colour bg (a vec4); a point far
+    outside, or not finite, is the colour bg."""
+    wf, hf = SF.from_u32(S, w), SF.from_u32(S, h)
+    xs, ys = x - 0.5, y - 0.5
+    x0f, y0f = xs.floor(), ys.floor()
+    far = (x0f < -2.0) | (y0f < -2.0) | (x0f > wf + 1.0) | (y0f > hf + 1.0) | sf_nonfinite(S, x) | sf_nonfinite(S, y)
+    x0, y0 = xs.floor_i32(), ys.floor_i32()
+    fx = (xs - x0f).to_f32()
+    fy = (ys - y0f).to_f32()
+    ix, iy = 1.0 - fx, 1.0 - fy
+    wt = [ix * iy, fx * iy, ix * fy, fx * fy]
+    taps = []
+    for t in range(4):
+        tx = x0 + (t & 1)
+        ty = y0 + (t >> 1)
+        inside = (tx >= 0) & (ty >= 0) & (tx < S.to_i(w)) & (ty < S.to_i(h))
+        cx = S.to_u(S.clamp(tx, 0, S.to_i(w) - 1))
+        cy = S.to_u(S.clamp(ty, 0, S.to_i(h) - 1))
+        px = buf.load(cy * w + cx)
+        taps.append(S.vec4(S.select(inside, px.x, bg.x), S.select(inside, px.y, bg.y), S.select(inside, px.z, bg.z), S.select(inside, px.w, bg.w)))
+    acc = S.splat4(0.0) + taps[0] * wt[0]
+    acc = acc + taps[1] * wt[1]
+    acc = acc + taps[2] * wt[2]
+    acc = acc + taps[3] * wt[3]
+    return S.select(far, bg, acc)
+
+@kernel("mirror", WH + dpush('kx', 'ky', 'px0', 'py0', 'ex', 'ey', 'tie') + [('bgr', 'f'), ('bgg', 'f'), ('bgb', 'f'), ('bga', 'f'), ('straight', 'u')], [PIC_IN, PIC_OUT])
 def mirror(S):
-    # mirror() in builtins_filters.cpp
+    # mirror() in builtins_filters.cpp, float pictures: the CPU's positions and distances are doubles, so they are here (the software double)
     P = S.p
     with S.in_range(P.w, P.h):
         i = S.gy * P.w + S.gx
-        xc = S.to_f(S.gx) + 0.5
-        yc = S.to_f(S.gy) + 0.5
-        d = (xc - P.px0) * P.kx + (yc - P.py0) * P.ky
+        kx, ky, px0, py0, ex, ey, tie = [pd(P, n) for n in ('kx', 'ky', 'px0', 'py0', 'ex', 'ey', 'tie')]
+        xc = SF.from_u32(S, S.gx) + 0.5
+        yc = SF.from_u32(S, S.gy) + 0.5
+        d = (xc - px0) * kx + (yc - py0) * ky
         res = S.var('v4')
         bg = S.vec4(P.bgr, P.bgg, P.bgb, P.bga)
-        with S.if_((d - P.tie) <= 0.000001):
-            sx = xc - 2.0 * d * P.kx
-            sy = yc - 2.0 * d * P.ky
+        with S.if_((d - tie) <= 1e-6):
+            sx = xc - (d * 2.0) * kx
+            sy = yc - (d * 2.0) * ky
             with S.if_(S.ne(P.straight, 0)):
-                oob = (sx < -0.5000011) | (sy < -0.5000011) | (sx > S.to_f(P.w) + 0.5000011) | (sy > S.to_f(P.h) + 0.5000011)
+                wf, hf = SF.from_u32(S, P.w), SF.from_u32(S, P.h)
+                oob = (sx < -0.5 - 1e-6) | (sy < -0.5 - 1e-6) | (sx > wf + 0.5 + 1e-6) | (sy > hf + 0.5 + 1e-6)
                 with S.if_(oob):
                     res.set(bg)
                 with S.else_():
-                    res.set(sample_clamped(S, S.buf('in0'), P.w, P.h, sx, sy))
+                    res.set(sample_clamped_d(S, S.buf('in0'), P.w, P.h, sx, sy))
             with S.else_():
-                res.set(sample_on_bg(S, S.buf('in0'), P.w, P.h, sx + P.ex, sy + P.ey, bg))
+                res.set(sample_on_bg_d(S, S.buf('in0'), P.w, P.h, sx + ex, sy + ey, bg))
         with S.else_():
             res.set(S.buf('in0').load(i))
         S.buf('out').store(i, res.get())
@@ -1645,9 +1696,11 @@ def colorgrading(S):
 
 # ---------------------------------------------------------------------------------------------------------- Color Match (builtins_color.cpp)
 def cbrt_f(S, t):
-    """cbrt of a positive float: pow, then one Newton step so it is as good as the library's."""
-    y = S.pow(S.max(t, 1e-30), S.f(1.0 / 3.0))
-    return y - (y * y * y - t) / (3.0 * y * y)
+    """cbrt of a positive float as the CPU has it: (float)cbrt((double)t). The double cube root is x ** (1/3) in the software double with 1/3 as a double
+    (its error is under one double ulp, about 1e-16: the rounded float differs from the library's only for a value within that of a rounding boundary)."""
+    import sf64
+    x = SF.from_f32(S, S.max(t, 1e-30))
+    return sf64.sf_pow(S, x, SF.const(S, 1.0 / 3.0)).to_f32()
 
 def srgb_tab(S, tab, base, v):
     """tab(): a table of 4097 values read with linear interpolation, v clamped to 0..1."""
@@ -1669,55 +1722,63 @@ def to_lab(S, tab, r, g, b):
 
 @kernel("colormatch_rows", WH, [PIC_IN, PIC_OUT, TABLE])
 def colormatch_rows(S):
-    # the statistics of colorMatch(): one thread per sample row adds up its samples (the table: the two sRGB tables (4097 each), then the 160 sample columns and 90 sample rows)
+    # the 160 x 90 samples of colorMatch()'s frame statistics, one thread each: out[j * 160 + i] = (L, a, b, 1 for a sample that counts else 0)
+    # (the table: the two sRGB tables (4097 each), then the 160 sample columns and 90 sample rows)
     P = S.p
-    with S.if_(S.gx < 1):
-        with S.if_(S.gy < 90):
-            tab = S.buf('table')
-            y = S.to_u(tab.load(S.u(8194 + 160) + S.gy))
-            s0 = S.var('v4', S.splat4(0.0))
-            s1 = S.var('v4', S.splat4(0.0))
-            with S.for_(0, 160) as i:
-                x = S.to_u(tab.load(S.u(8194) + i))
-                p = S.buf('in0').load(y * P.w + x)
-                a = p.w
-                has = a > 1e-6
-                r = S.select(has, p.x / a, S.f(0.0))
-                g = S.select(has, p.y / a, S.f(0.0))
-                b = S.select(has, p.z / a, S.f(0.0))
-                L, A, B = to_lab(S, tab, r, g, b)
-                with S.if_(a > 0.0):
-                    s0.set(s0.get() + S.vec4(L, A, B, 1.0))
-                    s1.set(s1.get() + S.vec4(L * L, A * A, B * B, 0.0))
-            S.buf('out').store(S.gy * 2, s0.get())
-            S.buf('out').store(S.gy * 2 + 1, s1.get())
+    with S.if_((S.gx < 160) & (S.gy < 90)):
+        tab = S.buf('table')
+        y = S.to_u(tab.load(S.u(8194 + 160) + S.gy))
+        x = S.to_u(tab.load(S.u(8194) + S.gx))
+        p = S.buf('in0').load(y * P.w + x)
+        a = p.w
+        has = a > 1e-6
+        r = S.select(has, p.x / a, S.f(0.0))
+        g = S.select(has, p.y / a, S.f(0.0))
+        b = S.select(has, p.z / a, S.f(0.0))
+        L, A, B = to_lab(S, tab, r, g, b)
+        cnt = S.select(a > 0.0, S.f(1.0), S.f(0.0))
+        S.buf('out').store(S.gy * 160 + S.gx, S.vec4(L, A, B, cnt))
 
 @kernel("colormatch_params", WH, [PIC_IN, PIC_OUT, TABLE])
 def colormatch_params(S):
-    # the numbers the picture pass needs: table = the 12 statistics of the settings, the captured-target flag, the strength, the lightness flag
+    # the numbers the picture pass needs, all in doubles as the CPU has them. table: the 12 statistics (doubles as two words each), the captured-target flag,
+    # the strength, the lightness flag. Without a captured target the target's statistics are the samples' (summed in the CPU's order: row by row, one thread).
     P = S.p
     with S.if_(S.eq(S.gx, 0) & S.eq(S.gy, 0)):
         tab = S.buf('table')
-        t0 = S.var('v4', S.splat4(0.0))
-        t1 = S.var('v4', S.splat4(0.0))
-        with S.for_(0, 90) as j:
-            t0.set(t0.get() + S.buf('in0').load(j * 2))
-            t1.set(t1.get() + S.buf('in0').load(j * 2 + 1))
-        cnt = t0.get().w
-        captured = S.ne(S.to_u(tab.load(S.u(12))), 0)
-        means = [t0.get()[k] / S.max(cnt, 1.0) for k in range(3)]
-        stds = [S.sqrt(S.max(t1.get()[k] / S.max(cnt, 1.0) - means[k] * means[k], 0.0)) for k in range(3)]
+        captured = S.ne(S.f_to_bits(tab.load(S.u(24))), 0)
+        zero = SF.const(S, 0.0)
+        sums = [SFVar(S, 0.0) for _ in range(3)]
+        sqs = [SFVar(S, 0.0) for _ in range(3)]
+        count = S.var('u', S.u(0))
+        with S.if_(~captured):
+            with S.for_(0, 14400) as k:
+                v = S.buf('in0').load(k)
+                with S.if_(v.w > 0.5):
+                    for q in range(3):
+                        d = SF.from_f32(S, v[q])
+                        sums[q].set(sums[q].get() + d)
+                        sqs[q].set(sqs[q].get() + d * d)
+                    count.set(count.get() + 1)
+        cnt = SF.from_u32(S, count.get())
         mul, tm, sm = [], [], []
         for k in range(3):
-            ss = tab.load(S.u(2 * k + 1))
-            tmean = S.select(captured, tab.load(S.u(6 + 2 * k)), means[k])
-            tstd = S.select(captured, tab.load(S.u(7 + 2 * k)), stds[k])
-            m = S.select(tstd > 0.05, S.min(S.max(ss / S.select(tstd > 0.05, tstd, S.f(1.0)), 0.0), 8.0), S.f(1.0))
-            mul.append(m); tm.append(tmean); sm.append(tab.load(S.u(2 * k)))
-        ok = S.select(captured | (cnt >= 4.0), S.f(1.0), S.f(0.0))
+            ss = ld_sf(S, tab, 2 * (2 * k + 1))
+            smean = ld_sf(S, tab, 2 * (2 * k))
+            mean_t = sums[k].get() / cnt
+            var_t = sqs[k].get() / cnt - mean_t * mean_t
+            std_t = SF.sel(S, var_t > 0.0, var_t, zero).sqrt()
+            tmean = SF.sel(S, captured, ld_sf(S, tab, 2 * (6 + 2 * k)), mean_t)
+            tstd = SF.sel(S, captured, ld_sf(S, tab, 2 * (7 + 2 * k)), std_t)
+            ratio = ss / SF.sel(S, tstd > 0.05, tstd, SF.const(S, 1.0))
+            ratio = SF.sel(S, ratio > 0.0, ratio, zero)
+            ratio = SF.sel(S, ratio < 8.0, ratio, SF.const(S, 8.0))
+            m = SF.sel(S, tstd > 0.05, ratio, SF.const(S, 1.0))
+            mul.append(m.to_f32()); tm.append(tmean.to_f32()); sm.append(smean.to_f32())
+        ok = S.select(captured | (count.get() >= 4), S.f(1.0), S.f(0.0))
         S.buf('out').store(S.u(0), S.vec4(tm[0], tm[1], tm[2], ok))
-        S.buf('out').store(S.u(1), S.vec4(mul[0], mul[1], mul[2], tab.load(S.u(13))))
-        S.buf('out').store(S.u(2), S.vec4(sm[0], sm[1], sm[2], tab.load(S.u(14))))
+        S.buf('out').store(S.u(1), S.vec4(mul[0], mul[1], mul[2], tab.load(S.u(25))))
+        S.buf('out').store(S.u(2), S.vec4(sm[0], sm[1], sm[2], tab.load(S.u(26))))
 
 @kernel("colormatch", WH, [PIC_IN, PIC_IN1, PIC_OUT, TABLE])
 def colormatch(S):
@@ -1782,21 +1843,21 @@ def heightplane(S):
         v = S.select(S.ne(P.alpha, 0), v * p.w, v)
         S.buf('out').store(S.gy * P.w + S.gx, v)
 
-@kernel("tvsimulator", WH + [('zoom', 'f'), ('roll', 'f'), ('phos', 'f'), ('grill', 'f'), ('inter', 'f'), ('scan', 'f'), ('stat', 'f'), ('scale', 'f'), ('full', 'u'), ('t7', 'u')],
+@kernel("tvsimulator", WH + [('phos', 'f'), ('grill', 'f'), ('inter', 'f'), ('scan', 'f'), ('stat', 'f'), ('scale', 'f'), ('full', 'u'), ('t7', 'u')],
         [PIC_IN, PIC_IN1, PIC_OUT, TABLE])
 def tvsimulator(S):
-    # tvSimulator(): the table holds, per row, the line wobble (sync trouble) and the brightness band, worked out in double precision
+    # tvSimulator(): the CPU's sample position is a pair of doubles. The table holds (H = the height, W = the width): the line wobble of each row as a double (2 words a row),
+    # its brightness band as a float (H words), the row's sample y as a double (2 words a row) and each column's x without the wobble as a double (2 words a column);
+    # the position is the column's x plus the row's wobble, in the software double
     P = S.p
     with S.in_range(P.w, P.h):
         tab = S.buf('table')
-        wf, hf = S.to_f(P.w), S.to_f(P.h)
-        wob = tab.load(S.gy)
-        bandv = tab.load(P.h + S.gy)
-        zx = (S.to_f(S.gx) + 0.5 - wf * 0.5) / P.zoom + wf * 0.5 + wob
-        sy = S.fmod(S.to_f(S.gy) + P.roll, hf)
-        zy = (sy + 0.5 - hf * 0.5) / P.zoom + hf * 0.5
-        p = sample_clamped(S, S.buf('in0'), P.w, P.h, zx, zy)
-        g = sample_clamped(S, S.buf('in1'), P.w, P.h, zx, zy)
+        wob = ld_sf(S, tab, S.gy * 2)
+        bandv = tab.load(P.h * 2 + S.gy)
+        zy = ld_sf(S, tab, P.h * 3 + S.gy * 2)
+        zx = ld_sf(S, tab, P.h * 5 + S.gx * 2) + wob
+        p = sample_clamped_d(S, S.buf('in0'), P.w, P.h, zx, zy)
+        g = sample_clamped_d(S, S.buf('in1'), P.w, P.h, zx, zy)
         k = P.phos * 0.5
         o = [p[c] + (g[c] * 1.1 - p[c]) * k for c in range(3)]
         o[2] = o[2] + P.phos * 0.04 * g[3]
@@ -1871,19 +1932,18 @@ def lensflare(S):
                 hhit = m >= 0.0
                 # type 5: the rays
                 ang = S.atan2(v, u)
-                PIF, PILO = 3.1415927410125732, -8.742278000372485e-8
-                s_ = ang + PIF
-                bb = s_ - ang
-                err = (ang - (s_ - bb)) + (PIF - bb)
-                af = s_ + (err + PILO)
-                a2 = S.max(af * 28.64788975654116, 0.0)
-                fl = S.floor(a2)
-                fr = a2 - fl
-                ii = S.to_u(fl)
-                w = (1.0 - fr) * tab.load(ii % 64) + fr * tab.load((ii + 1) % 64)
+                # (the CPU's doubles: the angle plus pi rounded to a float, scaled to 0..180, the table read with a double blend, the cube of 1 - q)
+                ad = SF.from_f32(S, (SF.from_f32(S, ang) + 3.141592653589793).to_f32())
+                ad = ad / 6.283185307179586 * 3.0
+                ad = ad * 60.0
+                fr = ad - ad.trunc()
+                ii = S.to_u(ad.trunc_i32())
+                t0 = SF.from_f32(S, tab.load(ii & 63))
+                t1 = SF.from_f32(S, tab.load((ii + 1) & 63))
+                w = (((SF.const(S, 1.0) - fr) * t0) + (fr * t1)).to_f32()
                 qq = S.select(S.f(0.0) >= d, S.f(0.0), S.select(d < w, d / w, S.f(1.0)))
-                om = 1.0 - qq
-                s5 = om * om * om
+                xq = SF.const(S, 1.0) - SF.from_f32(S, qq)
+                s5 = ((xq * xq) * xq).to_f32()
                 s5 = S.select(d < 0.3, (d / 0.3) * (s5 - 1.0) + 1.0, s5)
                 s = S.select(S.eq(ty, 0), s0, S.select(S.eq(ty, 1), s1, S.select(S.eq(ty, 2), s2, S.select(S.eq(ty, 3), s3, S.select(S.eq(ty, 4), s4, s5)))))
                 hit = S.select(S.eq(ty, 2), hit2, S.select(S.eq(ty, 3) | S.eq(ty, 4), hhit, lt1))

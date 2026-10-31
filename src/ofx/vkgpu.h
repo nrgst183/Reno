@@ -25,7 +25,7 @@ struct DeviceInfo {
     uint32_t maxStorageRange = 0, maxPushConstants = 0, maxGroupInvocations = 0;
     bool timestamps = false;
     // Float controls (Vulkan 1.2 / VK_KHR_shader_float_controls), as the driver reports them: fcKnown is false when they could not be asked (a Vulkan 1.0/1.1 device).
-    bool fcUseRte = false, fcUseDenorm = false;      // the controls put into every kernel
+    bool fcUseRte = false, fcUseDenorm = false, fcUseSzinf = false;      // the controls put into every kernel
     bool fcKnown = false, fcRteF32 = false, fcDenormPreserveF32 = false, fcDenormFlushF32 = false, fcRtzF32 = false, fcSignedZeroInfNanF32 = false;
     int fcDenormIndependence = -1, fcRoundingIndependence = -1;      // 0 = 32-bit only, 1 = all, 2 = none
     bool floatControlsUsed = false;     // every kernel is made with RoundingModeRTE and DenormPreserve for 32-bit floats
@@ -77,8 +77,11 @@ struct FrameIO {
     bool deferOut = false;
 };
 struct RunStats {
-    double gpuMs = 0;
+    double gpuMs = 0;                   // the kernels (the unpack, the passes, the pack), as the card's timestamps say
     double totalMs = 0;
+    // where the rest of totalMs goes (0 when not measured): copying into the staging memory, recording, the card copying up / down (timestamps), the
+    // whole submit-to-fence wait, copying out of the staging memory
+    double fillMs = 0, recordMs = 0, copyUpMs = 0, copyDownMs = 0, waitMs = 0, readMs = 0;
     bool inputStayed = false;
     bool deferred = false;              // FrameIO::deferOut was done
     int passes = 0;

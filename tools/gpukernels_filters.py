@@ -690,16 +690,19 @@ DER_N, DER_M, DER_D, DER_EN, DER_EM = 0, 4, 8, 12, 17
 @kernel("deriche", WH + [('vert', 'u'), ('inlv', 'u'), ('outlv', 'u'), ('pad', 'u')], [PIC_IN, (1, 'st', 'u', 'rw'), PIC_OUT, TABLE], local=(64, 1))
 def deriche(S):
     """One line (a row, or a column with vert) of VEGAS's Deriche Gaussian, vegasDericheBlurSigma() / dericheLanes() in builtins_deriche.cpp, in doubles
-    in the CPU's order of operations, one invocation per line and channel (gx = line * 4 + channel, deriche_pack gathers the channels): the causal half (the first five values from the edge terms) into the
-    state buffer (the double's two words, 8 words a pixel), then the anti-causal half added to it. inlv: the input is a picture (0..1) taken to levels
-    (1; 2: whole ones); 0: it is levels already (the middle plane). outlv: the result back to 0..1 (1; 2: rounded to whole levels first); 0: as it is."""
+    in the CPU's order of operations, one invocation per line, channel and half (gx = line * 4 + channel; the second half of the invocations is the anti-causal half): the
+    causal half (the first five values from the edge terms) into the state buffer (the double's two words, 16 words a pixel: the causal doubles of the four channels, then the
+    anti-causal ones), the anti-causal half beside it; deriche_join adds them. The two halves do not depend on each other, so they run side by side. inlv: the input is a picture
+    (0..1) taken to levels (1; 2: whole ones); 0: it is levels already (the middle plane). (outlv is for deriche_join.)"""
     P = S.p
     vert = S.ne(P.vert, 0)
     n = S.select(vert, P.h, P.w)
     lines = S.select(vert, P.w, P.h)
-    with S.if_(S.gx < lines * 4):
-        line = S.gx >> 2
-        ch0 = S.gx & 3
+    with S.if_(S.gx < lines * 8):
+        anti = S.ge_(S.gx, lines * 4) if hasattr(S, 'ge_') else (S.gx >= lines * 4)
+        g = S.gx - S.select(anti, lines * 4, S.u(0))
+        line = g >> 2
+        ch0 = g & 3
         tab = S.buf('table')
         st = S.buf('st')
         src = S.buf('in0')
@@ -720,80 +723,86 @@ def deriche(S):
             sc = f * c255
             r = SF.from_i32(S, sf_nearbyint(S, SF.sel(S, sc < zero, zero, SF.sel(S, sc > c255, c255, sc))))
             return SF.sel(S, S.eq(P.inlv, 0), f, SF.sel(S, S.eq(P.inlv, 1), sc, r))
-        def ld(pix, ch, w):
-            return st.load(pix * 8 + ch * 2 + w)
         with S.for_(ch0, ch0 + 1) as ch:
+          with S.if_(~anti):
             # ---- causal
-            xL = get(pos(S.u(0)), ch)
-            x1, x2, x3 = SFVar(S, zero), SFVar(S, zero), SFVar(S, zero)
-            y1, y2, y3, y4 = SFVar(S, zero), SFVar(S, zero), SFVar(S, zero), SFVar(S, zero)
-            with S.for_(0, n) as t:
-                x0 = get(pos(t), ch)
-                acc = SFVar(S, zero)
-                with S.if_(t < 5):
-                    xs = [x0, x1.get(), x2.get(), x3.get()]
-                    ys = [zero, y1.get(), y2.get(), y3.get()]
-                    for k in range(5):
-                        b = co(DER_EN + k) * xL
-                        if k < 4:
-                            a = x0 * co(DER_N + k) if k == 0 else xs[k] * co(DER_N + k) - co(DER_D + k - 1) * ys[k]
-                            acc.set(acc.get() + SF.sel(S, t > k, a, b))
-                        else:
-                            acc.set(acc.get() + b)
-                with S.else_():
-                    a = x0 * co(DER_N)
-                    a = a + (x1.get() * co(DER_N + 1) - co(DER_D) * y1.get())
-                    a = a + (x2.get() * co(DER_N + 2) - co(DER_D + 1) * y2.get())
-                    a = a + (x3.get() * co(DER_N + 3) - co(DER_D + 2) * y3.get())
-                    a = a - co(DER_D + 3) * y4.get()
-                    acc.set(a)
-                y = tiny(acc.get())
-                pix = idx(pos(t))
-                st.store(pix * 8 + ch * 2, y.hi)
-                st.store(pix * 8 + ch * 2 + 1, y.lo)
-                x3.set(x2.get()); x2.set(x1.get()); x1.set(x0)
-                y4.set(y3.get()); y3.set(y2.get()); y2.set(y1.get()); y1.set(y)
-            # ---- anti-causal, and the sum
-            xR = get(pos(n - 1), ch)
-            a1, a2, a3, a4 = SFVar(S, zero), SFVar(S, zero), SFVar(S, zero), SFVar(S, zero)
-            z1, z2, z3, z4 = SFVar(S, zero), SFVar(S, zero), SFVar(S, zero), SFVar(S, zero)
-            with S.for_(0, n) as t:
-                q = pos(n - 1 - t)
-                x0 = get(q, ch)
-                acc = SFVar(S, zero)
-                with S.if_(t < 5):
-                    xs = [x0, a1.get(), a2.get(), a3.get(), a4.get()]
-                    zs = [zero, z1.get(), z2.get(), z3.get(), z4.get()]
-                    for k in range(1, 5):
-                        b = co(DER_EM + k) * xR
-                        a = xs[k] * co(DER_M + k - 1) - co(DER_D + k - 1) * zs[k]
-                        acc.set(acc.get() + SF.sel(S, t > k, a, b))
-                with S.else_():
-                    a = a1.get() * co(DER_M) - co(DER_D) * z1.get()
-                    a = a + (a2.get() * co(DER_M + 1) - co(DER_D + 1) * z2.get())
-                    a = a + (a3.get() * co(DER_M + 2) - co(DER_D + 2) * z3.get())
-                    a = a + (a4.get() * co(DER_M + 3) - co(DER_D + 3) * z4.get())
-                    acc.set(a)
-                z = tiny(acc.get())
-                pix = idx(q)
-                yc = SF(S, ld(pix, ch, 0), ld(pix, ch, 1))
-                tot = yc + z
-                r = SF.from_i32(S, sf_nearbyint(S, SF.sel(S, tot < zero, zero, SF.sel(S, tot > c255, c255, tot))))
-                v = SF.sel(S, S.eq(P.outlv, 2), r, tot)
-                v = SF.sel(S, S.eq(P.outlv, 0), tot, v / c255)
-                st.store(pix * 8 + ch * 2, S.f_to_bits(v.to_f32()))
-                a4.set(a3.get()); a3.set(a2.get()); a2.set(a1.get()); a1.set(x0)
-                z4.set(z3.get()); z3.set(z2.get()); z2.set(z1.get()); z1.set(z)
+              xL = get(pos(S.u(0)), ch)
+              x1, x2, x3 = SFVar(S, zero), SFVar(S, zero), SFVar(S, zero)
+              y1, y2, y3, y4 = SFVar(S, zero), SFVar(S, zero), SFVar(S, zero), SFVar(S, zero)
+              with S.for_(0, n) as t:
+                  x0 = get(pos(t), ch)
+                  acc = SFVar(S, zero)
+                  with S.if_(t < 5):
+                      xs = [x0, x1.get(), x2.get(), x3.get()]
+                      ys = [zero, y1.get(), y2.get(), y3.get()]
+                      for k in range(5):
+                          b = co(DER_EN + k) * xL
+                          if k < 4:
+                              a = x0 * co(DER_N + k) if k == 0 else xs[k] * co(DER_N + k) - co(DER_D + k - 1) * ys[k]
+                              acc.set(acc.get() + SF.sel(S, t > k, a, b))
+                          else:
+                              acc.set(acc.get() + b)
+                  with S.else_():
+                      a = x0 * co(DER_N)
+                      a = a + (x1.get() * co(DER_N + 1) - co(DER_D) * y1.get())
+                      a = a + (x2.get() * co(DER_N + 2) - co(DER_D + 1) * y2.get())
+                      a = a + (x3.get() * co(DER_N + 3) - co(DER_D + 2) * y3.get())
+                      a = a - co(DER_D + 3) * y4.get()
+                      acc.set(a)
+                  y = tiny(acc.get())
+                  pix = idx(pos(t))
+                  st.store(pix * 16 + ch * 2, y.hi)
+                  st.store(pix * 16 + ch * 2 + 1, y.lo)
+                  x3.set(x2.get()); x2.set(x1.get()); x1.set(x0)
+                  y4.set(y3.get()); y3.set(y2.get()); y2.set(y1.get()); y1.set(y)
+          with S.else_():
+            # ---- anti-causal
+              xR = get(pos(n - 1), ch)
+              a1, a2, a3, a4 = SFVar(S, zero), SFVar(S, zero), SFVar(S, zero), SFVar(S, zero)
+              z1, z2, z3, z4 = SFVar(S, zero), SFVar(S, zero), SFVar(S, zero), SFVar(S, zero)
+              with S.for_(0, n) as t:
+                  q = pos(n - 1 - t)
+                  x0 = get(q, ch)
+                  acc = SFVar(S, zero)
+                  with S.if_(t < 5):
+                      xs = [x0, a1.get(), a2.get(), a3.get(), a4.get()]
+                      zs = [zero, z1.get(), z2.get(), z3.get(), z4.get()]
+                      for k in range(1, 5):
+                          b = co(DER_EM + k) * xR
+                          a = xs[k] * co(DER_M + k - 1) - co(DER_D + k - 1) * zs[k]
+                          acc.set(acc.get() + SF.sel(S, t > k, a, b))
+                  with S.else_():
+                      a = a1.get() * co(DER_M) - co(DER_D) * z1.get()
+                      a = a + (a2.get() * co(DER_M + 1) - co(DER_D + 1) * z2.get())
+                      a = a + (a3.get() * co(DER_M + 2) - co(DER_D + 2) * z3.get())
+                      a = a + (a4.get() * co(DER_M + 3) - co(DER_D + 3) * z4.get())
+                      acc.set(a)
+                  z = tiny(acc.get())
+                  pix = idx(q)
+                  st.store(pix * 16 + 8 + ch * 2, z.hi)
+                  st.store(pix * 16 + 8 + ch * 2 + 1, z.lo)
+                  a4.set(a3.get()); a3.set(a2.get()); a2.set(a1.get()); a1.set(x0)
+                  z4.set(z3.get()); z3.set(z2.get()); z2.set(z1.get()); z1.set(z)
 
-@kernel("deriche_pack", WH, [PIC_IN, (1, 'st', 'u', 'rw'), PIC_OUT])
-def deriche_pack(S):
-    """The result words of "deriche" (channel ch of a pixel in word ch * 2 of its 8) as the picture."""
+@kernel("deriche_join", WH + [('outlv', 'u'), ('pad', 'u')], [PIC_IN, (1, 'st', 'u', 'rw'), PIC_OUT])
+def deriche_join(S):
+    """The two halves of "deriche" added, a pixel and four channels a thread: causal + anti-causal (as the CPU's single loop does), then outlv: the result back to 0..1 (1; 2: rounded to
+    whole levels first); 0: as it is."""
     P = S.p
     with S.in_range(P.w, P.h):
         pix = S.gy * P.w + S.gx
         st = S.buf('st')
-        def fv(ch): return S.bits_to_f(st.load(pix * 8 + ch * 2))
-        S.buf('out').store(pix, S.vec4(fv(0), fv(1), fv(2), fv(3)))
+        c255, zero = SF.const(S, 255.0), SF.const(S, 0.0)
+        res = []
+        for ch in range(4):
+            yc = SF(S, st.load(pix * 16 + ch * 2), st.load(pix * 16 + ch * 2 + 1))
+            z = SF(S, st.load(pix * 16 + 8 + ch * 2), st.load(pix * 16 + 8 + ch * 2 + 1))
+            tot = yc + z
+            r = SF.from_i32(S, sf_nearbyint(S, SF.sel(S, tot < zero, zero, SF.sel(S, tot > c255, c255, tot))))
+            v = SF.sel(S, S.eq(P.outlv, 2), r, tot)
+            v = SF.sel(S, S.eq(P.outlv, 0), tot, v / c255)
+            res.append(v.to_f32())
+        S.buf('out').store(pix, S.vec4(res[0], res[1], res[2], res[3]))
 
 @kernel("unsharp_mix", WH + dpush('amount') + [('thr', 'f'), ('lv', 'u')], [PIC_IN, PIC_IN1, PIC_OUT])
 def unsharp_mix(S):
@@ -2371,20 +2380,32 @@ for _m in range(3): _news_dots(_m)
 # ---------------------------------------------------------------------------------------------------------- Min and Max / Median in 8 bits (rankFilter8), Median (vegasMedian)
 @kernel("rank8", WH + [('nx', 'u'), ('ny', 'u'), ('rank', 'f'), ('pad', 'u')], [PIC_IN, PIC_OUT, TABLE])
 def rank8(S):
-    """rankFilter8() in builtins_more_blur.cpp: per pixel and channel (B, G, R, A bytes) a histogram of floats in the window's walk order; the table holds the quadrant's weights"""
+    """rankFilter8() in builtins_more_blur.cpp: per pixel and channel (B, G, R, A bytes) a histogram of floats in the window's walk order; the table holds the quadrant's weights.
+    Only the bins the window touches are set (a bit mask says which; the first weight into a bin is the sum 0 + w, which is w) and read, in rising order: the same sums in the same
+    order as the 256-bin walk, without clearing and scanning bins the window never reaches."""
     P = S.p
     with S.in_range(P.w, P.h):
         inb, tab = S.buf('in0'), S.buf('table')
-        hist = S.local_array(256, 'f')
+        hist = S.local_array(256, 'f', init=False)
+        mask = S.local_array(8, 'u')
         wi, hi_ = S.to_i(P.w), S.to_i(P.h)
         nx, ny = S.to_i(P.nx), S.to_i(P.ny)
         x, y = S.to_i(S.gx), S.to_i(S.gy)
         total = S.var('f', S.f(0.0))
         vals = [None] * 4
+        def each_bin(fn):
+            """fn(v) for every touched bin v, rising"""
+            with S.for_(0, 8) as wd:
+                m = S.var('u', mask.load(wd))
+                with S.for_(0, S.bit_count(m.get())):
+                    lsb = m.get() & (~m.get() + 1)
+                    fn(wd * 32 + S.find_umsb(lsb))
+                    m.set(m.get() ^ lsb)
         for b in range(4):
             ch = [2, 1, 0, 3][b]
-            with S.for_(0, 256) as z:
-                hist.store(z, S.f(0.0))
+            if b > 0:
+                with S.for_(0, 8) as z:
+                    mask.store(z, S.u(0))
             with S.for_(0, 2 * P.ny - 1) as step:
                 dy = (ny - 1) - S.to_i(step)
                 yy = y + dy
@@ -2396,17 +2417,23 @@ def rank8(S):
                         with S.if_((xx >= 0) & (xx < wi)):
                             w = tab.load(S.to_u(iy * nx + S.select(dx < 0, S.i(0) - dx, dx)))
                             with S.if_(~S.eq(w, S.f(0.0))):
-                                v = to_level(S, inb.load(S.to_u(yy) * P.w + S.to_u(xx))[ch])
-                                hist.store(S.to_u(v), hist.load(S.to_u(v)) + w)
+                                v = S.to_u(to_level(S, inb.load(S.to_u(yy) * P.w + S.to_u(xx))[ch]))
+                                wd = v >> 5
+                                bit = S.u(1) << (v & 31)
+                                mw = mask.load(wd)
+                                with S.if_(S.ne(mw & bit, 0)):
+                                    hist.store(v, hist.load(v) + w)
+                                with S.else_():
+                                    hist.store(v, w)
+                                    mask.store(wd, mw | bit)
             if b == 0:
-                with S.for_(0, 256) as z:
-                    total.set(total.get() + hist.load(z))
+                each_bin(lambda v: total.set(total.get() + hist.load(v)))
             t = ((total.get() - 1.0) * P.rank) + 0.5
             lo = t - 0.5
             hi = 0.5 + t
             prev = S.var('f', S.f(0.0))
             acc = S.var('f', S.f(0.0))
-            with S.for_(0, 256) as v:
+            def scan(v):
                 w = hist.load(v)
                 with S.if_(w > 0.0):
                     cur = w + prev.get()
@@ -2414,6 +2441,7 @@ def rank8(S):
                         ov = S.select(hi < cur, S.select(lo <= prev.get(), hi - prev.get(), S.f(1.0)), S.select(lo <= prev.get(), w, cur - lo))
                         acc.set(acc.get() + ov * S.to_f(S.to_i(v)))
                     prev.set(cur)
+            each_bin(scan)
             r = S.clamp(S.to_i(acc.get()), 0, 255)
             vals[ch] = from_level(S, r)
         S.buf('out').store(S.gy * P.w + S.gx, S.vec4(vals[0], vals[1], vals[2], vals[3]))
@@ -3577,10 +3605,17 @@ def scene_gather(S):
         x0, y0 = S.to_i(t.load(i * 4)), S.to_i(t.load(i * 4 + 1))
         fx, fy = t.load(i * 4 + 2), t.load(i * 4 + 3)
         wi, hi = S.to_i(P.w), S.to_i(P.h)
+        def umod(v, n):
+            # v mod n (n > 0) in the range 0..n-1 as C++ code (i %= n; if (i < 0) i += n) has it, with unsigned arithmetic only: no signed remainder, whose
+            # rounding of negative operands is left to the driver's compiler
+            neg = v < 0
+            mag = S.select(neg, S.to_u(S.i(0) - v), S.to_u(v))          # (|v|, right for the most negative int too)
+            r = S.to_i(mag % S.to_u(n))
+            return S.select(neg & S.ne(r, 0), n - r, r)
         def wrap(v, n):
-            plain = ((v % n) + n) % n
+            plain = umod(v, n)
             n2 = n * 2
-            m = ((v % n2) + n2) % n2
+            m = umod(v, n2)
             mir = S.select(m < n, m, n2 - 1 - m)
             return S.select(S.ne(P.mirror, 0), mir, plain)
         def texel(xx, yy):
@@ -3604,11 +3639,23 @@ def _lerp4(S, a, b, t):
     return tuple(a[k] + (b[k] - a[k]) * t for k in range(4))
 
 
-@kernel("lr_ray", WH + [('nT', 'u'), ('rN', 'u'), ('t0', 'u'), ('chunk', 'u'), ('cx', 'f'), ('cy', 'f'), ('sens', 'f'), ('pad', 'u')] + dpush('span', 'fmin'),
-        [PIC_IN, (1, 'st', 'u', 'rw'), PIC_OUT, TABLE], local=(64, 1))
+LR_PUSH = WH + [('nT', 'u'), ('rN', 'u'), ('t0', 'u'), ('chunk', 'u'), ('cx', 'f'), ('cy', 'f'), ('sens', 'f'), ('pad', 'u')] + dpush('span', 'fmin')
+
+
+def _lr_layout(S, P, tab, ray):
+    """The scratch layout of a ray of the chunk (st): its samples (4 words each), then the two sums (6 words a position)."""
+    t = P.t0 + ray
+    count = S.to_u(tab.load(P.nT * 2 + t))
+    qw = (P.rN + 8) * 4
+    sw = (P.rN + 9) * 6
+    base = ray * (qw + sw * 2)
+    return t, count, base, base + qw, base + qw + sw
+
+
+@kernel("lr_ray", LR_PUSH, [PIC_IN, (1, 'st', 'u', 'rw'), PIC_OUT, TABLE], local=(64, 1))
 def lr_ray(S):
-    """One ray a thread (marchTowardsCentre() with Light Rays' pixel function): the frame sampled along the ray (floats, stepping by the cosine and sine), the running
-    sums of the samples in doubles, then every radius' value; out[ray * rN + r]. st: per ray of the chunk the samples (4 words each), then the two sums (6 words a position)."""
+    """One ray a thread (marchTowardsCentre() with Light Rays' pixel function): the frame sampled along the ray (floats, stepping by the cosine and sine); the
+    samples go to st (4 words each, per ray of the chunk). The sums (lr_sum) and every radius' value (lr_val) are the next passes."""
     P = S.p
     with S.if_(S.gx < P.chunk):
         t = P.t0 + S.gx
@@ -3616,7 +3663,6 @@ def lr_ray(S):
             tab = S.buf('table')
             src = S.buf('in0')
             st = S.buf('st')
-            out = S.buf('out')
             c = tab.load(t)
             sn = tab.load(P.nT + t)
             count = S.to_u(tab.load(P.nT * 2 + t))
@@ -3624,12 +3670,9 @@ def lr_ray(S):
             qw = (P.rN + 8) * 4
             sw = (P.rN + 9) * 6
             base = S.gx * (qw + sw * 2)
-            s0b = base + qw
-            s1b = s0b + sw
             wi, hi = S.to_i(P.w), S.to_i(P.h)
             mx, my = S.to_f(P.w - 1), S.to_f(P.h - 1)
             zero_f = S.f(0.0)
-            # ---- the samples
             x = S.var('f', P.cx + S.f(-4.0) * c)
             y = S.var('f', P.cy + S.f(-4.0) * sn)
             with S.for_(0, n) as i:
@@ -3653,34 +3696,67 @@ def lr_ray(S):
                 st.store(base + i * 4 + 3, S.f_to_bits(zero_f))
                 x.set(x.get() + c)
                 y.set(y.get() + sn)
-            # ---- the running sums
+
+
+@kernel("lr_sum", LR_PUSH, [(1, 'st', 'u', 'rw'), TABLE], local=(64, 1))
+def lr_sum(S):
+    """The running sums of the samples in doubles, a thread to each ray, channel and sum (the sums do not depend on each other): sum 0 adds the sample, sum 1 the sample
+    times its radius index (marchTowardsCentre()'s two prefix sums, in the same order)."""
+    P = S.p
+    with S.if_(S.gx < P.chunk * 6):
+        # (the two sums in two halves of the threads: the threads of a warp all take the same branch below)
+        half = P.chunk * 3
+        which = S.select(S.gx >= half, S.u(1), S.u(0))
+        rem = S.gx - which * half
+        ray = rem / 3
+        k = rem - ray * 3
+        with S.if_(P.t0 + ray < P.nT):
+            tab = S.buf('table')
+            st = S.buf('st')
+            t, count, base, s0b, s1b = _lr_layout(S, P, tab, ray)
+            n = count + 8
+            b = S.select(S.ne(which, 0), s1b, s0b)
             zero = SF.const(S, 0.0)
-            for k in range(3):
-                for b in (s0b, s1b):
-                    st.store(b + k * 2, zero.hi)
-                    st.store(b + k * 2 + 1, zero.lo)
-            run0 = [SFVar(S, zero) for _ in range(3)]
-            run1 = [SFVar(S, zero) for _ in range(3)]
+            st.store(b + k * 2, zero.hi)
+            st.store(b + k * 2 + 1, zero.lo)
+            run = SFVar(S, zero)
             with S.for_(0, n) as j:
-                r = SF.from_i32(S, S.to_i(j) - 4)
-                for k in range(3):
-                    qv = SF.from_f32(S, S.bits_to_f(st.load(base + j * 4 + k)))
-                    n0 = run0[k].get() + qv
-                    n1 = run1[k].get() + r * qv
-                    run0[k].set(n0)
-                    run1[k].set(n1)
-                    pos = (j + 1) * 6 + k * 2
-                    st.store(s0b + pos, n0.hi); st.store(s0b + pos + 1, n0.lo)
-                    st.store(s1b + pos, n1.hi); st.store(s1b + pos + 1, n1.lo)
-            # ---- the values
-            span, fmin = pd(P, 'span'), pd(P, 'fmin')
-            one, half = SF.const(S, 1.0), SF.const(S, 0.5)
-            taps = SF.const(S, 40.0)
-            def qf(j, k): return SF.from_f32(S, S.bits_to_f(st.load(base + S.to_u(j) * 4 + k)))
-            def sget(b, j, k):
-                pos = S.to_u(j) * 6 + k * 2
-                return SF(S, st.load(b + pos), st.load(b + pos + 1))
-            with S.for_(0, count) as r:
+                qv = SF.from_f32(S, S.bits_to_f(st.load(base + j * 4 + k)))
+                pos = (j + 1) * 6 + k * 2
+                with S.if_(S.ne(which, 0)):
+                    r = SF.from_i32(S, S.to_i(j) - 4)
+                    nn = run.get() + r * qv
+                    run.set(nn)
+                    st.store(b + pos, nn.hi); st.store(b + pos + 1, nn.lo)
+                with S.else_():
+                    nn = run.get() + qv
+                    run.set(nn)
+                    st.store(b + pos, nn.hi); st.store(b + pos + 1, nn.lo)
+
+
+@kernel("lr_val", LR_PUSH, [PIC_OUT, (1, 'st', 'u', 'rw'), TABLE])
+def lr_val(S):
+    """Every radius' value of every ray (a thread each): out[ray * rN + r]."""
+    P = S.p
+    with S.if_(S.gx < P.rN):
+        with S.if_(S.gy < P.chunk):
+            tab = S.buf('table')
+            st = S.buf('st')
+            out = S.buf('out')
+            t, count, base, s0b, s1b = _lr_layout(S, P, tab, S.gy)
+            with S.if_(P.t0 + S.gy < P.nT):
+              with S.if_(S.gx < count):
+                n = count + 8
+                zero_f = S.f(0.0)
+                zero = SF.const(S, 0.0)
+                span, fmin = pd(P, 'span'), pd(P, 'fmin')
+                one, half = SF.const(S, 1.0), SF.const(S, 0.5)
+                taps = SF.const(S, 40.0)
+                def qf(j, k): return SF.from_f32(S, S.bits_to_f(st.load(base + S.to_u(j) * 4 + k)))
+                def sget(b, j, k):
+                    pos = S.to_u(j) * 6 + k * 2
+                    return SF(S, st.load(b + pos), st.load(b + pos + 1))
+                r = S.gx
                 dst = (t * P.rN + r)
                 ri = S.to_i(r)
                 vals = [S.var('f', zero_f) for _ in range(3)]

@@ -112,6 +112,7 @@ int runFxBench(const std::vector<std::string>& args)
     makeGpuTestPicture(W, H, isFloat, true, false, in.data(), stride);
 
     std::printf("%-40s %9s %11s %12s   %s\n", "effect", "CPU", "GPU kernel", "GPU+transfer", "faster");
+    std::printf("%-40s %9s %11s %12s   %s\n", "", "", "", "", "  (GPU: plan on the CPU | fill staging | card copy up | kernels | card copy down | submit/wait overhead | read staging)");
     double cpuSum = 0, gpuSum = 0;
     int shown = 0;
     for (const BuiltinInfo& bi : builtinInfos()) {
@@ -123,6 +124,7 @@ int runFxBench(const std::vector<std::string>& args)
         const std::string shortId = bi.id.substr(bi.id.find(':') + 1);
         const GpuTestSettings set(*d, GpuCheckCase());
         double cpuMs = -1, kernMs = -1, gpuMs = -1;
+        char parts[200] = "";
         if (doCpu) {
             Ctx c;
             set.apply(c);
@@ -141,22 +143,32 @@ int runFxBench(const std::vector<std::string>& args)
             set.apply(c);
             c.fps = 25;
             gpu::RunStats st;
-            std::vector<double> t, k;
+            std::vector<double> t, k, pl, fi, up, dn, sy, rd;
             bool ok = renderFrameGpu(*d, c, W, H, isFloat, true, in.data(), stride, b.data(), stride, &st);
             for (int r = 0; r < repeat && ok; ++r) {
                 const Clock::time_point t0 = Clock::now();
                 ok = renderFrameGpu(*d, c, W, H, isFloat, true, in.data(), stride, b.data(), stride, &st);
-                t.push_back(msSince(t0));
+                const double wall = msSince(t0);
+                t.push_back(wall);
                 k.push_back(st.gpuMs);
+                pl.push_back(std::max(0.0, wall - st.totalMs));
+                fi.push_back(st.fillMs);
+                up.push_back(st.copyUpMs);
+                dn.push_back(st.copyDownMs);
+                sy.push_back(std::max(0.0, st.waitMs - st.copyUpMs - st.gpuMs - st.copyDownMs));
+                rd.push_back(st.readMs);
             }
-            if (ok) { gpuMs = median(t); kernMs = median(k); }
+            if (ok) {
+                gpuMs = median(t); kernMs = median(k);
+                std::snprintf(parts, sizeof parts, "  [%.2f | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f]", median(pl), median(fi), median(up), kernMs, median(dn), median(sy), median(rd));
+            }
         }
         char cs[16] = "-", ks[16] = "-", gs[16] = "-";
         if (cpuMs >= 0) std::snprintf(cs, sizeof cs, "%.2f", cpuMs);
         if (kernMs >= 0) std::snprintf(ks, sizeof ks, "%.2f", kernMs);
         if (gpuMs >= 0) std::snprintf(gs, sizeof gs, "%.2f", gpuMs);
         const char* faster = (cpuMs >= 0 && gpuMs >= 0) ? (gpuMs < cpuMs ? "GPU" : "CPU") : "";
-        std::printf("%-40s %9s %11s %12s   %s\n", shortId.c_str(), cs, ks, gs, faster);
+        std::printf("%-40s %9s %11s %12s   %s%s\n", shortId.c_str(), cs, ks, gs, faster, parts);
         std::fflush(stdout);
         if (cpuMs >= 0) cpuSum += cpuMs;
         if (gpuMs >= 0) gpuSum += gpuMs;

@@ -8,4 +8,6 @@ mkdir -p $OUT
 rm -f $OUT/*.spv.h
 python3 tools/gpukernels.py $OUT
 python3 tools/shader_index.py $OUT
+
+python3 tools/spvlint.py $OUT
 rm -rf tools/__pycache__

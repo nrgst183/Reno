@@ -423,7 +423,7 @@ inline float tab(const float* t, float v)
     const int i = std::min(4095, (int)p);
     return t[i] + (t[i + 1] - t[i]) * (p - (float)i);
 }
-inline float labF(float t) { return t > 0.008856f ? std::cbrt(t) : 7.787f * t + 16.f / 116.f; }
+inline float labF(float t) { return t > 0.008856f ? (float)std::cbrt((double)t) : 7.787f * t + 16.f / 116.f; }      // (the double cbrt rounded to a float: the same on every C library, and what the GPU kernel works out)
 inline float labFinv(float t) { const float t3 = t * t * t; return t3 > 0.008856f ? t3 : (t - 16.f / 116.f) / 7.787f; }
 void toLab(const SrgbTables& T, float r, float g, float b, float lab[3])
 {
@@ -915,11 +915,21 @@ bool colorMatchGpu(Ctx& c, int W, int H, ColorMatchGpu& o)
     const int gx = 160, gy = 90;
     for (int i = 0; i < gx; ++i) o.rowsTable.push_back((float)std::min(W - 1, (int)((i + 0.5) * W / gx)));
     for (int j = 0; j < gy; ++j) o.rowsTable.push_back((float)std::min(H - 1, (int)((j + 0.5) * H / gy)));
-    o.paramTable.resize(15);
-    for (int i = 0; i < 12; ++i) o.paramTable[(size_t)i] = (float)st[i];
-    o.paramTable[12] = captured ? 1.f : 0.f;
-    o.paramTable[13] = (float)strength;
-    o.paramTable[14] = c.b("Processlightness") ? 1.f : 0.f;
+    // the 12 statistics as doubles (two words each: the bits of the high and the low half, held in floats), then the flags
+    o.paramTable.resize(27);
+    for (int i = 0; i < 12; ++i) {
+        uint64_t bits;
+        std::memcpy(&bits, &st[i], 8);
+        const uint32_t hi = (uint32_t)(bits >> 32), lo = (uint32_t)(bits & 0xffffffffu);
+        std::memcpy(&o.paramTable[(size_t)i * 2], &hi, 4);
+        std::memcpy(&o.paramTable[(size_t)i * 2 + 1], &lo, 4);
+    }
+    {
+        const uint32_t cap = captured ? 1u : 0u;
+        std::memcpy(&o.paramTable[24], &cap, 4);          // (a word read as an integer)
+    }
+    o.paramTable[25] = (float)strength;
+    o.paramTable[26] = c.b("Processlightness") ? 1.f : 0.f;
     return true;
 }
 

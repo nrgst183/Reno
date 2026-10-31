@@ -394,7 +394,15 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
         const View fv = viewOf(fromImg), tv = viewOf(toImg);
         if (d.gpu && fv.ok() && tv.ok() && ov.ok() && fv.isFloat == ov.isFloat && fv.bgra == ov.bgra && fv.x1 <= fx1 && fv.x2 >= fx1 + c.frameW && fv.y1 <= fy1 &&
             fv.y2 >= fy1 + c.frameH && ov.x1 == fx1 && ov.y1 == fy1 && fv.rowBytes > 0 && ov.rowBytes > 0) {
-            load(tv, c.src2, c.frameW, c.frameH, fx1, fy1);
+            // an 8-bit incoming frame that covers the frame goes up as it is (a quarter of the bytes of the floats, and no converting here); the card makes the floats
+            if (!tv.isFloat && tv.x1 <= fx1 && tv.x2 >= fx1 + c.frameW && tv.y1 <= fy1 && tv.y2 >= fy1 + c.frameH && tv.rowBytes > 0) {
+                c.src2.px.clear();
+                c.src2Bytes = tv.data + (ptrdiff_t)(fy1 - tv.y1) * tv.rowBytes + (size_t)(fx1 - tv.x1) * 4;
+                c.src2RowBytes = (size_t)tv.rowBytes;
+                c.src2Bgra = tv.bgra;
+            } else {
+                load(tv, c.src2, c.frameW, c.frameH, fx1, fy1);
+            }
             const size_t bpp = fv.isFloat ? 16 : 4;
             GpuFrame gf;
             gf.in = fv.data + (ptrdiff_t)(fy1 - fv.y1) * fv.rowBytes + (size_t)(fx1 - fv.x1) * bpp;
@@ -409,6 +417,7 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
                 gEff->clipReleaseImage(outImg);
                 return kOfxStatOK;
             }
+            c.src2Bytes = nullptr;
         }
         load(fv, c.src, c.frameW, c.frameH, fx1, fy1);
         load(tv, c.src2, c.frameW, c.frameH, fx1, fy1);

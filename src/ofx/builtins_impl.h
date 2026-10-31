@@ -135,6 +135,13 @@ struct Ctx {
     bool interactive = true;
     Buf src;
     Buf src2;
+    // GPU only: the incoming frame of a transition as the host holds it (8-bit, rows bottom first) instead of src2's floats, which are then left empty: the card
+    // makes the floats from the bytes (vkplan.h Plan::addFrameTable). The bytes must outlive the render.
+    const uint8_t* src2Bytes = nullptr;
+    size_t src2RowBytes = 0;
+    bool src2Bgra = true;
+    std::vector<uint8_t> src2Store;         // (the tests' own incoming frame, kept between their renders with the Ctx)
+    const void* src2StoreKey = nullptr;
     double progress = 0;
     Buf out;
     const std::map<std::string, std::vector<double>>* testParams = nullptr;
