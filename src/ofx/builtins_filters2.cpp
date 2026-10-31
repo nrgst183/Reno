@@ -370,8 +370,11 @@ void ccBuild(CcTable& t, const double P[10])
 void ccRow8(const CcTable& t, const float* src, float* out, int n)
 {
     const int flags = t.flags;
+    uint8_t lv[4 * 1024];
     for (int x = 0; x < n; ++x, src += 4, out += 4) {
-        const int bb = v8::toLevel(src[2]), gg = v8::toLevel(src[1]), rr = v8::toLevel(src[0]), aa = v8::toLevel(src[3]);
+        if ((x & 1023) == 0) v8::levelsRow(src, lv, (size_t)std::min(1024, n - x) * 4);
+        const uint8_t* l4 = lv + (size_t)(x & 1023) * 4;
+        const int bb = l4[2], gg = l4[1], rr = l4[0], aa = l4[3];
         int ob = bb, og = gg, orr = rr;
         if (flags == 4) {
             float Y = (float)gg * 0.587f;
@@ -580,8 +583,11 @@ void ccsBuildGeneral(Ccs8& t, const CcsSet& p, int fl, bool inv)
 void ccsRowGeneral(const Ccs8& t, const float* src, float* out, int n)
 {
     const float winv = t.inv ? 1.f : 0.f;
+    uint8_t lv[4 * 1024];
     for (int x = 0; x < n; ++x, src += 4, out += 4) {
-        const int bb = v8::toLevel(src[2]), gg = v8::toLevel(src[1]), rr = v8::toLevel(src[0]), aa = v8::toLevel(src[3]);
+        if ((x & 1023) == 0) v8::levelsRow(src, lv, (size_t)std::min(1024, n - x) * 4);
+        const uint8_t* l4 = lv + (size_t)(x & 1023) * 4;
+        const int bb = l4[2], gg = l4[1], rr = l4[0], aa = l4[3];
         int ob = bb, og = gg, orr = rr, oa = aa;
         const float fb = (float)bb, fg = (float)gg, fr = (float)rr;
         float Y = fr * 0.299f;
@@ -1021,16 +1027,54 @@ static void convolutionKernel8(Ctx& c)
     convolutionKernel8Setup(c, A, off, alphaPlain);
     // the picture in whole levels (premultiplied, as stored)
     std::vector<uint8_t> in((size_t)W * H * 4);
-    for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x) {
-            const float* q = c.src.at(x, y);
-            for (int k = 0; k < 4; ++k) in[((size_t)y * W + x) * 4 + k] = (uint8_t)v8::toLevel(q[k]);
-        }
+    forRows(H, W, [&](int y) { v8::levelsRow(c.src.at(0, y), &in[(size_t)y * W * 4], (size_t)W * 4); });
     auto clampv = [](float v) { return 0.f > v ? 0.f : std::min(255.f, v); };
     forRows(H, W, [&](int y) {
         // rows of the image as VEGAS reads them: the bottom row of the kernel (weights 0..2) is the image row below
         const uint8_t* rows[3];
         for (int j = 0; j < 3; ++j) rows[j] = &in[(size_t)std::min(H - 1, std::max(0, y + 1 - j)) * W * 4];
+#ifdef RENO_PIXROWS_SSE2
+        {
+            // the same sums in the same order, the four channels in the four lanes of a register (no fused multiply-add)
+            const __m128i zero = _mm_setzero_si128();
+            const __m128 zerof = _mm_setzero_ps(), k255 = _mm_set1_ps(255.f), vOff = _mm_set1_ps(off), inv255 = _mm_set1_ps(1.f * (1.f / 255.f));
+            __m128 wv[9];
+            for (int i = 0; i < 9; ++i) wv[i] = _mm_set1_ps(A[i]);
+            const __m128 alphaLane = _mm_castsi128_ps(_mm_set_epi32(-1, 0, 0, 0));
+            // 0.f > v ? 0.f : (v < 255 ? v : 255) (not a number: 255)
+            auto clampLanes = [&](__m128 v) {
+                const __m128 low = _mm_cmpgt_ps(zerof, v), lt = _mm_cmplt_ps(v, k255);
+                const __m128 r = _mm_or_ps(_mm_and_ps(lt, v), _mm_andnot_ps(lt, k255));
+                return _mm_andnot_ps(low, r);
+            };
+            float* o = c.out.at(0, y);
+            for (int x = 0; x < W; ++x, o += 4) {
+                const int xs[3] = {std::max(0, x - 1), x, std::min(W - 1, x + 1)};
+                __m128 acc = zerof;
+                for (int j = 0; j < 3; ++j)
+                    for (int t = 0; t < 3; ++t) {
+                        int word;
+                        std::memcpy(&word, rows[j] + (size_t)xs[t] * 4, 4);
+                        const __m128i b = _mm_cvtsi32_si128(word);
+                        const __m128 q = _mm_cvtepi32_ps(_mm_unpacklo_epi16(_mm_unpacklo_epi8(b, zero), zero));
+                        acc = _mm_add_ps(acc, _mm_mul_ps(q, wv[j * 3 + t]));
+                    }
+                if (alphaPlain) {
+                    const __m128 pa = _mm_set1_ps((float)rows[1][(size_t)std::min(W - 1, x + 1) * 4 + 3]);
+                    acc = _mm_or_ps(_mm_andnot_ps(alphaLane, acc), _mm_and_ps(alphaLane, pa));
+                }
+                const __m128 a = clampLanes(acc);
+                const __m128 aAll = _mm_shuffle_ps(a, a, 0xFF);
+                const __m128 v = clampLanes(_mm_add_ps(acc, vOff));
+                // std::min(v, a): a if a < v
+                const __m128 lt = _mm_cmplt_ps(aAll, v);
+                const __m128 m = _mm_or_ps(_mm_and_ps(lt, aAll), _mm_andnot_ps(lt, v));
+                const __m128 res = _mm_or_ps(_mm_andnot_ps(alphaLane, m), _mm_and_ps(alphaLane, a));
+                _mm_storeu_ps(o, _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvttps_epi32(res)), inv255));
+            }
+            return;
+        }
+#endif
         for (int x = 0; x < W; ++x) {
             float acc[4] = {0.f, 0.f, 0.f, 0.f};            // r, g, b, a
             for (int j = 0; j < 3; ++j)

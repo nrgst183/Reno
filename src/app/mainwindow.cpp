@@ -870,7 +870,10 @@ QWidget* line(QWidget* parent, const QColor& c, bool horizontal = true)
 // A docked window with VEGAS's tab (name, float and close buttons) under it. Shown while the window is alone in its place; otherwise the main window's tab row is used.
 class DockPage : public QWidget {
 public:
-    DockPage(QDockWidget* dock, QWidget* content, QWidget* parent) : QWidget(parent)
+    DockPage(QDockWidget* dock, QWidget* content, QWidget* parent) : QWidget(parent) { build(dock, content); }
+    // the content made here, as the page's own child (make gets the page)
+    DockPage(QDockWidget* dock, const std::function<QWidget*(QWidget*)>& make, QWidget* parent) : QWidget(parent) { build(dock, make(this)); }
+    void build(QDockWidget* dock, QWidget* content)
     {
         setObjectName(dock->objectName() + "Page");
         auto* v = new QVBoxLayout(this);
@@ -2270,9 +2273,14 @@ void applyDockOptions(QMainWindow* w, const std::vector<QDockWidget*>& docks)
 
 QDockWidget* MainWindow::dock(const QString& title, const QString& name, QWidget* w)
 {
+    return dock(title, name, std::function<QWidget*(QWidget*)>([w](QWidget*) { return w; }));
+}
+
+QDockWidget* MainWindow::dock(const QString& title, const QString& name, const std::function<QWidget*(QWidget*)>& make)
+{
     QDockWidget* d = new QDockWidget(title, this);
     d->setObjectName(name);
-    d->setWidget(new DockPage(d, w, d));
+    d->setWidget(new DockPage(d, make, d));
     // Docked windows have no title bar (the tab names them); floating ones get one back.
     QWidget* noTitle = new QWidget(d);
     d->setTitleBarWidget(noTitle);
@@ -2345,40 +2353,48 @@ void MainWindow::buildDocks()
     setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
     setTabPosition(Qt::TopDockWidgetArea, QTabWidget::South);
     setTabPosition(Qt::BottomDockWidgetArea, QTabWidget::South);
-    preview_ = new PreviewWidget(playback_.get(), this);
-    preview_->onOpenFx = [this](const FxTarget& t, uint64_t slot) { openFx(t, slot); };
-    preview_->onProjectProperties = [this] { runProjectPropertiesFull(this); };
-    preview_->onExternalMonitor = [this] { if (QAction* a = findChild<QAction*>("externalMonitor")) a->trigger(); };
-    preview_->onPreferences = [this] { runPreferences(this); };
+    // (each window is made as a child of its dock's page: one moved in from outside is styled again, with all its widgets)
     fxWindow_->onEffectShown = [this](uint64_t slotId, const FxTarget& t) { if (preview_) preview_->setOverlayEffect(slotId, t); };
-    QDockWidget* preview = dock("Video Preview", "dockPreview", preview_);
-    MasterBusWidget* masterBus = new MasterBusWidget(playback_.get(), this);
-    masterBus->onOpenFx = [this](const FxTarget& t, uint64_t slot) { openFx(t, slot); };
-    QDockWidget* master = dock("Master Bus", "dockMaster", masterPage(this, masterBus, [this] { if (mixerDock_) showDock(mixerDock_); }, playback_.get()));
+    QDockWidget* preview = dock("Video Preview", "dockPreview", [this](QWidget* parent) -> QWidget* {
+        preview_ = new PreviewWidget(playback_.get(), parent);
+        preview_->onOpenFx = [this](const FxTarget& t, uint64_t slot) { openFx(t, slot); };
+        preview_->onProjectProperties = [this] { runProjectPropertiesFull(this); };
+        preview_->onExternalMonitor = [this] { if (QAction* a = findChild<QAction*>("externalMonitor")) a->trigger(); };
+        preview_->onPreferences = [this] { runPreferences(this); };
+        return preview_;
+    });
+    QDockWidget* master = dock("Master Bus", "dockMaster", [this](QWidget* parent) -> QWidget* {
+        MasterBusWidget* masterBus = new MasterBusWidget(playback_.get(), parent);
+        masterBus->onOpenFx = [this](const FxTarget& t, uint64_t slot) { openFx(t, slot); };
+        return masterPage(parent, masterBus, [this] { if (mixerDock_) showDock(mixerDock_); }, playback_.get());
+    });
 
-    mediaBin_ = new MediaBin(this);
-    QDockWidget* media = dock("Project Media", "dockMedia", mediaBin_);
+    QDockWidget* media = dock("Project Media", "dockMedia", [this](QWidget* parent) -> QWidget* { return mediaBin_ = new MediaBin(parent); });
     const struct { FxBrowser::Kind kind; const char* title; const char* name; } lists[] = {
         {FxBrowser::VideoFx, "Video FX", "dockVideoFx"}, {FxBrowser::AudioFx, "Audio FX", "dockAudioFx"},
         {FxBrowser::Generators, "Media Generators", "dockGenerators"}, {FxBrowser::Transitions, "Transitions", "dockTransitions"}};
     std::map<std::string, QDockWidget*> byName;
     for (const auto& l : lists) {
-        FxBrowser* b = new FxBrowser(l.kind, this);
-        b->onActivated = [this](FxBrowser::Kind k, const std::string& data) { browserActivated(k, data); };
-        byName[l.name] = dock(l.title, l.name, b);
+        byName[l.name] = dock(l.title, l.name, [this, &l](QWidget* parent) -> QWidget* {
+            FxBrowser* b = new FxBrowser(l.kind, parent);
+            b->onActivated = [this](FxBrowser::Kind k, const std::string& data) { browserActivated(k, data); };
+            return b;
+        });
     }
-    QDockWidget* notes = dock("Project Notes", "dockNotes", makeNotesPanel(this));
-    MixerWindow* mixer = new MixerWindow(playback_.get(), this);
-    mixer->onOpenFx = [this](const FxTarget& t, uint64_t slot) { openFx(t, slot); };
-    mixer->onDim = [this](bool on) {
-        if (QAction* a = findChild<QAction*>("dimOutput"))
-            if (a->isChecked() != on) a->trigger();
-    };
-    mixer->onAudioProperties = [this] { runProjectPropertiesAudio(this); };
-    mixerDock_ = dock("Mixing Console", "dockMixer", mixer);
-    QDockWidget* scopes = dock("Video Scopes", "dockScopes", new VideoScopes(playback_.get(), this));
-    QDockWidget* explorer = dock("Explorer", "dockExplorer", new MediaExplorer(this));
-    QDockWidget* details = dock("Edit Details", "dockDetails", new EditDetails(this));
+    QDockWidget* notes = dock("Project Notes", "dockNotes", [this](QWidget* parent) { return makeNotesPanel(parent); });
+    mixerDock_ = dock("Mixing Console", "dockMixer", [this](QWidget* parent) -> QWidget* {
+        MixerWindow* mixer = new MixerWindow(playback_.get(), parent);
+        mixer->onOpenFx = [this](const FxTarget& t, uint64_t slot) { openFx(t, slot); };
+        mixer->onDim = [this](bool on) {
+            if (QAction* a = findChild<QAction*>("dimOutput"))
+                if (a->isChecked() != on) a->trigger();
+        };
+        mixer->onAudioProperties = [this] { runProjectPropertiesAudio(this); };
+        return mixer;
+    });
+    QDockWidget* scopes = dock("Video Scopes", "dockScopes", [this](QWidget* parent) -> QWidget* { return new VideoScopes(playback_.get(), parent); });
+    QDockWidget* explorer = dock("Explorer", "dockExplorer", [](QWidget* parent) -> QWidget* { return new MediaExplorer(parent); });
+    QDockWidget* details = dock("Edit Details", "dockDetails", [](QWidget* parent) -> QWidget* { return new EditDetails(parent); });
 
     const struct { QDockWidget* dock; const char* name; const char* key; } entries[] = {
         {master, "showMasterBus", "Alt+3"}, {preview, "showPreview", "Alt+4"}, {media, "showMedia", "Alt+5"}, {notes, "showNotes", "Alt+6"},

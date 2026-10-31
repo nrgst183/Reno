@@ -252,13 +252,18 @@ bool colorCurvesRows(Ctx& c, RowFn& fn)
             }
         }
         fn = [lut](const float* sp, float* o, int n, int) {
-            for (int x = 0; x < n; ++x, sp += 4, o += 4) {
-                const int a = v8::toLevel(sp[3]);
-                for (int k = 0; k < 3; ++k) {
-                    const int r = (*lut)[(size_t)k * 256 + (size_t)v8::toLevel(sp[k])];
-                    o[k] = v8::fromLevel(r < a ? r : a);
+            uint8_t lv[4 * 1024];
+            for (int base = 0; base < n; base += 1024) {
+                const int m = std::min(1024, n - base);
+                v8::levelsRow(sp, lv, (size_t)m * 4);
+                for (int x = 0; x < m; ++x, sp += 4, o += 4) {
+                    const int a = lv[x * 4 + 3];
+                    for (int k = 0; k < 3; ++k) {
+                        const int r = (*lut)[(size_t)k * 256 + lv[x * 4 + k]];
+                        o[k] = v8::fromLevel(r < a ? r : a);
+                    }
+                    o[3] = sp[3];
                 }
-                o[3] = sp[3];
             }
         };
         return true;

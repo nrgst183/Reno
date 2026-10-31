@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cmath>
+#include "cpufeat.h"
 // (Every x64 compiler takes the SSE2 path; define RENO_NO_SSE2 for the plain loops, which give the same bytes.)
 #if !defined(RENO_NO_SSE2) && (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64))
 #  include <emmintrin.h>
@@ -142,9 +143,46 @@ inline void opaqueRow(uint8_t* d, int n)
 // ---- OpenFX built-ins' float <-> 8-bit conversions (builtins.cpp: load / store)
 // 'n' float RGBA pixels (premultiplied) to 8-bit: alpha made 0..1 (not a number: 0), a colour channel 0..alpha (not
 // finite: 0), each times 255 rounded half up; 'bgra' puts red and blue in the order of a BGRA frame.
+#ifdef RENO_HAVE_AVX2_CODE
+// The same operations on two pixels per register (the first n - n % 8 pixels); returns how many it did.
+RENO_AVX2_FN inline __m256i floatTwoToInts(const float* q, bool bgra)
+{
+    const __m256 zero = _mm256_setzero_ps(), one = _mm256_set1_ps(1.f), k255 = _mm256_set1_ps(255.f), half = _mm256_set1_ps(0.5f);
+    const __m256 inf = _mm256_castsi256_ps(_mm256_set1_epi32(0x7F800000)), absMask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
+    const __m256 alphaLane = _mm256_castsi256_ps(_mm256_set_epi32(-1, 0, 0, 0, -1, 0, 0, 0));
+    __m256 v = _mm256_loadu_ps(q);
+    __m256 a = _mm256_shuffle_ps(v, v, 0xFF);
+    a = _mm256_and_ps(a, _mm256_cmp_ps(a, zero, _CMP_GE_OQ));
+    a = _mm256_min_ps(a, one);
+    __m256 c = _mm256_min_ps(_mm256_max_ps(v, zero), a);
+    c = _mm256_and_ps(c, _mm256_cmp_ps(_mm256_and_ps(v, absMask), inf, _CMP_LT_OQ));
+    c = _mm256_or_ps(_mm256_andnot_ps(alphaLane, c), _mm256_and_ps(alphaLane, a));
+    if (bgra) c = _mm256_shuffle_ps(c, c, _MM_SHUFFLE(3, 0, 1, 2));
+    const __m256 m = _mm256_mul_ps(c, k255);
+    const __m256i i = _mm256_cvttps_epi32(m);
+    const __m256 up = _mm256_cmp_ps(_mm256_sub_ps(m, _mm256_cvtepi32_ps(i)), half, _CMP_GE_OQ);
+    return _mm256_sub_epi32(i, _mm256_castps_si256(up));
+}
+RENO_AVX2_FN inline int floatRowToBytesAvx2(const float* p, uint8_t* o, int n, bool bgra)
+{
+    const __m256i order = _mm256_set_epi32(7, 3, 6, 2, 5, 1, 4, 0);
+    int x = 0;
+    for (; x + 8 <= n; x += 8) {
+        const float* q = p + (size_t)x * 4;
+        const __m256i a = _mm256_packs_epi32(floatTwoToInts(q, bgra), floatTwoToInts(q + 8, bgra));
+        const __m256i b = _mm256_packs_epi32(floatTwoToInts(q + 16, bgra), floatTwoToInts(q + 24, bgra));
+        _mm256_storeu_si256((__m256i*)(o + (size_t)x * 4), _mm256_permutevar8x32_epi32(_mm256_packus_epi16(a, b), order));
+    }
+    return x;
+}
+#endif
+
 inline void floatRowToBytes(const float* p, uint8_t* o, int n, bool bgra)
 {
     int x = 0;
+#ifdef RENO_HAVE_AVX2_CODE
+    if (n >= 8 && cpuHasAvx2()) x = floatRowToBytesAvx2(p, o, n, bgra);
+#endif
 #ifdef RENO_PIXROWS_SSE2
     const __m128 zero = _mm_setzero_ps(), one = _mm_set1_ps(1.f), k255 = _mm_set1_ps(255.f), half = _mm_set1_ps(0.5f);
     const __m128 inf = _mm_castsi128_ps(_mm_set1_epi32(0x7F800000)), absMask = _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF));
@@ -185,10 +223,30 @@ inline void floatRowToBytes(const float* p, uint8_t* o, int n, bool bgra)
 }
 
 // 'n' 8-bit RGBA / BGRA pixels to floats (value x (1 / 255)), red first.
+#ifdef RENO_HAVE_AVX2_CODE
+// two pixels per register (the first n - n % 2 are done in blocks of 8); returns how many it did
+RENO_AVX2_FN inline int bytesRowToFloatAvx2(const uint8_t* s, float* d, int n, bool bgra)
+{
+    const __m256 vk = _mm256_set1_ps(1.f / 255.f);
+    int x = 0;
+    for (; x + 8 <= n; x += 8)
+        for (int j = 0; j < 4; ++j) {
+            const __m128i b = _mm_loadl_epi64((const __m128i*)(s + (size_t)(x + j * 2) * 4));
+            __m256 f = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(b)), vk);
+            if (bgra) f = _mm256_shuffle_ps(f, f, _MM_SHUFFLE(3, 0, 1, 2));
+            _mm256_storeu_ps(d + (size_t)(x + j * 2) * 4, f);
+        }
+    return x;
+}
+#endif
+
 inline void bytesRowToFloat(const uint8_t* s, float* d, int n, bool bgra)
 {
     int x = 0;
     const float k = 1.f / 255.f;
+#ifdef RENO_HAVE_AVX2_CODE
+    if (n >= 8 && cpuHasAvx2()) x = bytesRowToFloatAvx2(s, d, n, bgra);
+#endif
 #ifdef RENO_PIXROWS_SSE2
     const __m128i zero = _mm_setzero_si128();
     const __m128 vk = _mm_set1_ps(k);

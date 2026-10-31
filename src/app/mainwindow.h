@@ -100,6 +100,8 @@ private:
     void saveVersion();
     void browserActivated(FxBrowser::Kind kind, const std::string& data);
     QDockWidget* dock(const QString& title, const QString& name, QWidget* w);
+    // The same, the window made by 'make' as a child of the dock's page (a window made elsewhere and moved in is styled twice).
+    QDockWidget* dock(const QString& title, const QString& name, const std::function<QWidget*(QWidget*)>& make);
     void updateDockTabs();              // a docked window's own tab shows while it is alone in its place
     void compositingMenu(QMenu* menu, uint64_t trackId);    // added to a video track's menu
     void showDiskSpace();               // status bar's right-hand side

@@ -8,6 +8,7 @@
 #include "../../src/app/playback.h"
 #include "uitestlib.h"
 #include <QApplication>
+#include <QElapsedTimer>
 #include <chrono>
 #include <cmath>
 #include <thread>
@@ -164,6 +165,22 @@ public:
     std::string name() const override { return "test"; }
 };
 
+// Lets the pictures being made finish: waits until none was made for a while (at least 'ms'; at most a few seconds). A fixed wait
+// is too short when the machine is busy: a picture of the paused cursor not finished when play starts is then rendered during the
+// play, which the checks on replaying count as a failure.
+static void settleRendered(Playback& pb, int ms)
+{
+    QElapsedTimer t;
+    t.start();
+    uint64_t last = pb.picturesRendered() + pb.picturesRenderedAhead();
+    qint64 since = 0;
+    do {
+        uitest::settle(20);
+        const uint64_t now = pb.picturesRendered() + pb.picturesRenderedAhead();
+        if (now != last) { last = now; since = t.elapsed(); }
+    } while (t.elapsed() < ms || (t.elapsed() - since < 400 && t.elapsed() < 8000));
+}
+
 // Plays on for 'seconds', taking the sound at about the pace of a sound card (which moves the playback on).
 static void playFor(ManualOutput* out, double seconds)
 {
@@ -218,7 +235,7 @@ int main(int argc, char** argv)
     pb.playAt(0.4);
     playFor(out, 2.8);
     pb.pause();
-    uitest::settle(300);
+    settleRendered(pb, 300);
     const uint64_t made1 = pb.picturesRendered() + pb.picturesRenderedAhead();
     const size_t kept1 = pb.ramPreviewFrames();
     check(made1 >= 25, "playing slowly renders the section's pictures", strfmt("%llu rendered", (unsigned long long)made1));
@@ -231,12 +248,12 @@ int main(int argc, char** argv)
     playFor(out, 1.2);
     const uint64_t droppedCold = pb.droppedFrames();
     pb.pause();
-    uitest::settle(300);
+    settleRendered(pb, 300);
     check(droppedCold > 5, "a section not played before drops frames at the normal rate (60 ms a picture)", strfmt("%llu dropped", (unsigned long long)droppedCold));
 
     // ---- the first section again, at the normal rate: from memory, nothing rendered, nothing dropped
     app.setCursor(1.05);
-    uitest::settle(300);  // the paused picture is rendered and kept too
+    settleRendered(pb, 300);  // the paused picture is rendered and kept too
     const uint64_t before = pb.picturesRendered();
     const uint64_t shownBefore = pb.framesShown();
     pb.play();
@@ -256,7 +273,7 @@ int main(int argc, char** argv)
     app.edit("settings", [](Project& p) { p.settings.width = 320; p.tracks[0].events[0].length = 19.5; });
     uitest::settle(100);
     app.setCursor(1.05);
-    uitest::settle(300);
+    settleRendered(pb, 300);
     const uint64_t before2 = pb.picturesRendered();
     pb.play();
     playFor(out, 0.5);
@@ -303,7 +320,7 @@ int main(int argc, char** argv)
     pb.playAt(0.4);
     playFor(out, 2.0);
     pb.pause();
-    uitest::settle(300);
+    settleRendered(pb, 300);
     check(pb.ramPreviewBytes() <= 1024 * 1024 && pb.ramPreviewFrames() >= 2, "over the limit, the memory stays within it", strfmt("%zu bytes, %zu frames", pb.ramPreviewBytes(), pb.ramPreviewFrames()));
     int64_t newest = -1, oldest = 1 << 30;
     for (const auto& k : pb.ramStore().keys()) { newest = std::max(newest, k.first); oldest = std::min(oldest, k.first); }
@@ -315,7 +332,7 @@ int main(int argc, char** argv)
     pb.playAt(0.4);
     playFor(out, 0.8);
     pb.pause();
-    uitest::settle(300);
+    settleRendered(pb, 300);
     check(pb.ramPreviewFrames() == 0, "at 0 MB the store is off");
 
     // ---- Shift+B still makes a range

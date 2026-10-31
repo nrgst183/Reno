@@ -418,6 +418,16 @@ const char* const kSliderNames[5] = {"exposure", "contrast", "saturation", "temp
 
 struct ColorGradingPanel::Impl {
     ColorGradingPanel* q = nullptr;
+    // The panel's controls (a hundred widgets) are made when it is first shown or first asked for something, not when the window
+    // is made: most sessions never open it. 'build' is the rest of the constructor.
+    std::function<void()> build;
+    bool built = false;
+    void ensure()
+    {
+        if (built) return;
+        built = true;
+        if (build) build();
+    }
     QComboBox* applyBox = nullptr;
     QLabel* targetLbl = nullptr;
     QPushButton* bypass = nullptr, *pinBtn = nullptr;
@@ -1106,6 +1116,7 @@ void ColorGradingPanel::buildPages(QHBoxLayout* root)
 // The pickers' mouse: the average colour of what is picked becomes the black point, white point or neutral tone.
 void ColorGradingPanel::pickedRegion(int state, const QRectF&, const QImage& region)
 {
+    d->ensure();
     if (d->picking == 0 || region.isNull()) return;
     double r = 0, gr = 0, b = 0;
     long n = 0;
@@ -1134,6 +1145,7 @@ void ColorGradingPanel::pickedRegion(int state, const QRectF&, const QImage& reg
 
 void ColorGradingPanel::pickColour(int which, const QImage& region)
 {
+    d->ensure();
     if (which < 1 || which > 3) return;
     d->picking = which;
     pickedRegion(3, QRectF(), region);
@@ -1141,6 +1153,7 @@ void ColorGradingPanel::pickColour(int which, const QImage& region)
 
 void ColorGradingPanel::setField(const std::string& name, double v)
 {
+    d->ensure();
     ColorGrade& g = d->g;
     struct F { const char* n; double* p; };
     const F fs[] = {{"blackIn", &g.blackIn}, {"whiteIn", &g.whiteIn}, {"blackOut", &g.blackOut}, {"whiteOut", &g.whiteOut}, {"brightness", &g.brightness},
@@ -1156,6 +1169,7 @@ void ColorGradingPanel::setField(const std::string& name, double v)
 
 void ColorGradingPanel::setLut(bool camera, const std::string& source, double strength, bool tetrahedral)
 {
+    d->ensure();
     LutRef& r = camera ? d->g.cameraLut : d->g.lookLut;
     r.source = source;
     r.strength = strength;
@@ -1167,6 +1181,7 @@ void ColorGradingPanel::setLut(bool camera, const std::string& source, double st
 
 void ColorGradingPanel::setHslCurve(int kind, const std::vector<std::pair<double, double>>& points)
 {
+    d->ensure();
     if (kind < 0 || kind >= ColorGrade::HslCurveCount) return;
     d->g.hslCurve[kind] = points;
     d->change(true);
@@ -1178,43 +1193,57 @@ ColorGradingPanel::ColorGradingPanel(QWidget* parent) : QWidget(parent), d(new I
     d->q = this;
     setObjectName("colorGrading");
     Impl* impl = d.get();
-    auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(6, 4, 6, 6);
-    root->setSpacing(4);
-    // top: what is graded (VEGAS grades the selected event; Reno can also grade a track or the video output)
-    auto* top = new QHBoxLayout();
-    d->applyBox = new QComboBox(this);
-    d->applyBox->setObjectName("gradeApplyTo");
-    d->applyBox->addItem("Selected Event");
-    d->applyBox->addItem("Selected Track");
-    d->applyBox->addItem("Video Output");
-    d->targetLbl = new QLabel(this);
-    d->targetLbl->setObjectName("gradeTarget");
-    top->addWidget(new QLabel("Grade:", this));
-    top->addWidget(d->applyBox);
-    top->addWidget(d->targetLbl, 1);
-    root->addLayout(top);
-    auto* main = new QHBoxLayout();
-    main->setSpacing(8);
-    buildPages(main);
-    root->addLayout(main, 1);
-    d->sec1->setCurrentIndex(1);
-
-    QObject::connect(d->applyBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int i) { setApplyTo((Apply)i); });
-    QObject::connect(d->bypass, &QPushButton::toggled, this, [impl](bool on) {
-        if (impl->updating) return;
-        AppState& app = AppState::get();
-        const FxTarget t = impl->currentTarget();
-        const FxSlot* s = Impl::gradeSlot(app.chainOf(app.project(), t));
-        if (s) app.setFxBypass(t, s->id, on);
-    });
-    d->listener.reset(new Listener([impl](int changes) {
-        if (changes & kSelection) impl->pinned = FxTarget();
-        if (changes & (kProject | kSelection)) impl->load();
-    }));
     d->apply = (Apply)std::min(2, std::max(0, QSettings().value("colorGrading/applyTo", 0).toInt()));
-    d->applyBox->setCurrentIndex((int)d->apply);
-    d->load();
+    d->build = [this, impl] {
+        auto* root = new QVBoxLayout(this);
+        root->setContentsMargins(6, 4, 6, 6);
+        root->setSpacing(4);
+        // top: what is graded (VEGAS grades the selected event; Reno can also grade a track or the video output)
+        auto* top = new QHBoxLayout();
+        d->applyBox = new QComboBox(this);
+        d->applyBox->setObjectName("gradeApplyTo");
+        d->applyBox->addItem("Selected Event");
+        d->applyBox->addItem("Selected Track");
+        d->applyBox->addItem("Video Output");
+        d->targetLbl = new QLabel(this);
+        d->targetLbl->setObjectName("gradeTarget");
+        top->addWidget(new QLabel("Grade:", this));
+        top->addWidget(d->applyBox);
+        top->addWidget(d->targetLbl, 1);
+        root->addLayout(top);
+        auto* main = new QHBoxLayout();
+        main->setSpacing(8);
+        buildPages(main);
+        root->addLayout(main, 1);
+        d->sec1->setCurrentIndex(1);
+
+        QObject::connect(d->applyBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int i) { setApplyTo((Apply)i); });
+        QObject::connect(d->bypass, &QPushButton::toggled, this, [impl](bool on) {
+            if (impl->updating) return;
+            AppState& app = AppState::get();
+            const FxTarget t = impl->currentTarget();
+            const FxSlot* s = Impl::gradeSlot(app.chainOf(app.project(), t));
+            if (s) app.setFxBypass(t, s->id, on);
+        });
+        d->listener.reset(new Listener([impl](int changes) {
+            if (changes & kSelection) impl->pinned = FxTarget();
+            if (changes & (kProject | kSelection)) impl->load();
+        }));
+        d->apply = (Apply)std::min(2, std::max(0, QSettings().value("colorGrading/applyTo", 0).toInt()));
+        d->applyBox->setCurrentIndex((int)d->apply);
+        d->load();
+    };
+    // built when first shown (any other first use builds it too: every function below starts with ensure())
+    struct ShowBuilder : QObject {
+        Impl* impl;
+        ShowBuilder(QObject* parent, Impl* i) : QObject(parent), impl(i) {}
+        bool eventFilter(QObject*, QEvent* e) override
+        {
+            if (e->type() == QEvent::Show) impl->ensure();
+            return false;
+        }
+    };
+    installEventFilter(new ShowBuilder(this, impl));
 }
 
 ColorGradingPanel::~ColorGradingPanel()
@@ -1224,6 +1253,7 @@ ColorGradingPanel::~ColorGradingPanel()
 
 void ColorGradingPanel::setApplyTo(Apply a)
 {
+    d->ensure();
     d->apply = a;
     d->pinned = FxTarget();
     if (d->pinLock) d->pinBtn->setChecked(false);
@@ -1232,11 +1262,12 @@ void ColorGradingPanel::setApplyTo(Apply a)
     d->load();
 }
 
-ColorGradingPanel::Apply ColorGradingPanel::applyTo() const { return d->apply; }
-FxTarget ColorGradingPanel::target() const { return d->currentTarget(); }
+ColorGradingPanel::Apply ColorGradingPanel::applyTo() const { d->ensure(); return d->apply; }
+FxTarget ColorGradingPanel::target() const { d->ensure(); return d->currentTarget(); }
 
 uint64_t ColorGradingPanel::slot() const
 {
+    d->ensure();
     AppState& app = AppState::get();
     const FxSlot* s = Impl::gradeSlot(app.chainOf(app.project(), d->currentTarget()));
     return s ? s->id : 0;
@@ -1244,12 +1275,14 @@ uint64_t ColorGradingPanel::slot() const
 
 void ColorGradingPanel::showSlot(uint64_t, const FxTarget& target)
 {
+    d->ensure();
     d->pinned = target;
     d->load();
 }
 
 void ColorGradingPanel::setValue(const std::string& name, double v)
 {
+    d->ensure();
     for (int k = 0; k < 5; ++k)
         if (name == kSliderNames[k]) {
             d->setNamed(k, v);
@@ -1260,6 +1293,7 @@ void ColorGradingPanel::setValue(const std::string& name, double v)
 
 void ColorGradingPanel::setWheel(const std::string& name, double x, double y, double master)
 {
+    d->ensure();
     const char* names[4] = {"lift", "gamma", "gain", "offset"};
     for (int k = 0; k < 4; ++k)
         if (name == names[k]) {
@@ -1272,6 +1306,7 @@ void ColorGradingPanel::setWheel(const std::string& name, double x, double y, do
 
 void ColorGradingPanel::setCurve(int channel, const std::vector<std::pair<double, double>>& points)
 {
+    d->ensure();
     if (channel < 0 || channel > 3) return;
     d->g.curve[channel] = points;
     d->change(true);
@@ -1280,6 +1315,7 @@ void ColorGradingPanel::setCurve(int channel, const std::vector<std::pair<double
 
 void ColorGradingPanel::resetAll()
 {
+    d->ensure();
     d->g = ColorGrade();
     d->change(true);
     d->load();
@@ -1288,6 +1324,7 @@ void ColorGradingPanel::resetAll()
 // Pin/Unpin: pinned, the panel keeps grading what it is grading whatever is selected next.
 void ColorGradingPanel::setPinned(bool on)
 {
+    d->ensure();
     if (on == d->pinLock) return;
     if (on) {
         d->pinTarget = d->currentTarget();
@@ -1303,12 +1340,13 @@ void ColorGradingPanel::setPinned(bool on)
     if (d->pinBtn->isChecked() != on) d->pinBtn->setChecked(on);
     d->load();
 }
-bool ColorGradingPanel::pinned() const { return d->pinLock; }
+bool ColorGradingPanel::pinned() const { d->ensure(); return d->pinLock; }
 
 // Auto Color Balance (0: the image's average colour becomes neutral), Auto Black Point / White Point (1, 2: the darkest
 // / brightest fifth of a percent of pixels become black / white), from the image frameSource gives.
 void ColorGradingPanel::autoAdjust(int kind)
 {
+    d->ensure();
     if (!frameSource) return;
     const QImage img = frameSource();
     if (img.isNull() || d->currentTarget().kind == FxTarget::None) return;
@@ -1337,9 +1375,9 @@ void ColorGradingPanel::autoAdjust(int kind)
     pickColour(kind == 0 ? 3 : kind, one);
 }
 
-Json ColorGradingPanel::state() const { return d->g.toJson(); }
-QWidget* ColorGradingPanel::wheel(int k) const { return k >= 0 && k < 4 ? d->wheels[k] : nullptr; }
-QWidget* ColorGradingPanel::curveEditor() const { return d->curves; }
+Json ColorGradingPanel::state() const { d->ensure(); return d->g.toJson(); }
+QWidget* ColorGradingPanel::wheel(int k) const { d->ensure(); return k >= 0 && k < 4 ? d->wheels[k] : nullptr; }
+QWidget* ColorGradingPanel::curveEditor() const { d->ensure(); return d->curves; }
 
 bool ColorGradingPanel::eventFilter(QObject* o, QEvent* e)
 {
@@ -1355,6 +1393,7 @@ bool ColorGradingPanel::eventFilter(QObject* o, QEvent* e)
 
 bool ColorGradingPanel::exportLut(const std::string& path, std::string* error) const
 {
+    d->ensure();
     ColorGrade g = d->g;
     g.prepare();
     const int n = 33;
@@ -1380,6 +1419,7 @@ bool ColorGradingPanel::exportLut(const std::string& path, std::string* error) c
 
 bool ColorGradingPanel::addPlugin(const std::string& pluginId)
 {
+    d->ensure();
     AppState& app = AppState::get();
     const FxTarget t = d->currentTarget();
     if (t.kind == FxTarget::None) {

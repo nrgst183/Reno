@@ -338,9 +338,13 @@ void Importer::readMedia(const Chunk& list)
                 mi->info.hasAudio = mi->info.hasAudio || m.audio;
                 if (m.kind == VegMediaRecord::File) {
                     if (!m.name.empty()) mi->name = windowsFileName(m.name);
-                    auto o = origin<VegMediaOrigin>(c);
-                    o->vegId = m.vegId;
-                    mi->veg = o;           // asRead copy is made in finishMedia
+                    // (two records for one file become one item: it keeps the first record, so its place in the pool is that record's)
+                    const auto* had = vegOriginAs<VegMediaOrigin>(mi->veg, VegOrigin::MediaK);
+                    if (!had || !had->vegId) {
+                        auto o = origin<VegMediaOrigin>(c);
+                        o->vegId = m.vegId;
+                        mi->veg = o;           // asRead copy is made in finishMedia
+                    }
                 }
             }
             if (m.kind == VegMediaRecord::Subclip) {

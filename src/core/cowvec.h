@@ -93,13 +93,14 @@ public:
     {
         const std::ptrdiff_t k = pos - cdata();
         std::vector<T>& v = own();
-        return &*v.erase(v.begin() + k);
+        // (the returned iterator is end() when the last elements went, and may not be dereferenced: take the place as a number)
+        return v.data() + (v.erase(v.begin() + k) - v.begin());
     }
     T* erase(const T* a, const T* b)
     {
         const std::ptrdiff_t k = a - cdata(), n = b - a;
         std::vector<T>& v = own();
-        return &*v.erase(v.begin() + k, v.begin() + k + n);
+        return v.data() + (v.erase(v.begin() + k, v.begin() + k + n) - v.begin());
     }
     template <class It>
     void assign(It a, It b) { d_ = std::make_shared<std::vector<T>>(a, b); }

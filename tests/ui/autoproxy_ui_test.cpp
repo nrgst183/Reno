@@ -243,6 +243,8 @@ int main(int argc, char** argv)
         check(names(wk.queued()) == "B.mp4, C.mp4", "then B (10), then C (3)", names(wk.queued()));
         uitest::settle(900);
         QLabel* text = w->findChild<QLabel*>("videoProxyText");
+        // (the label follows the worker on a timer: on a busy machine it takes longer than the fixed wait)
+        waitFor([&] { uitest::settle(50); return text && text->text().contains("Making preview proxies: 1 of 3"); }, 10);
         check(text && text->text().contains("Making preview proxies: 1 of 3") && text->text().contains("A.mp4"), "the status bar says which, '1 of 3'", text ? text->text().toStdString() : "no label");
         QWidget* piece = w->findChild<QWidget*>("videoProxyProgress");
         check(piece && piece->isVisibleTo(w), "and the piece is shown");

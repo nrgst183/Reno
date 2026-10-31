@@ -174,8 +174,7 @@ void MainWindow::buildToolWindows()
         d->hide();
     };
 
-    t->trimmer = new TrimmerWindow(this);
-    t->trimmerDock = dock("Trimmer", "dockTrimmer", t->trimmer);
+    t->trimmerDock = dock("Trimmer", "dockTrimmer", [&](QWidget* parent) -> QWidget* { return t->trimmer = new TrimmerWindow(parent); });
     addWindow(t->trimmerDock, "showTrimmer", "Alt+2");
     t->trimmer->onWillPlay = [pb] { pb->pause(); };
     t->trimmer->onPreviewPicture = [this](const QImage& img) { if (preview_) preview_->showPicture(img); };
@@ -236,13 +235,11 @@ void MainWindow::buildToolWindows()
         app.status("Recordings go to " + ss(dir));
     });
 
-    t->loudness = new LoudnessWindow(pb, this);
-    t->loudnessDock = dock("Loudness Meters", "dockLoudness", t->loudness);
+    t->loudnessDock = dock("Loudness Meters", "dockLoudness", [&](QWidget* parent) -> QWidget* { return t->loudness = new LoudnessWindow(pb, parent); });
     addWindow(t->loudnessDock, "showLoudness", "Ctrl+Alt+7");
 
     // ---- the Surround Panner (Ctrl+Alt+3): the current track's (or bus's) panner in a 5.1 project; a double-click on a Mixing Console strip's small panner shows that track's or bus's
-    t->surround = new SurroundPannerWindow(this);
-    t->surroundDock = dock("Surround Panner", "dockSurround", t->surround);
+    t->surroundDock = dock("Surround Panner", "dockSurround", [&](QWidget* parent) -> QWidget* { return t->surround = new SurroundPannerWindow(parent); });
     addWindow(t->surroundDock, "showSurroundPanner", "Ctrl+Alt+3");
     if (MixerWindow* mixer = mixerDock_ ? dynamic_cast<MixerWindow*>(mixerDock_->findChild<QWidget*>("mixer")) : nullptr)
         mixer->onOpenSurround = [this, t](uint64_t id) {
@@ -255,16 +252,16 @@ void MainWindow::buildToolWindows()
             showDock(t->surroundDock);
         };
 
-    t->plugins = new PluginManager(this);
-    t->plugins->onActivated = [this](FxBrowser::Kind kind, const std::string& data) { browserActivated(kind, data); };
-    t->pluginsDock = dock("Plug-In Manager", "dockPlugins", t->plugins);
+    t->pluginsDock = dock("Plug-In Manager", "dockPlugins", [&](QWidget* parent) -> QWidget* {
+        t->plugins = new PluginManager(parent);
+        t->plugins->onActivated = [this](FxBrowser::Kind kind, const std::string& data) { browserActivated(kind, data); };
+        return t->plugins;
+    });
     addWindow(t->pluginsDock, "showPluginManager", "Ctrl+Alt+1");
 
-    t->dashboard = new Dashboard(pb, rec, this);
-    t->dashboardDock = dock("Dashboard", "dockDashboard", t->dashboard);
+    t->dashboardDock = dock("Dashboard", "dockDashboard", [&](QWidget* parent) -> QWidget* { return t->dashboard = new Dashboard(pb, rec, parent); });
     addWindow(t->dashboardDock, "showDashboard", "Ctrl+Alt+8");
-    t->devices = new DeviceExplorer(this);
-    t->devicesDock = dock("Device Explorer", "dockDevices", t->devices);
+    t->devicesDock = dock("Device Explorer", "dockDevices", [&](QWidget* parent) -> QWidget* { return t->devices = new DeviceExplorer(parent); });
     addWindow(t->devicesDock, "showDeviceExplorer", "Ctrl+Alt+6");
 
     t->monitor = new ExternalMonitor(pb, this);
@@ -326,12 +323,10 @@ void MainWindow::buildToolWindows()
     };
     keyAction(this, "colorGradingLayout", "&Color Grading Layout", seq({"Alt+D, C"}), [t] { t->colorGradingLayout(); });
 
-    t->tracking = new MotionTrackingWindow(pb, this);
-    t->trackingDock = dock("Motion Tracking", "dockMotionTracking", t->tracking);
+    t->trackingDock = dock("Motion Tracking", "dockMotionTracking", [&](QWidget* parent) -> QWidget* { return t->tracking = new MotionTrackingWindow(pb, parent); });
     addWindow(t->trackingDock, "showMotionTracking", "Alt+M");
 
-    t->speech = new TextToSpeechWindow(this);
-    t->speechDock = dock("Text to Speech", "dockTextToSpeech", t->speech);
+    t->speechDock = dock("Text to Speech", "dockTextToSpeech", [&](QWidget* parent) -> QWidget* { return t->speech = new TextToSpeechWindow(parent); });
     addWindow(t->speechDock, "showTextToSpeech", "Ctrl+Shift+P");
 
     t->midi.reset(new MidiSync(pb));

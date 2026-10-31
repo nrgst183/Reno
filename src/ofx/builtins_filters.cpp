@@ -1197,6 +1197,8 @@ void borderBevelRow(const BorderGeo& g, int y, BorderSpans& xs)
 
 namespace {
 
+std::vector<uint8_t>& tlLevels() { thread_local std::vector<uint8_t> v; return v; }
+
 void chromaKeyer(Ctx& c)
 {
     const Color kc = c.color("color");
@@ -1215,10 +1217,22 @@ void chromaKeyer(Ctx& c)
     forRows(H, W, [&](int y) {
         const float* in = c.src.at(0, y);
         float* mrow = &mask[(size_t)y * W];
-        for (int x = 0; x < W; ++x) {
-            const float* px = in + (size_t)x * 4;
-            const int a = v8::toLevel(px[3]);
-            const int br = v8::toLevel(px[0]), bg = v8::toLevel(px[1]), bb = v8::toLevel(px[2]);
+        // the answer depends only on the pixel's four bytes: the last answers are kept (flat and repeated areas are common)
+        constexpr int kCache = 512;
+        uint32_t ckey[kCache];
+        int16_t cval[kCache];
+        std::memset(cval, 0xFF, sizeof cval);
+        uint8_t lv[4 * 4096];
+        for (int x0 = 0; x0 < W; x0 += 4096) {
+        const int xn = std::min(W - x0, 4096);
+        v8::levelsRow(in + (size_t)x0 * 4, lv, (size_t)xn * 4);
+        for (int xi = 0; xi < xn; ++xi) {
+            const int x = x0 + xi;
+            uint32_t word;
+            std::memcpy(&word, lv + (size_t)xi * 4, 4);
+            const uint32_t slot = (word * 0x9E3779B1u) >> 23;
+            if (cval[slot] >= 0 && ckey[slot] == word) { mrow[x] = (float)cval[slot]; continue; }
+            const int br = lv[xi * 4], bg = lv[xi * 4 + 1], bb = lv[xi * 4 + 2], a = lv[xi * 4 + 3];
             double r, g, b;
             if (a >= 1 && a <= 254) { r = inv[a] * val[br]; g = inv[a] * val[bg]; b = inv[a] * val[bb]; }
             else { r = val[br]; g = val[bg]; b = val[bb]; }
@@ -1244,7 +1258,11 @@ void chromaKeyer(Ctx& c)
                 v = 0.f > v ? 0.f : std::min(255.f, v);
                 m = (int)v;
             }
-            mrow[x] = (float)std::min(m, a);                                          // (the alpha byte also holds the picture's own alpha)
+            m = std::min(m, a);                                                       // (the alpha byte also holds the picture's own alpha)
+            mrow[x] = (float)m;
+            ckey[slot] = word;
+            cval[slot] = (int16_t)m;
+        }
         }
     });
     // the blur
@@ -1269,15 +1287,35 @@ void chromaKeyer(Ctx& c)
     }
     const bool maskOnly = c.b("ShowMaskOnly");
     const int despill = chromaKeyDespill(key);
+    // (the byte a colour channel gets from a mask byte: table[mask][level] = (int)(level * (mask / 255)) with VEGAS's double steps)
+    static const std::vector<uint8_t> scaleTab = [] {
+        std::vector<uint8_t> t(256 * 256);
+        for (int m = 0; m < 256; ++m) {
+            const double f = (double)m * 0.00392156862745098;
+            for (int p = 0; p < 256; ++p) t[(size_t)m * 256 + p] = (uint8_t)(int)((double)p * f);
+        }
+        return t;
+    }();
+    float lvF[256];
+    for (int i = 0; i < 256; ++i) lvF[i] = v8::fromLevel(i);
     forRows(H, W, [&](int y) {
         const float* s = c.src.at(0, y);
         float* o = c.out.at(0, y);
         const float* mrow = &mask[(size_t)y * W];
+        std::vector<uint8_t>& lv = tlLevels();
+        lv.resize((size_t)W * 4);
+        v8::levelsRow(s, lv.data(), (size_t)W * 4);
         for (int x = 0; x < W; ++x, s += 4, o += 4) {
             const int a8 = (int)mrow[x];
-            int p[3] = {v8::toLevel(s[0]), v8::toLevel(s[1]), v8::toLevel(s[2])};     // R, G, B bytes as the source holds them (premultiplied)
+            int p[3] = {lv[(size_t)x * 4], lv[(size_t)x * 4 + 1], lv[(size_t)x * 4 + 2]};     // R, G, B bytes as the source holds them (premultiplied)
             if (maskOnly) { const float v = v8::fromLevel(a8); o[0] = o[1] = o[2] = o[3] = v; continue; }
             if (a8 >= 1) { if (despill == 1) p[2] = std::min(p[2], p[1]); else if (despill == 2) p[1] = std::min(p[1], p[0]); }
+            if (a8 >= 0 && a8 < 256) {
+                const uint8_t* t = &scaleTab[(size_t)a8 * 256];
+                o[0] = lvF[t[p[0]]]; o[1] = lvF[t[p[1]]]; o[2] = lvF[t[p[2]]];
+                o[3] = lvF[a8];
+                continue;
+            }
             const double f = (double)a8 * 0.00392156862745098;
             for (int i = 0; i < 3; ++i) o[i] = v8::fromLevel((int)((double)p[i] * f));
             o[3] = v8::fromLevel(a8);

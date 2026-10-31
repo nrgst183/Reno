@@ -710,7 +710,17 @@ void checkSaveLoad(Context& c, const std::string& tag)
         if (!r2.ok) { fail(".veg save of a loaded .veg fails", r2.error); return; }
         if (!loadProjectFile(base + "_2.veg", q2, &e)) { fail(".veg written twice does not load", e); return; }
         const std::string a = json(q1), b = json(q2);
-        if (a != b) fail(".veg saved and loaded twice differs", where(a, b));
+        if (a != b) {
+            // keep both files and both projects (as JSON) next to the log, to look at what differs
+            const QString keep = gOut + "/differs_" + QString::fromStdString(tag);
+            QFile::copy(QString::fromStdString(base + "_1.veg"), keep + "_1.veg");
+            QFile::copy(QString::fromStdString(base + "_2.veg"), keep + "_2.veg");
+            for (int k = 0; k < 2; ++k) {
+                QFile f(keep + QString("_%1.json").arg(k + 1));
+                if (f.open(QIODevice::WriteOnly)) f.write((k == 0 ? a : b).c_str(), (qint64)(k == 0 ? a : b).size());
+            }
+            fail(".veg saved and loaded twice differs", where(a, b));
+        }
         ++c.saved;
     }
 }

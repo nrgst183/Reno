@@ -38,6 +38,7 @@ const QColor kSplashTop(30, 30, 32), kSplashBottom(18, 18, 19), kSplashOrange(23
 
 SplashScreen* gSplash = nullptr;
 PluginLoadProgress* gLoad = nullptr;
+qint64 gLastLoadPaintMs = 0;     // when the plug-in loading window was last painted
 
 QString elide(const QFont& f, const QString& s, int width)
 {
@@ -233,6 +234,7 @@ void PluginLoadProgress::making(const FxSlot& slot, int done, int total)
         const bool own = file.isEmpty();
         if (!dialog_ && (!own || QDateTime::currentMSecsSinceEpoch() - startMs_ > 300)) {
             dialog_ = new QDialog(parent_ ? parent_->window() : nullptr, Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint);
+            gLastLoadPaintMs = 0;       // (the first plug-in's line is shown at once)
             dialog_->setObjectName("pluginLoadProgress");
             dialog_->setWindowTitle("Reno");
             dialog_->setWindowModality(Qt::ApplicationModal);
@@ -256,12 +258,19 @@ void PluginLoadProgress::making(const FxSlot& slot, int done, int total)
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
         }
         if (dialog_) {
-            line_->setText(elide(line_->font(), "Loading " + name + (file.isEmpty() ? QString() : " - " + file) + count, 420));
-            bar_->setRange(0, std::max(1, total));
-            bar_->setValue(done);
-            dialog_->repaint();
-            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-            painted = title_->text() + "\n" + line_->text();
+            const QString lineText = elide(line_->font(), "Loading " + name + (file.isEmpty() ? QString() : " - " + file) + count, 420);
+            // painted about 30 times a second at most (and always the last one): setting the texts and the bar and painting for each
+            // of hundreds of quick plug-ins costs more than the plug-ins; 'painted' still names this plug-in's line
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            if (now - gLastLoadPaintMs >= 33 || done + 1 >= total) {
+                gLastLoadPaintMs = now;
+                line_->setText(lineText);
+                bar_->setRange(0, std::max(1, total));
+                bar_->setValue(done);
+                dialog_->repaint();
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            }
+            painted = title_->text() + "\n" + lineText;
         }
     }
     if (beforePlugin()) beforePlugin()(painted);
