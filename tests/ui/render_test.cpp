@@ -9,7 +9,6 @@
 #include "../../src/app/mainwindow.h"  // so the stand-in checks link the windows the main window makes, this dialog among them
 #include "../../src/app/panels.h"
 #include "../../src/app/renderdialog.h"
-#include "../../src/app/theme.h"
 #include "../../src/engine/renderas.h"
 #include "../../src/media/media.h"
 #include "uitestlib.h"

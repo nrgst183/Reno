@@ -1,6 +1,6 @@
 // The time display over the track headers and the ruler at frame rates over 100 (src/engine/timefmt.cpp formatTime,
 // src/app/timeline.cpp): Time & Frames writes the frame number with three digits at 120 fps (00:02:06:102, then 00:02:07:006), so
-// the time display's text keeps its size and width from one frame to the next, in both looks.
+// the time display's text keeps its size and width from one frame to the next.
 //
 //   timedisplay_test <output folder>
 //
@@ -67,10 +67,9 @@ int main(int argc, char** argv)
     w.resize(1200, 300);
     w.show();
     uitest::settle(200);
-    for (UiTheme look : {UiTheme::Reno, UiTheme::Vegas}) {
-        applyTheme(look);
+    {
         uitest::settle(150);
-        const char* name = look == UiTheme::Reno ? "Reno" : "VEGAS";
+        const char* name = "VEGAS";
         app.setCursor(126.0 + 102.0 / 120.0);
         uitest::settle(100);
         const std::string a = rulerTime(app.project(), app.cursor());

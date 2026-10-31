@@ -8,7 +8,6 @@
 #include "appstate.h"
 #include "playback.h"
 #include "panels.h"
-#include "theme.h"
 #include <QMainWindow>
 #include <map>
 #include <vector>
@@ -104,7 +103,7 @@ private:
     void updateDockTabs();              // a docked window's own tab shows while it is alone in its place
     void compositingMenu(QMenu* menu, uint64_t trackId);    // added to a video track's menu
     void showDiskSpace();               // status bar's right-hand side
-    void restyle();                     // colours of the window's own bars for the current look (theme.h)
+    void restyle();                     // colours of the window's own bars
     void stepTrack(int dir);            // Alt+Shift+Up / Down: previous or next track becomes selected
     void showDock(QDockWidget* d);      // shown, raised in its tabs and focused
     void cycleFocus(int dir);           // F6 / Shift+F6
@@ -174,16 +173,12 @@ private:
     std::pair<double, double> lastSelection_{0, 0};
     bool restoringSelection_ = false;
     int listener_ = 0;
-    int styledTheme_ = -1;              // look restyle() last coloured the window for
-    std::string themePref_;             // look Preferences asked for when last checked
     std::unique_ptr<Actions> a_;
     std::unique_ptr<Tools> tools_;
 };
 
-// Dark colours for the whole application in the look Preferences ask for (theme.h). The second form applies the given
-// look at once without changing Preferences.
+// Dark colours for the whole application (VEGAS Pro 18's scheme).
 void applyTheme();
-void applyTheme(UiTheme theme);
 
 }  // namespace app
 }  // namespace reno

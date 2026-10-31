@@ -21,7 +21,6 @@ class GlyphButton : public QAbstractButton {
 public:
     GlyphButton(Glyph g, const QString& tip, QWidget* parent, int w = 26, int h = 24);
     bool menuArrow = false;             // a small arrow at the right: the button opens a menu
-    bool boxed = false;                 // Reno's own look: drawn as a raised box even when the mouse is not over it
     void setPlaying(bool on);
 
 protected:

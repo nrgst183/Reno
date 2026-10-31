@@ -380,7 +380,6 @@ void TimelineWidget::Impl::changed(int changes)
         all = true;
     }
     if (changes & kPrefs) {
-        themeChanged();
         {
             const int pt = std::max(0, std::min(32, vprefs::number("prefs/timelineFontPt")));
             QFont want = pt > 0 ? QFont(QApplication::font()) : QFont();
@@ -631,7 +630,6 @@ const QImage* TimelineWidget::Impl::thumb(const ThumbKey& key, const MediaItem& 
 void TimelineWidget::Impl::paint(QPainter& p, const QRect& clip)
 {
     ++paintCount;
-    if (shownTheme != uiTheme()) themeChanged();
     updateFonts();
     ensureIndex(true);
     paintLanes(p, clip);
@@ -647,15 +645,14 @@ void TimelineWidget::Impl::paint(QPainter& p, const QRect& clip)
 
 double TimelineWidget::Impl::rulerLabelWidth() const
 {
-    if (rulerLabelW <= 0 || rulerLabelLook != uiTheme()) {
-        rulerLabelLook = uiTheme();
-        rulerLabelW = QFontMetrics(renoTheme() ? smallFont : rulerFont).horizontalAdvance(QString("00:00:00:00")) + 20.0;
+    if (rulerLabelW <= 0) {
+        rulerLabelW = QFontMetrics(rulerFont).horizontalAdvance(QString("00:00:00:00")) + 20.0;
         rulerLabelFps = 0;
     }
     if (rulerLabelFps != fps()) {
         rulerLabelFps = fps();
         const int digits = frameDigits(std::max(1, (int)std::lround(rulerLabelFps)));
-        rulerLabelWide = digits > 2 ? QFontMetrics(renoTheme() ? smallFont : rulerFont).horizontalAdvance(QString(digits - 2, QChar('0'))) : 0.0;
+        rulerLabelWide = digits > 2 ? QFontMetrics(rulerFont).horizontalAdvance(QString(digits - 2, QChar('0'))) : 0.0;
     }
     return rulerLabelW + rulerLabelWide;
 }
@@ -997,18 +994,14 @@ TimelineWidget::Impl::TitleText& TimelineWidget::Impl::titleText(const Event& e,
 TimelineWidget::Impl::RowLook TimelineWidget::Impl::rowLook(const Row& row) const
 {
     RowLook l;
-    l.reno = renoTheme();
     l.tc = trackColor(app.project().tracks[(size_t)row.index], row.index);
-    l.body = l.reno ? mix(l.tc, QColor(24, 24, 28), row.video ? 0.66 : 0.6) : (row.video ? mix(l.tc, QColor(16, 16, 16), 0.55) : l.tc);
-    l.title = l.reno ? mix(l.tc, QColor(24, 24, 28), 0.3) : mix(l.tc, QColor(0, 0, 0), 0.25);
-    l.bodySelected = l.reno ? l.body.lighter(132) : l.body;
-    l.titleSelected = l.reno ? l.title.lighter(128) : l.title;
-    l.wave = l.reno ? mix(l.tc, QColor(255, 255, 255), 0.7) : mix(l.tc, QColor(255, 255, 255), 0.62);
+    l.body = row.video ? mix(l.tc, QColor(16, 16, 16), 0.55) : l.tc;
+    l.title = mix(l.tc, QColor(0, 0, 0), 0.25);
+    l.wave = mix(l.tc, QColor(255, 255, 255), 0.62);
     // Preferences > Display, "Reverse Event Background Color": a light event with a dark waveform instead of a dark one
     // with a light waveform
     if (!row.video && vprefs::on("prefs/reverseEventBg")) {
         l.body = mix(l.tc, QColor(255, 255, 255), 0.55);
-        l.bodySelected = l.reno ? l.body.lighter(115) : l.body;
         l.wave = mix(l.tc, QColor(0, 0, 0), 0.7);
     }
     return l;
@@ -1025,9 +1018,9 @@ int TimelineWidget::Impl::sliverOf(const Row& row, const Event& e, const QRect& 
     const QRectF v(QPointF(std::max(r.left(), lanes.left() - 16.0), r.top()), QPointF(std::min(r.right(), lanes.right() + 16.0), r.bottom()));
     if (!(v.width() < 5.0) || e.mute) return 2;
     const bool selected = app.selection().count(e.id) != 0;
-    if (!look.reno && selected) return 2;
+    if (selected) return 2;
     *rect = v;
-    *color = look.reno ? (selected ? kSelect : look.title) : (row.video ? look.tc : look.body);
+    *color = row.video ? look.tc : look.body;
     return 1;
 }
 
@@ -1037,9 +1030,7 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     if (r.right() < c.left() - 2 || r.left() > c.right() + 2) return;
     const MediaItem* m = mediaOf(e.mediaId);
     const bool selected = app.selection().count(e.id) != 0;
-    const bool reno = look.reno;
-    const QColor body = selected ? look.bodySelected : look.body;
-    const QColor titleColor = selected ? look.titleSelected : look.title;
+    const QColor body = look.body;
     // Only the part in view is drawn: zoomed far in, an event can be a very long way wide. It is the part in the
     // whole view, not just in what this paint covers, so a part painted on its own looks exactly as in a whole
     // repaint (its name elided at the same place and so on).
@@ -1048,11 +1039,8 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     if (v.width() < 5.0) {
         const qreal opacity = p.opacity();
         if (e.mute) p.setOpacity(0.42);
-        if (reno) p.fillRect(v, selected ? kSelect : titleColor);
-        else {
-            p.fillRect(v, row.video ? look.tc : body);
-            if (selected) p.fillRect(v, QColor(255, 255, 255, 80));
-        }
+        p.fillRect(v, row.video ? look.tc : body);
+        if (selected) p.fillRect(v, QColor(255, 255, 255, 80));
         if (e.mute) p.setOpacity(opacity);
         return;
     }
@@ -1061,30 +1049,15 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     // A narrow event (a stutter's, zoomed out) is drawn plainly: square corners, straight fade lines with nothing
     // shaded, no smoothing. Thousands are drawn at once, and at that size it looks the same.
     const bool narrow = v.width() < 12.0;
-    // Its body and outline are drawn only as far as 16 pixels past what this paint covers: the same pixels there (the
-    // rounded corners cut off out of sight), and an event running across the whole view is not outlined from end to
-    // end.
+    // Its body and outline are drawn only as far as 16 pixels past what this paint covers: the same pixels there, and
+    // an event running across the whole view is not outlined from end to end.
     const QRectF vd(QPointF(std::max(v.left(), c.left() - 16.0), v.top()), QPointF(std::min(v.right(), c.right() + 16.0), v.bottom()));
-    // Cut off on both sides, its rounded corners are out of sight: its body is a plain rectangle with the same pixels
-    // here (its top and bottom lie on whole pixels) and its outline two lines. On a screen scaled by a fraction,
-    // smoothed lines come out a shade different from the outline's, so there the rounded rectangle is drawn as it is.
-    const QTransform dt = p.deviceTransform();
-    const bool cutBoth = v.left() < c.left() - 16.0 && v.right() > c.right() + 16.0 && dt.type() <= QTransform::TxScale &&
-                         dt.m11() == std::floor(dt.m11()) && dt.m22() == dt.m11();
-    if (reno && !narrow && !cutBoth) {
-        p.setRenderHint(QPainter::Antialiasing, !dense);
-        p.setPen(Qt::NoPen);
-        p.setBrush(body);
-        p.drawRoundedRect(vd, 3.5, 3.5);
-        p.setRenderHint(QPainter::Antialiasing, false);
-    } else {
-        p.fillRect(vd, body);
-    }
+    p.fillRect(vd, body);
 
-    const EventPaint ev{row, e, m, c, look, r, v, vd, selected, narrow, cutBoth};
+    const EventPaint ev{row, e, m, c, look, r, v, vd, selected, narrow};
     const double titleH = eventTitleH(r);
     p.save();
-    p.setClipRect(reno ? vd.adjusted(1, 1, -1, -1).intersected(QRectF(c)) : vd.intersected(QRectF(c)));
+    p.setClipRect(vd.intersected(QRectF(c)));
     drawEventContent(p, ev, titleH);
     drawEventTitle(p, ev, titleH);
     drawFadesAndGain(p, ev);
@@ -1160,10 +1133,9 @@ void TimelineWidget::Impl::drawEventTitle(QPainter& p, const EventPaint& ev, dou
     const Event& e = ev.e;
     const QRectF &r = ev.r, &v = ev.v, &vd = ev.vd;
     const QRect& c = ev.c;
-    const bool reno = ev.look.reno;
     if (titleH > 0) {
-        p.fillRect(QRectF(vd.left(), vd.top(), vd.width(), titleH), ev.selected ? ev.look.titleSelected : ev.look.title);
-        double tx = std::max(r.left(), (double)headerW) + (reno ? 9.0 : 5.0);
+        p.fillRect(QRectF(vd.left(), vd.top(), vd.width(), titleH), ev.look.title);
+        double tx = std::max(r.left(), (double)headerW) + 5.0;
         double textRight = v.right() - 8.0;
         if (opt.showEventButtons && hasMenuButton(r)) {
             double left = menuButtonRect(r).left();
@@ -1177,7 +1149,7 @@ void TimelineWidget::Impl::drawEventTitle(QPainter& p, const EventPaint& ev, dou
             const double lw = lfm.horizontalAdvance(lt) + 4.0;
             if (textRight - lw > c.left() - 40.0 && tx < c.right() + 2) {
                 p.setFont(smallFont);
-                p.setPen(reno ? QColor(235, 235, 235) : QColor(230, 230, 230));
+                p.setPen(QColor(230, 230, 230));
                 p.drawText(QRectF(textRight - lw, v.top(), lw, titleH), Qt::AlignRight | Qt::AlignVCenter, lt);
             }
             textRight -= lw + 6.0;
@@ -1189,7 +1161,7 @@ void TimelineWidget::Impl::drawEventTitle(QPainter& p, const EventPaint& ev, dou
         const double textW = textRight - tx;
         if (textW > 14 && tx < c.right() + 2) {
             p.setFont(smallFont);
-            p.setPen(reno ? QColor(246, 246, 246) : QColor(240, 240, 240));
+            p.setPen(QColor(240, 240, 240));
             TitleText& tt = titleText(e, ev.m, (int)textW);
             drawKeptText(p, QRectF(tx, v.top(), textW, titleH), tt.elided, tt.kept);
         }
@@ -1268,40 +1240,12 @@ void TimelineWidget::Impl::drawLoopNotches(QPainter& p, const EventPaint& ev)
 }
 
 // Selected: lit up, with a light rim; else a dark line where it starts and ends so events that meet are told apart.
-// Reno's own look has a rounded outline, yellow and thicker while selected.
 void TimelineWidget::Impl::drawEventOutline(QPainter& p, const EventPaint& ev)
 {
     const QRectF &r = ev.r, &v = ev.v, &vd = ev.vd;
-    const bool reno = ev.look.reno, selected = ev.selected, narrow = ev.narrow, cutBoth = ev.cutBoth;
+    const bool selected = ev.selected, narrow = ev.narrow;
     p.setRenderHint(QPainter::Antialiasing, false);
-    if (reno && narrow) {
-        p.setBrush(Qt::NoBrush);
-        p.setPen(selected ? QPen(kSelect, 2.0) : QPen(QColor(10, 10, 12), 1.0));
-        p.drawRect(v.adjusted(0.5, 0.5, -0.5, -0.5));
-    } else if (reno) {
-        p.setRenderHint(QPainter::Antialiasing, !dense);
-        p.setBrush(Qt::NoBrush);
-        if (selected) {
-            p.setPen(QPen(kSelect, 2.0));
-            const QRectF o = vd.adjusted(1, 1, -1, -1);
-            if (cutBoth) {
-                p.drawLine(QPointF(o.left(), o.top()), QPointF(o.right(), o.top()));
-                p.drawLine(QPointF(o.left(), o.bottom()), QPointF(o.right(), o.bottom()));
-            } else {
-                p.drawRoundedRect(o, 3.0, 3.0);
-            }
-        } else {
-            p.setPen(QPen(QColor(10, 10, 12), 1.0));
-            const QRectF o = vd.adjusted(0.5, 0.5, -0.5, -0.5);
-            if (cutBoth) {
-                p.drawLine(QPointF(o.left(), o.top()), QPointF(o.right(), o.top()));
-                p.drawLine(QPointF(o.left(), o.bottom()), QPointF(o.right(), o.bottom()));
-            } else {
-                p.drawRoundedRect(o, 3.5, 3.5);
-            }
-        }
-        p.setRenderHint(QPainter::Antialiasing, false);
-    } else if (selected) {
+    if (selected) {
         p.fillRect(vd, QColor(255, 255, 255, 58));
         p.setPen(QColor(236, 236, 236));
         p.setBrush(Qt::NoBrush);
@@ -1310,7 +1254,7 @@ void TimelineWidget::Impl::drawEventOutline(QPainter& p, const EventPaint& ev)
         if (r.left() >= v.left() - 0.5) p.fillRect(QRectF(std::floor(r.left()), v.top(), 1.0, v.height()), QColor(0, 0, 0, 120));
         if (r.right() <= v.right() + 0.5) p.fillRect(QRectF(std::floor(r.right()) - 1.0, v.top(), 1.0, v.height()), QColor(0, 0, 0, 120));
     }
-    if (!reno && !narrow) {
+    if (!narrow) {
         p.fillRect(QRectF(vd.left(), std::floor(r.top()), vd.width(), 1.0), QColor(216, 216, 216));
     }
 }
@@ -1342,7 +1286,6 @@ void TimelineWidget::Impl::drawFadeHandles(QPainter& p, const EventPaint& ev)
     const QRectF& r = ev.r;
     const QRect& c = ev.c;
     if (!hasFadeHandles(r)) return;
-    const bool reno = ev.look.reno;
     p.setRenderHint(QPainter::Antialiasing, !dense);
     const double fi = clampd(xAtF(e.start + e.fadeIn), r.left() + 5.0, r.right() - 5.0);
     const double fo = clampd(xAtF(e.end() - e.fadeOut), r.left() + 5.0, r.right() - 5.0);
@@ -1350,12 +1293,6 @@ void TimelineWidget::Impl::drawFadeHandles(QPainter& p, const EventPaint& ev)
         const bool hot = hover.event == e.id && hover.part == (side == 0 ? Part::FadeIn : Part::FadeOut);
         const double x = side == 0 ? fi : fo;
         if (x + 7.0 < c.left() || x - 7.0 > c.right()) continue;
-        if (reno) {
-            p.setPen(QPen(QColor(10, 10, 12, 200), 1.0));
-            p.setBrush(hot ? kSelect : kFadeHandle);
-            p.drawRect(QRectF(x - 3.0, r.top() + 2.5, 6.0, 6.0));
-            continue;
-        }
         // VEGAS 18's: small and pure blue; a corner of a triangle in the event's corner while there is no fade, a short
         // tab hanging from the top edge where a fade ends (bigger and lighter under the mouse)
         p.setPen(Qt::NoPen);
@@ -1382,29 +1319,10 @@ void TimelineWidget::Impl::drawEventButtons(QPainter& p, const EventPaint& ev)
     const Event& e = ev.e;
     const QRectF& r = ev.r;
     const QRect& c = ev.c;
-    const bool reno = ev.look.reno;
     auto button = [&](const QRectF& b, Part part) {
         if (b.right() < c.left() || b.left() > c.right()) return;
         const bool hot = hover.event == e.id && hover.part == part;
         p.setRenderHint(QPainter::Antialiasing, !dense);
-        if (reno) {
-            bool bad = false, any = false;
-            if (part == Part::EventFx) {
-                for (const FxSlot& sl : e.fx)
-                    if (!app.fx.error(sl.id).empty()) bad = true;
-                any = !e.fx.empty();
-            } else if (part == Part::EventCrop) {
-                any = !e.panCrop.empty() || maskActive(e);
-            }
-            p.setPen(QPen(hot ? QColor(255, 255, 255) : QColor(255, 255, 255, any ? 120 : 70), 1.0));
-            p.setBrush(bad ? kFxBad : (any ? kFxOn : QColor(0, 0, 0, 130)));
-            p.drawRoundedRect(b.adjusted(0.5, 1.5, -0.5, -0.5), 3.0, 3.0);
-            const QColor ink = any || hot ? QColor(255, 255, 255) : QColor(205, 205, 205);
-            if (part == Part::EventCrop) drawCropIcon(p, b.adjusted(1, 2, -1, 0), ink);
-            else if (part == Part::EventFx) drawFxIcon(p, b.adjusted(0, 1, 0, 0), ink, any);
-            else drawMenuIcon(p, b.adjusted(3, 4, -3, -2), ink);
-            return;
-        }
         if (hot) {
             p.setPen(QPen(QColor(255, 255, 255, 200), 1.0));
             p.setBrush(QColor(255, 255, 255, 70));
@@ -1610,15 +1528,9 @@ void TimelineWidget::Impl::drawCrossFade(QPainter& p, const Row& row, const Even
     const bool transition = !b.transition.kind.empty();
     const bool target = drop.ok && drop.kind == DropKind::Transition && drop.event == b.id;
     p.save();
-    if (renoTheme()) {
-        p.fillRect(QRectF(l, rb.top() + 1, rr - l, rb.height() - 2), target ? QColor(255, 196, 61, 90) : (transition ? QColor(150, 96, 210, 96) : QColor(0, 0, 0, 84)));
-        p.setRenderHint(QPainter::Antialiasing, !dense);
-        p.setPen(QPen(QColor(244, 244, 244, 225), 1.3));
-    } else {
-        if (target || transition) p.fillRect(QRectF(l, rb.top(), rr - l, rb.height()), target ? QColor(255, 196, 61, 90) : QColor(150, 96, 210, 70));
-        p.setRenderHint(QPainter::Antialiasing, !dense);
-        p.setPen(QPen(QColor(36, 44, 255), 1.4));
-    }
+    if (target || transition) p.fillRect(QRectF(l, rb.top(), rr - l, rb.height()), target ? QColor(255, 196, 61, 90) : QColor(150, 96, 210, 70));
+    p.setRenderHint(QPainter::Antialiasing, !dense);
+    p.setPen(QPen(QColor(36, 44, 255), 1.4));
     const bool narrow = x1 - x0 < 12.0;
     if (narrow) p.setRenderHint(QPainter::Antialiasing, false);
     drawFade(p, x0, x1, rb.top() + 1, rb.bottom() - 1, narrow ? CurveLinear : (b.fadeInRecipCurve >= 0 ? b.fadeInRecipCurve : a.fadeOutCurve), false, l, rr, false);
@@ -1650,7 +1562,7 @@ void TimelineWidget::Impl::paintGrid(QPainter& p, const QRect& c, int tracksBott
         if (x < c.left()) continue;
         for (int y = std::max(c.top(), kTopH) | 1; y < std::min(tracksBottom, c.bottom() + 1); y += 2) dots.push_back(QPointF(x + 0.5, y + 0.5));
     }
-    p.setPen(renoTheme() ? QColor(104, 104, 112) : QColor(118, 118, 118));
+    p.setPen(QColor(118, 118, 118));
     p.drawPoints(dots.constData(), dots.size());
 }
 
@@ -1662,7 +1574,7 @@ void TimelineWidget::Impl::paintLayerLanes(QPainter& p, const Row& r, int y, con
     for (const auto& t : r.lm->trans) {
         const double x0 = std::floor(xAtF(t.first)), x1 = std::floor(xAtF(t.second));
         if (x1 < c.left() - 2 || x0 > c.right() + 2) continue;
-        p.fillRect(QRectF(x0, top + 2.0 * hl, std::max(1.0, x1 - x0), r.h - 2.0 - 2.0 * hl - 1.0), renoTheme() ? QColor(110, 160, 235, 150) : QColor(96, 140, 210, 170));
+        p.fillRect(QRectF(x0, top + 2.0 * hl, std::max(1.0, x1 - x0), r.h - 2.0 - 2.0 * hl - 1.0), QColor(96, 140, 210, 170));
     }
     p.setFont(smallFont);
     p.setPen(QColor(255, 255, 255, 80));
@@ -1682,13 +1594,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
     for (const Row& r : rows) {
         const int y = rowTop(r);
         if (y + r.h <= c.top() || y > c.bottom()) continue;
-        if (renoTheme()) {
-            QColor bg = r.video ? kLane : kLaneAudio;
-            if (r.id == app.currentTrack) bg = bg.lighter(128);
-            p.fillRect(QRect(c.left(), y, c.width(), r.h - 1), bg);
-        } else {
-            p.fillRect(QRect(c.left(), y, c.width(), r.h - 1), kLane);
-        }
+        p.fillRect(QRect(c.left(), y, c.width(), r.h - 1), kLane);
         p.fillRect(QRect(c.left(), y + r.h - 1, c.width(), 1), kLine);
         if (r.lm) paintLayerLanes(p, r, y, c);
     }
@@ -1747,13 +1653,12 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
                     if (e.length * pps >= 1.99)
                         if (const Event* a = fadeSource((size_t)r.index, k)) drawCrossFade(p, r, *a, e, c);
         }
-        if (tr.mute || (pr.anySolo(tr.type) && !tr.solo)) p.fillRect(QRect(c.left(), y, c.width(), r.h - 1), renoTheme() ? QColor(22, 22, 24, 128) : QColor(30, 30, 30, 140));
+        if (tr.mute || (pr.anySolo(tr.type) && !tr.solo)) p.fillRect(QRect(c.left(), y, c.width(), r.h - 1), QColor(30, 30, 30, 140));
         paintTrackKeys(p, r, tr, c);
     }
     for (const EnvLane& L : envLanes()) drawEnvelope(p, L, c);
     if (app.loopEnd > app.loopStart) {
-        QColor edge = app.loopOn ? QColor(kLoopOn.red(), kLoopOn.green(), kLoopOn.blue(), 150) : QColor(255, 255, 255, 90);
-        if (renoTheme()) edge = QColor(120, 170, 235, 95);
+        const QColor edge = app.loopOn ? QColor(kLoopOn.red(), kLoopOn.green(), kLoopOn.blue(), 150) : QColor(255, 255, 255, 90);
         p.fillRect(QRectF(std::floor(xAtF(app.loopStart)), kTopH, 1.0, tracksBottom - kTopH), edge);
         p.fillRect(QRectF(std::floor(xAtF(app.loopEnd)), kTopH, 1.0, tracksBottom - kTopH), edge);
     }

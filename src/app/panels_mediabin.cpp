@@ -10,7 +10,6 @@
 #include "logo.h"
 #include "fxlibrary.h"
 #include "fxthumbs.h"
-#include "theme.h"
 #include "playback.h"
 #include "timeline.h"
 #include "../media/media.h"
@@ -1082,40 +1081,34 @@ struct MediaBin::Impl {
         refresh(true);
     }
 
-    // The tool bar: words in Reno's look, small images (actions in tool tips) in VEGAS's.
+    // The tool bar: small images, the actions in tool tips.
     void applyLook()
     {
-        const bool reno = renoTheme();
         const QString viewName = view == 0 ? "Detailed" : view == 1 ? "List" : "Thumbnails";
-        struct B { QAbstractButton* b; const char* text; int icon; const char* tip; };
-        const B all[] = {{importButton, "Import Media...", 0, "Import Media (Ctrl+I)"},
-                         {addButton, "Add to Timeline", 1, "Add to Timeline: put the selected media on the timeline at the cursor"},
-                         {removeButton, "Remove from Project", 2, "Remove from Project: take the selected media out of the project (only if no event uses it)"},
-                         {removeUnused, "Remove Unused", 3, "Remove All Unused Media: everything no event uses"},
-                         {properties, "Properties...", 4, "Media Properties: the selected media's streams, name, tags and comment"}};
+        struct B { QAbstractButton* b; int icon; const char* tip; };
+        const B all[] = {{importButton, 0, "Import Media (Ctrl+I)"},
+                         {addButton, 1, "Add to Timeline: put the selected media on the timeline at the cursor"},
+                         {removeButton, 2, "Remove from Project: take the selected media out of the project (only if no event uses it)"},
+                         {removeUnused, 3, "Remove All Unused Media: everything no event uses"},
+                         {properties, 4, "Media Properties: the selected media's streams, name, tags and comment"}};
         for (const B& x : all) {
             if (!x.b) continue;
-            x.b->setText(reno ? QString(x.text) : QString());
-            x.b->setIcon(reno ? QIcon() : mediaBarIcon(x.icon));
+            x.b->setText(QString());
+            x.b->setIcon(mediaBarIcon(x.icon));
             x.b->setIconSize(QSize(16, 16));
             x.b->setToolTip(x.tip);
             if (QPushButton* pb = qobject_cast<QPushButton*>(x.b)) {
-                pb->setFlat(!reno);
-                if (reno) {
-                    pb->setMinimumSize(0, 0);
-                    pb->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
-                } else {
-                    pb->setFixedSize(26, 24);
-                }
+                pb->setFlat(true);
+                pb->setFixedSize(26, 24);
             } else if (QToolButton* tb = qobject_cast<QToolButton*>(x.b)) {
-                tb->setAutoRaise(!reno);
-                tb->setToolButtonStyle(reno ? Qt::ToolButtonTextOnly : Qt::ToolButtonIconOnly);
+                tb->setAutoRaise(true);
+                tb->setToolButtonStyle(Qt::ToolButtonIconOnly);
             }
         }
-        viewButton->setText(reno ? viewName + " ▾" : QString("▾"));
-        viewButton->setIcon(reno ? QIcon() : mediaBarIcon(5));
-        viewButton->setToolButtonStyle(reno ? Qt::ToolButtonTextOnly : Qt::ToolButtonTextBesideIcon);
-        viewButton->setAutoRaise(!reno);
+        viewButton->setText(QString("▾"));
+        viewButton->setIcon(mediaBarIcon(5));
+        viewButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        viewButton->setAutoRaise(true);
         viewButton->setToolTip("Views: " + viewName);
     }
 

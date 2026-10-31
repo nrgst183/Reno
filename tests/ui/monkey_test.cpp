@@ -635,16 +635,6 @@ void stepPlayback(Context&)
     if (r.chance(0.4)) gW->playback()->pause();
 }
 
-void stepTheme(Context&)
-{
-    const UiTheme t = gRng->chance(0.5) ? UiTheme::Vegas : UiTheme::Reno;
-    logStep(std::string("theme ") + themeKey(t));
-    st().prefs.theme = themeKey(t);
-    applyTheme(t);
-    st().notify(kPrefs);
-    uitest::settle(20);
-}
-
 void stepResize(Context&)
 {
     Rng& r = *gRng;
@@ -1308,7 +1298,7 @@ int runSteps(Context& c, uint64_t seed, int steps)
     struct Kind { int weight; void (*fn)(Context&); bool undo; };
     const std::vector<Kind> kinds = {
         {30, stepAction, false}, {22, stepKeys, false}, {30, stepMouse, false}, {8, stepUndoRedo, true}, {5, stepPlayback, false},
-        {2, stepTheme, false}, {1, stepResize, false}, {5, stepMedia, false}, {6, stepSelect, false}, {3, stepSample, false},
+        {1, stepResize, false}, {5, stepMedia, false}, {6, stepSelect, false}, {3, stepSample, false},
         {1, stepNewDemo, false}, {3, stepFxWindow, false}, {2, stepDock, false}, {6, stepWidget, false}, {10, stepModel, false},
     };
     int total = 0;

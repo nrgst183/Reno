@@ -1,5 +1,4 @@
 // Reno - the editor.
-#include "theme.h"
 #include "../media/media.h"
 #include "scripting.h"
 #include "mainwindow.h"
@@ -108,7 +107,6 @@ int main(int argc, char** argv)
         if (!project.empty() && QFileInfo::exists(QString::fromStdString(project))) start.openPath = QString::fromStdString(project);
     }
     start.showSplash = !cmd.noLogo;
-    if (cmd.colors == 1) applyTheme(reno::app::UiTheme::Vegas);
     start.makeWindow = [] {
         // the starting project is a new one as VEGAS makes it: 29.970 fps, or "Start all new projects with these settings"
         reno::app::AppState::get().newProject(true);

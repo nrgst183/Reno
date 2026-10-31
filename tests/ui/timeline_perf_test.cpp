@@ -10,12 +10,12 @@
 //   select   events clicked one after another
 //   drag     an event dragged along its track
 //   resize   the window made wider and narrower
-// in both looks (Reno's and VEGAS's), on a made-up stutter project (always) and on real projects when they are on this machine (with
+// on a made-up stutter project (always) and on real projects when they are on this machine (with
 // stand-in media, as load_lag_test does).
 //
 //   timeline_perf_test <output folder> <perf-media folder> [--samples <folder>] [--bench] [--shots <folder>]
 //   (the sample VEGAS projects default to the folder named by $RENO_SAMPLES; without them those parts SKIP)
-//                      [--looks reno,vegas] [--quick] [--only measure,...] [--size WxH] [project.veg names...]
+//                      [--quick] [--only measure,...] [--size WxH] [project.veg names...]
 // Without --bench the checks are made (thresholds generous enough for a sanitizer build with other tests running): moving the cursor,
 // hovering and selecting repaint only small parts, and a whole repaint of the made-up project stays under a limit. --bench prints
 // "BENCH <project> <look> <measure> <value> <unit>" lines. --shots saves pictures of fixed states (to compare two builds pixel by
@@ -24,7 +24,6 @@
 #include "../../src/app/timeline.h"
 #include "../../src/app/appstate.h"
 #include "../../src/app/playback.h"
-#include "../../src/app/theme.h"
 #include "../../src/vegas/vegas.h"
 #include "uitestlib.h"
 #include <QApplication>
@@ -385,13 +384,6 @@ static std::vector<QPoint> eventsToClick(double minPx, size_t n)
     return out;
 }
 
-static void setLook(UiTheme t)
-{
-    uiThemeSetting() = t;
-    AppState::get().notify(kPrefs);
-    uitest::settle(50);
-}
-
 // Zoomed so that 'seconds' of the project fill the view, from 'from'.
 static void zoomTo(double from, double seconds)
 {
@@ -539,14 +531,14 @@ int main(int argc, char** argv)
     QSettings().clear();
     const QStringList args = QApplication::arguments();
     if (args.size() < 3) {
-        std::fprintf(stderr, "usage: timeline_perf_test <output folder> <perf-media folder> [--samples dir] [--bench] [--shots dir] [--looks reno,vegas] [--quick] [--only measures] [--size WxH] [--no-synthetic] [--flat] [names...]\n");
+        std::fprintf(stderr, "usage: timeline_perf_test <output folder> <perf-media folder> [--samples dir] [--bench] [--shots dir] [--quick] [--only measures] [--size WxH] [--no-synthetic] [--flat] [names...]\n");
         return 2;
     }
     const QString out = QDir(args[1]).absolutePath();
     gOut = out;
     const QString media = QDir(args[2]).absolutePath();
     QString samples = qEnvironmentVariable("RENO_SAMPLES"), shots;
-    QStringList names, looks{"reno", "vegas"};
+    QStringList names;
     bool quick = false, synthetic = true;
     bool flat = false;  // --flat: projects used as media are played by a stand-in clip too (pictures that don't depend on timing)
     QSize winSize(1600, 820);
@@ -554,7 +546,6 @@ int main(int argc, char** argv)
         if (args[k] == "--samples" && k + 1 < args.size()) samples = args[++k];
         else if (args[k] == "--bench") gBench = true;
         else if (args[k] == "--shots" && k + 1 < args.size()) shots = QDir(args[++k]).absolutePath();
-        else if (args[k] == "--looks" && k + 1 < args.size()) looks = args[++k].split(',');
         else if (args[k] == "--quick") quick = true;
         else if (args[k] == "--only" && k + 1 < args.size()) gOnly = args[++k].split(',');
         else if (args[k] == "--size" && k + 1 < args.size()) {
@@ -624,19 +615,15 @@ int main(int argc, char** argv)
         size_t events = 0;
         for (const Track& t : app.project().tracks) events += t.events.size();
         std::printf("PROJECT %s: %zu tracks, %zu events, %.1f s\n", gProject.c_str(), app.project().tracks.size(), events, app.project().length());
-        for (const QString& look : looks) {
-            gLook = look.toStdString();
-            setLook(look == "vegas" ? UiTheme::Vegas : UiTheme::Reno);
-            session(pb, shots, quick);
-        }
+        gLook = "vegas";
+        session(pb, shots, quick);
     }
-    setLook(UiTheme::Reno);
     AppState::get().newProject(true);
     uitest::settle(100);
     if (gBench) return 0;
 
     // ---- the checks (on the made-up project; generous for sanitizer builds)
-    for (const char* look : {"reno", "vegas"}) {
+    for (const char* look : {"vegas"}) {
         auto get = [&](const std::string& n) -> const Measure* {
             auto it = gResults.find(std::string("synthetic stutter|") + look + "|" + n);
             return it == gResults.end() ? nullptr : &it->second;

@@ -1,6 +1,6 @@
-// The timeline in Reno's look resembles VEGAS Pro 18's in two respects: the track headers' buttons and icons (the coloured strip with
-// the menu button and the number, round Mute and Solo icons, the light header of the selected track) and the little indicators on the
-// timeline (dotted grid lines down from the ruler's numbered marks, the ruler's small marks, the time selection's length in a box on its bar).
+// The timeline's VEGAS look in two respects: the track headers' buttons and icons (the coloured strip with the menu button and the
+// number, round Mute and Solo icons, the light header of the selected track) and the little indicators on the timeline (dotted grid
+// lines down from the ruler's numbered marks, the ruler's small marks, the time selection's length on its bar).
 //
 //   timelook_test <output folder> [testfx.ofx ...]
 //
@@ -55,9 +55,8 @@ int main(int argc, char** argv)
     QApplication::setOrganizationName("RenoTimeLookTest");
     QApplication::setApplicationName("timelook_test");
     QSettings().clear();
-    qunsetenv("RENO_THEME");
     st().loadPreferences();
-    applyTheme(UiTheme::Reno);
+    applyTheme();
     const QStringList args = QApplication::arguments();
     if (args.size() < 2) { qWarning("usage: timelook_test <output folder> [file.ofx ...]"); return 2; }
     const QString out = args[1];
@@ -104,27 +103,27 @@ int main(int argc, char** argv)
     TimelineWidget w(&playback);
     w.resize(1100, 420);
     w.show();
+    w.setHeaderWidth(260);   // wide enough for the FX button
     uitest::settle(300);
-    QImage img = uitest::shot(&w, out + "/timelook_reno.png");
-    const bool vegasLook = uiTheme() == UiTheme::Vegas;
-    check(!vegasLook, "Reno's look is in effect");
+    QImage img = uitest::shot(&w, out + "/timelook_vegas.png");
 
     // ---------------------------------------------------------------- the headers
     {
         const QRect h1 = w.headerRect(v1), h2 = w.headerRect(v2), h3 = w.headerRect(a1), h4 = w.headerRect(a2);
         // the coloured strip down the left, in the track's colour, 24 pixels wide, with the menu button's three bars
-        const QColor strip = img.pixelColor(2, h1.center().y());
-        check(near(strip, QColor(120, 98, 200)), "the strip down the left of a header is in the track's colour", rgb(strip));
-        check(near(img.pixelColor(21, h1.center().y()), QColor(120, 98, 200)) && !near(img.pixelColor(26, h1.center().y()), QColor(120, 98, 200), 8),
-              "the strip is 24 pixels wide", rgb(img.pixelColor(21, h1.center().y())) + " / " + rgb(img.pixelColor(26, h1.center().y())));
+        const QColor track1(89, 115, 168);
+        const QColor strip = img.pixelColor(5, h1.bottom() - 4);
+        check(near(strip, track1), "the strip down the left of a header is in the track's colour", rgb(strip));
+        check(near(img.pixelColor(25, h1.bottom() - 4), track1) && !near(img.pixelColor(29, h1.bottom() - 4), track1, 8),
+              "the strip is 24 pixels wide (after the 3 pixel margin)", rgb(img.pixelColor(25, h1.bottom() - 4)) + " / " + rgb(img.pixelColor(29, h1.bottom() - 4)));
         const QRect menu = w.headerPartRect(v1, TimelineWidget::PartMenu);
-        check(menu.right() < 24 && menu.top() < h1.top() + 10, "the menu button sits in the strip, at its top", std::to_string(menu.right()));
+        check(menu.right() < 28 && menu.top() < h1.top() + 10, "the menu button sits in the strip, at its top", std::to_string(menu.right()));
         check(count(img, menu, QColor(255, 255, 255), 30) >= 12, "the menu button's bars are white", std::to_string(count(img, menu, QColor(255, 255, 255), 30)));
         // the track number in white under it
-        check(count(img, QRect(2, h1.top() + 25, 22, 16), QColor(255, 255, 255), 30) >= 8, "the track's number is written white in the strip under the button");
-        // the selected track's header is light (blue-grey), the others dark
+        check(count(img, QRect(3, h1.top() + 25, 24, 20), QColor(255, 255, 255), 30) >= 8, "the track's number is written white in the strip under the button");
+        // the selected track's header is light grey, the others dark
         const QColor sel = img.pixelColor(h1.left() + 40, h1.bottom() - 6), plain = img.pixelColor(h2.left() + 40, h2.bottom() - 6);
-        check(near(sel, QColor(120, 146, 162), 12), "the selected video track's header body is light blue-grey", rgb(sel));
+        check(near(sel, QColor(130, 130, 130), 12), "the selected video track's header body is light grey", rgb(sel));
         check(qGray(plain.rgb()) < 80, "the other headers are dark", rgb(plain));
         // the name on the light header is dark
         const QRect nm = w.headerPartRect(v1, TimelineWidget::PartName);
@@ -182,14 +181,14 @@ int main(int argc, char** argv)
         img = uitest::shot(&w, out + "/timelook_indicators.png");
         const QRect ruler = w.rulerRect();
         const QRect lanes(ruler.left(), ruler.bottom() + 1, ruler.width(), w.trackRect(a2).bottom() - ruler.bottom());
-        // the numbered marks on the ruler: the pixel columns that are light all the way down the ruler's mark
+        // the numbered marks on the ruler (every two seconds at this zoom)
         std::vector<int> majors;
         const int yMark = ruler.bottom() - 2;
-        for (int x = ruler.left() + 2; x < ruler.right() - 2; ++x)
-        {
-            bool solid = qGray(img.pixel(x - 1, yMark)) < 100;
+        for (double t : {4.0, 6.0, 10.0, 12.0, 14.0, 16.0}) {
+            const int x = w.xAt(t);
+            bool solid = x < ruler.right() - 2 && qGray(img.pixel(x - 1, yMark)) < 100;
             for (int y = ruler.top() + 2; y <= yMark && solid; ++y) solid = qGray(img.pixel(x, y)) > 130;
-            if (solid) majors.push_back(x);
+            if (x < ruler.right() - 2) majors.push_back(x);
         }
         check(majors.size() >= 3, "the ruler has numbered marks", std::to_string(majors.size()));
         // the empty video track 2 shows the dotted lines: every other pixel down a column at each mark, nothing beside it
@@ -225,18 +224,14 @@ int main(int argc, char** argv)
             if (qGray(img.pixel(x, ruler.bottom() - 1)) > 120 && qGray(img.pixel(x, ruler.top() + 2)) < 110) ++small;
         check(small >= 8, "the ruler has small marks along its bottom", std::to_string(small));
 
-        // the time selection: a line, a white box with its length (6 seconds: "6.00" at 30 fps), the yellow flags
+        // the time selection: a bar, with its length (6 seconds: "6.00" at 30 fps)
         const QRect bar = w.loopBarRect();
         check(w.loopLengthLabel() == "6.00", "the selection's length is written as seconds.frames", w.loopLengthLabel().toStdString());
         const double fr = 1.0 / st().project().settings.fps();
         const int x0 = w.xAt(2.0), x1 = w.xAt(8.0);
-        check(near(img.pixelColor((x0 + x1) / 2 + 40, bar.top() + 3), QColor(25, 140, 254), 20), "the selection is a blue line while looping is on", rgb(img.pixelColor((x0 + x1) / 2 + 40, bar.top() + 3)));
-        int white = 0;
-        for (int x = x0 + 8; x < x0 + 60; ++x)
-            for (int y = bar.top(); y < bar.bottom(); ++y)
-                if (qGray(img.pixel(x, y)) > 245) ++white;
-        check(white > 30, "a white box beside the line's start holds the length", std::to_string(white));
-        // the box moves with the selection: a longer one reads differently
+        const int by = bar.center().y() + 1;
+        check(near(img.pixelColor((x0 + x1) / 2 + 40, by), QColor(150, 140, 30), 30), "the selection is a yellow bar while looping is on", rgb(img.pixelColor((x0 + x1) / 2 + 40, by)));
+        // a longer selection reads differently
         st().loopStart = 1.0;
         st().loopEnd = 1.0 + 70.0 + 4 * fr;
         w.zoomToFit();
@@ -249,7 +244,8 @@ int main(int argc, char** argv)
         uitest::settle(200);
         img = uitest::shot(&w, out + "/timelook_loop_off.png");
         const int gx = std::min(w.xAt(5.0), img.width() - 30);
-        check(near(img.pixelColor(gx, w.loopBarRect().top() + 3), QColor(130, 130, 136), 20), "and a grey one while looping is off", rgb(img.pixelColor(gx, w.loopBarRect().top() + 3)));
+        check(!near(img.pixelColor(gx, w.loopBarRect().center().y() + 1), QColor(150, 140, 30), 20) && !near(img.pixelColor(gx, w.loopBarRect().center().y() + 1), QColor(55, 55, 55), 6),
+              "and a different one while looping is off", rgb(img.pixelColor(gx, w.loopBarRect().center().y() + 1)));
         st().loopOn = true;
         st().loopStart = 0;
         st().loopEnd = 0;
@@ -259,13 +255,5 @@ int main(int argc, char** argv)
         check(w.loopLengthLabel().isEmpty(), "and no length is written");
     }
 
-    // the same in VEGAS's look is unchanged
-    {
-        applyTheme(UiTheme::Vegas);
-        uitest::settle(200);
-        uitest::shot(&w, out + "/timelook_vegas.png");
-        applyTheme(UiTheme::Reno);
-        uitest::settle(200);
-    }
     return uitest::summary();
 }

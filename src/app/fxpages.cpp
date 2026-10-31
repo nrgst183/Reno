@@ -51,7 +51,7 @@ const double kPi = 3.14159265358979323846;
 
 // ------------------------------------------------------------------------------------------ small widgets
 // VEGAS's DirectX pages are Windows-classic: a trackbar is a thin sunken groove with a small grey thumb (style sheet on
-// the slider, so it looks the same under either of Reno's looks).
+// the slider, so it looks the same whatever the application style says).
 class DxSlider : public QSlider {
 public:
     DxSlider(Qt::Orientation o, QWidget* parent) : QSlider(o, parent)

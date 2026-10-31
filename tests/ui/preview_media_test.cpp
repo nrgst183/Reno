@@ -10,7 +10,6 @@
 #include "../../src/app/mainwindow.h"  // so the stand-in checks link the windows the main window makes
 #include "../../src/app/panels.h"
 #include "../../src/app/playback.h"
-#include "../../src/app/theme.h"
 #include "uitestlib.h"
 #include <QAbstractButton>
 #include <QApplication>

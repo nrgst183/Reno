@@ -32,49 +32,11 @@ QColor kTimeText(222, 222, 222);
 QColor kFxOn(110, 210, 120);
 QColor kFxBad(230, 90, 76);
 QColor kFadeHandle(28, 40, 255);
-QColor kAccent(0, 122, 204);
-QColor kSelect(255, 196, 61);
-QColor kLaneAudio(33, 35, 38);
-
-void useColors(UiTheme theme)
-{
-    static UiTheme inUse = UiTheme::Vegas;
-    if (theme == inUse) return;
-    inUse = theme;
-    const bool reno = theme == UiTheme::Reno;
-    auto set = [reno](QColor& c, QColor vegas, QColor own) { c = reno ? own : vegas; };
-    set(kWindow, QColor(55, 55, 55), QColor(45, 45, 48));
-    set(kPanel, QColor(70, 70, 70), QColor(30, 30, 33));
-    set(kHeaderBg, QColor(45, 45, 45), QColor(50, 50, 54));
-    set(kHeaderCurrent, QColor(130, 130, 130), QColor(66, 72, 84));
-    set(kLane, QColor(45, 45, 45), QColor(37, 37, 41));
-    set(kBusLane, QColor(58, 58, 62), QColor(40, 40, 46));
-    set(kBelowBg, QColor(35, 35, 35), QColor(27, 27, 29));
-    set(kLine, QColor(35, 35, 35), QColor(22, 22, 24));
-    set(kLightLine, QColor(70, 70, 70), QColor(62, 62, 66));
-    set(kText, QColor(222, 222, 222), QColor(222, 222, 222));
-    set(kTextOnLight, QColor(20, 20, 20), QColor(240, 240, 244));
-    set(kDimText, QColor(160, 160, 160), QColor(150, 150, 154));
-    set(kSnapLine, QColor(70, 170, 255), QColor(255, 196, 61));
-    set(kCursorLine, QColor(8, 8, 8), QColor(238, 238, 238));
-    set(kRulerBg, QColor(55, 55, 55), QColor(54, 54, 58));
-    set(kRulerText, QColor(214, 214, 214), QColor(204, 204, 208));
-    set(kSelectionWash, QColor(255, 255, 255, 34), QColor(120, 170, 235, 30));
-    set(kTimeText, QColor(222, 222, 222), QColor(232, 232, 236));
-    set(kFxOn, QColor(110, 210, 120), QColor(72, 160, 92));
-    set(kFxBad, QColor(230, 90, 76), QColor(200, 72, 60));
-    set(kFadeHandle, QColor(28, 40, 255), QColor(236, 236, 236, 205));
-}
 
 // Colors tracks get in turn when they have none of their own (in the spirit of VEGAS's defaults: muted blue, deep
 // red, ...); sound events are filled with them.
 QColor defaultTrackColor(int index)
 {
-    if (renoTheme()) {
-        static const QColor own[] = {QColor(120, 98, 200), QColor(64, 132, 214), QColor(38, 160, 150), QColor(112, 168, 64),
-                                     QColor(226, 150, 48), QColor(214, 90, 90), QColor(170, 86, 180), QColor(40, 160, 190)};
-        return own[(size_t)index % (sizeof(own) / sizeof(own[0]))];
-    }
     static const QColor colors[] = {QColor(89, 115, 168), QColor(124, 52, 65), QColor(150, 116, 52), QColor(70, 128, 74),
                                     QColor(52, 124, 132), QColor(118, 82, 158), QColor(160, 84, 116), QColor(108, 110, 64)};
     const QStringList own = vprefs::list("prefs/trackColors");

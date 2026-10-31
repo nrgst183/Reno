@@ -1,7 +1,7 @@
 // VEGAS 18's hamburger buttons and Expand Track Layers on the timeline (src/app/timeline.cpp): the track header's hamburger menu
 // (the header buttons' commands, then Edit Visible Button Set), the event header's hamburger (right of the title bar, beside the
 // Pan/Crop and FX buttons), Edit Visible Button Set hiding header buttons, the right-click track menu in VEGAS's order, Activate
-// Automation Controls, and Expand Track Layers' A roll / B roll / transition roll. Both looks.
+// Automation Controls, and Expand Track Layers' A roll / B roll / transition roll.
 //
 //   vidui_test <output folder>
 //
@@ -61,10 +61,9 @@ int main(int argc, char** argv)
     uitest::setup(std::vector<std::string>(), std::vector<std::string>());
     AppState& app = AppState::get();
 
-    for (int look = 0; look < 2; ++look) {
-        const bool reno = look == 1;
-        const QString tag = reno ? "reno" : "vegas";
-        applyTheme(reno ? UiTheme::Reno : UiTheme::Vegas);
+    {
+        const QString tag = "vegas";
+        applyTheme();
         app.newProject();
         uitest::buildDemoProject();
         Playback playback;
@@ -88,7 +87,7 @@ int main(int argc, char** argv)
             if (!v0 && t.type == TrackType::Video) v0 = t.id;
             if (!a0 && t.type == TrackType::Audio) a0 = t.id;
         }
-        const std::string L = reno ? "[Reno look] " : "[VEGAS look] ";
+        const std::string L = "[VEGAS look] ";
 
         // ------------------------------------------------------------ the track header's hamburger
         {

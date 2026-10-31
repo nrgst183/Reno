@@ -17,7 +17,6 @@
 #include "editdialogs.h"
 #include "mainwindow_tools.h"
 #include "../vegas/vegas.h"
-#include "theme.h"
 #include "renderdialog.h"
 #include "keyboard.h"
 #include "trackdefaults.h"

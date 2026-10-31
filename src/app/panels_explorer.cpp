@@ -11,7 +11,6 @@
 #include "logo.h"
 #include "fxlibrary.h"
 #include "fxthumbs.h"
-#include "theme.h"
 #include "playback.h"
 #include "timeline.h"
 #include "../media/media.h"

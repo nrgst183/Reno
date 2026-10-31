@@ -19,7 +19,6 @@
 #include "../../src/app/audiotools.h"
 #include "../../src/engine/captions.h"
 #include "../../src/engine/colormgmt.h"
-#include "../../src/app/theme.h"
 #include "uitestlib.h"
 #include <QLineEdit>
 #include <QPushButton>
@@ -375,7 +374,7 @@ int main(int argc, char** argv)
         QWidget* rec = pv->findChild<QWidget*>("previewRecord");
         QWidget* toEnd = pv->findChild<QWidget*>("previewGoToEnd");
         QWidget* fromStart = pv->findChild<QWidget*>("previewPlayFromStart");
-        check(rec && toEnd && fromStart && rec->isVisible() == !renoTheme() && !fromStart->isVisible(), "Edit Visible Button Set: the buttons chosen show");
+        check(rec && toEnd && fromStart && rec->isVisible() && !fromStart->isVisible(), "Edit Visible Button Set: the buttons chosen show");
         uitest::shot(pv, out + "/preview_transport.png");
         pv->setVisibleTransportButtons({"play", "pause", "stop"});
         check(QSettings().value("preview/transportButtons").toStringList().size() == 3, "and are kept for the next start");

@@ -1,5 +1,5 @@
 // The timeline keeps a picture of itself while only the cursor moves (playing) and paints the cursor's strips from it. This checks
-// that what is on screen after such paints is the same pixels as a whole repaint of the timeline, in both looks, after the things
+// that what is on screen after such paints is the same pixels as a whole repaint of the timeline, after the things
 // that change the picture (a selection, a time selection, zooming, a resize), and that the strips really are painted from the picture.
 //
 //   timeline_layer_test <output folder>
@@ -7,7 +7,6 @@
 // QT_QPA_PLATFORM=offscreen. Prints PASS/FAIL lines and a summary; exits non-zero on failure.
 #include "../../src/app/timeline.h"
 #include "../../src/app/playback.h"
-#include "../../src/app/theme.h"
 #include "uitestlib.h"
 #include <QApplication>
 #include <QDir>
@@ -25,13 +24,6 @@ using uitest::check;
 namespace {
 
 AppState& st() { return AppState::get(); }
-
-void setLook(UiTheme t)
-{
-    uiThemeSetting() = t;
-    AppState::get().notify(kPrefs);
-    uitest::settle(50);
-}
 
 // What the window shows now (the backing store as the offscreen screen gives it) against a whole repaint of the timeline.
 // Returns the number of differing pixels.
@@ -165,12 +157,9 @@ int main(int argc, char** argv)
     TimelineWidget* tl = new TimelineWidget(&pb, &win);
     lay->addWidget(tl);
     win.resize(1100, 520);
-    for (UiTheme look : {UiTheme::Reno, UiTheme::Vegas}) {
-        setLook(look);
-        uitest::buildDemoProject();
-        win.show();
-        uitest::settle(300);
-        session(out, look == UiTheme::Reno ? "reno" : "vegas", win, *tl);
-    }
+    uitest::buildDemoProject();
+    win.show();
+    uitest::settle(300);
+    session(out, "vegas", win, *tl);
     return uitest::summary();
 }

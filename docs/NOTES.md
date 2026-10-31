@@ -13,7 +13,7 @@ Reference material for working on Reno. For what Reno is and how to build it, se
 | `src/vegas` | Reading and writing `.veg` projects |
 | `src/media` | Reading and writing media files through FFmpeg |
 | `src/engine` | The project model, compositor, mixer, rendering, plug-in list, scripting session |
-| `src/app` | The Qt interface |
+| `src/app` | The Qt interface. It has one look, VEGAS Pro 18's (`applyTheme()` in `mainwindow.cpp` sets the dark palette and style sheet; the sizes and colours of the timeline are in `timeline_internal.h` / `timeline_support.cpp`). A look saved in the preferences by an older build (`prefs/theme`: "reno", "modern") is not read |
 | `src/scripting` | `ScriptPortal.Vegas`, the C# implementation of VEGAS's scripting API |
 | `src/cli` | `reno_cli`: the command-line renderer and the plug-in checker |
 | `tests`, `tools` | Test programs; generators and comparison scripts |

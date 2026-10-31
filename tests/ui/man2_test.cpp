@@ -560,6 +560,9 @@ void syncLinkTests(TimelineWidget& w)
 void automationTests(TimelineWidget& w, Playback& playback)
 {
     buildProject();
+    // (a header of the default width has no Automation Settings button on an audio track: a wider one has)
+    const int headerWas = w.headerWidth();
+    w.setHeaderWidth(260);
     w.zoomToFit();
     uitest::settle(50);
     const QRect autoBtn = w.headerPartRect(ids.a2, TimelineWidget::PartAuto);
@@ -668,7 +671,7 @@ void automationTests(TimelineWidget& w, Playback& playback)
         } else {
             check(true, "(the track is too short for its phase button)");
         }
-    }    // pictures of the headers in automation mode (Reno's look and VEGAS's)
+    }    // a picture of the headers in automation mode
     {
         st().edit("Look", [&](Project& p) {
             for (Track& t : p.tracks) {
@@ -681,12 +684,9 @@ void automationTests(TimelineWidget& w, Playback& playback)
         });
         uitest::settle(50);
         check(!w.headerPartRect(ids.v2, TimelineWidget::PartFade).isEmpty(), "a video track in automation mode shows the Fade slider");
-        uitest::shot(&w, "man2_shots/automation_reno.png");
-        applyTheme(UiTheme::Vegas);
         uitest::settle(100);
         uitest::shot(&w, "man2_shots/automation_vegas.png");
-        applyTheme(UiTheme::Reno);
-        uitest::settle(50);
+        w.setHeaderWidth(headerWas);
     }
 }
 

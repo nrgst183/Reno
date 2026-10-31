@@ -10,7 +10,6 @@
 #include "../../src/app/fxwindow.h"
 #include "../../src/app/mainwindow.h"
 #include "../../src/app/pluginchooser.h"
-#include "../../src/app/theme.h"
 #include "../../src/core/base.h"
 #include "../../src/engine/catalog.h"
 #include "../../src/ofx/ofxhost.h"

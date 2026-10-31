@@ -241,9 +241,8 @@ int main(int argc, char** argv)
         check(w.xAt(0.0) == L && w.headerRect(ids.v1).right() + 1 == L, "zero is at the left of the event area", strfmt("%d", w.xAt(0.0)));
         check(w.xAt(16.0) < 1400 && w.xAt(16.0) > 1250, "zoom to fit shows the whole project", strfmt("%d", w.xAt(16.0)));
         check(near(w.timeAt(w.xAt(5.0)), 5.0, 0.02), "timeAt and xAt agree");
-        // VEGAS's look: VEGAS's default heights; Reno's own look: the first build's
-        const int vh = renoTheme() ? 88 : 64, ah = renoTheme() ? 66 : 68;
-        check(w.trackRect(ids.v1).height() == vh && w.trackRect(ids.a1).height() == ah, "tracks start at the look's default heights (VEGAS: video 64, audio 68)");
+        // VEGAS's default heights
+        check(w.trackRect(ids.v1).height() == 64 && w.trackRect(ids.a1).height() == 68, "tracks start at VEGAS's default heights (video 64, audio 68)");
         check(w.trackRect(ids.v1).top() == w.rulerRect().bottom() + 1 && w.trackRect(ids.v2).top() == w.trackRect(ids.v1).bottom() + 1, "tracks are stacked under the ruler");
         check(w.markerBarRect().bottom() < w.loopBarRect().top() && w.loopBarRect().bottom() < w.rulerRect().top(), "the marker bar, the time selection bar and the ruler, top to bottom");
         uitest::settle(400);
@@ -384,19 +383,19 @@ int main(int argc, char** argv)
         const QRect v2 = w.trackRect(ids.v2);
         st().setCursor(0.0);
         // left edge of e3 (2..7, offset 1): one second later
-        uitest::mouseDrag(&w, QPoint(w.xAt(2.0) + 1, v2.top() + 60), QPoint(w.xAt(3.0) + 1, v2.top() + 60));
+        uitest::mouseDrag(&w, QPoint(w.xAt(2.0) + 1, v2.top() + 40), QPoint(w.xAt(3.0) + 1, v2.top() + 40));
         const Event* e3 = ev(ids.e3);
         check(near(e3->start, 3.0) && near(e3->length, 4.0) && near(e3->offset, 2.0), "trimming the left edge moves start, length and offset together",
               num(e3->start) + " " + num(e3->length) + " " + num(e3->offset));
         check(st().undoName() == "Trim Event", "named Trim Event", st().undoName());
         st().undo();
         // right edge, past the start: stops at one frame
-        uitest::mouseDrag(&w, QPoint(w.xAt(7.0) - 1, v2.top() + 60), QPoint(w.xAt(0.5), v2.top() + 60), 8, Qt::ShiftModifier);
+        uitest::mouseDrag(&w, QPoint(w.xAt(7.0) - 1, v2.top() + 40), QPoint(w.xAt(0.5), v2.top() + 40), 8, Qt::ShiftModifier);
         check(near(ev(ids.e3)->length, fr) && near(ev(ids.e3)->start, 2.0), "a trim never leaves less than one frame", num(ev(ids.e3)->length));
         st().undo();
         // grouped: the sound is trimmed with the picture
         const QRect v1 = w.trackRect(ids.v1);
-        uitest::mouseDrag(&w, QPoint(w.xAt(5.0) - 1, v1.top() + 60), QPoint(w.xAt(4.0) - 1, v1.top() + 60));
+        uitest::mouseDrag(&w, QPoint(w.xAt(5.0) - 1, v1.top() + 40), QPoint(w.xAt(4.0) - 1, v1.top() + 40));
         check(near(ev(ids.e1)->length, 3.0) && near(ev(ids.e1a)->length, 3.0), "trimming a grouped event trims its partner",
               num(ev(ids.e1)->length) + " " + num(ev(ids.e1a)->length));
         st().undo();
@@ -417,18 +416,18 @@ int main(int argc, char** argv)
         st().undo();
         check(near(ev(ids.e2)->fadeIn, 0.0) && near(ev(ids.e2)->fadeOut, 0.0), "fades undo");
         // stretch: Ctrl + right edge doubles the length and halves the rate
-        uitest::mouseDrag(&w, QPoint(w.xAt(7.0) - 1, v2.top() + 60), QPoint(w.xAt(12.0) - 1, v2.top() + 60), 8, Qt::ControlModifier);
+        uitest::mouseDrag(&w, QPoint(w.xAt(7.0) - 1, v2.top() + 40), QPoint(w.xAt(12.0) - 1, v2.top() + 40), 8, Qt::ControlModifier);
         const Event* s = ev(ids.e3);
         check(near(s->length, 10.0) && near(s->rate, 0.5) && near(s->start, 2.0), "Ctrl-dragging the right edge stretches (rate follows the length)",
               num(s->length) + " " + num(s->rate));
         check(st().undoName() == "Stretch Event", "named Stretch Event", st().undoName());
         st().undo();
         // and the limits on the rate
-        uitest::mouseDrag(&w, QPoint(w.xAt(7.0) - 1, v2.top() + 60), QPoint(w.xAt(2.05), v2.top() + 60), 8, Qt::ControlModifier | Qt::ShiftModifier);
+        uitest::mouseDrag(&w, QPoint(w.xAt(7.0) - 1, v2.top() + 40), QPoint(w.xAt(2.05), v2.top() + 40), 8, Qt::ControlModifier | Qt::ShiftModifier);
         check(near(ev(ids.e3)->rate, 10.0, 1e-6) && near(ev(ids.e3)->length, 0.5), "a stretch keeps the rate at 10 or under", num(ev(ids.e3)->rate));
         st().undo();
         // left edge stretch
-        uitest::mouseDrag(&w, QPoint(w.xAt(2.0) + 1, v2.top() + 60), QPoint(w.xAt(4.5) + 1, v2.top() + 60), 8, Qt::ControlModifier);
+        uitest::mouseDrag(&w, QPoint(w.xAt(2.0) + 1, v2.top() + 40), QPoint(w.xAt(4.5) + 1, v2.top() + 40), 8, Qt::ControlModifier);
         check(near(ev(ids.e3)->start, 4.5) && near(ev(ids.e3)->rate, 2.0) && near(ev(ids.e3)->offset, 1.0), "Ctrl-dragging the left edge stretches too",
               num(ev(ids.e3)->start) + " " + num(ev(ids.e3)->rate));
         st().undo();
@@ -582,9 +581,8 @@ int main(int argc, char** argv)
         check(near(st().project().tracks[2].pan, 0.0), "double-click centres it");
         // FX buttons
         fxCalls = 0;
-        // VEGAS's look: the header's FX button shows once the headers are wide enough, as in VEGAS; Reno's own look always has FX, M and S
-        if (renoTheme()) check(!part(ids.v1, TimelineWidget::PartFx).isEmpty(), "Reno's look: the headers show the FX button at the default width");
-        else check(part(ids.v1, TimelineWidget::PartFx).isEmpty(), "at the default width the headers show no FX button");
+        // the header's FX button shows once the headers are wide enough, as in VEGAS
+        check(part(ids.v1, TimelineWidget::PartFx).isEmpty(), "at the default width the headers show no FX button");
         const int headerW = w.headerWidth();
         w.setHeaderWidth(260);
         check(!part(ids.v1, TimelineWidget::PartFx).isEmpty() && !part(ids.v1, TimelineWidget::PartMotion).isEmpty(), "wider headers show FX and Track Motion");
@@ -690,7 +688,7 @@ int main(int argc, char** argv)
         check(ev(ids.e3)->fx.size() == 1 && fxCalls == 1 && fxTarget.kind == FxTarget::Event && fxSlot == ev(ids.e3)->fx[0].id,
               "dropped on a video event it is added to it, and its window opened");
         // onto a video track's header
-        dropAt(&w, &fx, QPoint(60, w.headerRect(ids.v1).top() + 60));
+        dropAt(&w, &fx, QPoint(60, w.headerRect(ids.v1).top() + 40));
         check(st().project().tracks[0].fx.size() == 1 && fxTarget.kind == FxTarget::Track, "dropped on a video track's header it goes on the track");
         // an audio effect onto an audio track
         AudioPluginDesc desc;

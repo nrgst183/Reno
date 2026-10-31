@@ -14,7 +14,6 @@
 #include "panels.h"
 #include "playback.h"
 #include "pluginchooser.h"
-#include "theme.h"
 #include "timesource.h"
 #include "vprefs.h"
 
@@ -76,7 +75,6 @@ const int kHeaderDefault = 161;
 const int kHeaderMin = 130, kHeaderMax = 420;
 const int kHeaderGap = 6;
 const int kHeaderMargin = 3;
-const int kRenoStripW = 24;
 const int kStripW = 24;
 const int kMarkerTop = 1;
 const int kMarkerH = 16;
@@ -101,14 +99,7 @@ const double kHandlePx = 11.0;
 const double kMinRate = 0.1, kMaxRate = 10.0;
 const int kEventButton = 16;
 
-const int kRenoHeaderDefault = 190, kRenoHeaderMin = 172;
-const int kRenoVideoH = 88, kRenoAudioH = 66;
-inline int headerDefault() { return renoTheme() ? kRenoHeaderDefault : kHeaderDefault; }
-inline int headerMin() { return renoTheme() ? kRenoHeaderMin : kHeaderMin; }
-inline int clampHeaderW(int w) { return std::max(headerMin(), std::min(kHeaderMax, w)); }
-inline const char* headerWidthKey() { return renoTheme() ? "timeline/headerWidthReno" : "timeline/headerWidth"; }
-inline int defaultVideoH() { return renoTheme() ? kRenoVideoH : kVideoH; }
-inline int defaultAudioH() { return renoTheme() ? kRenoAudioH : kAudioH; }
+inline int clampHeaderW(int w) { return std::max(kHeaderMin, std::min(kHeaderMax, w)); }
 inline int clampTrackH(int h) { return std::max(kMinTrackH, std::min(kMaxTrackH, h)); }
 
 extern QColor kWindow;
@@ -138,11 +129,6 @@ extern QColor kFxOn;
 extern QColor kFxBad;
 extern QColor kFadeHandle;
 
-extern QColor kAccent;
-extern QColor kSelect;
-extern QColor kLaneAudio;
-
-void useColors(UiTheme theme);
 
 QColor defaultTrackColor(int index);
 
@@ -528,7 +514,6 @@ struct TimelineWidget::Impl {
     std::set<uint64_t> selMarkers;
     uint64_t markerAnchor = 0;
     int headerW = kHeaderDefault;
-    UiTheme shownTheme = UiTheme::Vegas;
     NameEdit* nameEdit = nullptr;
     enum class Naming { None, Track, Event, Marker };
     Naming naming = Naming::None;
@@ -688,7 +673,6 @@ struct TimelineWidget::Impl {
     bool fontsMade = false;
     QFontMetrics smallFm{QFont()};
     mutable double rulerLabelW = 0;
-    mutable UiTheme rulerLabelLook = UiTheme::Reno;
     mutable double rulerLabelFps = 0, rulerLabelWide = 0;
     // Each track's events by time: AppState keeps them in order of start, and 'maxEnd' (the latest end among events [0,
     // k]) lets the ones that reach into a time span be found by binary search instead of scanning thousands. Rebuilt.
@@ -767,11 +751,11 @@ struct TimelineWidget::Impl {
     // of its kind; then the body with the name at the top left, round buttons at the top right (solo, mute and, where
     // there is room, FX and Track Motion), and under them the level slider (for sound: volume, and pan under it) with
     // its value to the left.
-    struct HeaderRects { QRect all, strip, menu, body, name, motion, fx, mute, solo, level, levelValue, pan, panValue, number, levelLabel, panLabel, arm;
+    struct HeaderRects { QRect all, strip, menu, body, name, motion, fx, mute, solo, level, levelValue, pan, panValue, number, arm;
                          QRect surround;
                          // (see Part::HeaderAuto...)     // (an audio track in a 5.1 project: its small surround
                          // panner, in place of the pan slider)
-                         QRect autoBtn, fade, fadeValue, fadeLabel, phase, bus; };
+                         QRect autoBtn, fade, phase, bus; };
     HeaderRects headerRects(const Row& r) const;
     void placeSurround(HeaderRects& h) const;
 
@@ -781,15 +765,11 @@ struct TimelineWidget::Impl {
     bool buttonHidden(bool video, const char* key) const { return hiddenButtons[video ? 1 : 0].count(QString::fromLatin1(key)) != 0; }
 
     HeaderRects vegasHeaderRects(const Row& r) const;
-    HeaderRects renoHeaderRects(const Row& r) const;
     void setHeaderWidth(int w);
-    void themeChanged();
 
-    // The height of an event's title bar (0: none). VEGAS's look shows it on tall tracks only (or with View > Event
-    // Headers); Reno's own look on every track tall enough to keep some thumbnail under it.
+    // The height of an event's title bar (0: none). Shown on tall tracks only (or with View > Event Headers).
     double titleHeight(int rowH, double eventH) const
     {
-        if (renoTheme()) return rowH >= 36 ? std::min((double)smallFm.height() + 3.0, eventH) : 0.0;
         return (rowH >= kTitleMinRow || opt.eventHeaders) ? std::min((double)kTitleH, eventH) : 0.0;
     }
 
@@ -1027,8 +1007,7 @@ struct TimelineWidget::Impl {
     // color with the waveform in a lighter shade; a video event is its thumbnails, edge to edge. A selected event is
     // lit up.
     struct RowLook {
-        bool reno = false;
-        QColor tc, body, bodySelected, title, titleSelected, wave;
+        QColor tc, body, title, wave;
     };
     RowLook rowLook(const Row& row) const;
     int sliverOf(const Row& row, const Event& e, const QRect& c, const RowLook& look, QRectF* rect, QColor* color) const;
@@ -1042,7 +1021,7 @@ struct TimelineWidget::Impl {
         QRectF r;
         QRectF v;
         QRectF vd;
-        bool selected, narrow, cutBoth;
+        bool selected, narrow;
     };
     void drawEventContent(QPainter& p, const EventPaint& ev, double titleH);
     void drawStretchMark(QPainter& p, const EventPaint& ev, const QRectF& content);
@@ -1071,16 +1050,13 @@ struct TimelineWidget::Impl {
     static void drawSlider(QPainter& p, const QRect& travel, double s, bool pointer, bool hot, bool onLight);
     static void drawKindIcon(QPainter& p, const QPointF& at, bool video);
 
-    // ---- Reno's own look (the first build's): headers, ruler, cursor and time display
     // A header button: a rounded box with its letters, filled with its colour while switched on.
-    static void drawRenoButton(QPainter& p, const QRect& r, const QString& text, bool on, const QColor& onColor, bool hot, bool darkText = false);
+    static void drawTextButton(QPainter& p, const QRect& r, const QString& text, bool on, const QColor& onColor, bool hot, bool darkText = false);
     static void drawAutoKnob(QPainter& p, const QRect& travel, double s);
-    static void drawAutoIcon(QPainter& p, const QRect& r, bool on, const std::string& mode, bool reno);
-    static void drawAutoArrow(QPainter& p, const QRect& r, bool reno);
+    static void drawAutoIcon(QPainter& p, const QRect& r, bool on, const std::string& mode);
+    static void drawAutoArrow(QPainter& p, const QRect& r);
     QString busLabel(const Track& t) const;
-    void drawSmallSurround(QPainter& p, const QRect& r, const SurroundPan& sp, bool hot, bool reno) const;
-    static void drawRenoSlider(QPainter& p, const QRect& r, double s, double from, double mark, bool hot);
-    static QString compositeNote(const Track& t);
+    void drawSmallSurround(QPainter& p, const QRect& r, const SurroundPan& sp, bool hot) const;
 
     // ---- the track headers kept as images. A header is drawn into an image of its own, shown until something the
     // header shows changes: everything that can change one is in HeaderKey, directly or through 'headerGeneration'
@@ -1088,7 +1064,6 @@ struct TimelineWidget::Impl {
     // made at the same fraction of a pixel the header would be painted at on screen.
     struct HeaderKey {
         uint64_t generation = 0;
-        UiTheme theme = UiTheme::Reno;
         int headerW = 0, h = 0, index = 0, top = 0;
         bool video = false;
         double sx = 0, sy = 0, fx = 0, fy = 0;
@@ -1098,7 +1073,7 @@ struct TimelineWidget::Impl {
         double a1 = 0, a2 = 0, a3 = 0;
         bool operator==(const HeaderKey& o) const
         {
-            return generation == o.generation && theme == o.theme && headerW == o.headerW && h == o.h && index == o.index && top == o.top &&
+            return generation == o.generation && headerW == o.headerW && h == o.h && index == o.index && top == o.top &&
                    video == o.video && sx == o.sx && sy == o.sy && fx == o.fx && fy == o.fy && hotPart == o.hotPart && held == o.held &&
                    current == o.current && selected == o.selected && armed == o.armed && naming == o.naming && dropTarget == o.dropTarget && bad == o.bad &&
                    a1 == o.a1 && a2 == o.a2 && a3 == o.a3;
@@ -1132,7 +1107,6 @@ struct TimelineWidget::Impl {
         }
         HeaderKey k;
         k.generation = headerGeneration;
-        k.theme = uiTheme();
         k.headerW = headerW;
         k.h = r.h;
         k.index = r.index;
@@ -1187,12 +1161,8 @@ struct TimelineWidget::Impl {
         p.restore();
     }
 
-    void paintRenoHeaders(QPainter& p, const QRect& clip);
     QString selectionLengthText(double length) const;
-    void paintRenoRuler(QPainter& p, const QRect& clip);
-    void paintRenoCursor(QPainter& p, const QRect& clip);
     static QString sizingText(QString text);
-    void paintRenoTimeDisplay(QPainter& p, const QRect& clip);
     void paintHeaders(QPainter& p, const QRect& clip);
     void paintRuler(QPainter& p, const QRect& clip);
     void paintCursor(QPainter& p, const QRect& clip);

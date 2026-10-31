@@ -11,7 +11,6 @@
 #include "../../src/app/cachedscroll.h"
 #include "../../src/app/mainwindow.h"
 #include "../../src/app/playback.h"
-#include "../../src/app/theme.h"
 #include "../../src/app/timeline.h"
 #include "../../src/vegas/vegas.h"
 #include "uitestlib.h"

@@ -12,7 +12,6 @@
 #include "panels.h"
 #include "midisync.h"
 #include "playback.h"
-#include "theme.h"
 #include "vprefs.h"
 #include "../engine/catalog.h"
 #include "strconv.h"
@@ -1525,13 +1524,6 @@ private:
         QTimer::singleShot(0, b, [scrubMs, scrubVol, scrub] { scrubMs->setEnabled(scrub->isChecked()); scrubVol->setEnabled(scrub->isChecked()); });
 
         f->addRow(heading("Interface", b));
-        QComboBox* theme = new QComboBox(b);
-        theme->setObjectName("theme");
-        theme->addItem("Reno (wide track headers, events with title bars)", "reno");
-        theme->addItem("VEGAS (VEGAS Pro 18's look)", "vegas");
-        bindPref([theme](const Preferences& p) { theme->setCurrentIndex(std::max(0, theme->findData(qs(p.theme)))); },
-                 [theme](Preferences& p) { p.theme = s8(theme->currentData().toString()); });
-        f->addRow("Look:", theme);
         QSpinBox* uiScale = integer(b, "prefs/uiScale", "uiScale", 50, 300);
         uiScale->setSuffix(" %");
         uiScale->setSingleStep(10);

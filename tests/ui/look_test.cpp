@@ -75,8 +75,7 @@ int main(int argc, char** argv)
     QApplication::setOrganizationName("RenoLookTest");
     QApplication::setApplicationName("look_test");
     QSettings().clear();
-    // this test is about VEGAS's look; theme_test checks Reno's own
-    applyTheme(UiTheme::Vegas);
+    applyTheme();
     const QStringList args = QApplication::arguments();
     const QString out = args.size() > 1 ? args[1] : QString("look");
     QDir().mkpath(out);

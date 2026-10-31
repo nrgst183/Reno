@@ -1,15 +1,14 @@
 // Timeline pointers (cursors.h) over an event's edges (trim; Ctrl stretch, Alt slip-trim), fade handles, Alt (slip) and the
-// envelope tools; sideways wheel scrolls instead of zooming; the VEGAS look hides Arm for Record in a default-width header
-// and shows Project Media's tool bar as pictures (Reno's look: words).
+// envelope tools; sideways wheel scrolls instead of zooming; a default-width header hides Arm for Record and Project Media's
+// tool bar shows pictures.
 //
 //   cursors_test <output folder> [file.ofx ...]
 //
-// Saves cursors.png (every pointer, light and dark, at 2x) and media_bar.png. RENO_THEME=vegas or reno picks the look.
+// Saves cursors.png (every pointer, light and dark, at 2x) and media_bar.png.
 #include "../../src/app/mainwindow.h"
 #include "../../src/app/timeline.h"
 #include "../../src/app/panels.h"
 #include "../../src/app/cursors.h"
-#include "../../src/app/theme.h"
 #include "uitestlib.h"
 #include <QAbstractButton>
 #include <QApplication>
@@ -39,7 +38,6 @@ int main(int argc, char** argv)
     std::vector<std::string> ofx;
     for (int k = 2; k < args.size(); ++k) ofx.push_back(args[k].toStdString());
     uitest::setup(ofx, std::vector<std::string>());
-    const bool reno = renoTheme();
 
     // ---- the pointers: each made once, all different
     {
@@ -170,8 +168,8 @@ int main(int argc, char** argv)
     }
 
     // ---- the Arm for Record button: VEGAS 18 leaves it out of a header of its default width
-    if (!reno) {
-        check(tl->headerPartRect(at, TimelineWidget::PartArm).isEmpty(), "VEGAS's look: no Arm for Record button in a header of the default width");
+    {
+        check(tl->headerPartRect(at, TimelineWidget::PartArm).isEmpty(), "no Arm for Record button in a header of the default width");
         app.armedTracks.insert(at);
         app.notify(kProject);
         uitest::settle(50);
@@ -205,12 +203,11 @@ int main(int argc, char** argv)
               std::to_string(app.loopStart) + " " + std::to_string(app.loopEnd));
     }
 
-    // ---- Project Media's tool bar: pictures in VEGAS's look, words in Reno's
+    // ---- Project Media's tool bar: pictures
     QAbstractButton* import = w.findChild<QAbstractButton*>("importMedia");
     QWidget* bin = import ? import->parentWidget() : nullptr;
     if (import) {
-        if (reno) check(import->text() == "Import Media..." && import->icon().isNull(), "Reno's look: Project Media's buttons have words");
-        else check(import->text().isEmpty() && !import->icon().isNull() && import->toolTip().startsWith("Import Media"), "VEGAS's look: Project Media's buttons are pictures with tool tips");
+        check(import->text().isEmpty() && !import->icon().isNull() && import->toolTip().startsWith("Import Media"), "Project Media's buttons are pictures with tool tips");
         uitest::shot(bin, out + "/media_bar.png");
     } else {
         check(false, "Project Media's Import Media button is there");

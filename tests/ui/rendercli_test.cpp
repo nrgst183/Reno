@@ -13,7 +13,6 @@
 #include "../../src/app/mainwindow.h"  // so the stand-in checks link the windows the main window makes
 #include "../../src/app/renderdialog.h"
 #include "../../src/app/rendertemplates.h"
-#include "../../src/app/theme.h"
 #include "../../src/engine/renderas.h"
 #include "../../src/media/media.h"
 #include "uitestlib.h"

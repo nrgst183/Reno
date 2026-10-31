@@ -8,7 +8,6 @@
 // for a moment, fall back slowly and clear when playback stops.
 #include "mixer.h"
 #include "recorder.h"
-#include "theme.h"
 #include "playback.h"
 #include "surroundpanner.h"
 #include "pluginchooser.h"
@@ -3126,7 +3125,7 @@ protected:
         static const char* names[6] = {"L", "R", "C", "LFE", "Ls", "Rs"};
         for (int k = 0; k < 6; ++k) {
             const QRect bar(x0 + k * (w + 1), top, w, bottom - top + 1);
-            p.fillRect(bar, themed(kMbWell));
+            p.fillRect(bar, kMbWell);
             if (meter.level[k] > 1e-6f) {
                 const int y = meterY(levelDb(meter.level[k]));
                 if (y < bottom) {
@@ -3162,7 +3161,7 @@ protected:
             p.drawText(r, Qt::AlignCenter, peakText(h));
         }
         const QRect cap = capRect();
-        p.fillRect(QRect(kGrooveX, grooveTop(), 1, grooveBottom() - grooveTop() + 1), themed(kMbLine));
+        p.fillRect(QRect(kGrooveX, grooveTop(), 1, grooveBottom() - grooveTop() + 1), kMbLine);
         if (cap.bottom() + 1 < grooveBottom()) p.fillRect(QRect(kGrooveX - 1, cap.bottom() + 1, 1, grooveBottom() - cap.bottom() - 1), kMbFill);
         const bool hot = drag_.active || hover_;
         p.fillRect(cap, QColor(35, 35, 35));
@@ -3196,7 +3195,7 @@ protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
-        p.fillRect(rect(), themed(kMbBg));
+        p.fillRect(rect(), kMbBg);
         if (meter.channels == 6) {
             paintSix(p);
             return;
@@ -3213,7 +3212,7 @@ protected:
 
         for (int k = 0; k < 2; ++k) {
             const QRect bar(k ? kMeterR : kMeterL, top, kMeterW, bottom - top + 1);
-            p.fillRect(bar, themed(kMbWell));
+            p.fillRect(bar, kMbWell);
             if (meter.level[k] > 1e-6f) {
                 const int y = meterY(levelDb(meter.level[k]));
                 if (y < bottom) {
@@ -3235,11 +3234,11 @@ protected:
         const qreal dpr = devicePixelRatioF();
         if (dpr == std::floor(dpr) && dpr >= 1.0 && dpr <= 4.0) {
             const QRect area(kScaleX, top - 6, kScaleW, bottom - top + 15);
-            const QString key = QString("%1 %2 %3 %4 %5 %6").arg(top).arg(bottom).arg(f.key(), themed(kMbBg).name(), kMbText.name()).arg(dpr);
+            const QString key = QString("%1 %2 %3 %4 %5 %6").arg(top).arg(bottom).arg(f.key(), kMbBg.name(), kMbText.name()).arg(dpr);
             if (scaleImg_.isNull() || scaleKey_ != key) {
                 QImage img(area.size() * (int)dpr, QImage::Format_RGB32);
                 img.setDevicePixelRatio(dpr);
-                img.fill(themed(kMbBg));
+                img.fill(kMbBg);
                 QPainter ip(&img);
                 ip.setFont(f);
                 paintScale(ip, QPoint(-area.left(), -area.top()), top, bottom, fm);
@@ -3260,7 +3259,7 @@ protected:
         }
 
         const QRect cap = capRect();
-        p.fillRect(QRect(kGrooveX, grooveTop(), 1, grooveBottom() - grooveTop() + 1), themed(kMbLine));
+        p.fillRect(QRect(kGrooveX, grooveTop(), 1, grooveBottom() - grooveTop() + 1), kMbLine);
         if (cap.bottom() + 1 < grooveBottom()) p.fillRect(QRect(kGrooveX - 1, cap.bottom() + 1, 1, grooveBottom() - cap.bottom() - 1), kMbFill);
         const bool hot = drag_.active || hover_;
         p.fillRect(cap, QColor(35, 35, 35));
@@ -3465,9 +3464,8 @@ MasterBusWidget::MasterBusWidget(Playback* playback, QWidget* parent) : QWidget(
                   "QToolButton:disabled { background: transparent; }");
     setAutoFillBackground(true);
     QPalette pal = palette();
-    pal.setColor(QPalette::Window, themed(kMbBg));
+    pal.setColor(QPalette::Window, kMbBg);
     setPalette(pal);
-    setProperty("renoFill", kMbBg);     // coloured again by the main window when the look changes
     setMinimumWidth(96);
 
     auto* root = new QVBoxLayout(this);

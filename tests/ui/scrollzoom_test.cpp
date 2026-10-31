@@ -10,7 +10,6 @@
 #include "../../src/app/playback.h"
 #include "../../src/app/mainwindow.h"
 #include "../../src/app/cachedscroll.h"
-#include "../../src/app/theme.h"
 #include "../../src/app/timeline.h"
 #include "uitestlib.h"
 #include "../testdata.h"
@@ -402,10 +401,9 @@ int main(int argc, char** argv)
         }
     }
 
-    // ---------------------------------------------------------------- the handle lights up under the mouse (both looks)
-    for (UiTheme theme : {UiTheme::Reno, UiTheme::Vegas}) {
-        const char* tn = theme == UiTheme::Reno ? "Reno" : "VEGAS";
-        applyTheme(theme);
+    // ---------------------------------------------------------------- the handle lights up under the mouse
+    {
+        const char* tn = "VEGAS";
         uitest::settle(200);
         w.zoomToFit();
         for (int k = 0; k < 3; ++k) w.zoomIn();
@@ -413,7 +411,7 @@ int main(int argc, char** argv)
         hbar->setValue(hbar->maximum() / 2);
         CachedScrollBar* cb = dynamic_cast<CachedScrollBar*>(hbar);
         check(cb != nullptr, std::string("(the horizontal bar is a CachedScrollBar) ") + tn);
-        if (!cb) continue;
+        if (!cb) return uitest::summary();
         const Box b = boxOf(hbar);
         check(b.b - b.a > 60 && b.b - b.a < b.glen - 40, std::string("(the handle is a part of the groove) ") + tn, strfmt("%.0f..%.0f of %.0f", b.a, b.b, b.glen));
         const int y = hbar->height() / 2;
@@ -487,6 +485,5 @@ int main(int argc, char** argv)
         check(cb->lit() == 0 && cb->hoverPart() == 0, "the handle is normal again when the mouse leaves" + t);
         (void)xGroove;
     }
-    applyTheme(UiTheme::Reno);
     return uitest::summary();
 }

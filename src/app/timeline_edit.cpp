@@ -428,7 +428,7 @@ void TimelineWidget::Impl::renameSelected()
 int TimelineWidget::Impl::heightStep(int h, int dir)
 {
     std::vector<int> ladder = {kMinTrackH, kMaxTrackH};
-    for (int def : {defaultVideoH(), defaultAudioH()})
+    for (int def : {kVideoH, kAudioH})
         for (int k = -8; k <= 16; ++k) {
             const int v = (int)std::lround(def * std::pow(1.25, k));
             if (v > kMinTrackH && v < kMaxTrackH) ladder.push_back(v);
@@ -452,7 +452,7 @@ void TimelineWidget::Impl::changeTrackHeights(int dir)
     const Project& p = app.project();
     std::map<uint64_t, int> next;
     for (const Track& t : p.tracks) {
-        const int def = t.type == TrackType::Video ? defaultVideoH() : defaultAudioH();
+        const int def = t.type == TrackType::Video ? kVideoH : kAudioH;
         const int now = trackHeight(t);
         const int h = heightStep(now, dir);
         const int value = h == def ? 0 : h;

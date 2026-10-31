@@ -512,7 +512,6 @@ void Preferences::load()
     panMultichannelTracks = q.value("prefs/panMultichannelTracks", def.panMultichannelTracks).toBool();
     audioEditor = str("audioEditor", def.audioEditor);
     cutToOverlap = std::min(60.0, std::max(0.01, q.value("prefs/cutToOverlap", def.cutToOverlap).toDouble()));
-    theme = str("theme", def.theme) == "vegas" ? "vegas" : "reno";
     audioInputDevice = str("audioInputDevice", def.audioInputDevice);
     recordFolder = str("recordFolder", def.recordFolder);
     prerenderFolder = str("prerenderFolder", def.prerenderFolder);
@@ -597,7 +596,6 @@ void Preferences::save() const
     q.setValue("prefs/panMultichannelTracks", panMultichannelTracks);
     q.setValue("prefs/audioEditor", QString::fromStdString(audioEditor));
     q.setValue("prefs/cutToOverlap", cutToOverlap);
-    q.setValue("prefs/theme", QString::fromStdString(theme));
     q.setValue("prefs/audioInputDevice", QString::fromStdString(audioInputDevice));
     q.setValue("prefs/recordFolder", QString::fromStdString(recordFolder));
     q.setValue("prefs/prerenderFolder", QString::fromStdString(prerenderFolder));

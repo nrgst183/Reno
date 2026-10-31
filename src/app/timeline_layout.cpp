@@ -12,7 +12,7 @@ int TimelineWidget::Impl::trackHeight(const Track& t) const
 {
     if (minimized.count(t.id)) return kMinTrackH;
     if (maximized.count(t.id)) return clampTrackH(lanesBottom() - kTopH);
-    const int base = t.height > 0 ? t.height : (int)std::lround((t.type == TrackType::Video ? defaultVideoH() : defaultAudioH()) * heightScale);
+    const int base = t.height > 0 ? t.height : (int)std::lround((t.type == TrackType::Video ? kVideoH : kAudioH) * heightScale);
     return clampTrackH(base);
 }
 
@@ -129,45 +129,28 @@ QString TimelineWidget::Impl::gainText(bool video, double gain)
 
 TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::headerRects(const Row& r) const
 {
-    HeaderRects h = renoTheme() ? renoHeaderRects(r) : vegasHeaderRects(r);
+    HeaderRects h = vegasHeaderRects(r);
     if (!r.video && app.project().settings.surround()) placeSurround(h);
     return h;
 }
 
 // A 5.1 project: an audio track's header shows its surround panner as a small square at its right, from the level
 // slider's row down (where the pan slider was; VEGAS's 5.1 header has no pan slider); the level slider gets shorter.
-// Reno's look writes the level's value on the second row. Only on a header tall and wide enough for the square and a
-// usable level slider.
+// Only on a header tall and wide enough for the square and a usable level slider.
 void TimelineWidget::Impl::placeSurround(HeaderRects& h) const
 {
     if (h.level.isEmpty()) return;
-    const bool reno = renoTheme();
-    const int top = h.level.top() - (reno ? 0 : 2);
+    const int top = h.level.top() - 2;
     const int side = std::min(40, h.body.bottom() - 2 - top);
     if (side < 16) return;
-    const QRect sq(h.body.right() - (reno ? 4 : 6) - side + 1, top, side, side);
-    if (reno) {
-        const bool twoRows = !h.pan.isEmpty();
-        QRect level = h.level, value = h.levelValue;
-        if (twoRows) {
-            value = QRect(h.level.left(), h.pan.top(), sq.left() - 8 - h.level.left(), h.pan.height());
-            level.setRight(sq.left() - 10);
-        } else {
-            value.moveRight(sq.left() - 6);
-            level.setRight(value.left() - 8);
-        }
-        if (level.width() < 30) return;
-        h.level = level;
-        h.levelValue = value;
-    } else {
-        QRect level = h.level;
-        if (!h.pan.isEmpty()) level = QRect(h.levelValue.left() + 6, h.pan.top(), sq.left() - 12 - (h.levelValue.left() + 6), h.pan.height());
-        else level.setRight(sq.left() - 12);
-        if (level.width() < 30) return;
-        h.level = level;
-    }
+    const QRect sq(h.body.right() - 6 - side + 1, top, side, side);
+    QRect level = h.level;
+    if (!h.pan.isEmpty()) level = QRect(h.levelValue.left() + 6, h.pan.top(), sq.left() - 12 - (h.levelValue.left() + 6), h.pan.height());
+    else level.setRight(sq.left() - 12);
+    if (level.width() < 30) return;
+    h.level = level;
     h.surround = sq;
-    h.pan = h.panValue = h.panLabel = QRect();
+    h.pan = h.panValue = QRect();
 }
 
 TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::vegasHeaderRects(const Row& r) const
@@ -238,72 +221,6 @@ TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::vegasHeaderRects(const R
     return h;
 }
 
-// Reno's own header (the first build's): a thin strip of the track's color at the left; along the top the menu
-// button, number box, name, and the FX, M and S buttons; under them labeled sliders with values at the right (Level
-// for video; Vol and Pan for sound). A video track tall enough has a third row with the Track Motion button. The gap
-// at the right resizes the column, as in the VEGAS look.
-TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::renoHeaderRects(const Row& r) const
-{
-    HeaderRects h;
-    const int y = rowTop(r);
-    const int br = headerW - kHeaderGap;
-    h.all = QRect(0, y, headerW, r.h);
-    h.strip = QRect(0, y, kRenoStripW, r.h - 1);
-    h.body = QRect(kRenoStripW, y, br - kRenoStripW, r.h - 1);
-    const int ty = r.h < kMinTrackH + 4 ? y + 3 : y + 6;
-    h.menu = QRect(3, ty, 18, 16);
-    h.number = r.h < 40 ? QRect() : QRect(3, ty + 19, 20, 16);
-    int left = br - 1;
-    if (!buttonHidden(r.video, "solo")) { h.solo = QRect(left - 24, ty, 21, 17); left = h.solo.left(); }
-    if (!buttonHidden(r.video, "mute")) { h.mute = QRect(left - 24, ty, 21, 17); left = h.mute.left(); }
-    if (!r.video && !buttonHidden(false, "arm") && (left - 24 - 28 - 4 - 50 >= 56 || app.armedTracks.count(r.id) != 0)) {
-        // sound: VEGAS's Arm for Record button, next to Mute (where the name keeps enough room: in a narrow column it
-        // squeezed "Audio" to "Au..."; an armed track always shows it)
-        h.arm = QRect(left - 24, ty, 21, 17);
-        left = h.arm.left();
-    }
-    int nameRight = left - 3;
-    if (!buttonHidden(r.video, "fx")) {
-        h.fx = QRect(left - 28, ty, 25, 17);
-        nameRight = h.fx.left();
-    }
-    if (!buttonHidden(r.video, "auto") && nameRight - 24 - 4 - 50 >= 40) {
-        h.autoBtn = QRect(nameRight - 24, ty, 21, 17);
-        nameRight = h.autoBtn.left();
-    }
-    h.name = QRect(kRenoStripW + 5, ty, std::max(0, nameRight - 4 - (kRenoStripW + 5)), 17);
-    if (r.h < 44) return h;
-    const Track* tk = trackOf(r);
-    const bool automation = tk && tk->automation;
-    const int ly = y + 29;
-    h.levelLabel = QRect(kRenoStripW + 5, ly, 32, 15);
-    h.level = QRect(kRenoStripW + 40, ly, br - (kRenoStripW + 40) - 64, 15);
-    h.levelValue = QRect(br - 60, ly, 56, 15);
-    if (h.autoBtn.isEmpty() && !buttonHidden(r.video, "auto")) {
-        h.autoBtn = QRect(kRenoStripW + 4, ly - 1, 25, 17);
-        h.levelLabel = QRect();
-    }
-    if (!r.video && r.h >= 62) {
-        const int py = y + 46;
-        h.panLabel = QRect(kRenoStripW + 5, py, 32, 15);
-        h.pan = QRect(kRenoStripW + 40, py, br - (kRenoStripW + 40) - 64, 15);
-        h.panValue = QRect(br - 60, py, 56, 15);
-    }
-    const bool fadeRow = r.video && automation && r.h >= 62;
-    if (fadeRow) {
-        const int py = y + 46;
-        h.fadeLabel = QRect(kRenoStripW + 5, py, 32, 15);
-        h.fade = QRect(kRenoStripW + 40, py, br - (kRenoStripW + 40) - 64, 15);
-        h.fadeValue = QRect(br - 60, py, 56, 15);
-    }
-    if (r.video && !buttonHidden(true, "motion") && r.h >= (fadeRow ? 84 : 66)) h.motion = QRect(kRenoStripW + 4, y + (fadeRow ? 65 : 48), 25, 17);
-    if (!r.video && r.h >= 82) {
-        h.phase = QRect(kRenoStripW + 4, y + 64, 25, 17);
-        h.bus = QRect(kRenoStripW + 34, y + 64, std::min(110, br - (kRenoStripW + 38)), 17);
-    }
-    return h;
-}
-
 void TimelineWidget::Impl::setHeaderWidth(int w)
 {
     w = clampHeaderW(std::min(w, q->width() - 120));
@@ -313,21 +230,7 @@ void TimelineWidget::Impl::setHeaderWidth(int w)
     viewStart = t;
     updateBars();
     q->update();
-    QSettings().setValue(headerWidthKey(), headerW);
-    if (q->onHeaderWidthChanged) q->onHeaderWidthChanged(headerW);
-}
-
-void TimelineWidget::Impl::themeChanged()
-{
-    if (shownTheme == uiTheme()) return;
-    shownTheme = uiTheme();
-    useColors(shownTheme);
-    updateFonts();
-    headerW = clampHeaderW(QSettings().value(headerWidthKey(), headerDefault()).toInt());
-    layout();
-    updateBars();
-    placeNameEdit();
-    q->update();
+    QSettings().setValue("timeline/headerWidth", headerW);
     if (q->onHeaderWidthChanged) q->onHeaderWidthChanged(headerW);
 }
 
@@ -466,7 +369,7 @@ void TimelineWidget::Impl::barEdgeDrag(bool vertical, int phase, int edge, doubl
         for (Track& t : pr.tracks) {
             auto it = base.find(t.id);
             if (it == base.end()) continue;
-            const int def = t.type == TrackType::Video ? defaultVideoH() : defaultAudioH();
+            const int def = t.type == TrackType::Video ? kVideoH : kAudioH;
             const int h = clampTrackH((int)std::lround(it->second * f));
             t.height = h == def ? 0 : h;
         }
@@ -613,7 +516,7 @@ void TimelineWidget::Impl::zoomTracks(int a, int b)
     maximized.clear();
     std::map<uint64_t, int> next;
     for (const Track& t : p.tracks) {
-        const int def = t.type == TrackType::Video ? defaultVideoH() : defaultAudioH();
+        const int def = t.type == TrackType::Video ? kVideoH : kAudioH;
         const int h = clampTrackH((int)std::lround(trackHeight(t) * f));
         const int value = h == def ? 0 : h;
         if (value != t.height) next[t.id] = value;

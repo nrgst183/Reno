@@ -34,11 +34,9 @@ TimelineWidget::Impl::Impl(TimelineWidget* w, Playback* pb) : q(w), playback(pb)
     vbar->setCursor(Qt::ArrowCursor);
     hbar->setObjectName("timelineHScroll");
     vbar->setObjectName("timelineVScroll");
-    shownTheme = uiTheme();
-    useColors(shownTheme);
     {
         QSettings s;
-        headerW = clampHeaderW(s.value(headerWidthKey(), headerDefault()).toInt());
+        headerW = clampHeaderW(s.value("timeline/headerWidth", kHeaderDefault).toInt());
         for (const QString& k : s.value("timeline/hiddenButtons/video").toStringList()) hiddenButtons[1].insert(k);
         for (const QString& k : s.value("timeline/hiddenButtons/audio").toStringList()) hiddenButtons[0].insert(k);
     }
@@ -217,7 +215,7 @@ void TimelineWidget::resetTrackHeights()
 
 void TimelineWidget::zoomToFrames()
 {
-    int h = defaultVideoH();
+    int h = kVideoH;
     for (const Impl::Row& r : d->rows) if (r.video) h = std::min(h, r.h);
     const double tileW = std::max(8.0, (h - 2.0) * 16.0 / 9.0);
     const double x = clampd(d->xAtF(AppState::get().cursor()), d->headerW, d->lanesRight());
@@ -576,7 +574,6 @@ void TimelineWidget::Impl::buildLayer()
         QPainter lp(&img);
         const QRect all = q->rect();
         ++paintCount;
-        if (shownTheme != uiTheme()) themeChanged();
         updateFonts();
         ensureIndex(true);
         paintLanes(lp, all);

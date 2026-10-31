@@ -3,7 +3,7 @@
 //     own, a stereo event per pair, or one event mixed down), new tracks panned to their speakers;
 //   - Preferences > Audio and Audio Device (channel count, Downmix), Audio Event Properties' Media channels, Project Media's
 //     Properties showing the channels;
-//   - the small surround panner in the audio track headers of a 5.1 project, in both looks, and its double-click;
+//   - the small surround panner in the audio track headers of a 5.1 project, and its double-click;
 //   - six-channel playback to a six-channel sound card (a stand-in device), the fold-down on a stereo one and with Downmix, at
 //     the normal rate and another;
 //   - Render As's AC-3 and 5.1 AAC templates.
@@ -16,7 +16,6 @@
 #include "../../src/app/panels.h"
 #include "../../src/app/playback.h"
 #include "../../src/app/renderdialog.h"
-#include "../../src/app/theme.h"
 #include "../../src/app/timeline.h"
 #include "uitestlib.h"
 #include <QApplication>
@@ -333,9 +332,8 @@ void testHeaders(const std::string& file, Playback& pb)
     uint64_t firstAudio = 0;
     for (const Track& t : app.project().tracks)
         if (t.type == TrackType::Audio && !firstAudio) firstAudio = t.id;
-    for (int look = 0; look < 2; ++look) {
-        uiThemeSetting() = look == 0 ? UiTheme::Reno : UiTheme::Vegas;
-        const char* name = look == 0 ? "reno" : "vegas";
+    {
+        const char* name = "vegas";
         TimelineWidget tl(&pb);
         tl.resize(1100, 640);
         tl.show();
@@ -362,7 +360,7 @@ void testHeaders(const std::string& file, Playback& pb)
             app.undo();
             t = trackById(t7);
             check(t && std::fabs(t->surround.x - 0.5) < 1e-9 && std::fabs(t->surround.y + 0.3) < 1e-9, std::string("headers (") + name + "): ... undone in one step");
-            if (look == 1) {
+            {
                 app.edit("Surround Pan Keyframe", [&](Project& p) {
                     if (Track* tt = p.findTrack(t7)) {
                         SurroundKey k;
@@ -390,7 +388,7 @@ void testHeaders(const std::string& file, Playback& pb)
         check(trackById(firstAudio)->surround.x == fx && trackById(firstAudio)->surround.y == fy,
               std::string("headers (") + name + "): a fixed route (LFE Only) is not dragged");
         uitest::settle(800);  // the waveforms of the picked channels are read meanwhile
-        shot(&tl, look == 0 ? "headers_51_reno" : "headers_51_vegas");
+        shot(&tl, "headers_51_vegas");
         // a picture of one header, larger
         const QRect hr = tl.headerRect(t7);
         if (!hr.isEmpty()) {
@@ -405,7 +403,6 @@ void testHeaders(const std::string& file, Playback& pb)
         setSurround(true);
         uitest::settle(50);
     }
-    uiThemeSetting() = UiTheme::Reno;
 }
 
 // A sound card stand-in: takes sound at the rate it would be played (like the silent output), in as many channels as it is started with, and keeps it.

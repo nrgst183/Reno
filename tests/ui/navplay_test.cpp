@@ -7,7 +7,6 @@
 // Build: with uibuild (tests/ui/stubs, docs/NOTES.md)
 #include "../../src/app/mainwindow.h"
 #include "../../src/app/playback.h"
-#include "../../src/app/theme.h"
 #include "../../src/app/timeline.h"
 #include "uitestlib.h"
 #include <QAction>

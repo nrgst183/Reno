@@ -51,7 +51,6 @@ struct Preferences {
     bool panMultichannelTracks = true;          // pan new tracks to their speaker
     std::string audioEditor;                    // program for Open in Audio Editor (Ctrl+E)
     double cutToOverlap = 1.0;                  // seconds: overlap made by Convert Cut to Transition
-    std::string theme = "reno";                 // "reno" or "vegas" (theme.h)
     std::string audioInputDevice;               // recording input (Qt Multimedia id); empty = system default
     std::string recordFolder;                   // empty = "Recorded" beside the project
     std::string prerenderFolder;                // empty = user data folder

@@ -1,6 +1,5 @@
 // The small drawn images on the transport and tool bar buttons: see panels_glyph.h.
 #include "panels_glyph.h"
-#include "theme.h"
 #include <QPainterPath>
 
 namespace reno {
@@ -88,44 +87,22 @@ void drawGlyph(QPainter& p, Glyph g, const QRectF& r, const QColor& fg)
         break;
     case Glyph::Stop: p.drawRect(QRectF(cx - 5, cy - 5, 10, 10)); break;
     case Glyph::GoToStart:
-        if (!renoTheme()) {
-            p.drawRect(QRectF(cx - 5.5, cy - 6, 2.2, 12));
-            tri(cx + 5, cy - 6, cx + 5, cy + 6, cx - 3, cy);
-            break;
-        }
-        p.drawRect(QRectF(cx - 6.5, cy - 5.5, 2, 11));
-        tri(cx + 1, cy - 5.5, cx + 1, cy + 5.5, cx - 4.5, cy);
-        tri(cx + 7, cy - 5.5, cx + 7, cy + 5.5, cx + 1.5, cy);
+        p.drawRect(QRectF(cx - 5.5, cy - 6, 2.2, 12));
+        tri(cx + 5, cy - 6, cx + 5, cy + 6, cx - 3, cy);
         break;
     case Glyph::GoToEnd:
-        if (!renoTheme()) {
-            p.drawRect(QRectF(cx + 3.3, cy - 6, 2.2, 12));
-            tri(cx - 5, cy - 6, cx - 5, cy + 6, cx + 3, cy);
-            break;
-        }
-        p.drawRect(QRectF(cx + 4.5, cy - 5.5, 2, 11));
-        tri(cx - 1, cy - 5.5, cx - 1, cy + 5.5, cx + 4.5, cy);
-        tri(cx - 7, cy - 5.5, cx - 7, cy + 5.5, cx - 1.5, cy);
+        p.drawRect(QRectF(cx + 3.3, cy - 6, 2.2, 12));
+        tri(cx - 5, cy - 6, cx - 5, cy + 6, cx + 3, cy);
         break;
     case Glyph::PrevFrame:
-        if (!renoTheme()) {
-            tri(cx - 0.5, cy - 6, cx - 0.5, cy + 6, cx - 7, cy);
-            p.drawRect(QRectF(cx + 1, cy - 6, 2, 12));
-            p.drawRect(QRectF(cx + 4.5, cy - 6, 2, 12));
-            break;
-        }
-        p.drawRect(QRectF(cx + 2.5, cy - 5, 2, 10));
-        tri(cx + 1, cy - 5, cx + 1, cy + 5, cx - 5, cy);
+        tri(cx - 0.5, cy - 6, cx - 0.5, cy + 6, cx - 7, cy);
+        p.drawRect(QRectF(cx + 1, cy - 6, 2, 12));
+        p.drawRect(QRectF(cx + 4.5, cy - 6, 2, 12));
         break;
     case Glyph::NextFrame:
-        if (!renoTheme()) {
-            p.drawRect(QRectF(cx - 6.5, cy - 6, 2, 12));
-            p.drawRect(QRectF(cx - 3, cy - 6, 2, 12));
-            tri(cx + 0.5, cy - 6, cx + 0.5, cy + 6, cx + 7, cy);
-            break;
-        }
-        p.drawRect(QRectF(cx - 4.5, cy - 5, 2, 10));
-        tri(cx - 1, cy - 5, cx - 1, cy + 5, cx + 5, cy);
+        p.drawRect(QRectF(cx - 6.5, cy - 6, 2, 12));
+        p.drawRect(QRectF(cx - 3, cy - 6, 2, 12));
+        tri(cx + 0.5, cy - 6, cx + 0.5, cy + 6, cx + 7, cy);
         break;
     case Glyph::Properties: {
         QPainterPath gear;
@@ -212,21 +189,18 @@ void GlyphButton::paintEvent(QPaintEvent*)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
     const QRectF r = QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5);
-    // VEGAS's tool buttons: flat, bright blue square when on (Reno's look: rounded, its own blue)
-    const bool reno = renoTheme();
+    // VEGAS's tool buttons: flat, bright blue square when on
     QColor bg(0, 0, 0, 0), edge(0, 0, 0, 0);
-    if (isChecked()) { bg = reno ? QColor(0, 122, 204) : QColor(18, 176, 255); edge = reno ? QColor(28, 151, 234) : bg; }
-    else if (isDown()) { bg = reno ? QColor(0, 95, 158) : QColor(46, 143, 214); edge = bg; }
-    else if (underMouse() && isEnabled()) { bg = reno ? QColor(62, 62, 66) : QColor(90, 90, 90); edge = reno ? QColor(85, 85, 90) : QColor(110, 110, 110); }
-    else if (reno && boxed) { bg = QColor(62, 62, 66); edge = QColor(22, 22, 24); }
+    if (isChecked()) { bg = QColor(18, 176, 255); edge = bg; }
+    else if (isDown()) { bg = QColor(46, 143, 214); edge = bg; }
+    else if (underMouse() && isEnabled()) { bg = QColor(90, 90, 90); edge = QColor(110, 110, 110); }
     p.setPen(QPen(edge, 1.0));
     p.setBrush(bg);
-    if (reno) p.drawRoundedRect(r, 3.0, 3.0);
-    else p.drawRect(r);
+    p.drawRect(r);
     QColor fg = isEnabled() ? QColor(238, 238, 238) : QColor(104, 104, 104);
     if (glyph_ == Glyph::Record) fg = isEnabled() ? QColor(232, 140, 150) : QColor(132, 104, 108);
     if (glyph_ == Glyph::Play && playing_) fg = QColor(120, 220, 140);
-    if (glyph_ == Glyph::Save && !reno && isEnabled()) fg = QColor(150, 202, 240);
+    if (glyph_ == Glyph::Save && isEnabled()) fg = QColor(150, 202, 240);
     QRectF g = r;
     if (menuArrow) {
         g.setRight(g.right() - 6);
@@ -239,7 +213,7 @@ void GlyphButton::paintEvent(QPaintEvent*)
         p.setBrush(fg);
         p.drawPath(a);
     }
-    if (isEnabled() && glyph_ != Glyph::OutputFx && glyph_ != Glyph::Bypass && !reno)
+    if (isEnabled() && glyph_ != Glyph::OutputFx && glyph_ != Glyph::Bypass)
         for (const QPointF& o : {QPointF(-1, 0), QPointF(1, 0), QPointF(0, -1), QPointF(0, 1)}) drawGlyph(p, glyph_, g.translated(o), QColor(28, 28, 28));
     drawGlyph(p, glyph_, g, fg);
 }

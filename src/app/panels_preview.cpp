@@ -13,7 +13,6 @@
 #include "logo.h"
 #include "fxlibrary.h"
 #include "fxthumbs.h"
-#include "theme.h"
 #include "playback.h"
 #include "timeline.h"
 #include "../media/media.h"
@@ -1368,13 +1367,13 @@ struct PreviewWidget::Impl {
     GlyphButton *bypass = nullptr, *overlays = nullptr, *play = nullptr;
     QToolButton* qualityButton = nullptr;
     QLabel *project = nullptr, *previewInfo = nullptr, *frame = nullptr, *display = nullptr;
-    // under the image: the parts both looks show, and those only Reno's own look shows
+    // under the image
     QWidget* under = nullptr;
     QWidget *pause = nullptr, *stop = nullptr, *more = nullptr;
     GlyphButton *toStart = nullptr, *loop = nullptr;
     QLabel* captions[4] = {nullptr, nullptr, nullptr, nullptr};
     QWidget* rules[2] = {nullptr, nullptr};
-    int arranged = -1;
+    bool arranged = false;
     std::unique_ptr<ListenerHandle> listener;
     double lastMs = -1;
     QElapsedTimer sizesShown;
@@ -1468,7 +1467,7 @@ struct PreviewWidget::Impl {
         const QRect t = view->target();
         setReadoutText(display, t.isEmpty() ? QString("-") : QString("%1x%2x32").arg(t.width()).arg(t.height()));
         QPalette pal = display->palette();
-        pal.setColor(QPalette::WindowText, !t.isEmpty() && t.width() < ps.width() ? QColor(240, 128, 128) : (renoTheme() ? QColor(160, 160, 165) : QColor(220, 220, 220)));
+        pal.setColor(QPalette::WindowText, !t.isEmpty() && t.width() < ps.width() ? QColor(240, 128, 128) : QColor(220, 220, 220));
         display->setPalette(pal);
         qualityButton->setText(QString("%1 (%2) \u25BE").arg(qualityName(view->quality)).arg(sizeName(view->size)));
         qualityButton->setToolTip(QString("Preview Quality: %1 (%2)").arg(qualityName(view->quality)).arg(sizeName(view->size)));
@@ -1491,7 +1490,7 @@ void PreviewWidget::Impl::setTransportSet(const QStringList& set)
 {
     transportSet = set;
     QSettings().setValue("preview/transportButtons", set);
-    arranged = -1;
+    arranged = false;
     arrange();
 }
 
@@ -1527,7 +1526,7 @@ void PreviewWidget::Impl::setTransportShown(bool on)
 {
     transportShown = on;
     QSettings().setValue("preview/transportBar", on);
-    arranged = -1;
+    arranged = false;
     arrange();
 }
 
@@ -1539,31 +1538,29 @@ void PreviewWidget::Impl::sync360()
     button360->setChecked(is360 && view->mode360);
 }
 
-// Lays out what is under the image for the current look. VEGAS: small transport in the middle, sizes at the left,
-// frame and display size at the right. Reno: a row of transport buttons with the big orange cursor time.
+// Lays out what is under the image: small transport in the middle, sizes at the left, frame and display size at the
+// right.
 void PreviewWidget::Impl::arrange()
 {
-    const bool reno = renoTheme();
-    if (arranged == (int)reno) return;
-    arranged = (int)reno;
+    if (arranged) return;
+    arranged = true;
     delete under->layout();
     for (QLabel* l : {project, previewInfo, frame, display}) releaseReadout(l);
-    for (QWidget* w : {(QWidget*)toStart, (QWidget*)loop}) w->setVisible(reno);
+    for (QWidget* w : {(QWidget*)toStart, (QWidget*)loop}) w->setVisible(false);
     for (GlyphButton* b : {toStart, play, (GlyphButton*)pause, (GlyphButton*)stop, loop, (GlyphButton*)more}) {
-        b->boxed = reno;
-        b->setFixedSize(reno ? 30 : 24, reno ? 26 : 22);
+        b->setFixedSize(24, 22);
     }
     for (GlyphButton* b : {record, playStart, toEnd, prevFrame, nextFrame})
         if (b) b->setVisible(false);
     QPalette owner_pal = owner->palette();
-    owner_pal.setColor(QPalette::Window, themed(QColor(70, 70, 70)));
+    owner_pal.setColor(QPalette::Window, QColor(70, 70, 70));
     owner->setPalette(owner_pal);
     for (QWidget* r : rules) {
         QPalette lp = r->palette();
-        lp.setColor(QPalette::Window, reno ? QColor(22, 22, 24) : QColor(130, 130, 130));
+        lp.setColor(QPalette::Window, QColor(130, 130, 130));
         r->setPalette(lp);
     }
-    const QColor dim = reno ? QColor(160, 160, 165) : QColor(220, 220, 220);
+    const QColor dim = QColor(220, 220, 220);
     for (QLabel* l : {project, previewInfo, frame}) {
         QPalette pal = l->palette();
         pal.setColor(QPalette::WindowText, dim);
@@ -1571,29 +1568,8 @@ void PreviewWidget::Impl::arrange()
     }
     for (QLabel* l : captions) {
         QPalette pal = l->palette();
-        pal.setColor(QPalette::WindowText, reno ? QColor(120, 120, 126) : owner->palette().color(QPalette::WindowText));
+        pal.setColor(QPalette::WindowText, owner->palette().color(QPalette::WindowText));
         l->setPalette(pal);
-    }
-    if (reno) {
-        auto* uv = new QVBoxLayout(under);
-        uv->setContentsMargins(8, 6, 8, 5);
-        uv->setSpacing(3);
-        auto* row1 = new QHBoxLayout();
-        row1->setSpacing(4);
-        for (QWidget* w : {(QWidget*)toStart, (QWidget*)play, pause, stop, (QWidget*)loop, more}) row1->addWidget(w);
-        row1->addStretch(1);
-        uv->addLayout(row1);
-        auto* row2 = new QHBoxLayout();
-        row2->setSpacing(5);
-        for (int k = 0; k < 4; ++k) {
-            row2->addWidget(captions[k]);
-            row2->addWidget(k == 0 ? project : k == 1 ? previewInfo : k == 2 ? frame : display);
-            if (k < 3) row2->addSpacing(12);
-        }
-        row2->addStretch(1);
-        uv->addLayout(row2);
-        under->setFixedHeight(62);
-        return;
     }
     auto* uv = new QVBoxLayout(under);
     uv->setContentsMargins(3, 4, 8, 2);

@@ -122,7 +122,6 @@
 #include "editdialogs.h"
 #include "mainwindow_tools.h"
 #include "../vegas/vegas.h"
-#include "theme.h"
 #include "renderdialog.h"
 #include "keyboard.h"
 #include "trackdefaults.h"
@@ -277,7 +276,7 @@ public:
     void drawComplexControl(ComplexControl cc, const QStyleOptionComplex* o, QPainter* p, const QWidget* w) const override
     {
         const QStyleOptionSlider* s = qstyleoption_cast<const QStyleOptionSlider*>(o);
-        if (cc != CC_ScrollBar || !s || renoTheme()) {
+        if (cc != CC_ScrollBar || !s) {
             QProxyStyle::drawComplexControl(cc, o, p, w);
             return;
         }
@@ -327,8 +326,16 @@ public:
 
 }  // namespace
 
-static void applyVegasTheme()
+// Dark colours for the whole application: VEGAS Pro 18's scheme, narrow headers, Segoe UI 8 pt, dark menus.
+void applyTheme()
 {
+    static bool first = true;
+    // Dark everywhere: Qt 6.8 gives windows a dark title bar when told the app is dark; Windows' own styles ignore the palette.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
+#endif
+    if (first) QApplication::setStyle(new RenoStyle());
+    first = false;
     QPalette p;
     const QColor text(220, 220, 220), accent(18, 132, 214);
     p.setColor(QPalette::Window, kBar);
@@ -402,102 +409,6 @@ static void applyVegasTheme()
         "QStatusBar::item { border: none; }"
         "QStatusBar QLabel { padding: 0px 4px; }"
         "QHeaderView::section { background: #3c3c3c; color: #d6d6d6; border: none; border-right: 1px solid #2d2d2d; border-bottom: 1px solid #2d2d2d; padding: 3px 5px; }");
-}
-
-// Reno's look: Fusion with a blue-grey dark palette and the system text size; menus dark.
-static void applyRenoTheme(const QFont& systemFont)
-{
-    using namespace reno_colors;
-    QPalette p;
-    const QColor text(220, 220, 220);
-    p.setColor(QPalette::Window, kWindow);
-    p.setColor(QPalette::WindowText, text);
-    p.setColor(QPalette::Base, kBase);
-    p.setColor(QPalette::AlternateBase, kAlt);
-    p.setColor(QPalette::ToolTipBase, QColor(60, 60, 64));
-    p.setColor(QPalette::ToolTipText, text);
-    p.setColor(QPalette::Text, text);
-    p.setColor(QPalette::Button, kMid);
-    p.setColor(QPalette::ButtonText, text);
-    p.setColor(QPalette::BrightText, Qt::white);
-    p.setColor(QPalette::Highlight, kAccent);
-    p.setColor(QPalette::HighlightedText, Qt::white);
-    p.setColor(QPalette::Link, QColor(90, 170, 255));
-    p.setColor(QPalette::PlaceholderText, QColor(140, 140, 140));
-    p.setColor(QPalette::Light, QColor(80, 80, 84));
-    p.setColor(QPalette::Midlight, QColor(70, 70, 74));
-    p.setColor(QPalette::Mid, QColor(52, 52, 55));
-    p.setColor(QPalette::Dark, QColor(28, 28, 30));
-    p.setColor(QPalette::Shadow, QColor(15, 15, 16));
-    for (QPalette::ColorRole r : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
-        p.setColor(QPalette::Disabled, r, QColor(120, 120, 120));
-    QApplication::setPalette(p);
-    QFont f = QApplication::font();
-    if (systemFont.pixelSize() > 0) f.setPixelSize(systemFont.pixelSize());
-    else f.setPointSizeF(systemFont.pointSizeF());
-    QApplication::setFont(f);
-#ifdef _WIN32
-    const QString menuFont = "font-family: 'Segoe UI'; font-size: 9pt;";
-#else
-    const QString menuFont = "";
-#endif
-    qApp->setStyleSheet(
-        "QToolTip { color: #dcdcdc; background-color: #3c3c40; border: 1px solid #5a5a5e; }"
-        "QMenuBar { background: #2a2a2d; color: #dcdcdc; border: none; padding: 1px 0px 2px 0px; " + menuFont + " }"
-        "QMenuBar::item { padding: 2px 6px; background: transparent; color: #dcdcdc; }"
-        "QMenuBar::item:selected { background: #3e3e42; }"
-        "QMenuBar::item:pressed { background: #007acc; color: #ffffff; }"
-        "QMenu { background: #2d2d30; color: #dcdcdc; border: 1px solid #55555a; padding: 2px; " + menuFont + " }"
-        "QMenu::item { padding: 3px 28px 3px 26px; color: #dcdcdc; background: transparent; }"
-        "QMenu::item:selected { background: #007acc; color: #ffffff; }"
-        "QMenu::item:disabled { color: #78787c; }"
-        "QMenu::item:disabled:selected { background: #3e3e42; color: #78787c; }"
-        "QMenu::separator { height: 1px; background: #55555a; margin: 4px 8px; }"
-        "QMenu::indicator { width: 13px; height: 13px; left: 6px; }"
-        "QToolBar { background: #2d2d30; border: none; spacing: 0px; padding: 2px 4px; }"
-        "QToolBar::separator { background: #46464b; width: 1px; margin: 4px 5px; }"
-        "QToolButton { border: 1px solid transparent; border-radius: 3px; padding: 2px; color: #dcdcdc; }"
-        "QToolButton:hover { background: #3e3e42; border-color: #55555a; }"
-        "QToolButton:pressed { background: #005f9e; }"
-        "QToolButton:checked { background: #007acc; border-color: #1c97ea; }"
-        "QToolButton[popupMode=\"1\"] { padding-right: 11px; }"
-        "QToolButton::menu-button { border: none; width: 10px; }"
-        "QToolButton::menu-arrow { width: 7px; height: 7px; }"
-        "QMainWindow::separator { background: #1b1b1d; width: 5px; height: 5px; }"
-        "QMainWindow::separator:hover { background: #007acc; }"
-        "QDockWidget { color: #dcdcdc; }"
-        "QDockWidget::title { background: #37373a; padding: 4px; }"
-        "QStatusBar { background: #2d2d30; color: #dcdcdc; }"
-        "QStatusBar::item { border: none; }"
-        "QStatusBar QLabel { padding: 0px 6px; }");
-}
-
-void applyTheme()
-{
-    // RENO_THEME=reno or vegas overrides the preference
-    std::string key = AppState::get().prefs.theme;
-    const QByteArray env = qgetenv("RENO_THEME").toLower();
-    if (env == "reno" || env == "vegas") key = env.toStdString();
-    applyTheme(themeFromKey(key));
-}
-
-void applyTheme(UiTheme theme)
-{
-    static bool first = true;
-    static QFont systemFont;
-    if (first) systemFont = QApplication::font();
-    const bool changed = first || uiThemeSetting() != theme;
-    uiThemeSetting() = theme;
-    // Dark everywhere: Qt 6.8 gives windows a dark title bar when told the app is dark; Windows' own styles ignore the palette.
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-    QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
-#endif
-    if (first) QApplication::setStyle(new RenoStyle());
-    first = false;
-    if (theme == UiTheme::Reno) applyRenoTheme(systemFont);
-    else applyVegasTheme();
-    if (changed) AppState::get().notify(kPrefs);
-    for (QWidget* w : QApplication::allWidgets()) w->update();
 }
 
 // ================================================================================================ the shortcut list
@@ -936,28 +847,16 @@ QToolButton* flatButton(QWidget* parent, const char* name, Ico ico, const QStrin
     return b;
 }
 
-// A widget filled with one colour; recoloured when the look changes.
+// A widget filled with one colour.
 QWidget* filled(QWidget* parent, const char* name, const QColor& c)
 {
     QWidget* w = new QWidget(parent);
     w->setObjectName(name);
     w->setAutoFillBackground(true);
-    w->setProperty("renoFill", c);
     QPalette pal = w->palette();
-    pal.setColor(QPalette::Window, themed(c));
+    pal.setColor(QPalette::Window, c);
     w->setPalette(pal);
     return w;
-}
-
-void refill(QWidget* root)
-{
-    for (QWidget* w : root->findChildren<QWidget*>()) {
-        const QVariant v = w->property("renoFill");
-        if (!v.isValid()) continue;
-        QPalette pal = w->palette();
-        pal.setColor(QPalette::Window, themed(v.value<QColor>()));
-        w->setPalette(pal);
-    }
 }
 
 QWidget* line(QWidget* parent, const QColor& c, bool horizontal = true)
@@ -1058,11 +957,9 @@ protected:
         if (onDoubleClick) onDoubleClick();
         e->accept();
     }
-    void paintEvent(QPaintEvent* e) override
+    void paintEvent(QPaintEvent*) override
     {
-        if (renoTheme()) {
-            QSlider::paintEvent(e);
-        } else {
+        {
             QPainter p(this);
             const int cy = height() / 2 - 1;
             p.fillRect(QRect(0, cy - 1, width(), 3), QColor(38, 38, 38));
@@ -1215,9 +1112,6 @@ MainWindow::MainWindow() : a_(new Actions())
     diskText_ = new QLabel(this);
     diskText_->setObjectName("diskSpace");
     statusBar()->addWidget(statusText_, 1);
-    QLabel* format = new QLabel(this);
-    format->setObjectName("statusFormat");
-    statusBar()->addPermanentWidget(format);
     statusBar()->addPermanentWidget(diskText_);
     statusBar()->setSizeGripEnabled(false);
     statusBar()->setFixedHeight(20);
@@ -1237,13 +1131,7 @@ MainWindow::MainWindow() : a_(new Actions())
     });
     AutomationHooks::wake = [automationTimer] { if (!automationTimer->isActive()) automationTimer->start(); };
 
-    themePref_ = app.prefs.theme;
     listener_ = app.addListener([this](int changes) {
-        if ((changes & kPrefs) && AppState::get().prefs.theme != themePref_) {
-            themePref_ = AppState::get().prefs.theme;
-            applyTheme(themeFromKey(themePref_));
-        }
-        if ((changes & kPrefs) && styledTheme_ != (int)uiTheme()) restyle();
         if (changes & kPrefs) {
             applyDockOptions(this, docks_);
             bool wrongSide = false;
@@ -1317,39 +1205,19 @@ void MainWindow::saveWindowLayout()
 
 void MainWindow::restyle()
 {
-    styledTheme_ = (int)uiTheme();
-    refill(this);
-    if (QToolBar* main = findChild<QToolBar*>("mainToolBar")) {
-        if (renoTheme())
-            main->setStyleSheet("QToolBar { border: none; border-bottom: 1px solid #1b1b1d; padding: 4px 4px 3px 4px; background: #2d2d30; }");
-        else
-            main->setStyleSheet("QToolBar { border: none; padding: 4px 4px 3px 4px; background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, "
-                                "stop: 0 #232323, stop: 0.0769 #232323, stop: 0.077 #828282, stop: 0.1025 #828282, stop: 0.1026 #464646, "
-                                "stop: 0.923 #464646, stop: 0.9231 #232323, stop: 1 #232323); }");
-    }
-    if (QSlider* rate = findChild<QSlider*>("rateSlider")) {
-        if (renoTheme())
-            rate->setStyleSheet("QSlider::groove:horizontal { height: 3px; background: #18181a; border-radius: 1px; }"
-                                "QSlider::sub-page:horizontal { background: #007acc; border-radius: 1px; }"
-                                "QSlider::handle:horizontal { width: 7px; height: 13px; margin: -5px 0px; background: #d6d6da; border: 1px solid #121214; border-radius: 2px; }");
-        else
-            rate->setStyleSheet("QSlider::groove:horizontal { height: 2px; background: #232323; border-top: 1px solid #828282; }"
-                                "QSlider::handle:horizontal { width: 11px; height: 10px; margin: -5px 0px; background: #e6e6e6; border: 1px solid #181818; }");
-    }
-    if (QLabel* format = findChild<QLabel*>("statusFormat")) format->setVisible(renoTheme());
-    {
-        QFont f = QApplication::font();
-        if (f.pixelSize() > 0) f.setPixelSize(std::max(8, (int)std::lround(f.pixelSize() * 0.9)));
-        else f.setPointSizeF(f.pointSizeF() * 0.9);
-        const int w = QFontMetrics(f).horizontalAdvance("00:00:00:00") + 4;
-        const int widths[3] = {75, 72, 63};
-        QLabel* labels[3] = {cursorText_, selEnd_, selLength_};
-        for (int k = 0; k < 3; ++k) {
-            if (!labels[k]) continue;
-            if (renoTheme()) labels[k]->setFont(f);
-            else labels[k]->setFont(QFont());
-            labels[k]->setFixedWidth(renoTheme() ? w : widths[k]);
-        }
+    if (QToolBar* main = findChild<QToolBar*>("mainToolBar"))
+        main->setStyleSheet("QToolBar { border: none; padding: 4px 4px 3px 4px; background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, "
+                            "stop: 0 #232323, stop: 0.0769 #232323, stop: 0.077 #828282, stop: 0.1025 #828282, stop: 0.1026 #464646, "
+                            "stop: 0.923 #464646, stop: 0.9231 #232323, stop: 1 #232323); }");
+    if (QSlider* rate = findChild<QSlider*>("rateSlider"))
+        rate->setStyleSheet("QSlider::groove:horizontal { height: 2px; background: #232323; border-top: 1px solid #828282; }"
+                            "QSlider::handle:horizontal { width: 11px; height: 10px; margin: -5px 0px; background: #e6e6e6; border: 1px solid #181818; }");
+    const int widths[3] = {75, 72, 63};
+    QLabel* labels[3] = {cursorText_, selEnd_, selLength_};
+    for (int k = 0; k < 3; ++k) {
+        if (!labels[k]) continue;
+        labels[k]->setFont(QFont());
+        labels[k]->setFixedWidth(widths[k]);
     }
     if (ratePanel_) ratePanel_->setFixedWidth(timeline_->headerWidth());
     update();
@@ -2154,29 +2022,6 @@ void MainWindow::buildMenus()
     view->addSeparator();
     view->addAction(g("rebuildPeaks"));
     a.toolbars = view->addMenu("&Toolbars");
-    {
-        QMenu* themes = view->addMenu("T&heme");
-        themes->setObjectName("themeMenu");
-        QActionGroup* group = new QActionGroup(themes);
-        for (UiTheme t : {UiTheme::Reno, UiTheme::Vegas}) {
-            QAction* act = themes->addAction(t == UiTheme::Reno ? "&Reno" : "&VEGAS");
-            act->setObjectName(t == UiTheme::Reno ? "themeReno" : "themeVegas");
-            act->setCheckable(true);
-            act->setActionGroup(group);
-            act->setStatusTip(t == UiTheme::Reno ? "Reno's own look: wide track headers, events with title bars" : "VEGAS Pro 18's look");
-            QObject::connect(act, &QAction::triggered, this, [t] {
-                AppState& st = AppState::get();
-                if (st.prefs.theme != themeKey(t)) {
-                    st.prefs.theme = themeKey(t);
-                    st.applyPreferences();
-                }
-                if (uiTheme() != t) applyTheme(t);
-            });
-        }
-        QObject::connect(themes, &QMenu::aboutToShow, themes, [themes] {
-            for (QAction* act : themes->actions()) act->setChecked(act->objectName() == (renoTheme() ? "themeReno" : "themeVegas"));
-        });
-    }
 
     QMenu* insert = menuBar()->addMenu("&Insert");
     insert->addActions({g("audioTrack"), g("videoTrack"), g("audioBus")});
@@ -3327,7 +3172,6 @@ void MainWindow::refresh(int changes)
         a.get("redo")->setText(app.canRedo() ? QString("&Redo %1").arg(QString::fromStdString(app.redoName())) : QString("&Redo"));
         const ProjectSettings& s = app.project().settings;
         diskText_->setToolTip(QString("%1x%2, %3 fps, %4 Hz").arg(s.width).arg(s.height).arg(s.fps(), 0, 'f', s.fpsDen == 1 ? 0 : 3).arg(s.sampleRate));
-        if (QLabel* format = findChild<QLabel*>("statusFormat")) format->setText(diskText_->toolTip());
         if (changes & kFile) showDiskSpace();
         a.get("render")->setEnabled(app.project().length() > 0);
     }

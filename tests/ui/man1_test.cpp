@@ -14,7 +14,6 @@
 #include "../../src/app/vegasextras.h"
 #include "../../src/app/outputcmds.h"
 #include "../../src/app/vprefs.h"
-#include "../../src/app/theme.h"
 #include "uitestlib.h"
 #include <QAction>
 #include <QApplication>
