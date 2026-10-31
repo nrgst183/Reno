@@ -150,8 +150,26 @@ bool createVideoProxy(const std::string& mediaPath, const VideoProxyOptions& opt
     if (opt.encoderThreads > 0) es.encoderOptions += (es.encoderOptions.empty() ? "" : " ") + strfmt("threads=%d", opt.encoderThreads);
     es.stretch = true;
     es.quickConvert = true;             // a preview: the quick colour conversion (it took as long as decoding)
-    // H.264 from the processor first (libx264 / OpenH264).
-    std::unique_ptr<MediaWriter> out = createMediaWriter(es, &err);
+    // H.264 on the graphics card if it has an encoder (several times faster than the processor, which is left to the
+    // decoding), else from the processor (libx264 / OpenH264).
+    std::unique_ptr<MediaWriter> out;
+    bool onCard = false;
+    if (opt.hardwareEncoder) {
+        static const char* const cards[][2] = {{"h264_nvenc", "preset=p1 tune=ll"}, {"h264_amf", "quality=speed usage=lowlatency"}};
+        for (const auto& card : cards) {
+            EncodeSettings hs = es;
+            hs.videoCodec = card[0];
+            hs.encodeMode = "auto";
+            hs.encoderOptions = card[1];
+            std::string hwErr;
+            out = createMediaWriter(hs, &hwErr);
+            if (out) {
+                onCard = true;
+                break;
+            }
+        }
+    }
+    if (!out) out = createMediaWriter(es, &err);
     if (!out) {
         const std::string first = err;
         es.encodeMode = "auto";
@@ -247,6 +265,13 @@ bool createVideoProxy(const std::string& mediaPath, const VideoProxyOptions& opt
     std::error_code ec;
     if (!ok || stopped || !finished) {
         std::filesystem::remove(fsPath(part), ec);
+        // the graphics card's encoder failed on the way (out of sessions, the driver): once more on the processor
+        if (onCard && !stopped) {
+            VideoProxyOptions cpu = opt;
+            cpu.hardwareEncoder = false;
+            in.reset();
+            return createVideoProxy(mediaPath, cpu, progress, error);
+        }
         return fail(stopped ? std::string("Stopped.") : (!ferr.empty() ? ferr : err));
     }
     std::filesystem::remove(fsPath(final), ec);

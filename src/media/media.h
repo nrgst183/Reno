@@ -320,6 +320,8 @@ struct VideoProxyOptions {
     std::string outputPath;                 // empty: videoProxyPath(mediaPath); the finished file is renamed from "<it>.part.mp4"
     double fromSeconds = 0, toSeconds = 0;  // only this part of the original (0, 0: all of it; for measuring)
     bool announce = true;                   // tell readers proxies changed when done (false for files that are not proxies)
+    // Encode on the graphics card when it can (NVIDIA NVENC, then AMD AMF), the processor otherwise or if that fails.
+    bool hardwareEncoder = true;
 };
 // Makes the proxy of 'mediaPath' (replacing one that is there). 'progress' is told how far it has got (0..1) and may
 // return false to stop (nothing is left behind then). False with *error set if it failed or was stopped.
