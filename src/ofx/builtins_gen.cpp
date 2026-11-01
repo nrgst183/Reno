@@ -3,6 +3,9 @@
 #include "builtins_impl.h"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdlib>
+#include <string>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -32,28 +35,79 @@ void solidColor(Ctx& c)
 }
 
 // ------------------------------------------------------------------ Color Gradient
-// VEGAS has a gradient editor with control points; Reno has two colours, a centre, a size and a direction: Linear runs from Color 1 to Color 2
-// across 'Size' of the frame along the angle; Elliptical and Rectangular run outwards from the centre (angle turns the shape, Aspect stretches it).
+// VEGAS's Color Gradient is a list of colour stops (position 0..1, colour with its own alpha) laid along a shape: Linear runs from Start to End, Elliptical
+// and Rectangular run outwards from Center to Radius (both in fractions of the frame; angle turns the shape). Colours and alpha are blended unpremultiplied.
+// 'GradientStops' holds the stops as "position r g b a;position r g b a;..."; empty means two stops, Color1 at 0 and Color2 at 1 (VEGAS's default is white
+// to black, left to right). Like VEGAS's legacy effects the position of a pixel is its index, not its centre.
+struct GradStop { double pos; Color col; };
+
+std::vector<GradStop> parseStops(const std::string& s, const Color& a, const Color& b)
+{
+    std::vector<GradStop> v;
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t j = s.find(';', i);
+        if (j == std::string::npos) j = s.size();
+        double n[5];
+        int k = 0;
+        const char* p = s.c_str() + i;
+        const char* end = s.c_str() + j;
+        while (k < 5) {
+            char* q = nullptr;
+            const double x = std::strtod(p, &q);
+            if (q == p || q > end) break;
+            n[k++] = x;
+            p = q;
+        }
+        if (k == 5 && std::isfinite(n[0])) v.push_back({clampd(n[0], 0, 1), Color{n[1], n[2], n[3], n[4]}});
+        i = j + 1;
+    }
+    if (v.empty()) v = {{0.0, a}, {1.0, b}};
+    std::stable_sort(v.begin(), v.end(), [](const GradStop& x, const GradStop& y) { return x.pos < y.pos; });
+    return v;
+}
+
+Color stopColor(const std::vector<GradStop>& v, double t)
+{
+    if (t <= v.front().pos) return v.front().col;
+    if (t >= v.back().pos) return v.back().col;
+    size_t k = 1;
+    while (k < v.size() && v[k].pos < t) ++k;
+    const GradStop& p = v[k - 1];
+    const GradStop& q = v[k];
+    const double d = q.pos - p.pos;
+    return d <= 1e-9 ? q.col : mix(p.col, q.col, (t - p.pos) / d);
+}
+
 void colorGradient(Ctx& c)
 {
     const int type = c.i("GradientType");
-    const Color a = c.color("Color1"), b = c.color("Color2");
-    double cx, cy;
+    const std::vector<GradStop> stops = parseStops(c.s("GradientStops"), c.color("Color1"), c.color("Color2"));
+    double sx, sy, ex, ey, cx, cy, rx, ry;
+    c.xy("Start", sx, sy);
+    c.xy("End", ex, ey);
     c.xy("Center", cx, cy);
-    const double size = std::max(1e-4, c.d("Size"));
+    c.xy("Radius", rx, ry);
+    sy = 1 - sy; ey = 1 - ey; cy = 1 - cy; // the parameters are OFX points (y up); the rows below run from the top
+    rx = std::max(1e-4, std::fabs(rx));
+    ry = std::max(1e-4, std::fabs(ry));
     const double ang = c.d("AspectRatioAngle") * kPi / 180.0;
-    const double aspect = std::max(0.01, c.d("Aspect"));
-    const int W = c.out.w, H = c.out.h;
     const double ca = std::cos(ang), sa = std::sin(ang);
+    const int W = c.out.w, H = c.out.h;
+    const double ddx = ex - sx, ddy = ey - sy, dd = ddx * ddx + ddy * ddy;
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
-            const double dx = ((x + 0.5) - cx * W) / H, dy = ((H - (y + 0.5)) - cy * H) / H;
-            const double u = dx * ca + dy * sa, v = -dx * sa + dy * ca;
+            const double u = (double)x / W, v = (double)y / H; // row 0 is the top of the picture
             double t;
-            if (type == 0) t = u / size + 0.5;
-            else if (type == 1) t = std::sqrt(u * u / (aspect * aspect) + v * v) / (size * 0.5);
-            else t = std::max(std::fabs(u) / aspect, std::fabs(v)) / (size * 0.5);
-            put(c.out.at(x, y), mix(a, b, clampd(t, 0, 1)));
+            if (type == 0) {
+                t = dd > 1e-12 ? ((u - sx) * ddx + (v - sy) * ddy) / dd : 0.0;
+            } else {
+                // offset from the centre in pixels, turned by the angle, then measured against the radii (in frame widths / heights)
+                const double px = (u - cx) * W, py = (v - cy) * H;
+                const double qx = (px * ca + py * sa) / (rx * W), qy = (-px * sa + py * ca) / (ry * H);
+                t = type == 1 ? std::sqrt(qx * qx + qy * qy) : std::max(std::fabs(qx), std::fabs(qy));
+            }
+            put(c.out.at(x, y), stopColor(stops, clampd(t, 0, 1)));
         }
     });
 }
@@ -1052,13 +1106,13 @@ void addGenerators(std::vector<Def>& out)
         d.label = "Color Gradient";
         d.group = kGroup;
         d.generator = true;
-        d.description = "A blend from one colour to another (Reno's own, standing in for VEGAS Color Gradient).";
+        d.description = "A blend between colour stops along a line, an ellipse or a rectangle (Reno's own, standing in for VEGAS Color Gradient).";
         d.params = {choice("GradientType", "Gradient type", 0, {"Linear", "Elliptical", "Rectangular"}),
-                    rgba("Color1", "Color 1", 0, 0, 0, 1), rgba("Color2", "Color 2", 1, 1, 1, 1),
-                    point("Center", "Center", 0.5, 0.5), dbl("Size", "Size", 1.0, 0.0, 4.0),
-                    dbl("AspectRatioAngle", "Aspect ratio angle", 0, -360, 360), dbl("Aspect", "Aspect ratio", 1, 0.01, 10)};
-        d.params[4].dmax = 2;
-        d.params[6].dmax = 4;
+                    rgba("Color1", "Color 1", 1, 1, 1, 1), rgba("Color2", "Color 2", 0, 0, 0, 1),
+                    text("GradientStops", "Gradient stops (position r g b a; ...)", "", false),
+                    point("Start", "Start (linear)", 0.0, 0.5), point("End", "End (linear)", 1.0, 0.5),
+                    point("Center", "Center", 0.5, 0.5), point("Radius", "Radius (elliptical, rectangular)", 0.5, 0.5),
+                    dbl("AspectRatioAngle", "Aspect ratio angle", 0, -360, 360)};
         d.render = colorGradient;
         out.push_back(d);
     }

@@ -742,23 +742,6 @@ void tabD(std::vector<float>& t, double d)
     t.push_back(f[1]);
 }
 
-bool planColorGradient(Ctx& c, Plan& p)
-{
-    const Color a = c.color("Color1"), b = c.color("Color2");
-    double cx, cy;
-    c.xy("Center", cx, cy);
-    const double ang = c.d("AspectRatioAngle") * kPi / 180.0;
-    const double size = std::max(1e-4, c.d("Size")), aspect = std::max(0.01, c.d("Aspect"));
-    std::vector<float> tab;
-    const double ds[16] = {cx * p.w, cy * p.h, std::cos(ang), std::sin(ang), size, aspect, aspect * aspect, size * 0.5, a.r, a.g, a.b, a.a, b.r, b.g, b.b, b.a};
-    for (double d : ds) tabD(tab, d);
-    P::Colorgradient pc = {p.w, p.h, u32(c.i("GradientType"))};
-    Pass& ps = p.add("colorgradient", 0, 1, p.w, p.h);
-    ps.table = p.addTable(std::move(tab));
-    ps.setPush(pc);
-    return true;
-}
-
 bool planCheckerboard(Ctx& c, Plan& p)
 {
     std::vector<float> tab;
@@ -1045,7 +1028,6 @@ struct Entry { const char* id; bool (*plan)(Ctx&, Plan&); };
 // VEGAS exactly in builtins_filters.cpp / builtins_more_colour.cpp)
 const Entry kEntries[] = {
     {"solidcolor", planSolidColor},
-    {"colorgradient", planColorGradient},
     {"checkerboard", planCheckerboard},
     {"testpattern", planTestPattern},
     {"crop", planCrop},
@@ -1196,8 +1178,6 @@ std::string meshBlob(int cols, int rows, float bend)
 const std::vector<CaseSet>& caseSets()
 {
     static const std::vector<CaseSet> sets = {
-        {"colorgradient", {{"elliptical", PM{{"GradientType", {1}}, {"Aspect", {1.7}}, {"AspectRatioAngle", {25}}, {"Center", {0.4, 0.6}}, {"Color1", {1.0, 0.3, 0.1, 0.8}}}},
-                           {"rectangular", PM{{"GradientType", {2}}, {"Size", {0.7}}, {"Color2", {0.1, 0.4, 1.0, 1.0}}}}}},
         {"checkerboard", {{"soft", PM{{"EdgeBlendingHorizontal", {0.3}}, {"EdgeBlendingVertical", {0.5}}, {"GridOffsetX", {0.13}}, {"TileDimensionsWidth", {0.07}}, {"TileDimensionsHeight", {0.11}}, {"TileDimensionsSquare", {0}}}},
                           {"hard", PM{{"GridOffsetX", {0.31}}, {"GridOffsetY", {0.2}}, {"Color1", {1.0, 0.2, 0.2, 1.0}}, {"Color2", {0.0, 0.3, 0.9, 0.6}}}}}},
         {"testpattern", {{"t1", PM{{"TestPatternType", {1}}}}, {"t2", PM{{"TestPatternType", {2}}}}, {"t3", PM{{"TestPatternType", {3}}}}, {"t4", PM{{"TestPatternType", {4}}}},

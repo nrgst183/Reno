@@ -701,9 +701,51 @@ void histogramFx(Ctx& c)
 // A wipe where the picture arrives where a gradient is below the progress. The gradient is a diagonal ramp from upper left to lower right (VEGAS
 // lets the user pick a picture; Reno's host cannot ask for one). Flip turns it over, Mirror folds it about the middle, Gradient blur softens it,
 // Threshold blend is the edge softness, Direction Reverse starts at the other end, Auto contrast stretch spreads it over 0..1.
+// The procedural gradients of VEGAS's Gradient Wipe presets (index 1.. of the "Gradient" list below; 0 is the diagonal above). The incoming picture
+// arrives where the value is below the progress, so a value of 0 is where the wipe starts. Read from VEGAS's own pictures of Linear Top-Bottom, Linear
+// Bottom-Left Diagonal and Circle Out (inferred, not VEGAS's numbers); the other linear ones follow by turning those over, Box and the bars are guesses.
+const char* const kWipeShapes[] = {"Linear Top-Left Diagonal", "Linear Left-Right", "Linear Right-Left", "Linear Top-Bottom", "Linear Bottom-Top",
+                                   "Linear Top-Right Diagonal", "Linear Bottom-Left Diagonal", "Linear Bottom-Right Diagonal", "Horizontal Open", "Vertical Open",
+                                   "Circle Out", "Circle In", "Box Out", "Box In", "Horizontal Alternating Bars", "Vertical Alternating Bars",
+                                   "Horizontal Alternating Bilinear Bars", "Vertical Alternating Bilinear Bars"};
+
+double wipeShape(int shape, double u, double v, int W, int H)
+{
+    switch (shape) {
+    case 1: return u;
+    case 2: return 1.0 - u;
+    case 3: return v;
+    case 4: return 1.0 - v;
+    case 5: return ((1.0 - u) + v) * 0.5;
+    case 6: return (u + (1.0 - v)) * 0.5;
+    case 7: return ((1.0 - u) + (1.0 - v)) * 0.5;
+    case 8: return std::fabs(u - 0.5) * 2.0;
+    case 9: return std::fabs(v - 0.5) * 2.0;
+    case 10:
+    case 11: {
+        // round in pixels, reaching the corners when the progress is 1
+        const double dx = (u - 0.5) * W, dy = (v - 0.5) * H;
+        const double r = std::sqrt(dx * dx + dy * dy) / std::max(1e-9, 0.5 * std::sqrt((double)W * W + (double)H * H));
+        return shape == 10 ? r : 1.0 - r;
+    }
+    case 12: return std::max(std::fabs(u - 0.5), std::fabs(v - 0.5)) * 2.0;
+    case 13: return 1.0 - std::max(std::fabs(u - 0.5), std::fabs(v - 0.5)) * 2.0;
+    default: {
+        // alternating bars: every other bar is wiped the other way round; the bilinear ones fade in and out within each bar
+        const bool horizontal = shape == 14 || shape == 16;
+        const double a = (horizontal ? v : u) * 8.0;
+        const double f = a - std::floor(a);
+        const bool odd = ((long long)std::floor(a)) & 1;
+        if (shape >= 16) return std::fabs(f - 0.5) * 2.0;
+        return odd ? 1.0 - f : f;
+    }
+    }
+}
+
 void gradientWipe(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
+    const int shape = c.i("Gradient");
     const bool hf = c.b("HorizontalFlip"), vf = c.b("VerticalFlip"), hm = c.b("HorizontalMirror"), vm = c.b("VerticalMirror");
     const bool reverse = c.i("Direction") == 1, stretch = c.b("AutoContrastStretch"), keepAspect = c.b("MaintainAspectRatio");
     const double blend = clampd(c.d("ThresholdBlend"), 0, 1) * 0.5, blur = clampd(c.d("GradientBlur"), 0, 1);
@@ -720,6 +762,7 @@ void gradientWipe(Ctx& c)
             if (hm) u = u < 0.5 ? u * 2 : (1.0 - u) * 2;
             // (with the aspect kept, the diagonal runs at 45 degrees of the picture, not corner to corner)
             double val = keepAspect ? (u * aspect + v) / (aspect + 1.0) : (u + v) * 0.5;
+            if (shape > 0) val = wipeShape(shape, u, v, W, H);
             g[(size_t)y * W + x] = (float)val;
         }
     }
@@ -904,6 +947,11 @@ void addFiltersVegasRest(std::vector<Def>& out)
             d.group = kGroup;
             d.description = "A wipe along a gradient (Reno's own, standing in for VEGAS Gradient Wipe).";
             vfxTune(d, "ThresholdBlend", 0.1, 0, 1);
+            {
+                std::vector<std::string> names;
+                for (const char* n : kWipeShapes) names.push_back(n);
+                d.params.push_back(choice("Gradient", "Gradient", 0, names));
+            }
             out.push_back(d);
         }
     }

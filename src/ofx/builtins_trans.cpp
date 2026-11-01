@@ -1355,12 +1355,18 @@ void starWipe(Ctx& c)
 
 void venetian(Ctx& c)
 {
-    const double ang = c.d("Angle") * kPi / 180.0, dx = std::cos(ang), dy = -std::sin(ang);
+    const double ang = c.d("Angle") * kPi / 180.0, dx = std::cos(ang), dy = std::sin(ang);
     const double n = std::max(1.0, c.d("NumberOfBlinds"));
     const double span = std::fabs(dx) + std::fabs(dy);
+    // Each blind opens outwards from its middle: the incoming picture covers the middle Progress of every blind's width (VEGAS's own capture of the
+    // presets; the blinds are counted from the frame's edge, so with the angle at 0 the first one starts at the left).
+    const double aw = (double)c.out.w, ah = (double)c.out.h;
+    (void)span;
     wipe(c, [&](double u, double v) {
-        const double pos = ((u - 0.5) * dx + (v - 0.5) * dy) / span * n + 0.5;
-        return pos - std::floor(pos);
+        // distances are in pixels and the blinds are counted in frame widths, whatever the angle
+        const double pos = ((u - 0.5) * aw * dx + (v - 0.5) * ah * dy) / aw * n + 0.5;
+        const double f = pos - std::floor(pos);
+        return std::fabs(f - 0.5) * 2.0;
     }, clampd(c.d("Feather"), 0, 1) * 0.5 + 0.002, 0.0, Color());
 }
 

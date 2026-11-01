@@ -246,27 +246,6 @@ bool planLinearWipe(Ctx& c, Plan& p)
     return true;
 }
 
-bool planVenetian(Ctx& c, Plan& p)
-{
-    const int t = toTable(c, p);
-    if (t < 0) return false;
-    const double ang = c.d("Angle") * kPi / 180.0, dx = std::cos(ang), dy = -std::sin(ang);
-    const double n = std::max(1.0, c.d("NumberOfBlinds"));
-    const double span = std::fabs(dx) + std::fabs(dy);
-    const double f = std::max(1e-4, clampd(c.d("Feather"), 0, 1) * 0.5 + 0.002);
-    const double edge = c.progress * (1.0 + f + 0.0);
-    Words q;
-    q.d(0, dx); q.d(2, dy); q.d(4, span); q.d(6, n); q.d(8, f); q.d(10, edge);
-    P::WipeVenetianF pc;
-    std::memset(&pc, 0, sizeof(pc));
-    pc.w = p.w; pc.h = p.h;
-    std::memcpy(&pc.q0, q.q, 12 * 4);
-    Pass& ps = p.add("wipe_venetian_f", 0, 1, p.w, p.h);
-    ps.table = t;
-    ps.setPush(pc);
-    return true;
-}
-
 bool planPortals(Ctx& c, Plan& p)
 {
     const int t = toTable(c, p);
@@ -1050,7 +1029,7 @@ bool planSplit(Ctx& c, Plan& p) { return planBlit8(c, p, "split"); }   // (the C
 
 const ExtraGpuEntry kExtra[] = {
     {"push", planPush}, {"swap", planSwap}, {"3dshuffle", planShuffle3d}, {"squeeze", planSqueeze}, {"zoom", planZoom}, {"barndoor", planBarndoor},
-    {"venetianblinds", planVenetian}, {"portals", planPortals}, {"iris", planIris}, {"checkerboard", planCheckerboardExact}, {"crosseffect", planCrossEffect}, {"flash", planFlash}, {"starwipe", planStarWipe}, {"3dblinds", planBlinds3d}, {"3dflyinout", planFly3d}, {"3dcascade", planCascade3d}, {"slide", planSlide}, {"spiral", planSpiral}, {"split", planSplit},
+    {"portals", planPortals}, {"iris", planIris}, {"checkerboard", planCheckerboardExact}, {"crosseffect", planCrossEffect}, {"flash", planFlash}, {"starwipe", planStarWipe}, {"3dblinds", planBlinds3d}, {"3dflyinout", planFly3d}, {"3dcascade", planCascade3d}, {"slide", planSlide}, {"spiral", planSpiral}, {"split", planSplit},
     {"dissolve", planDissolve},
     {"linearwipe", planLinearWipe},
     {"clockwipe", planClockWipe},
@@ -1114,14 +1093,6 @@ const std::vector<CaseSet>& caseSets()
             s.cases.push_back(GpuCheckCase("off centre", PM{{"Transition", {0.4}}, {"Center", {0.3, 0.7}}}));
             s.cases.push_back(GpuCheckCase("border", PM{{"Transition", {0.4}}, {"BorderSize", {0.05}}, {"BorderFeather", {0.1}}, {"BorderColor", blue}}));
             s.cases.push_back(GpuCheckCase("border late", PM{{"Transition", {0.95}}, {"BorderSize", {0.05}}, {"BorderFeather", {0.1}}, {"BorderColor", blue}, {"Direction", {1}}}));
-            v.push_back(s);
-        }
-        {
-            CaseSet s{"venetianblinds", {}};
-            for (double ang : {0.0, 45.0, 90.0, 190.0})
-                for (double pr : {0.3, 0.8}) s.cases.push_back(GpuCheckCase("angle" + std::to_string((int)ang) + " p" + std::to_string(pr), PM{{"Angle", {ang}}, {"Transition", {pr}}, {"NumberOfBlinds", {7}}, {"Feather", {0.1}}}));
-            s.cases.push_back(GpuCheckCase("one blind", PM{{"Transition", {0.5}}, {"NumberOfBlinds", {0}}, {"Feather", {0.0}}}));
-            s.cases.push_back(GpuCheckCase("soft", PM{{"Transition", {0.6}}, {"Angle", {105}}, {"NumberOfBlinds", {15}}, {"Feather", {0.8}}}));
             v.push_back(s);
         }
         {
@@ -1292,7 +1263,6 @@ bool extraGpuFloatTolerance(const std::string& id, double& tol)
         {"squeeze", 0.0},
         {"barndoor", 0.0},
         {"zoom", 0.0},
-        {"venetianblinds", 0.0},
         {"portals", 0.0},
         {"iris", 0.0},
         {"checkerboard", 0.0},
