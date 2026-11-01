@@ -51,22 +51,19 @@ void pushDouble(std::vector<float>& tab, double v)
     tab.push_back(f[1]);
 }
 
-// Deform (deform() in builtins_more_creative.cpp): the sines come from the host's own libm, as the table of doubles
+// Deform (deform() in builtins_more_creative.cpp, operation for operation in doubles)
 bool planDeform(Ctx& c, Plan& p)
 {
     const int W = (int)p.w, H = (int)p.h;
     const double amount = c.d("Amount"), sl = c.d("SqueezeLeft") * amount, sr = c.d("SqueezeRight") * amount, st = c.d("SqueezeTop") * amount, sb = c.d("SqueezeBottom") * amount;
-    const double sh = (c.d("ShearHorizontal") - 1.0) * amount, sv = c.d("ShearVertical") * amount;
+    const double shh = c.d("ShearHorizontal") * amount, shv = c.d("ShearVertical") * amount;
+    const double kx = shh * W / H, ky = shv * H / W;
     const double cl = c.d("CurveLeft") * amount, cr = c.d("CurveRight") * amount, ct = c.d("CurveTop") * amount, cb = c.d("CurveBottom") * amount;
     float bg[4];
     put(bg, c.color("Background"));
-    std::vector<float> tab;
-    for (int y = 0; y < H; ++y) pushDouble(tab, std::sin(kPi * ((y + 0.5) / H)));
-    for (int x = 0; x < W; ++x) pushDouble(tab, std::sin(kPi * ((x + 0.5) / W)));
-    const D2 ST = d2(st), SB = d2(sb), SL = d2(sl), SR = d2(sr), SH = d2(sh), SV = d2(sv), CT = d2(ct), CB = d2(cb), CL = d2(cl), CR = d2(cr);
+    const D2 ST = d2(st), SB = d2(sb), SL = d2(sl), SR = d2(sr), SH = d2(kx), SV = d2(ky), CT = d2(ct), CB = d2(cb), CL = d2(cl), CR = d2(cr);
     P::Deform pc = {p.w, p.h, ST.h, ST.l, SB.h, SB.l, SL.h, SL.l, SR.h, SR.l, SH.h, SH.l, SV.h, SV.l, CT.h, CT.l, CB.h, CB.l, CL.h, CL.l, CR.h, CR.l, bg[0], bg[1], bg[2], bg[3]};
     Pass& ps = p.add("deform", 0, 1, p.w, p.h);
-    ps.table = p.addTable(std::move(tab));
     ps.setPush(pc);
     return true;
 }

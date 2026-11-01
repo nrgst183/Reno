@@ -408,7 +408,8 @@ struct HostConfig {
     // reno_cli --gpu on|off): the host then reports kOfxImageEffectPropOpenGLRenderSupported "true" when a context can be made (call applyConfig after changing).
     bool gpu = true;
     // For VEGAS's own effects (isVegasOwnEffect) that Reno has a built-in reproduction of: true (default) always uses the built-in and ignores VEGAS's
-    // installed plug-in; false uses VEGAS's plug-in when installed and working. Effects Reno has no version of always use the installed plug-in.
+    // installed plug-in; false uses VEGAS's plug-in when installed and working. Effects Reno has no version of always use the installed plug-in. While true, VEGAS's own
+    // bundles are not scanned or loaded at all (skipVegasBundles), except for the effects in the table vegasRealAllowed() (empty).
     // Preferences > Video, reno_cli --vegas-fx real|builtin. Effects already made keep their choice until FxRuntime::prepare makes them again.
     bool preferBuiltinVegasFx = true;
     // Previews at a smaller size: effects without multi-resolution work at the preview's size too, as VEGAS does (RenderOptions::previewSizeForAll).
@@ -436,6 +437,20 @@ public:
     static std::vector<std::string> findBinaries(const std::vector<std::string>& dirs);
     // Program folders of VEGAS installs (their effects need DLLs from there).
     static std::vector<std::string> vegasProgramDirs();
+
+    // VEGAS's own plug-in bundles (Vfx1, Filters, Stabilize, MagixAiFx... in a VEGAS install's "OFX Video Plug-Ins" folder, or copied elsewhere) are not
+    // looked for, scanned or loaded while Reno uses its built-ins for VEGAS's effects (preferBuiltinVegasFx) and no effect is allowed to use VEGAS's
+    // own plug-in (vegasRealAllowed() is empty, as it is in the program). Other plug-ins are found as before.
+    static bool isVegasBundleFile(const std::string& path);
+    bool skipVegasBundles() const;
+    // findBinaries() without VEGAS's bundles when skipVegasBundles(); this is what the plug-in list, the scan and the effect lookup use.
+    // (reno_cli check / vegasfx compare VEGAS's plug-ins with the built-ins, so they keep using findBinaries.)
+    std::vector<std::string> usableBinaries(const std::vector<std::string>& dirs) const;
+    // The one table of VEGAS effect identifiers that keep using VEGAS's own plug-in (when it is installed and works) although the preference
+    // says to use the built-ins. Empty in the program (a table in ofxhost.cpp); tests change the list.
+    static std::vector<std::string>& vegasRealAllowed();
+    // Whether this effect is made from Reno's built-in version: it is one of VEGAS's own, the preference says so and it is not in the table above.
+    bool useBuiltinFor(const std::string& id) const;
 
     // An effect asked the host to show its Help or About (OfxVegasEffectSuite; 'action' is kVegasActionShowEffectHelp or ...ShowEffectAbout; 'effect' is its
     // instance or descriptor). Called on the effect's calling thread. Without a handler the request is only logged.

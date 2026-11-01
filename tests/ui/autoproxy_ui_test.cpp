@@ -13,6 +13,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialog>
 #include <QDir>
 #include <QFile>
@@ -197,13 +198,13 @@ int main(int argc, char** argv)
     prefs(*w, [](QDialog* d) {
         check(d->findChild<QCheckBox*>("autoProxyPreview") && d->findChild<QCheckBox*>("autoProxyPreview")->isChecked(), "Preferences > Video: the check box is there and on");
         setCheck(d, "autoProxyPreview", false);
-        setCheck(d, "autoProxy4k", false);
+        if (QComboBox* c = d->findChild<QComboBox*>("autoProxy4k")) c->setCurrentIndex(c->findData(false));
     });
     uitest::settle(100);
     check(!wk.enabled() && !vprefs::on("prefs/autoProxyPreview"), "cleared in the dialog (with the 4K one): the worker is off");
     prefs(*w, [](QDialog* d) {
         setCheck(d, "autoProxyPreview", true);
-        setCheck(d, "autoProxy4k", true);
+        if (QComboBox* c = d->findChild<QComboBox*>("autoProxy4k")) c->setCurrentIndex(c->findData(true));
     });
     uitest::settle(100);
     check(wk.enabled(), "set again: on");

@@ -47,6 +47,7 @@ struct SlideshowSettings {
     double perPicture = 5.0, total = 60.0, overlap = 1.0;
     std::string effect = "Fades";
     bool atCursor = true;
+    double startAt = -1;   // seconds; 0 or more starts the slideshow there (Start at:), else at the cursor or the project end
     unsigned seed = 1;
 };
 const std::vector<std::string>& slideshowEffects();

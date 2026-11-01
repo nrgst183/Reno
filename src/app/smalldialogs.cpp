@@ -2,6 +2,12 @@
 #include "smalldialogs.h"
 #include "appstate.h"
 #include "keyboard.h"
+#include "dialoglook.h"
+#include <QPainter>
+#include <QTabBar>
+#include <QToolButton>
+#include <QLineEdit>
+#include <map>
 #include <QAction>
 #include <QDir>
 #include <QFile>
@@ -261,7 +267,7 @@ std::vector<uint64_t> makeSlideshow(const SlideshowSettings& s, std::string* err
         for (const VideoFxEntry& v : Catalog::get().video())
             if (v.transition && v.ok) transitions.emplace_back(v.id, v.label);
     std::mt19937 rng(s.seed);
-    const double start0 = s.atCursor ? app.cursor() : app.project().length();
+    const double start0 = s.startAt >= 0 ? s.startAt : s.atCursor ? app.cursor() : app.project().length();
     const double span = (double)n * len - (double)(n - 1) * overlap;
     app.edit("Insert Slideshow", [&](Project& p) {
         Track* tr = nullptr;
@@ -340,122 +346,341 @@ std::vector<uint64_t> makeSlideshow(const SlideshowSettings& s, std::string* err
     return made;
 }
 
+namespace {
+
+// A flat glyph for the Slideshow Creator's toolbar (Reno's own drawing).
+QIcon slideshowGlyph(const QString& kind)
+{
+    QPixmap pm(16, 16);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QColor ink(200, 200, 200), gold(214, 178, 64);
+    p.setPen(QPen(ink, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    if (kind == "add") {
+        p.setPen(Qt::NoPen);
+        p.setBrush(gold);
+        p.drawRect(QRectF(1.5, 4, 5.5, 2.5));
+        p.drawRect(QRectF(1.5, 6, 13, 7.5));
+    } else if (kind == "delete") {
+        p.drawLine(QPointF(3.5, 3.5), QPointF(12.5, 12.5));
+        p.drawLine(QPointF(12.5, 3.5), QPointF(3.5, 12.5));
+    } else if (kind == "ccw" || kind == "cw") {
+        const bool cw = kind == "cw";
+        p.drawArc(QRectF(3, 4, 10, 10), cw ? 60 * 16 : -240 * 16, 240 * 16);
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        const double x = cw ? 12.5 : 3.5;
+        p.drawPolygon(QPolygonF() << QPointF(x - 2.5, 2) << QPointF(x + 2.5, 2) << QPointF(x, 6));
+    } else if (kind == "up" || kind == "down") {
+        const bool up = kind == "up";
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawPolygon(up ? QPolygonF() << QPointF(8, 3) << QPointF(13, 9) << QPointF(3, 9) : QPolygonF() << QPointF(8, 13) << QPointF(13, 7) << QPointF(3, 7));
+        p.drawRect(up ? QRectF(6, 9, 4, 4) : QRectF(6, 3, 4, 4));
+    } else if (kind == "shuffle") {
+        p.drawLine(QPointF(2, 4.5), QPointF(6, 4.5));
+        p.drawLine(QPointF(6, 4.5), QPointF(10, 11.5));
+        p.drawLine(QPointF(10, 11.5), QPointF(13, 11.5));
+        p.drawLine(QPointF(2, 11.5), QPointF(6, 11.5));
+        p.drawLine(QPointF(6, 11.5), QPointF(10, 4.5));
+        p.drawLine(QPointF(10, 4.5), QPointF(13, 4.5));
+    } else {
+        // sorts: a pointer with a bar
+        const bool up = kind == "az" || kind == "oldnew";
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawPolygon(up ? QPolygonF() << QPointF(8, 3) << QPointF(12, 8) << QPointF(4, 8) : QPolygonF() << QPointF(8, 13) << QPointF(12, 8) << QPointF(4, 8));
+        p.drawRect(QRectF(6.5, 8, 3, 5));
+        if (kind == "oldnew" || kind == "newold") {
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(ink, 1.2));
+            p.drawEllipse(QRectF(1.5, 1.5, 4, 4));
+        }
+    }
+    return QIcon(pm);
+}
+
+// "00:01:30.50", "1:30.5" or plain seconds, as the Slideshow Creator's time boxes show and take them.
+double slideshowTime(const QString& text, bool* ok)
+{
+    const QStringList parts = text.trimmed().split(':');
+    double t = 0;
+    bool good = !text.trimmed().isEmpty() && parts.size() <= 3;
+    for (const QString& p : parts) {
+        bool k = false;
+        const double v = p.toDouble(&k);
+        if (!k || v < 0) good = false;
+        t = t * 60 + v;
+    }
+    if (ok) *ok = good;
+    return good ? t : 0;
+}
+
+QString slideshowTimeText(double t)
+{
+    t = std::max(0.0, t);
+    const int cs = (int)std::lround(t * 100);
+    return QString("%1:%2:%3.%4").arg(cs / 360000, 2, 10, QChar('0')).arg(cs / 6000 % 60, 2, 10, QChar('0')).arg(cs / 100 % 60, 2, 10, QChar('0')).arg(cs % 100, 2, 10, QChar('0'));
+}
+
+}  // namespace
+
 void runSlideshowCreator(QWidget* parent)
 {
     QSettings st;
     QDialog d(parent);
     d.setObjectName("slideshowCreator");
     d.setWindowTitle("Slideshow Creator");
-    d.resize(560, 520);
-    QVBoxLayout* v = new QVBoxLayout(&d);
-    QGroupBox* pics = new QGroupBox("Pictures", &d);
-    QVBoxLayout* pv = new QVBoxLayout(pics);
-    QListWidget* list = new QListWidget(pics);
+    makeDialogDark(&d);   // VEGAS 18's Slideshow Creator is a dark window
+    // VEGAS's window is 538 x 397 with its frame; positions below are the capture's less the frame's 1 and 31
+    QFont f = d.font();
+    f.setPixelSize(12);
+    d.setFont(f);
+    d.setFixedSize(538 - 2, 397 - 31 - 1);
+    QPalette pal = d.palette();
+    const QColor dark(45, 45, 45);
+    pal.setColor(QPalette::Window, dark);
+    pal.setColor(QPalette::Base, dark);
+    pal.setColor(QPalette::Button, dark);
+    pal.setColor(QPalette::WindowText, QColor(230, 230, 230));
+    pal.setColor(QPalette::Text, QColor(230, 230, 230));
+    pal.setColor(QPalette::ButtonText, QColor(230, 230, 230));
+    for (QPalette::ColorRole r : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText}) pal.setColor(QPalette::Disabled, r, QColor(110, 110, 110));
+    d.setPalette(pal);
+    d.setStyleSheet("QDialog { background: #464646; }"
+                    "QTabWidget::pane { border: none; background: #2d2d2d; }"
+                    "QTabBar::tab { background: #464646; color: #d0d0d0; padding: 0px; border: none; min-width: 65px; max-width: 65px; min-height: 21px; max-height: 21px; }"
+                    "QTabBar::tab:selected { background: #2d2d2d; color: #ffffff; font-weight: bold; }"
+                    "QGroupBox { border: 1px solid #c8c8c8; margin: 0px; padding: 0px; }"
+                    "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0px 1px; }"
+                    "QLineEdit, QAbstractSpinBox { background: #2d2d2d; border: 1px solid #646464; color: #e6e6e6; selection-background-color: #12b0ff; }"
+                    "QAbstractSpinBox { background: #828282; color: #ffffff; }"
+                    "QAbstractSpinBox:disabled { background: #2d2d2d; color: #6e6e6e; }"
+                    "QLineEdit:disabled { color: #6e6e6e; }"
+                    "QPushButton { background: #2d2d2d; border: 1px solid #5a5a5a; color: #e6e6e6; }"
+                    "QPushButton:hover:enabled { border-color: #12b0ff; }"
+                    "QPushButton:disabled { color: #6e6e6e; border-color: #464646; }"
+                    "QComboBox { background: #2d2d2d; border: 1px solid #12b0ff; color: #ffffff; padding-left: 3px; }"
+                    "QComboBox::drop-down { border: none; width: 17px; }"
+                    "QToolButton { background: transparent; border: 1px solid transparent; }"
+                    "QToolButton:hover:enabled { border-color: #12b0ff; }");
+    auto at = [](QWidget* w, int x, int y, int cw, int ch) { w->setGeometry(x - 1, y - 31, cw, ch); return w; };
+
+    // the two tabs and their pages (7,59 523x278 in the window)
+    QTabBar* tabs = new QTabBar(&d);
+    tabs->setObjectName("slideshowTabs");
+    tabs->setDrawBase(false);
+    tabs->setExpanding(false);
+    tabs->setUsesScrollButtons(false);
+    tabs->setStyleSheet("QTabBar::tab { padding: 0px 8px; min-height: 21px; }");
+    tabs->addTab("Pictures");
+    tabs->addTab("Settings");
+    at(tabs, 5, 36, 131, 21);
+    auto makePage = [&]() {
+        QWidget* pg = new QWidget(&d);
+        pg->setAutoFillBackground(true);
+        at(pg, 7, 59, 523, 278);
+        return pg;
+    };
+
+    // ---- Pictures
+    QWidget* picPage = makePage();
+    QListWidget* list = new QListWidget(picPage);
     list->setObjectName("slideshowPictures");
+    list->setViewMode(QListView::IconMode);
+    list->setIconSize(QSize(64, 48));
+    list->setResizeMode(QListView::Adjust);
+    list->setMovement(QListView::Static);
     list->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    list->setDragDropMode(QAbstractItemView::InternalMove);
-    pv->addWidget(list, 1);
-    QHBoxLayout* pb = new QHBoxLayout();
-    QPushButton* add = new QPushButton("Add Pictures...", pics);
-    add->setObjectName("slideshowAdd");
-    QPushButton* del = new QPushButton("Remove", pics);
-    del->setObjectName("slideshowRemove");
-    QPushButton* up = new QPushButton("Move Up", pics);
-    QPushButton* down = new QPushButton("Move Down", pics);
-    QComboBox* sort = new QComboBox(pics);
-    sort->setObjectName("slideshowSort");
-    sort->addItems({"Sort By...", "Sort A to Z", "Sort Z to A", "Sort Old to New", "Sort New to Old"});
-    for (QWidget* w : std::initializer_list<QWidget*>{add, del, up, down, sort}) pb->addWidget(w);
-    pv->addLayout(pb);
-    v->addWidget(pics, 1);
-    QGroupBox* dur = new QGroupBox("Duration", &d);
-    QFormLayout* df = new QFormLayout(dur);
+    list->setFrameShape(QFrame::NoFrame);
+    list->setStyleSheet("QListWidget { background: #2d2d2d; color: #e6e6e6; border: 1px solid #464646; }");
+    // the picture area starts 59 px down the window, under the 30 px toolbar and its rule
+    QWidget* bar = new QWidget(picPage);
+    bar->setObjectName("slideshowToolbar");
+    bar->setStyleSheet("QWidget#slideshowToolbar { background: #2d2d2d; border-bottom: 1px solid #646464; }");
+    struct B { const char* name; const char* tip; const char* glyph; int x; };
+    const B buttons[] = {{"slideshowAdd", "Add Pictures...", "add", 7},
+                         {"slideshowRemove", "Delete Selected", "delete", 31},
+                         {"slideshowRotateLeft", "Rotate Counterclockwise", "ccw", 59},
+                         {"slideshowRotateRight", "Rotate Clockwise", "cw", 83},
+                         {"slideshowUp", "Move Selected -1", "up", 111},
+                         {"slideshowDown", "Move Selected +1", "down", 135},
+                         {"slideshowSortAZ", "Sort A to Z", "az", 163},
+                         {"slideshowSortZA", "Sort Z to A", "za", 187},
+                         {"slideshowSortNew", "Sort New to Old", "newold", 211},
+                         {"slideshowSortOld", "Sort Old to New", "oldnew", 235},
+                         {"slideshowShuffle", "Shuffle", "shuffle", 259}};
+    std::map<QString, QToolButton*> tb;
+    for (const B& b : buttons) {
+        QToolButton* t = new QToolButton(bar);
+        t->setObjectName(b.name);
+        t->setToolTip(b.tip);
+        t->setIcon(slideshowGlyph(b.glyph));
+        t->setGeometry(b.x - 7, 0, 24, 22);
+        t->setAutoRaise(true);
+        tb[b.name] = t;
+    }
+    QToolButton* add = tb["slideshowAdd"];
+    QToolButton* del = tb["slideshowRemove"];
+    QLabel* link = new QLabel("<a href=\"add\" style=\"color:#0000ee\">Add Pictures</a>", picPage);
+    link->setObjectName("slideshowAddLink");
+    link->setAlignment(Qt::AlignCenter);
+    QFont lf = link->font();
+    lf.setPixelSize(22);
+    link->setFont(lf);
+    // the picture explorer fills the page (7,59 523x278); Reno's rotate buttons stay off (pictures are not rotated by the slideshow)
+    tb["slideshowRotateLeft"]->setEnabled(false);
+    tb["slideshowRotateRight"]->setEnabled(false);
+    tb["slideshowRotateLeft"]->setToolTip("Rotate Counterclockwise (not available in Reno)");
+    tb["slideshowRotateRight"]->setToolTip("Rotate Clockwise (not available in Reno)");
+    // page geometry: the page is 523 x 278 at window 7,59; the toolbar 30 high, the rule at 89
+    // (set after the tab widget has placed the page)
+
+    // ---- Settings
+    QWidget* setPage = makePage();
+    auto pageAt = [&](QWidget* w, int x, int y, int cw, int ch) { w->setGeometry(x - 7, y - 59, cw, ch); return w; };
+    QGroupBox* place = new QGroupBox("Slideshow Placement", setPage);
+    pageAt(place, 10, 65, 515, 71);
+    QGroupBox* dur = new QGroupBox("Duration", setPage);
+    pageAt(dur, 10, 142, 515, 76);
+    QGroupBox* eff = new QGroupBox("Effects", setPage);
+    pageAt(eff, 10, 224, 515, 76);
+    auto place0 = [&](QWidget* w, QGroupBox* g, int x, int y, int cw, int ch) {
+        w->setParent(g);
+        w->setGeometry(x - (10 + 0), y - (g == place ? 65 : g == dur ? 142 : 224), cw, ch);
+        w->show();
+        return w;
+    };
+    QRadioButton* atCursor = new QRadioButton("Start at cursor", place);
+    atCursor->setObjectName("slideshowAtCursor");
+    QRadioButton* atTime = new QRadioButton("Start at:", place);
+    atTime->setObjectName("slideshowAtTime");
+    QLineEdit* startEdit = new QLineEdit("00:00:00.00", place);
+    startEdit->setObjectName("slideshowStartAt");
+    place0(atCursor, place, 19, 84, 93, 18);
+    place0(atTime, place, 19, 107, 62, 18);
+    place0(startEdit, place, 173, 106, 121, 20);
+
     QRadioButton* perRadio = new QRadioButton("Time per picture (sec):", dur);
-    QRadioButton* totalRadio = new QRadioButton("Total length (sec):", dur);
     perRadio->setObjectName("slideshowPerPicture");
+    QRadioButton* totalRadio = new QRadioButton("Total length:", dur);
     totalRadio->setObjectName("slideshowTotal");
     QDoubleSpinBox* per = new QDoubleSpinBox(dur);
     per->setObjectName("slideshowPerSeconds");
     per->setRange(0.1, 3600);
     per->setDecimals(2);
-    per->setValue(st.value("slideshow/perPicture", 5.0).toDouble());
-    QDoubleSpinBox* total = new QDoubleSpinBox(dur);
-    total->setObjectName("slideshowTotalSeconds");
-    total->setRange(0.1, 36000);
-    total->setDecimals(2);
-    total->setValue(st.value("slideshow/total", 60.0).toDouble());
-    QDoubleSpinBox* overlap = new QDoubleSpinBox(dur);
+    per->setValue(st.value("slideshow/perPicture", 3.0).toDouble());
+    QLineEdit* totalEdit = new QLineEdit(slideshowTimeText(st.value("slideshow/total", 60.0).toDouble()), dur);
+    totalEdit->setObjectName("slideshowTotalLength");
+    QLabel* perLabel = new QLabel("Time per picture (sec): 0.00", dur);
+    perLabel->setObjectName("slideshowPerLabel");
+    place0(perRadio, dur, 19, 162, 135, 18);
+    place0(per, dur, 173, 161, 120, 20);
+    place0(totalRadio, dur, 19, 189, 85, 18);
+    place0(totalEdit, dur, 173, 188, 121, 20);
+    place0(perLabel, dur, 318, 191, 142, 17);
+
+    QLabel* effLabel = new QLabel("Effect:", eff);
+    QComboBox* effect = new QComboBox(eff);
+    effect->setObjectName("slideshowEffect");
+    for (const std::string& e : slideshowEffects()) effect->addItem(QString::fromStdString(e));
+    effect->setCurrentText(st.value("slideshow/effect", "Random").toString());
+    effect->setToolTip("Fades: cross-fades where the pictures overlap. Random: a transition picked at random for each.\n"
+                       "With Pan / Zoom: each picture moves across or zooms (Event Pan/Crop keyframes).");
+    QLabel* ovLabel = new QLabel("Overlap (sec):", eff);
+    QDoubleSpinBox* overlap = new QDoubleSpinBox(eff);
     overlap->setObjectName("slideshowOverlap");
     overlap->setRange(0, 60);
     overlap->setDecimals(2);
     overlap->setValue(st.value("slideshow/overlap", 1.0).toDouble());
+    place0(effLabel, eff, 16, 246, 36, 17);
+    place0(effect, eff, 173, 243, 121, 21);
+    place0(ovLabel, eff, 16, 273, 75, 17);
+    place0(overlap, eff, 173, 271, 120, 20);
     (st.value("slideshow/useTotal", false).toBool() ? totalRadio : perRadio)->setChecked(true);
-    df->addRow(perRadio, per);
-    df->addRow(totalRadio, total);
-    df->addRow("Overlap (sec):", overlap);
-    v->addWidget(dur);
-    QGroupBox* eff = new QGroupBox("Effects", &d);
-    QFormLayout* ef = new QFormLayout(eff);
-    QComboBox* effect = new QComboBox(eff);
-    effect->setObjectName("slideshowEffect");
-    for (const std::string& e : slideshowEffects()) effect->addItem(QString::fromStdString(e));
-    effect->setCurrentText(st.value("slideshow/effect", "Fades").toString());
-    effect->setToolTip("Fades: cross-fades where the pictures overlap. Random: a transition picked at random for each.\n"
-                       "With Pan / Zoom: each picture moves across or zooms (Event Pan/Crop keyframes).");
-    ef->addRow("Effect:", effect);
-    v->addWidget(eff);
-    QGroupBox* place = new QGroupBox("Slideshow Placement", &d);
-    QHBoxLayout* pl = new QHBoxLayout(place);
-    QRadioButton* atCursor = new QRadioButton("Start at cursor", place);
-    QRadioButton* atEnd = new QRadioButton("At the end of the project", place);
-    atCursor->setObjectName("slideshowAtCursor");
-    atEnd->setObjectName("slideshowAtEnd");
-    (st.value("slideshow/atCursor", true).toBool() ? atCursor : atEnd)->setChecked(true);
-    pl->addWidget(atCursor);
-    pl->addWidget(atEnd);
-    v->addWidget(place);
-    QLabel* status = new QLabel(&d);
-    status->setObjectName("slideshowStatus");
-    v->addWidget(status);
-    QDialogButtonBox* bb = new QDialogButtonBox(&d);
-    QPushButton* create = bb->addButton("Insert Slideshow", QDialogButtonBox::AcceptRole);
+    (st.value("slideshow/atCursor", true).toBool() ? atCursor : atTime)->setChecked(true);
+
+    QPushButton* defAll = new QPushButton("Default All", setPage);
+    defAll->setObjectName("slideshowDefaultAll");
+    pageAt(defAll, 10, 306, 100, 24);
+    QPushButton* useDef = new QPushButton("Use as Defaults", setPage);
+    useDef->setObjectName("slideshowUseAsDefaults");
+    pageAt(useDef, 117, 306, 110, 24);
+
+    // ---- the strip under the tabs
+    QPushButton* create = new QPushButton("Create", &d);
     create->setObjectName("ok");
-    QPushButton* close = bb->addButton(QDialogButtonBox::Close);
-    close->setObjectName("cancel");
-    v->addWidget(bb);
+    at(create, 447, 346, 85, 24);
+    QWidget* strip = new QWidget(&d);
+    strip->setObjectName("slideshowStatusStrip");
+    at(strip, -1, 376, 540, 22);
+    strip->setStyleSheet("QWidget#slideshowStatusStrip { background: #2d2d2d; border-top: 1px solid #646464; }");
+    QLabel* count = new QLabel("Total: 0", &d);
+    count->setObjectName("slideshowStatus");
+    at(count, 0, 377, 45, 20);
+    QLabel* lengthLabel = new QLabel("00:00:00.00", &d);
+    lengthLabel->setObjectName("slideshowLength");
+    lengthLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    lengthLabel->setStyleSheet("color: #12b0ff;");
+    at(lengthLabel, 471, 377, 67, 20);
+    count->setStyleSheet("background: transparent; padding-left: 5px;");
+    count->raise();
+    lengthLabel->raise();
+
+    // the pictures page: the toolbar on top, the picture area under it (positions relative to the page at window 7,59)
+    bar->setGeometry(0, 0, 523, 31);
+    list->setGeometry(0, 31, 523, 247);
+    link->setGeometry(0, 90 - 59, 523, 85);
 
     auto files = [list] {
-        std::vector<std::string> f;
-        for (int i = 0; i < list->count(); ++i) f.push_back(list->item(i)->data(Qt::UserRole).toString().toStdString());
-        return f;
+        std::vector<std::string> fl;
+        for (int i = 0; i < list->count(); ++i) fl.push_back(list->item(i)->data(Qt::UserRole).toString().toStdString());
+        return fl;
     };
     auto update = [=] {
         const int n = list->count();
         double len = per->value(), ov = std::min(overlap->value(), per->value() * 0.49);
+        bool okTime = false;
+        const double tot = slideshowTime(totalEdit->text(), &okTime);
         double whole = n > 0 ? n * len - (n - 1) * ov : 0;
-        if (totalRadio->isChecked()) whole = n > 0 ? total->value() : 0;
-        status->setText(QString("Total: %1 picture(s), Length: %2 s").arg(n).arg(whole, 0, 'f', 2));
+        if (totalRadio->isChecked()) whole = n > 0 && okTime ? tot : 0;
+        count->setText(QString("Total: %1").arg(n));
+        lengthLabel->setText(slideshowTimeText(whole));
         create->setEnabled(n > 0);
         per->setEnabled(perRadio->isChecked());
-        total->setEnabled(totalRadio->isChecked());
+        totalEdit->setEnabled(totalRadio->isChecked());
+        startEdit->setEnabled(atTime->isChecked());
+        perLabel->setEnabled(false);
+        perLabel->setText(QString("Time per picture (sec): %1").arg(n > 0 ? (totalRadio->isChecked() ? (okTime ? (tot + (n - 1) * ov) / n : 0.0) : len) : 0.0, 0, 'f', 2));
+        link->setVisible(n == 0);
+        del->setEnabled(!list->selectedItems().isEmpty());
+        for (const char* nm : {"slideshowUp", "slideshowDown"}) tb.at(nm)->setEnabled(list->currentRow() >= 0);
+        for (const char* nm : {"slideshowSortAZ", "slideshowSortZA", "slideshowSortNew", "slideshowSortOld", "slideshowShuffle"}) tb.at(nm)->setEnabled(n > 1);
     };
-    auto addFile = [list](const QString& f) {
-        QListWidgetItem* it = new QListWidgetItem(QFileInfo(f).fileName(), list);
-        it->setData(Qt::UserRole, f);
-        it->setToolTip(f);
+    auto addFile = [list](const QString& fn) {
+        QListWidgetItem* it = new QListWidgetItem(QFileInfo(fn).fileName(), list);
+        it->setData(Qt::UserRole, fn);
+        it->setToolTip(fn);
+        const QPixmap pm(fn);
+        if (!pm.isNull()) it->setIcon(QIcon(pm.scaled(64, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
     };
-    QObject::connect(add, &QPushButton::clicked, &d, [&, addFile, update] {
+    auto addPictures = [&, addFile, update] {
         const QString dir = st.value("slideshow/folder", QDir::homePath()).toString();
         const QStringList fs = QFileDialog::getOpenFileNames(&d, "Add Pictures", dir,
                                                              "Pictures (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp *.tga);;All files (*)");
         if (!fs.isEmpty()) st.setValue("slideshow/folder", QFileInfo(fs.first()).absolutePath());
-        for (const QString& f : fs) addFile(f);
+        for (const QString& fn : fs) addFile(fn);
         update();
-    });
-    QObject::connect(del, &QPushButton::clicked, &d, [list, update] {
+    };
+    QObject::connect(add, &QToolButton::clicked, &d, addPictures);
+    QObject::connect(link, &QLabel::linkActivated, &d, [addPictures](const QString&) { addPictures(); });
+    QObject::connect(del, &QToolButton::clicked, &d, [list, update] {
         for (QListWidgetItem* it : list->selectedItems()) delete it;
         update();
     });
+    QObject::connect(list, &QListWidget::itemSelectionChanged, &d, [update] { update(); });
     auto move = [list](int dir) {
         const int r = list->currentRow(), to = r + dir;
         if (r < 0 || to < 0 || to >= list->count()) return;
@@ -463,49 +688,72 @@ void runSlideshowCreator(QWidget* parent)
         list->insertItem(to, it);
         list->setCurrentRow(to);
     };
-    QObject::connect(up, &QPushButton::clicked, &d, [move] { move(-1); });
-    QObject::connect(down, &QPushButton::clicked, &d, [move] { move(1); });
-    QObject::connect(sort, &QComboBox::activated, &d, [list, sort](int i) {
-        if (i <= 0) return;
+    QObject::connect(tb["slideshowUp"], &QToolButton::clicked, &d, [move] { move(-1); });
+    QObject::connect(tb["slideshowDown"], &QToolButton::clicked, &d, [move] { move(1); });
+    auto sortBy = [list, addFile, update](int mode) {
         std::vector<QString> fs;
         for (int k = 0; k < list->count(); ++k) fs.push_back(list->item(k)->data(Qt::UserRole).toString());
-        auto name = [](const QString& f) { return QFileInfo(f).fileName().toLower(); };
-        auto when = [](const QString& f) { return QFileInfo(f).lastModified(); };
-        std::stable_sort(fs.begin(), fs.end(), [&](const QString& a, const QString& b) {
-            switch (i) {
+        auto name = [](const QString& fn) { return QFileInfo(fn).fileName().toLower(); };
+        auto when = [](const QString& fn) { return QFileInfo(fn).lastModified(); };
+        if (mode == 5) std::shuffle(fs.begin(), fs.end(), std::mt19937((unsigned)QDateTime::currentMSecsSinceEpoch()));
+        else std::stable_sort(fs.begin(), fs.end(), [&](const QString& a, const QString& b) {
+            switch (mode) {
             case 1: return name(a) < name(b);
             case 2: return name(b) < name(a);
-            case 3: return when(a) < when(b);
-            default: return when(b) < when(a);
+            case 3: return when(b) < when(a);
+            default: return when(a) < when(b);
             }
         });
         list->clear();
-        for (const QString& f : fs) {
-            QListWidgetItem* it = new QListWidgetItem(QFileInfo(f).fileName(), list);
-            it->setData(Qt::UserRole, f);
-            it->setToolTip(f);
-        }
-        sort->setCurrentIndex(0);
+        for (const QString& fn : fs) addFile(fn);
+        update();
+    };
+    QObject::connect(tb["slideshowSortAZ"], &QToolButton::clicked, &d, [sortBy] { sortBy(1); });
+    QObject::connect(tb["slideshowSortZA"], &QToolButton::clicked, &d, [sortBy] { sortBy(2); });
+    QObject::connect(tb["slideshowSortNew"], &QToolButton::clicked, &d, [sortBy] { sortBy(3); });
+    QObject::connect(tb["slideshowSortOld"], &QToolButton::clicked, &d, [sortBy] { sortBy(4); });
+    QObject::connect(tb["slideshowShuffle"], &QToolButton::clicked, &d, [sortBy] { sortBy(5); });
+    for (QRadioButton* r : {perRadio, totalRadio, atCursor, atTime}) QObject::connect(r, &QRadioButton::toggled, &d, [update] { update(); });
+    for (QDoubleSpinBox* sp : {per, overlap}) QObject::connect(sp, &QDoubleSpinBox::valueChanged, &d, [update] { update(); });
+    QObject::connect(totalEdit, &QLineEdit::textChanged, &d, [update] { update(); });
+    // Default All: VEGAS's own settings; Use as Defaults: the ones shown are kept for the next slideshow
+    auto remember = [=, &st] {
+        bool k = false;
+        st.setValue("slideshow/perPicture", per->value());
+        const double t = slideshowTime(totalEdit->text(), &k);
+        if (k) st.setValue("slideshow/total", t);
+        st.setValue("slideshow/overlap", overlap->value());
+        st.setValue("slideshow/useTotal", totalRadio->isChecked());
+        st.setValue("slideshow/effect", effect->currentText());
+        st.setValue("slideshow/atCursor", atCursor->isChecked());
+    };
+    QObject::connect(useDef, &QPushButton::clicked, &d, remember);
+    QObject::connect(defAll, &QPushButton::clicked, &d, [=] {
+        atCursor->setChecked(true);
+        perRadio->setChecked(true);
+        per->setValue(3.0);
+        totalEdit->setText("00:01:00.00");
+        effect->setCurrentText("Random");
+        overlap->setValue(1.0);
     });
-    for (QRadioButton* r : {perRadio, totalRadio}) QObject::connect(r, &QRadioButton::toggled, &d, [update] { update(); });
-    for (QDoubleSpinBox* sp : {per, total, overlap}) QObject::connect(sp, &QDoubleSpinBox::valueChanged, &d, [update] { update(); });
-    QObject::connect(close, &QPushButton::clicked, &d, &QDialog::reject);
-    QObject::connect(create, &QPushButton::clicked, &d, [&, files] {
+    QObject::connect(create, &QPushButton::clicked, &d, [&, files, remember] {
         SlideshowSettings s;
         s.files = files();
         s.useTotal = totalRadio->isChecked();
         s.perPicture = per->value();
-        s.total = total->value();
+        bool okTotal = false;
+        const double tot = slideshowTime(totalEdit->text(), &okTotal);
+        s.total = okTotal && tot > 0 ? tot : 60.0;
         s.overlap = overlap->value();
         s.effect = effect->currentText().toStdString();
         s.atCursor = atCursor->isChecked();
+        if (atTime->isChecked()) {
+            bool okStart = false;
+            const double at0 = slideshowTime(startEdit->text(), &okStart);
+            if (okStart) s.startAt = at0;
+        }
         s.seed = (unsigned)QDateTime::currentMSecsSinceEpoch();
-        st.setValue("slideshow/perPicture", s.perPicture);
-        st.setValue("slideshow/total", s.total);
-        st.setValue("slideshow/overlap", s.overlap);
-        st.setValue("slideshow/useTotal", s.useTotal);
-        st.setValue("slideshow/effect", effect->currentText());
-        st.setValue("slideshow/atCursor", s.atCursor);
+        remember();
         std::string err;
         std::vector<std::string> skipped;
         const std::vector<uint64_t> made = makeSlideshow(s, &err, &skipped);
@@ -515,11 +763,16 @@ void runSlideshowCreator(QWidget* parent)
         }
         if (!skipped.empty()) {
             QStringList names;
-            for (const std::string& f : skipped) names << QFileInfo(QString::fromStdString(f)).fileName();
+            for (const std::string& fn : skipped) names << QFileInfo(QString::fromStdString(fn)).fileName();
             QMessageBox::warning(&d, "Slideshow Creator", "Warning: Some files could not be added to the slideshow:\n" + names.join("\n"));
         }
         d.accept();
     });
+    QObject::connect(tabs, &QTabBar::currentChanged, &d, [picPage, setPage](int i) {
+        picPage->setVisible(i == 0);
+        setPage->setVisible(i == 1);
+    });
+    setPage->hide();
     update();
     if (slideshowDialogShown) QMetaObject::invokeMethod(&d, [&d] { slideshowDialogShown(&d); }, Qt::QueuedConnection);
     d.exec();

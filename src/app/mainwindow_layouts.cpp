@@ -25,7 +25,11 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QDockWidget>
+#include <QFileInfo>
+#include <QLabel>
+#include <QListWidget>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -270,38 +274,76 @@ void MainWindow::fillLayoutsMenu(QMenu* menu)
     menu->addActions({a_->get("saveLayoutAs"), a_->get("saveCurrentLayout"), a_->get("reloadLayout"), a_->get("organizeLayouts")});
 }
 
-// Save Layout As: a name, and the number key to recall it (VEGAS's Shortcut list).
+namespace {
+// VEGAS's dialogs are placed by the capture's coordinates, which count from the window's top left with its frame (1 px at the
+// sides, 31 px of title bar on top).
+void placeAt(QWidget* w, int x, int y, int cw, int ch) { w->setGeometry(x - 1, y - 31, cw, ch); }
+void vegasFrame(QDialog& d, int w, int h)
+{
+    QFont f = d.font();
+    f.setPixelSize(12);
+    d.setFont(f);
+    d.setFixedSize(w - 2, h - 31 - 1);
+}
+QString layoutFolderText()
+{
+    return QDir::toNativeSeparators(QFileInfo(QSettings().fileName()).absolutePath() + "/");
+}
+QPushButton* standInButton(QWidget* parent, const QString& text, int x, int y, int w)
+{
+    QPushButton* b = new QPushButton(text, parent);
+    placeAt(b, x, y, w, 23);
+    b->setEnabled(false);
+    b->setToolTip("VEGAS keeps its layouts in files in a folder; Reno keeps them in its settings.");
+    return b;
+}
+QString slotText(int n, const QString& owner) { return QString("%1 %2").arg(n).arg(owner.isEmpty() ? QString("<EMPTY>") : owner); }
+}  // namespace
+
+// Save Layout As: a name, and the number key to recall it (VEGAS's Shortcut list). 632 x 159 like VEGAS's.
 void MainWindow::saveLayoutAsDialog()
 {
     QDialog dlg(this);
     dlg.setObjectName("saveLayoutDialog");
     dlg.setWindowTitle("Save Layout As");
-    auto* v = new QVBoxLayout(&dlg);
-    auto* form = new QFormLayout();
+    vegasFrame(dlg, 632, 159);
+    const std::vector<SavedLayout> list = savedLayoutList();
+    QLabel* nameLabel = new QLabel("Name:", &dlg);
+    placeAt(nameLabel, 18, 62, 40, 13);
     QLineEdit* name = new QLineEdit(&dlg);
     name->setObjectName("layoutName");
-    const std::vector<SavedLayout> list = savedLayoutList();
+    placeAt(name, 57, 57, 233, 23);
     name->setText(QString("Layout %1").arg(list.size() + 1));
     name->selectAll();
+    QLabel* keyLabel = new QLabel("Shortcut:", &dlg);
+    placeAt(keyLabel, 300, 60, 52, 13);
     QComboBox* key = new QComboBox(&dlg);
     key->setObjectName("layoutKey");
-    key->addItem("None", -1);
-    int firstFree = -1;
+    placeAt(key, 354, 57, 269, 21);
+    int firstFree = 0;
+    bool freeFound = false;
     for (int n = 0; n < 10; ++n) {
         QString owner;
         for (const SavedLayout& l : list)
             if (l.key == n) owner = l.name;
-        key->addItem(owner.isEmpty() ? QString("Alt+D, %1").arg(n) : QString("Alt+D, %1 (now %2)").arg(n).arg(owner), n);
-        if (owner.isEmpty() && firstFree < 0) firstFree = n;
+        key->addItem(slotText(n, owner), n);
+        if (owner.isEmpty() && !freeFound) { firstFree = n; freeFound = true; }
     }
-    key->setCurrentIndex(firstFree + 1);
-    form->addRow("Name:", name);
-    form->addRow("Shortcut:", key);
-    v->addLayout(form);
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    v->addWidget(buttons);
+    key->setCurrentIndex(firstFree);
+    QLabel* folderLabel = new QLabel("Folder:", &dlg);
+    placeAt(folderLabel, 16, 98, 40, 13);
+    QLineEdit* folder = new QLineEdit(layoutFolderText(), &dlg);
+    folder->setObjectName("layoutFolder");
+    folder->setReadOnly(true);
+    placeAt(folder, 57, 94, 488, 23);
+    standInButton(&dlg, "Browse...", 550, 94, 75)->setObjectName("layoutBrowse");
+    QPushButton* ok = new QPushButton("OK", &dlg);
+    placeAt(ok, 237, 127, 75, 23);
+    ok->setDefault(true);
+    QPushButton* cancel = new QPushButton("Cancel", &dlg);
+    placeAt(cancel, 324, 127, 75, 23);
+    QObject::connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
+    QObject::connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
     if (dlg.exec() != QDialog::Accepted || name->text().trimmed().isEmpty()) return;
     QString n = name->text().trimmed();
     for (int k = 0; k < 3; ++k)
@@ -310,102 +352,142 @@ void MainWindow::saveLayoutAsDialog()
     AppState::get().status(strfmt("Window layout \"%s\" saved.", n.toStdString().c_str()));
 }
 
-// Organize Layouts: saved layouts to bring back, rename, give a number key or delete.
+// Organize Layouts (596 x 372 like VEGAS's): the layouts that exist on the left, the ten number-key slotList ("Current layouts in
+// menu") on the right; Assign puts the chosen layout in the chosen slot. The changes are kept with OK.
 void MainWindow::organizeLayouts()
 {
     QDialog dlg(this);
     dlg.setObjectName("organizeLayoutsDialog");
     dlg.setWindowTitle("Organize Layouts");
-    dlg.resize(460, 300);
-    auto* h = new QHBoxLayout(&dlg);
+    vegasFrame(dlg, 596, 372);
+    QLabel* l1 = new QLabel("Current layout folder:", &dlg);
+    placeAt(l1, 13, 41, 190, 13);
+    QLineEdit* folder = new QLineEdit(layoutFolderText(), &dlg);
+    folder->setObjectName("layoutFolder");
+    folder->setReadOnly(true);
+    placeAt(folder, 13, 59, 488, 23);
+    standInButton(&dlg, "Browse...", 510, 59, 75)->setObjectName("layoutBrowse");
+    QLabel* l2 = new QLabel("Available layouts in current folder:", &dlg);
+    placeAt(l2, 13, 94, 250, 13);
     QTreeWidget* tree = new QTreeWidget(&dlg);
     tree->setObjectName("layoutList");
     tree->setRootIsDecorated(false);
-    tree->setHeaderLabels(QStringList() << "Layout" << "Shortcut");
-    tree->header()->setStretchLastSection(false);
-    tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    h->addWidget(tree, 1);
-    auto* side = new QVBoxLayout();
-    QPushButton* activate = new QPushButton("&Activate", &dlg);
-    QPushButton* rename = new QPushButton("&Rename...", &dlg);
-    QComboBox* key = new QComboBox(&dlg);
-    QPushButton* remove = new QPushButton("&Delete", &dlg);
-    QPushButton* close = new QPushButton("Close", &dlg);
+    tree->setHeaderHidden(true);
+    placeAt(tree, 13, 112, 195, 176);
+    QLabel* l3 = new QLabel("Current layouts in menu:", &dlg);
+    placeAt(l3, 306, 94, 195, 13);
+    QListWidget* slotList = new QListWidget(&dlg);
+    slotList->setObjectName("layoutSlots");
+    placeAt(slotList, 306, 112, 195, 176);
+    QPushButton* assign = new QPushButton("&Assign ->", &dlg);
+    assign->setObjectName("layoutAssign");
+    placeAt(assign, 219, 177, 75, 23);
+    QPushButton* up = new QPushButton("Move &Up", &dlg);
+    up->setObjectName("layoutUp");
+    placeAt(up, 510, 111, 75, 23);
+    QPushButton* down = new QPushButton("Move &Down", &dlg);
+    down->setObjectName("layoutDown");
+    placeAt(down, 510, 142, 75, 23);
+    QPushButton* clear = new QPushButton("&Clear", &dlg);
+    clear->setObjectName("layoutClear");
+    placeAt(clear, 510, 190, 75, 23);
+    QPushButton* activate = new QPushButton("Activate", &dlg);
     activate->setObjectName("layoutActivate");
-    rename->setObjectName("layoutRename");
-    key->setObjectName("layoutKey");
+    placeAt(activate, 510, 220, 75, 23);
+    QPushButton* remove = new QPushButton("Delete Layout", &dlg);
     remove->setObjectName("layoutDelete");
-    key->addItem("No shortcut", -1);
-    for (int n = 0; n < 10; ++n) key->addItem(QString("Alt+D, %1").arg(n), n);
-    for (QWidget* w : {(QWidget*)activate, (QWidget*)rename, (QWidget*)key, (QWidget*)remove}) side->addWidget(w);
-    side->addStretch(1);
-    side->addWidget(close);
-    h->addLayout(side);
+    placeAt(remove, 13, 294, 195, 23);
+    standInButton(&dlg, "Explore Containing Folder...", 306, 294, 195)->setObjectName("layoutExplore");
+    QPushButton* ok = new QPushButton("OK", &dlg);
+    placeAt(ok, 429, 337, 75, 23);
+    ok->setDefault(true);
+    QPushButton* cancel = new QPushButton("Cancel", &dlg);
+    placeAt(cancel, 510, 337, 75, 23);
+
     std::vector<SavedLayout> list = savedLayoutList();
-    bool filling = false;
-    auto fill = [&] {
-        filling = true;
-        const int row = std::max(0, tree->indexOfTopLevelItem(tree->currentItem()));
-        tree->clear();
+    std::vector<QString> deleted;
+    auto slotOwner = [&](int n) {
         for (const SavedLayout& l : list)
-            new QTreeWidgetItem(tree, QStringList() << l.name << (l.key >= 0 ? QString("Alt+D, %1").arg(l.key) : QString()));
-        if (!list.empty()) tree->setCurrentItem(tree->topLevelItem(std::min(row, (int)list.size() - 1)));
-        const bool any = !list.empty();
-        for (QWidget* w : {(QWidget*)activate, (QWidget*)rename, (QWidget*)key, (QWidget*)remove}) w->setEnabled(any);
-        if (any) key->setCurrentIndex(list[(size_t)tree->indexOfTopLevelItem(tree->currentItem())].key + 1);
-        filling = false;
+            if (l.key == n) return l.name;
+        return QString();
     };
-    auto current = [&]() -> SavedLayout* {
-        const int r = tree->indexOfTopLevelItem(tree->currentItem());
-        return r >= 0 && r < (int)list.size() ? &list[(size_t)r] : nullptr;
+    auto availableRow = [&]() { return tree->indexOfTopLevelItem(tree->currentItem()); };
+    auto update = [&] {
+        const bool any = availableRow() >= 0 && availableRow() < (int)list.size();
+        const int s = slotList->currentRow();
+        const bool filled = s >= 0 && !slotOwner(s).isEmpty();
+        assign->setEnabled(any && s >= 0);
+        remove->setEnabled(any);
+        clear->setEnabled(filled);
+        up->setEnabled(filled && s > 0);
+        down->setEnabled(filled && s < 9);
+        activate->setEnabled(any || filled);
+    };
+    auto fill = [&] {
+        const int row = std::max(0, availableRow());
+        const int srow = slotList->currentRow();
+        tree->clear();
+        for (const SavedLayout& l : list) new QTreeWidgetItem(tree, QStringList() << l.name);
+        if (!list.empty()) tree->setCurrentItem(tree->topLevelItem(std::min(row, (int)list.size() - 1)));
+        slotList->clear();
+        for (int n = 0; n < 10; ++n) slotList->addItem(slotText(n, slotOwner(n)));
+        slotList->setCurrentRow(srow >= 0 ? srow : 0);
+        update();
     };
     fill();
-    QObject::connect(tree, &QTreeWidget::currentItemChanged, &dlg, [&] {
-        if (filling) return;
-        if (SavedLayout* l = current()) {
-            filling = true;
-            key->setCurrentIndex(l->key + 1);
-            filling = false;
-        }
-    });
-    QObject::connect(key, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg, [&](int) {
-        SavedLayout* l = current();
-        if (filling || !l) return;
-        const int k = key->currentData().toInt();
+    QObject::connect(tree, &QTreeWidget::currentItemChanged, &dlg, [&] { update(); });
+    QObject::connect(slotList, &QListWidget::currentRowChanged, &dlg, [&] { update(); });
+    QObject::connect(assign, &QPushButton::clicked, &dlg, [&] {
+        const int r = availableRow(), s = slotList->currentRow();
+        if (r < 0 || r >= (int)list.size() || s < 0) return;
         for (SavedLayout& o : list)
-            if (&o != l && k >= 0 && o.key == k) o.key = -1;
-        l->key = k;
-        setSavedLayoutList(list);
+            if (o.key == s) o.key = -1;
+        list[(size_t)r].key = s;
+        fill();
+    });
+    QObject::connect(clear, &QPushButton::clicked, &dlg, [&] {
+        const int s = slotList->currentRow();
+        for (SavedLayout& o : list)
+            if (o.key == s) o.key = -1;
+        fill();
+    });
+    auto move = [&](int by) {
+        const int s = slotList->currentRow(), t = s + by;
+        if (s < 0 || t < 0 || t > 9) return;
+        for (SavedLayout& o : list) {
+            if (o.key == s) o.key = t;
+            else if (o.key == t) o.key = s;
+        }
+        slotList->setCurrentRow(t);
+        fill();
+    };
+    QObject::connect(up, &QPushButton::clicked, &dlg, [&] { move(-1); });
+    QObject::connect(down, &QPushButton::clicked, &dlg, [&] { move(1); });
+    QObject::connect(remove, &QPushButton::clicked, &dlg, [&] {
+        const int r = availableRow();
+        if (r < 0 || r >= (int)list.size()) return;
+        deleted.push_back(list[(size_t)r].name);
+        list.erase(list.begin() + r);
         fill();
     });
     auto activateCurrent = [&] {
-        if (SavedLayout* l = current()) recallLayout(l->name);
+        QString n;
+        if (QTreeWidgetItem* it = tree->currentItem()) n = it->text(0);
+        if (n.isEmpty()) n = slotOwner(slotList->currentRow());
+        if (!n.isEmpty()) {
+            setSavedLayoutList(list);   // what was changed so far counts, so the layout can be found
+            recallLayout(n);
+        }
     };
     QObject::connect(activate, &QPushButton::clicked, &dlg, activateCurrent);
     QObject::connect(tree, &QTreeWidget::itemDoubleClicked, &dlg, activateCurrent);
-    QObject::connect(rename, &QPushButton::clicked, &dlg, [&] {
-        SavedLayout* l = current();
-        if (!l) return;
-        bool ok = false;
-        const QString n = QInputDialog::getText(&dlg, "Rename Layout", "Name:", QLineEdit::Normal, l->name, &ok).trimmed();
-        if (!ok || n.isEmpty() || n == l->name) return;
-        for (const SavedLayout& o : list)
-            if (o.name == n) return;
-        if (currentLayout_ == l->name) currentLayout_ = n;
-        l->name = n;
-        setSavedLayoutList(list);
-        fill();
-    });
-    QObject::connect(remove, &QPushButton::clicked, &dlg, [&] {
-        SavedLayout* l = current();
-        if (!l) return;
-        if (currentLayout_ == l->name) currentLayout_.clear();
-        list.erase(list.begin() + (l - list.data()));
-        setSavedLayoutList(list);
-        fill();
-    });
-    QObject::connect(close, &QPushButton::clicked, &dlg, &QDialog::accept);
-    dlg.exec();
+    QObject::connect(slotList, &QListWidget::itemDoubleClicked, &dlg, activateCurrent);
+    QObject::connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
+    QObject::connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+    if (dlg.exec() != QDialog::Accepted) return;
+    for (const QString& d : deleted)
+        if (currentLayout_ == d) currentLayout_.clear();
+    setSavedLayoutList(list);
 }
 
 }  // namespace app

@@ -418,7 +418,7 @@ static int cmdVegasFx(const std::vector<std::string>& args)
 
 bool reno::isPluginCheckCommand(const std::string& cmd)
 {
-    return cmd == "check" || cmd == "ofxprobe" || cmd == "audioprobe" || cmd == "dxprobe" || cmd == "vegasfx" || cmd == "vegasfxrun" || cmd == "vegasfxlist";
+    return cmd == "check" || cmd == "ofxprobe" || cmd == "audioprobe" || cmd == "dxprobe" || cmd == "vegasfx" || cmd == "vegasfxrun" || cmd == "vegasfxlist" || cmd == "vegasfxdescribe";
 }
 
 int reno::runPluginCheckCommand(const std::string& cmd, const std::vector<std::string>& args)
@@ -426,7 +426,7 @@ int reno::runPluginCheckCommand(const std::string& cmd, const std::vector<std::s
     if (cmd == "check") return cmdCheck(args);
     if (cmd == "vegasfx") return cmdVegasFx(args);
     quietCrashes();
-    if (cmd == "vegasfxrun" || cmd == "vegasfxlist") return ofx::runVegasFxChild(cmd, args);
+    if (cmd == "vegasfxrun" || cmd == "vegasfxlist" || cmd == "vegasfxdescribe") return ofx::runVegasFxChild(cmd, args);
     if (cmd == "ofxprobe") return cmdOfxProbe(args);
     if (cmd == "audioprobe") return cmdAudioProbe(args);
     if (cmd == "dxprobe") return cmdDxProbe(args);

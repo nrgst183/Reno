@@ -30,6 +30,18 @@ inline const std::map<QString, QVariant>& defaults()
         {"prefs/mxfMultichannel", true},            // Import MXF as multichannel
         {"prefs/stereoDualMono", false},            // Import stereo as dual mono
         {"prefs/qsv", true},  // Enable QSV Encoding and Decoding (where available)
+        // the General items VEGAS has that Reno has no feature for (the check boxes are kept; VEGAS's states)
+        {"prefs/newsfeed", false},                  // Use Newsfeed to stay informed about VEGAS product updates
+        {"prefs/fileAssociations", true},           // Check project file type associations at startup
+        {"prefs/joystick", false},                  // Enable joystick support
+        {"prefs/detect360", true},                  // Enable auto-detection of 360 media
+        {"prefs/ignoreFactChunk", true},            // Ignore fact chunk when opening compressed Wave files
+        {"prefs/pulldownRemoval", true},            // Allow pulldown removal when opening 24p DV
+        {"prefs/aafFrameUnit", true},               // AAF Export - Use frame unit for audio
+        {"prefs/aafClipEnvelope", true},            // AAF Export - Use clip-based audio envelope
+        {"prefs/noRecompress", true},               // Enable no-recompress rendering
+        {"prefs/acesGpu", true},                    // Use GPU processing for ACES color management
+        {"prefs/openclInterop", true},              // Enable OpenCL/GL Interop for Intel GPU
         {"prefs/promptKeepRecorded", true},         // Prompt to keep files after recording
         {"prefs/fxUndo", true},                     // Create undos for FX parameter changes
         {"prefs/autoNameMarkers", true},            // Automatically name regions and markers if not playing

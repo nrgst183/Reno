@@ -20,6 +20,8 @@ void runProjectPropertiesFull(QWidget* parent);
 // Project Properties opened at its Audio tab (Master Bus window, Mixing Console).
 void runProjectPropertiesAudio(QWidget* parent);
 void runPreferences(QWidget* parent);
+// Preferences > Audio Device > Advanced...: VEGAS's Advanced Audio Configuration for the output device (name and id as the Audio Device tab has them).
+void advancedAudioConfiguration(QWidget* parent, const QString& deviceName, const QString& deviceId);
 
 // VEGAS's compositing modes as Track::composite stores them ("srcalpha", "add"...), with menu names, in VEGAS's order.
 struct CompositeMode {

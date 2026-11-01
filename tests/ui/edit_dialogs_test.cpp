@@ -732,8 +732,8 @@ int main(int argc, char** argv)
         check(d && d->objectName() == "preferencesDialog", "preferences: the dialog opens");
         if (!d) return;
         QTabWidget* tabs = child<QTabWidget>(d, "tabs");
-        check(tabs && tabs->count() == 14 && tabs->tabText(0) == "General" && tabs->tabText(7) == "Editing" && tabs->tabText(13) == "Reno",
-              "preferences: VEGAS's tabs (General ... File I/O, without CD Settings) and Reno's own");
+        check(tabs && tabs->count() == 15 && tabs->tabText(0) == "General" && tabs->tabText(7) == "Editing" && tabs->tabText(14) == "Reno",
+              "preferences: VEGAS's 14 tabs (General ... File I/O) and Reno's own");
         child<QSpinBox>(d, "undoLevels")->setValue(3);
         child<QSpinBox>(d, "autoSaveMinutes")->setValue(1);
         uitest::shot(d, gOut + "/preferences_general.png");

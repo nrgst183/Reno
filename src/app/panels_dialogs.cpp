@@ -42,6 +42,10 @@
 #include <QDesktopServices>
 #include <QProcess>
 #include <QTabWidget>
+#include <QTabBar>
+#include <QThread>
+#include <QScreen>
+#include <QSysInfo>
 #include <QPlainTextEdit>
 #include <QLocale>
 #include <QStyle>
@@ -458,53 +462,144 @@ void showAbout(QWidget* parent)
     QDialog dlg(parent);
     dlg.setObjectName("aboutDialog");
     dlg.setWindowTitle("About Reno");
-    dlg.setMinimumWidth(480);
-    auto* root = new QVBoxLayout(&dlg);
-    auto* logo = new QLabel(&dlg);
-    logo->setObjectName("aboutLogo");
-    logo->setPixmap(QPixmap::fromImage(renoLogo(96)));
-    root->addWidget(logo);
-    auto* name = new QLabel(QString("Reno %1").arg(renoVersion()), &dlg);
-    QFont nf = name->font();
-    nf.setPixelSize(30);
-    nf.setBold(true);
-    name->setFont(nf);
-    root->addWidget(name);
-    auto* what = new QLabel("A video editor with a timeline, OpenFX video effects and VST sound effects.", &dlg);
-    what->setWordWrap(true);
-    root->addWidget(what);
+    // VEGAS's About box is 532 x 384 with its frame; positions are the capture's less the frame's 1 and 31
+    QFont f = dlg.font();
+    f.setPixelSize(12);
+    dlg.setFont(f);
+    dlg.setFixedSize(532 - 2, 384 - 31 - 1);
+    auto at = [](QWidget* w, int x, int y, int cw, int ch) { w->setGeometry(x - 1, y - 31, cw, ch); return w; };
+    // the tabs: a tab bar over a bordered pane, one page of controls at a time (page = 510 x 283 at 11,60)
+    QTabBar* tabs = new QTabBar(&dlg);
+    tabs->setObjectName("aboutTabs");
+    tabs->setDrawBase(false);
+    tabs->setExpanding(false);
+    tabs->setUsesScrollButtons(false);
+    for (const char* t : {"General", "Computer", "Components", "Multimedia Devices", "Copyrights and Patents"}) tabs->addTab(t);
+    at(tabs, 7, 38, 518, 22);
+    QFrame* pane = new QFrame(&dlg);
+    pane->setObjectName("aboutPane");
+    pane->setStyleSheet("QFrame#aboutPane { background: #ffffff; border: 1px solid #d9d9d9; }");
+    at(pane, 7, 59, 518, 288);
+    std::vector<QWidget*> pages;
+    for (int i = 0; i < 5; ++i) {
+        QWidget* pg = new QWidget(&dlg);
+        at(pg, 11, 60, 510, 283);
+        pages.push_back(pg);
+    }
+    auto on = [&](int page, QWidget* w, int x, int y, int cw, int ch) {
+        w->setParent(pages[(size_t)page]);
+        w->setGeometry(x - 11, y - 60, cw, ch);
+        return w;
+    };
+    auto label = [&](int page, const QString& text, int x, int y, int cw, int ch) {
+        QLabel* l = new QLabel(text, pages[(size_t)page]);
+        on(page, l, x, y, cw, ch);
+        return l;
+    };
+    auto flat = [&](int page, const QString& text, int x, int y, int cw, int ch) {
+        QLineEdit* e = new QLineEdit(text, pages[(size_t)page]);
+        e->setReadOnly(true);
+        e->setFrame(false);
+        on(page, e, x, y, cw, ch);
+        QPalette pl = e->palette();
+        pl.setColor(QPalette::Base, Qt::white);
+        e->setPalette(pl);
+        e->setStyleSheet("QLineEdit { background: #ffffff; color: #000000; border: none; selection-background-color: #0078d7; }");
+        return e;
+    };
+    auto box = [&](int page, const QString& caption, const QString& text) {
+        QLabel* l = label(page, caption, 19, 68, 413, 13);
+        QPlainTextEdit* e = new QPlainTextEdit(text, pages[(size_t)page]);
+        e->setReadOnly(true);
+        on(page, e, 19, 83, 495, 237);
+        l->setBuddy(e);
+        return e;
+    };
 
+    // ---- General: the logo tile, the product, its licence
+    QLabel* logo = new QLabel(pages[0]);
+    logo->setObjectName("aboutLogo");
+    on(0, logo, 19, 73, 77, 77);
+    {
+        QImage tile(77, 77, QImage::Format_ARGB32);
+        tile.fill(QColor(14, 14, 14));
+        QPainter p(&tile);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        const QImage mark = renoLogo(57);
+        p.drawImage((77 - mark.width()) / 2, (77 - mark.height()) / 2, mark);
+        p.setPen(QPen(QColor(18, 176, 255), 3));
+        p.drawRect(QRect(1, 1, 75, 75));
+        p.end();
+        logo->setPixmap(QPixmap::fromImage(tile));
+    }
+    QLabel* name = label(0, "Reno", 110, 70, 321, 13);
+    QFont bf = name->font();
+    bf.setBold(true);
+    name->setFont(bf);
+    label(0, QString("Version %1").arg(renoVersion()), 110, 84, 321, 13);
+    label(0, "Opens VEGAS Pro projects and hosts the same plug-ins.", 110, 99, 321, 13);
+    label(0, "Free software; see Copyrights and Patents.", 110, 114, 321, 13);
+    label(0, "", 110, 128, 327, 13);
+    label(0, "This product is licensed to:", 110, 148, 321, 13);
+    flat(0, "Everyone: no licence is needed", 125, 162, 306, 13);
+    flat(0, "", 125, 177, 306, 13);
+    label(0, "Serial Number:", 128, 192, 98, 13);
+    flat(0, "Not required", 242, 192, 300, 13);
+    label(0, "Machine ID:", 128, 206, 98, 13);
+    flat(0, QSysInfo::machineHostName(), 242, 206, 189, 13);
+    {
+        QFrame* rule = new QFrame(pages[0]);
+        rule->setFrameShape(QFrame::HLine);
+        rule->setFrameShadow(QFrame::Sunken);
+        on(0, rule, 110, 229, 321, 2);
+    }
+    QLabel* notice = label(0, "Notice: Reno reads and writes VEGAS Pro project files (.veg) and hosts OpenFX and VST plug-ins, but it is not made by, "
+                              "or connected with, the makers of VEGAS Pro. VEGAS and the names of the plug-ins belong to their owners.",
+                           110, 237, 321, 73);
+    notice->setWordWrap(true);
+    notice->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+
+    // ---- Computer
+    QString computer = QString("Operating System\r\n  Platform: %1 (%2)\r\n  Version: %3\r\n\r\nProcessor\r\n  Architecture: %4\r\n  Logical processors: %5\r\n")
+                           .arg(QSysInfo::prettyProductName(), QString::number(QSysInfo::WordSize) + "-bit", QSysInfo::kernelVersion(),
+                                QSysInfo::currentCpuArchitecture(), QString::number(QThread::idealThreadCount()));
+    computer += "\r\nDisplays\r\n";
+    for (QScreen* sc : QGuiApplication::screens())
+        computer += QString("  %1: %2 x %3 at %4 dpi\r\n").arg(sc->name()).arg(sc->geometry().width()).arg(sc->geometry().height()).arg((int)sc->logicalDotsPerInch());
+    box(1, "&Computer properties:", computer);
+
+    // ---- Components
+    QString comps = QString("Application\r\n    Path: %1\r\n    Version: %2\r\n\r\nLibraries\r\n    FFmpeg: %3\r\n    Qt: %4\r\n")
+                        .arg(QDir::toNativeSeparators(QCoreApplication::applicationFilePath()), renoVersion(), qs(mediaBackendVersion()), QString::fromLatin1(qVersion()));
+    box(2, "&Component information:", comps)->setObjectName("aboutFacts");
+
+    // ---- Multimedia Devices
     QString sound = gPlayback ? qs(gPlayback->audioDeviceName()) : QString();
     if (sound.isEmpty()) sound = "not opened yet (it is opened when you first play)";
-    auto* facts = new QLabel(QString("<table cellspacing='4'>"
-                                     "<tr><td>FFmpeg:</td><td>%1</td></tr>"
-                                     "<tr><td>Qt:</td><td>%2</td></tr>"
-                                     "<tr><td>Sound device:</td><td>%3</td></tr></table>")
-                                 .arg(qs(mediaBackendVersion()).toHtmlEscaped(), QString::fromLatin1(qVersion()), sound.toHtmlEscaped()),
-                             &dlg);
-    facts->setObjectName("aboutFacts");
-    facts->setTextFormat(Qt::RichText);
-    root->addWidget(facts);
+    box(3, "&Multimedia devices info:", QString("CD Drives:\r\n    Reno reads no audio CDs\r\n\r\nSound device:\r\n    %1\r\n").arg(sound));
 
-    auto* notices = new QTextBrowser(&dlg);
-    notices->setObjectName("aboutNotices");
-    notices->setOpenExternalLinks(true);
-    notices->setMinimumHeight(180);
-    notices->setHtml("<b>Third-party software</b>"
-                     "<p><b>OpenFX headers</b> - BSD 3-Clause licence. Copyright The Open Effects Association Ltd. Used to host video effect plug-ins.</p>"
-                     "<p><b>VST 2 interface header</b> - BSD 3-Clause licence. Used to host VST 2 sound effects.</p>"
-                     "<p><b>FFmpeg</b> - GNU Lesser General Public Licence (LGPL) version 2.1 or later. Used to read and write media files; "
-                     "its libraries are loaded as separate shared libraries.</p>"
-                     "<p><b>Qt</b> - GNU Lesser General Public Licence (LGPL) version 3. Used for the interface.</p>");
-    root->addWidget(notices, 1);
+    // ---- Copyrights and Patents
+    label(4, "The following copyrights apply:", 19, 68, 377, 13);
+    QLabel* c1 = label(4, "OpenFX headers and the VST 2 interface header: BSD 3-Clause licence, used to host video and sound effect plug-ins. "
+                          "FFmpeg: GNU LGPL 2.1 or later, loaded as separate libraries.",
+                       19, 94, 405, 26);
+    QLabel* c2 = label(4, "Qt: GNU Lesser General Public Licence (LGPL) version 3, used for the interface.", 19, 130, 405, 26);
+    c1->setObjectName("aboutNotices1");
+    c2->setObjectName("aboutNotices2");
+    c1->setWordWrap(true);
+    c2->setWordWrap(true);
+    c1->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    c2->setAlignment(Qt::AlignLeft | Qt::AlignTop);
 
-    auto* row = new QHBoxLayout();
-    row->addStretch(1);
-    auto* ok = new QPushButton("OK", &dlg);
+    auto show = [&](int i) {
+        for (size_t k = 0; k < pages.size(); ++k) pages[k]->setVisible((int)k == i);
+    };
+    QObject::connect(tabs, &QTabBar::currentChanged, &dlg, show);
+    show(0);
+    QPushButton* ok = new QPushButton("OK", &dlg);
+    at(ok, 450, 353, 75, 23);
     ok->setDefault(true);
-    row->addWidget(ok);
-    root->addLayout(row);
-    QObject::connect(ok, &QPushButton::clicked, [&dlg] { dlg.accept(); });
+    QObject::connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
     dlg.exec();
 }
 

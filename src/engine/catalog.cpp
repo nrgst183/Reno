@@ -230,7 +230,7 @@ void Catalog::scan(const std::string& probeExe, bool full, const std::function<v
     }
     struct Job { std::string path, kind; };
     std::vector<Job> jobs;
-    for (const auto& f : ofx::Host::findBinaries(vdirs)) jobs.push_back({f, "ofx"});
+    for (const auto& f : ofx::Host::get().usableBinaries(vdirs)) jobs.push_back({f, "ofx"});
     for (const auto& f : findAudioPluginFiles(adirs)) jobs.push_back({f, "audio"});
     jobs.push_back({"<DirectX audio effects>", "dx"});
 
@@ -320,7 +320,7 @@ bool Catalog::changedSinceScan(std::string* what) const
     if (!known.isObject() || known.members().empty()) return say(std::string());     // never looked
     if (olderList) return say(std::string());                                         // made by an older Reno
     std::set<std::string> seen;
-    std::vector<std::string> files = ofx::Host::findBinaries(vdirs);
+    std::vector<std::string> files = ofx::Host::get().usableBinaries(vdirs);
     for (const auto& f : findAudioPluginFiles(adirs)) files.push_back(f);
     for (const auto& f : files) {
         seen.insert(f);
@@ -415,7 +415,7 @@ ScanTask::State ScanTask::state() const
 void Catalog::scanInProcess(const std::vector<std::string>& ofxDirs, const std::vector<std::string>& audioFiles)
 {
     Json fresh = Json::object();
-    for (const auto& f : ofx::Host::findBinaries(ofxDirs)) {
+    for (const auto& f : ofx::Host::get().usableBinaries(ofxDirs)) {
         Json r = Json::object();
         r["path"] = f;
         std::string err;

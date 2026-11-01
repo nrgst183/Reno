@@ -125,6 +125,14 @@ int visibleCommands(QDialog* d)
 
 }  // namespace
 
+// the dialog's OK button (VEGAS's dialog has plain buttons, not a button box)
+static QPushButton* okButton(QWidget* d)
+{
+    for (QPushButton* b : d->findChildren<QPushButton*>())
+        if (b->text() == "OK") return b;
+    return nullptr;
+}
+
 int main(int argc, char** argv)
 {
     QApplication qapp(argc, argv);
@@ -341,8 +349,7 @@ int main(int argc, char** argv)
         int splits = 0, saves = 0;
         QObject::connect(windowAction(w, "split"), &QAction::triggered, [&] { ++splits; });
         QObject::connect(windowAction(w, "save"), &QAction::triggered, [&] { ++saves; });
-        QDialogButtonBox* bb = d->findChild<QDialogButtonBox*>();
-        bb->button(QDialogButtonBox::Ok)->click();
+        okButton(d)->click();
         uitest::settle(50);
         check(d->result() == QDialog::Accepted, "OK closes the dialog");
         check(windowAction(w, "split")->shortcuts() == QList<QKeySequence>() << QKeySequence("Ctrl+Alt+J") << QKeySequence("Ctrl+S") &&
@@ -394,7 +401,7 @@ int main(int argc, char** argv)
         check(maps->currentText() == "My keys", "the dialog opens on the map in use");
         maps->setCurrentIndex(maps->findText("[Default]"));
         emit maps->activated(maps->currentIndex());
-        d2->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        okButton(d2)->click();
         uitest::settle(20);
         check(windowAction(&w2, "split")->shortcuts() == QList<QKeySequence>() << QKeySequence("S") &&
                   windowAction(&w2, "save")->shortcuts() == QList<QKeySequence>() << QKeySequence("Ctrl+S") && !QSettings().contains("keyboard/bindings"),

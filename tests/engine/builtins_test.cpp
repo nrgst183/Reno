@@ -529,7 +529,7 @@ int main(int argc, char** argv)
         ps["Threshold"] = val({0.5});
         Project th = rig.filtered(blue, kV + "threshold", ps);
         a = pixel(rig.render(th), 80, 45);
-        check(near(a, 0, 0, 0), "Threshold: dark becomes black", pxs(a));
+        check(near(a, 0, 0, 255), "Threshold: each channel on its own (r, g below 50 % go black, b above goes white)", pxs(a));
         // Rays: the Points setting (an integer parameter) changes the star
         {
             auto sb = [&](int pts) {
@@ -659,9 +659,9 @@ int main(int argc, char** argv)
             img = rig.render(rig.filtered("split:0,0,0,255,255,255", kV + "swirl", ps));
             check(img && edgeAt(img, 30) == 80 && edgeAt(img, 60) == 80, "Swirl at 0 changes nothing");
             ps = Json::object();
-            ps["HorizontalWaves"] = val({2});
-            ps["HorizontalAmplitude"] = val({0.1});
-            ps["VerticalAmplitude"] = val({0});
+            ps["VerticalWaves"] = val({2});
+            ps["VerticalAmplitude"] = val({0.1});
+            ps["HorizontalAmplitude"] = val({0});
             img = rig.render(rig.filtered("split:0,0,0,255,255,255", kV + "wave", ps));
             int lo = 999, hi = -1;
             for (int y = 0; y < 90; y += 3) { lo = std::min(lo, edgeAt(img, y)); hi = std::max(hi, edgeAt(img, y)); }

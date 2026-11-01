@@ -3,8 +3,8 @@
 //
 // They are ordinary OpenFX image effects compiled into Reno: the host "loads" them from the made-up path kBuiltinBinaryPath and they are described,
 // instanced, keyframed, saved and rendered like any other plug-in. They carry the identifiers and parameter names of VEGAS's own
-// (com.vegascreativesoftware:solidcolor, ...:gaussianblur ...), so a VEGAS project using them shows the same kind of frame without VEGAS. Where VEGAS's
-// real plug-in is installed and works, it is used instead (the catalog hides the built-in).
+// (com.vegascreativesoftware:solidcolor, ...:gaussianblur ...), so a VEGAS project using them shows the same kind of frame without VEGAS. By default they
+// are always used for VEGAS's identifiers and VEGAS's own plug-in bundles are not loaded (Host::skipVegasBundles).
 //
 // Each is Reno's approximation of VEGAS's effect; parameter names, choices and presets follow VEGAS Pro 18's (read from its OFX bundles' resource and
 // preset files).

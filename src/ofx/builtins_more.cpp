@@ -178,13 +178,17 @@ void addFiltersMore(std::vector<Def>& out)
             vfxTune(d, "Ambience", 0.1, NAN, NAN); vfxTune(d, "Shininess", 0.5, NAN, NAN); vfxTune(d, "BumpHeight", 0.5, NAN, NAN);
         }
         if (std::string(r.id) == "layerdimensionality") {
+            // (the live defaults the capture lists: no shadow, no glow, a red glow colour)
+            vfxTune(d, "ShadowType", 0, NAN, NAN); vfxTune(d, "GlowType", 0, NAN, NAN);
+            for (PDef& p : d.params)
+                if (p.name == "GlowColor") p.def = {1, 0, 0};
             d.params.push_back(point3("LightLocation", "Light Location", -1, 1, 3, -6, 6));
             d.params.back().dmin = -3; d.params.back().dmax = 6;
             d.general = true;
         }
         if (std::string(r.id) == "broadcastcolors") {
             // (the real ranges and the starting values that limit nothing)
-            vfxTune(d, "LumaMin", 0, -8, 40); vfxTune(d, "LumaMax", 110, 60, 110); vfxTune(d, "ChromaMax", 148, 0, 148);
+            vfxTune(d, "LumaMin", -8, -8, 40); vfxTune(d, "LumaMax", 110, 60, 110); vfxTune(d, "ChromaMax", 148, 0, 148);
             vfxTune(d, "CompositeMin", -47, -47, -8); vfxTune(d, "CompositeMax", 148, 100, 148);
             vfxTune(d, "StudioRGB16To135", 1, NAN, NAN);
         }
@@ -216,7 +220,20 @@ void addFiltersMore(std::vector<Def>& out)
         }
         // VEGAS's Defocus really starts at the middle of each range (its pictures show that), not at the XML defaults
         if (std::string(r.id) == "defocusvelvetmatter") { vfxTune(d, "Radius", 5.6, 0, 11.2); vfxTune(d, "BloomThreshold", 94.97, 0, 189.94); vfxTune(d, "BloomStrength", 10.51, 0, 21.02); }
-        if (std::string(r.id) == "crop") vfxTune(d, "Angle", 0, -360, 360);
+        // (VEGAS's Film Effects starts with nothing on: its default picture is the input, as after "Reset to None")
+        if (std::string(r.id) == "filmeffects") {
+            vfxTune(d, "Grain", 0, NAN, NAN); vfxTune(d, "Tint", 0, NAN, NAN); vfxTune(d, "ConvertToGreyscale", 0, NAN, NAN);
+            vfxTune(d, "EnableEnableParticles", 0, NAN, NAN); vfxTune(d, "EnableParticlesAmount", 0, NAN, NAN);
+        }
+        if (std::string(r.id) == "deform") vfxTune(d, "ShearHorizontal", 0, NAN, NAN);       // (VEGAS's Deform starts as a no-op; the descriptor's 1 is a full shear)
+        if (std::string(r.id) == "filllightvelvetmatter") vfxTune(d, "Softness", 3.33, NAN, NAN);       // (the live default the capture lists)
+        if (std::string(r.id) == "crop") {
+            vfxTune(d, "Angle", 0, -360, 360);
+            // (what the capture of this VEGAS lists as the live defaults: the whole frame, not the descriptor's right half)
+            vfxTune(d, "XScale", 1, NAN, NAN);
+            for (PDef& p : d.params)
+                if (p.name == "Location") p.def = {0.5, 0.5};
+        }
         if (std::string(r.id) == "pictureinpicture") { vfxTune(d, "Angle", 0, -1800, 1800); vfxTune(d, "Scale", 0.5, 0.1, 10); vfxTune(d, "DistortionScaleY", 0.5, 0.1, 10); }
         if (std::string(r.id) == "starburstvelvetmatter") vfxTune(d, "Orientation", 45, 0, 360);
         if (std::string(r.id) == "glintvelvetmatter") vfxTune(d, "EffectOrientation", 0, 0, 360);

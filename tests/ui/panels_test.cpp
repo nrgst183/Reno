@@ -648,8 +648,10 @@ void testAbout()
 {
     QString facts, notices;
     drive([&](QWidget* m) {
-        facts = kid<QLabel>(m, "aboutFacts")->text();
-        notices = kid<QWidget>(m, "aboutNotices") ? kid<QWidget>(m, "aboutNotices")->property("plainText").toString() : QString();
+        // the Components tab names the libraries; the Copyrights and Patents tab lists the notices
+        facts = kid<QWidget>(m, "aboutFacts") ? kid<QWidget>(m, "aboutFacts")->property("plainText").toString() : QString();
+        for (const char* n : {"aboutNotices1", "aboutNotices2"})
+            if (QLabel* l = kid<QLabel>(m, n)) notices += l->text() + "\n";
         uitest::shot(m, gOut + "/about.png");
         m->close();
         return true;

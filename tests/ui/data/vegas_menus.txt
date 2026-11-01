@@ -1,0 +1,415 @@
+# VEGAS Pro 18 menu tree (depth, text with &, shortcut, S=submenu, G=grayed, C=checked)
+0	&File		S	
+1	&New...	Ctrl+N		
+1	&Open...	Ctrl+O		
+1	&Close	Ctrl+F4		
+1	&Save	Ctrl+S		
+1	Save &As...	Ctrl+Shift+S		
+1	&Incremental Save	Ctrl+Alt+S		
+1	&Render As...			G
+1	Real-Ti&me Render...			
+1	&Import		S	
+2	&Media...			
+2	Media from &Project...			
+2	P&remiere/After Effects (*.prproj)...			
+2	&Final Cut Pro 7/DaVinci Resolve (*.xml)...			
+2	Final Cut Pro &X (*.fcpxml)...			
+2	&EDL Text File (*.txt)...			
+2	&Broadcast Wave Format...			
+2	&Closed Captioning...			
+1	E&xport		S	
+2	&VEGAS Project Archive (*.veg)...			
+2	Premiere/&After Effects (*.prproj)...			
+2	&Final Cut Pro 7/DaVinci Resolve (*.xml)...			
+2	Final Cut Pro &X (*.fcpxml)...			
+2	&EDL Text File (*.txt)...			
+1	VEGAS Capt&ure...			
+1	&Extract Audio from CD...			
+1	S&hare Online...		S	
+2	Upload to &Vimeo...			G
+2	Upload to &YouTube...			G
+1	&Properties...	Alt+Enter		
+1	E&xit	Alt+F4		
+0	&Edit		S	
+1	&Undo	Ctrl+Z		G
+1	&Redo	Ctrl+Y; Ctrl+Shift+Z		G
+1	Cu&t	Ctrl+X		G
+1	&Copy	Ctrl+C		G
+1	&Paste	Ctrl+V		G
+1	P&aste Repeat...	Ctrl+B		G
+1	Pa&ste Insert	Ctrl+Shift+V		G
+1	Paste E&vent Attributes			G
+1	Selectively Paste Event Attributes			G
+1	&Delete	Delete		G
+1	Tri&m	Ctrl+T		G
+1	Trim &Start	Alt+[		G
+1	Trim &End	Alt+]		G
+1	Spl&it	S		G
+1	Smart Spl&it	Alt+S		G
+1	Event Heal			G
+1	Close Gaps			G
+1	Na&vigate		S	
+2	&Go to Time...	Ctrl+G		
+2	Go to Project &Start	Ctrl+Home		
+2	Go to Project &End	Ctrl+End		
+2	Go to &Time Selection/View Start	Home		
+2	Go to Time Selection/&View End	End		
+2	M&ove Left by Grid Marks	Page Up		
+2	Move Right by Grid &Marks	Page Down		
+2	Move Left by &Pixel	Left		
+2	Move Right by P&ixel	Right		
+2	Move Left by &Frame	Alt+Left		
+2	Move Right by F&rame	Alt+Right		
+2	Move Left by M&arker/Region	Ctrl+Left		G
+2	Move Rig&ht by Marker/Region	Ctrl+Right		G
+2	Time Sele&ct Right by Marker/Region	Ctrl+Shift+Right		G
+2	Move &Left by Event Edit Points	Ctrl+Alt+Left		G
+2	Move Right by Event E&dit Points	Ctrl+Alt+Right		G
+2	Move Left &by Selected Event	Ctrl+[		G
+2	Move Right b&y Selected Event	Ctrl+]		G
+2	Move Cursor to Play&head	Alt+Down		G
+2	Center View aro&und Cursor	\		
+1	P&ost-Edit Ripple		S	
+2	Affected &Tracks	F		G
+2	Affected Tracks, &Bus Tracks, Markers, and Regions	Ctrl+F		G
+2	&All Tracks, Markers, and Regions	Ctrl+Shift+F		G
+1	Se&lect		S	
+2	Select &All	Ctrl+A		G
+2	Select All After Cursor			G
+2	Select Event Sta&rt	Num 7; [		G
+2	Select Event &End	Num 9; ]		G
+2	Enter Expanded Edit &Mode	Num 5		G
+2	Exit E&dit Mode	Num 5		G
+2	&Loop Playback	Ctrl+Shift+L; Q		
+2	&Zoom Selection			G
+2	Set Selection to &View			
+2	Set Selection to &Project			
+2	&Select Loop Region	Shift+L; Shift+Q		
+2	Set Selection S&tart	I		
+2	Set Selection E&nd	O		
+2	Set Selection to Prev&ious Selected Event	Ctrl+Shift+[		G
+2	Set Selection to Ne&xt Selected Event	Ctrl+Shift+]		G
+2	Rest&ore Previous Time Selection	Back		G
+1	&Editing Tool		S	
+2	&Normal Edit Tool			C
+2	S&huffle Tool			
+2	Sl&ip Tool			
+2	Sli&de Tool			
+2	Time Stretch/&Compress Tool			
+2	Split &Trim Tool			
+2	&Envelope			
+2	&Selection			
+2	&Zoom			
+2	Ne&xt Tool	D		
+2	&Previous Tool	Shift+D		
+1	E&xtensions		S	
+2	No Extensions			G
+1	S&witches		S	
+2	&Mute			G
+2	&Lock			G
+2	L&oop			G
+2	&Invert Phase			G
+2	&Normalize			G
+2	Maintain &Aspect Ratio			G
+2	Reduce Interlace &Flicker			G
+2	Use P&roject Resample Mode			G
+2	Force Re&sample			G
+2	&Disable Resample			G
+1	Ta&ke		S	
+2	&Rename Active	F2		G
+2	&Choose Active...			G
+2	&Next Take	T		G
+2	&Previous Take	Shift+T		G
+2	Delete &Active			G
+2	&Delete...			G
+1	&Group		S	
+2	Create &New	G		G
+2	&Remove From	U		G
+2	&Clear	Ctrl+U		G
+2	&Select All	Shift+G		G
+2	Cut &All			G
+2	Cop&y All			G
+2	&Delete All			G
+1	&Stream		S	
+2	Stream 1			G
+1	C&hannels		S	
+2	&Both			G
+2	&Left Only			G
+2	&Right Only			G
+2	&Combine			G
+2	&Swap			G
+1	U&ndo All			G
+1	Clear Edit Histor&y...			G
+0	&View		S	
+1	&Toolbar			C
+1	Status &Bar			C
+1	Window La&youts		S	
+2	&Organize Layouts...			
+2	&Save Layout			G
+2	Save Layout &As...			
+2	R&eload Selected Layout			G
+2	&Default Layout	Alt+D, D		
+2	Add and Arrange Media			
+2	Add Text and Titles			
+2	Add Graphic Elements			
+2	Add Video Transitions			
+2	Add Video Effects			
+2	Audio &Mixing	Alt+D, A		
+2	&Color Correction	Alt+D, C		
+2	&Vegas 14 Default	Alt+D, V		
+2	&0 <EMPTY>	Alt+D, 0		G
+2	&1 <EMPTY>	Alt+D, 1		G
+2	&2 <EMPTY>	Alt+D, 2		G
+2	&3 <EMPTY>	Alt+D, 3		G
+2	&4 <EMPTY>	Alt+D, 4		G
+2	&5 <EMPTY>	Alt+D, 5		G
+2	&6 <EMPTY>	Alt+D, 6		G
+2	&7 <EMPTY>	Alt+D, 7		G
+2	&8 <EMPTY>	Alt+D, 8		G
+2	&9 <EMPTY>	Alt+D, 9		G
+1	&Focus to Timeline	Alt+0		
+1	Window		S	
+2	E&xplorer	Alt+1		
+2	T&rimmer	Alt+2		
+2	&Master Bus	Alt+3		C
+2	&Video Preview	Alt+4		C
+2	Pro&ject Media	Alt+5		
+2	Project N&otes	Alt+6		
+2	&Transitions	Alt+7		
+2	V&ideo FX	Alt+8		
+2	Media &Generators	Alt+9		
+2	Compositors			
+2	&Plug-In Manager	Ctrl+Alt+1		
+2	Video &Scopes	Ctrl+Alt+2		
+2	S&urround Panner	Ctrl+Alt+3		
+2	Edit &Details	Ctrl+Alt+4		
+2	&Mixing Console	Ctrl+Alt+5		
+2	Device Exp&lorer	Ctrl+Alt+6		
+2	Loudness Meters	Ctrl+Alt+7		
+2	Dashboard	Ctrl+Alt+8		
+2	&Hub Explorer (Beta)	Ctrl+Alt+9		
+1	E&xtensions		S	
+2	No Extensions			G
+1	Mixer Previe&w Fader			
+1	Audio Bus Tra&cks	B		
+1	Vide&o Bus Track	Ctrl+Shift+B		
+1	Eve&nt Media Markers		S	
+2	&Show Markers	Ctrl+Shift+K		
+2	Show Marker &Labels			GC
+1	Active Take &Information	Ctrl+Shift+I		
+1	Audio Event &Waveforms	Ctrl+Shift+W		C
+1	Event &Buttons	Ctrl+Shift+C		C
+1	Event Fade &Lengths	Ctrl+Shift+T		C
+1	Video &Event Edge Edit Frames	Ctrl+Shift+O		C
+1	E&vent Headers	Ctrl+Shift+M		
+1	Event Length			
+1	&Audio Envelopes		S	
+2	Track &Mute			C
+2	Track &Volume	V		
+2	&Pan	P		
+1	Video &Envelopes		S	
+2	Track &Mute			C
+2	Track &Composite Level			C
+2	Track &Fade to Color			C
+2	Track &Keyframes			C
+2	Event &Velocity			C
+2	Transition &Progress			C
+2	Motion &Blur Amount			C
+2	Video &Supersampling			C
+1	S&how Envelopes	Ctrl+Shift+E		C
+1	Minimi&ze All Tracks			G
+1	Rebuild Audio Pea&ks	Shift+F5		G
+0	&Insert		S	
+1	A&udio Envelopes		S	
+2	&Mute			
+2	&Volume	Shift+V		G
+2	&Pan	Shift+P		G
+1	V&ideo Envelopes		S	
+2	Track &Mute			
+2	Track &Composite Level			G
+2	Track &Fade to Color			G
+2	Event &Velocity			G
+2	Transition &Progress			G
+1	&Audio Track	Ctrl+Q		
+1	&Video Track	Ctrl+Shift+Q		
+1	Audio &Bus			
+1	Audio In&put Bus			
+1	Audio Assignable &FX...			
+1	Insert Subtitles from File			
+1	Insert Subtitles from Regions			
+1	Add Missing Stream for Selected Event			G
+1	&Empty Event			G
+1	Te&xt...			G
+1	&Generated Media...			G
+1	&Slideshow...			
+1	&Time...			
+1	&Marker	M		
+1	&Region	R		G
+1	Audio CD Trac&k Region	N		
+1	Audio CD Track Inde&x	Shift+N		G
+1	&Command...	C		
+0	&Tools		S	
+1	&Audio		S	
+2	&Open in Audio Editor	Ctrl+E		G
+2	Open &Copy in Audio Editor			G
+2	Edit Source Pro&ject			G
+2	Audio &Event FX...			G
+2	Apply Non-Real-Time Event &FX...			G
+2	&Track FX...			G
+2	&Remove Assignable FX...			G
+1	&Video		S	
+2	&Media FX...			G
+2	Video Event &Pan/Crop...			G
+2	Video Event &FX...			G
+2	&Color Grading	Alt+G		
+2	Motion Trac&king	Alt+M		
+2	Video Track F&X...			G
+2	&Track Motion...			G
+2	Vi&deo Output FX...			
+2	&Guided Video Creator...			
+1	&Render to New Track...	Ctrl+M		G
+1	&Selectively Prerender Video...	Shift+M		G
+1	Clean &Up Prerendered Video...			
+1	Build Dynamic RAM Previe&w	Shift+B		G
+1	&Lay Out Audio CD from Events			G
+1	&Burn Disc		S	
+2	&Track-at-Once Audio CD...			G
+2	&Disc-at-Once Audio CD...			G
+2	&DVD...			G
+2	&Blu-ray Disc...			G
+1	Generate Loudness Log			G
+1	Advanced Save...			
+1	Scrip&ting		S	
+2	Ru&n Script...			
+2	Res&can Script Menu Folder			
+2	Add Timecode to all Media			
+2	Batch Render			
+2	Export Chapters			
+2	Export Closed Captioning for DVD Architect			
+2	Export Closed Captioning for QuickTime			
+2	Export Closed Captioning for Windows Media Player			
+2	Export Closed Captioning for YouTube			
+2	Export EDL			
+2	Export Regions as Subtitles			
+2	Group Video and Audio Events			
+2	Promote Media Closed Captioning			
+2	Promote Media Markers			
+2	Remove Letterboxing			
+2	Remove Timecode from all Media			
+2	Render Audio Tracks			
+2	Repair and Smooth unwanted Section			
+2	Resize Generated Media			
+2	Stereo to Mono			
+1	E&xtensions		S	
+2	Adjust Length of Slow Motion Plugin			
+2	JKL Shuttle Recorder			
+1	&Multicamera		S	
+2	Synchronize Audio to A&lign Events			G
+2	Synchronize Media &Timecode to Align Events			G
+2	Synchronize &Date/Time Stamp to Align Events			G
+2	&Create Multicamera Track			G
+2	E&xpand to Multiple Tracks...			G
+2	&Enable Multicamera Editing	Ctrl+Shift+D		
+2	Edit Multicamera &Audio with Video			G
+2	Show Full Frame in External &Monitor			
+1	&Clean Project Media			
+1	Rebuild Offline &Nested Audio			
+0	&Options		S	
+1	&Quantize to Frames	Alt+F8		
+1	&Enable Snapping	F8		C
+1	&Snap to Grid	Ctrl+F8		
+1	S&nap to Markers	Shift+F8		C
+1	Snap to All Even&ts	Ctrl+Shift+F8		C
+1	Gr&id Spacing		S	
+2	&Ruler Marks			C
+2	Mi&nutes			
+2	&Seconds			
+2	&Milliseconds			
+2	&Frames			
+2	Me&asures			
+2	&Quarter Notes			
+2	Q&uarter Note Triplets			
+2	&8th Notes			
+2	8th Note &Triplets			
+2	&16th Notes			
+2	16t&h Note Triplets			
+2	&32nd Notes			
+2	32nd Note Tr&iplets			
+1	Ruler &Format		S	
+2	&Samples			
+2	&Time			
+2	Se&conds			
+2	Time && Fra&mes			C
+2	Absol&ute Frames			
+2	Measures && &Beats			
+2	Feet and Frames &16mm (40 fpf)			
+2	Feet and Frames &35mm (16 fpf)			
+2	SMPTE Fi&lm Sync IVTC (23.976 fps, Video)			
+2	SMPTE &Film Sync (24 fps, Film)			
+2	SMPTE &EBU (25 fps, Video)			
+2	SMPTE &Non-Drop (29.97 fps, Video)			
+2	SMPTE &Drop (29.97 fps, Video)			
+2	SM&PTE 30 (30 fps, Audio)			
+2	&Audio CD Time			G
+2	Set T&ime at Cursor			
+1	&Automatic Crossfades	Ctrl+Shift+X		C
+1	Q&uickfade Audio Edits			
+1	&Ripple		S	
+2	Auto &Ripple	Ctrl+L		
+2	Affected &Tracks			GC
+2	Affected Tracks, &Bus Tracks, Markers, and Regions			G
+2	&All Tracks, Markers, and Regions			G
+1	Lock En&velopes to Events			C
+1	I&gnore Event Grouping	Ctrl+Shift+U		
+1	Slip All Ta&kes			
+1	&Loop Playback	Ctrl+Shift+L; Q		
+1	Metr&onome			
+1	&Loudness Meters		S	
+2	&Reset Clip			
+2	Reset Meterin&g Engine			
+2	EB&U R 128 Mode			C
+2	&ATSC A 85 Mode			
+2	True Peak &Blocking Filter			
+2	&True Peak Range		S	
+3	-&12 to 0 dB			
+3	-&24 to 0 dB			
+3	-&42 to 0 dB			
+3	-&60 to 0 dB			C
+3	-&78 to 0 dB			
+3	-&90 to 0 dB			
+3	-12&0 to 0 dB			
+3	-13&8 to 0 dB			
+2	Loudness S&cale		S	
+3	&EBU +9			C
+3	E&BU +18			
+3	&Absolute (-23 LUFS)			
+2	Show True P&eak Meter			C
+2	&Show Labels			C
+2	Hold Pea&ks			C
+2	Hold &Valleys			
+1	&Bypass All Audio FX			
+1	&Mute All Audio			
+1	Mute All Vi&deo			
+1	Time&code		S	
+2	&Generate MIDI Timecode	F7		
+2	Generate &MIDI Clock	Shift+F7		
+2	&Trigger from MIDI Timecode	Ctrl+F7		
+1	E&xternal Control			
+1	Customize &Toolbar...			
+1	Customize Timeline Toolbar...			
+1	Customize &Keyboard...			
+1	Export Preferences...			
+1	Import Preferences...			
+1	&Preferences...			
+0	&Help		S	
+1	&Contents and Index	F1		
+1	What's &This?	Shift+F1		
+1	&Keyboard Shortcuts			
+1	Interactive Tutorial&s...			
+1	Check for Software &Updates...			
+1	Check for &Driver Updates...			
+1	Check for News...			G
+1	Deactivate the Software on this PC...			
+1	VEGAS Pro &Home Page			
+1	&VEGAS Community...			
+1	&About ...			

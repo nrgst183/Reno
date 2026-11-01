@@ -1156,11 +1156,11 @@ void addGenerators(std::vector<Def>& out)
                     rgba("Background", "Background", 0, 0, 0, 0, "AdvancedGroup"), dbl("Tracking", "Tracking", 0, -1, 2, "AdvancedGroup"),
                     dbl("LineSpacing", "Line spacing", 1, 0.1, 5, "AdvancedGroup"),
                     group("OutlineGroup", "Outline"),
-                    dbl("OutlineWidth", "Outline width", 0, 0, 50, "OutlineGroup"), rgba("OutlineColor", "Outline color", 0, 0, 0, 1, "OutlineGroup"),
+                    dbl("OutlineWidth", "Outline width", 0, 0, 50, "OutlineGroup"), rgba("OutlineColor", "Outline color", 1, 1, 1, 1, "OutlineGroup"),
                     group("ShadowGroup", "Shadow"),
                     boolean("ShadowEnable", "Shadow enable", false, "ShadowGroup"), rgba("ShadowColor", "Shadow color", 0, 0, 0, 1, "ShadowGroup"),
-                    dbl("ShadowOffsetX", "Shadow offset X", 0.01, -1, 1, "ShadowGroup"), dbl("ShadowOffsetY", "Shadow offset Y", 0.01, -1, 1, "ShadowGroup"),
-                    dbl("ShadowBlur", "Shadow blur", 0.01, 0, 1, "ShadowGroup")};
+                    dbl("ShadowOffsetX", "Shadow offset X", 0.2, -1, 1, "ShadowGroup"), dbl("ShadowOffsetY", "Shadow offset Y", 0.2, -1, 1, "ShadowGroup"),
+                    dbl("ShadowBlur", "Shadow blur", 0.4, 0, 2, "ShadowGroup")};
         // VEGAS's Animation list, and the hidden name it keeps the animation by
         {
             std::vector<std::string> names(kTextAnimations, kTextAnimations + kTextAnimationCount);

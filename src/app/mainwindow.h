@@ -182,5 +182,8 @@ private:
 // Dark colours for the whole application (VEGAS Pro 18's scheme).
 void applyTheme();
 
+// Puts the menu bar's menus in VEGAS Pro 18's order and wording (menuconform.cpp).
+void conformMenusToVegas(QMenuBar* bar);
+
 }  // namespace app
 }  // namespace reno

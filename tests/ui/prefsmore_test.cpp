@@ -33,6 +33,7 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QSettings>
+#include <QSlider>
 #include <QSpinBox>
 #include <QTimer>
 #include <cmath>
@@ -695,13 +696,13 @@ int main(int argc, char** argv)
     // ======================================================================== Audio Device: playback buffering
     {
         prefs(*w, [](QDialog* d) {
-            if (QDoubleSpinBox* s = d->findChild<QDoubleSpinBox*>("playbackBuffer")) s->setValue(0.3);
+            if (QSlider* s = d->findChild<QSlider*>("playbackBuffer")) s->setValue(30);
             else check(false, "the dialog has playbackBuffer");
         });
         check(near(QSettings().value("prefs/playbackBuffer").toDouble(), 0.3) && near(vprefs::real("prefs/playbackBuffer"), 0.3),
               "playback buffering: saved (the sound card is opened with it the next time playback starts)");
         prefs(*w, [](QDialog* d) {
-            if (QDoubleSpinBox* s = d->findChild<QDoubleSpinBox*>("playbackBuffer")) s->setValue(0.05);
+            if (QSlider* s = d->findChild<QSlider*>("playbackBuffer")) s->setValue(5);
         });
     }
 

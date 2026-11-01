@@ -18,6 +18,8 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMouseEvent>
+#include <QPainter>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QSettings>
@@ -418,23 +420,94 @@ namespace {
 // VEGAS's Save Keyboard Map As: "Save this keyboard map as:".
 QString askMapName(QWidget* parent, const QString& start)
 {
+    return askKeyboardMapName(parent, start);
+}
+
+}  // namespace
+
+QString askKeyboardMapName(QWidget* parent, const QString& start)
+{
     QDialog d(parent);
     d.setObjectName("saveKeyboardMapAs");
     d.setWindowTitle("Save Keyboard Map As");
-    QVBoxLayout* v = new QVBoxLayout(&d);
-    v->addWidget(new QLabel("Save this keyboard map as:", &d));
+    // VEGAS's box is 352 x 131 with its frame; positions are the capture's less the frame's 1 and 31
+    QFont f = d.font();
+    f.setPixelSize(12);
+    d.setFont(f);
+    d.setFixedSize(352 - 2, 131 - 31 - 1);
+    QLabel* label = new QLabel("Save this keyboard map as:", &d);
+    label->setGeometry(12 - 1, 42 - 31, 329, 13);
     QLineEdit* name = new QLineEdit(start, &d);
     name->setObjectName("mapName");
+    name->setGeometry(12 - 1, 62 - 31, 329, 23);
     name->selectAll();
-    v->addWidget(name);
-    QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
-    QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
-    QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
-    v->addWidget(bb);
-    d.resize(360, d.sizeHint().height());
+    label->setBuddy(name);
+    QPushButton* ok = new QPushButton("OK", &d);
+    ok->setGeometry(177 - 1, 96 - 31, 75, 23);
+    ok->setDefault(true);
+    QPushButton* cancel = new QPushButton("Cancel", &d);
+    cancel->setGeometry(265 - 1, 96 - 31, 75, 23);
+    QObject::connect(ok, &QPushButton::clicked, &d, &QDialog::accept);
+    QObject::connect(cancel, &QPushButton::clicked, &d, &QDialog::reject);
     if (d.exec() != QDialog::Accepted) return QString();
     return name->text().trimmed();
 }
+
+namespace {
+
+// VEGAS's context buttons: a grid of four columns (TrackView, TrackList, Explorer, Trimmer / Mixer, EditDetails, TrackMotion, Global /
+// Mixing Console) above the command list. It is a tab bar to the code (the index of a tab stays the same); only where the tabs are
+// drawn differs.
+class ContextBar : public QTabBar {
+public:
+    explicit ContextBar(QWidget* parent) : QTabBar(parent)
+    {
+        setExpanding(false);
+        setDrawBase(false);
+        setFocusPolicy(Qt::TabFocus);
+        setUsesScrollButtons(false);
+    }
+    QSize sizeHint() const override { return QSize(493, 73); }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+    int rankOf(int i) const
+    {
+        static const QStringList order = {"trackview", "tracklist", "explorer", "trimmer", "mixer", "editdetails", "trackmotion", "global", "mixingconsole"};
+        QString k;
+        for (QChar c : tabText(i))
+            if (c.isLetterOrNumber()) k += c.toLower();
+        const int r = (int)order.indexOf(k);
+        return r >= 0 ? r : 100 + i;
+    }
+    QRect cell(int i) const
+    {
+        int rank = 0;
+        for (int k = 0; k < count(); ++k)
+            if (k != i && (rankOf(k) < rankOf(i))) ++rank;
+        return QRect((rank % 4) * 123, 1 + (rank / 4) * 24, rank % 4 == 3 ? 493 - 3 * 123 : 123, 24);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        for (int i = 0; i < count(); ++i) {
+            const QRect r = cell(i);
+            const bool sel = i == currentIndex();
+            p.fillRect(r, sel ? (palette().color(QPalette::Window).lightness() > 160 ? QColor(185, 243, 255) : palette().color(QPalette::Highlight).lighter(150)) : palette().color(QPalette::Button));
+            p.setPen(palette().color(QPalette::Mid));
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+            const QColor c = tabTextColor(i);
+            p.setPen(c.isValid() ? c : palette().color(QPalette::ButtonText));
+            p.drawText(r, Qt::AlignCenter, tabText(i));
+        }
+    }
+    void mousePressEvent(QMouseEvent* e) override
+    {
+        for (int i = 0; i < count(); ++i)
+            if (cell(i).contains(e->pos())) setCurrentIndex(i);
+    }
+    void mouseReleaseEvent(QMouseEvent*) override {}
+};
 
 class CustomizeKeyboardDialog : public QDialog {
 public:
@@ -453,94 +526,124 @@ public:
             loaded_ = fromFile;
         }
 
-        QVBoxLayout* v = new QVBoxLayout(this);
-        // ---- Keyboard map: [maps] Save As... Delete (and Reno's Import... / Export...)
-        v->addWidget(new QLabel("Keyboard &map:", this));
-        QHBoxLayout* mapRow = new QHBoxLayout();
+        // VEGAS's dialog is 517 x 490 with its frame; the controls sit where its capture has them (less the frame: 1 px, 31 px).
+        // What Reno has that VEGAS's has not (Import, Export, Reset, the note on the keys of a context) is reached from the
+        // context menus of the map list and the command list, and from the tool tips.
+        QFont df = font();
+        df.setPixelSize(12);
+        setFont(df);
+        setFixedSize(517 - 2, 490 - 31 - 1);
+        auto at = [](QWidget* c, int x, int y, int cw, int ch) { c->setGeometry(x - 1, y - 31, cw, ch); };
+        QLabel* mapLabel = new QLabel("Keyboard &map:", this);
+        at(mapLabel, 12, 41, 493, 13);
         maps_ = new QComboBox(this);
         maps_->setObjectName("keyboardMap");
-        maps_->setMinimumWidth(220);
-        static_cast<QLabel*>(v->itemAt(0)->widget())->setBuddy(maps_);
-        mapRow->addWidget(maps_, 1);
-        saveAs_ = button("Save As...", "saveMapAs", mapRow);
-        delete_ = button("&Delete", "deleteMap", mapRow);
-        import_ = button("Import...", "importMap", mapRow);
-        export_ = button("Export...", "exportMap", mapRow);
-        v->addLayout(mapRow);
+        at(maps_, 12, 59, 323, 21);
+        mapLabel->setBuddy(maps_);
+        saveAs_ = new QPushButton("Save As...", this);
+        saveAs_->setObjectName("saveMapAs");
+        at(saveAs_, 346, 57, 75, 23);
+        delete_ = new QPushButton("&Delete", this);
+        delete_->setObjectName("deleteMap");
+        at(delete_, 430, 57, 75, 23);
+        // Import and Export: not buttons here (VEGAS has none); the map list's context menu has them
+        import_ = new QPushButton("Import...", this);
+        import_->setObjectName("importMap");
+        import_->hide();
+        export_ = new QPushButton("Export...", this);
+        export_->setObjectName("exportMap");
+        export_->hide();
+        for (QPushButton* b : {saveAs_, delete_, import_, export_}) b->setAutoDefault(false);
+        maps_->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(maps_, &QWidget::customContextMenuRequested, this, [this](const QPoint& p) {
+            QMenu m(this);
+            m.addAction("Import...", this, [this] { import_->click(); });
+            m.addAction("Export...", this, [this] { export_->click(); });
+            m.exec(maps_->mapToGlobal(p));
+        });
 
         // ---- contexts (VEGAS's buttons above the list), filter and commands
-        contexts_ = new QTabBar(this);
+        contexts_ = new ContextBar(this);
         contexts_->setObjectName("contexts");
-        contexts_->setExpanding(false);
+        at(contexts_, 12, 129, 493, 73);
         contexts_->addTab("Global");
         std::vector<QString> names;
         for (const FixedKey& f : fixedKeys())
             if (std::find(names.begin(), names.end(), f.context) == names.end()) names.push_back(f.context);
         for (const QString& n : names) contexts_->addTab(n);
-        v->addWidget(contexts_);
         QLabel* fl = new QLabel("Show &commands containing:", this);
-        v->addWidget(fl);
+        at(fl, 12, 90, 493, 13);
         filter_ = new QLineEdit(this);
         filter_->setObjectName("filter");
-        filter_->setClearButtonEnabled(true);
+        at(filter_, 12, 108, 493, 20);
         fl->setBuddy(filter_);
-        v->addWidget(filter_);
         tree_ = new QTreeWidget(this);
         tree_->setObjectName("commands");
+        at(tree_, 12, 201, 493, 106);
         tree_->setColumnCount(2);
         tree_->setHeaderLabels(QStringList() << "Command" << "Shortcut keys");
         tree_->setRootIsDecorated(true);
         tree_->setUniformRowHeights(true);
         tree_->header()->setStretchLastSection(true);
         tree_->setColumnWidth(0, 330);
-        v->addWidget(tree_, 1);
-        note_ = new QLabel(this);
+        tree_->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(tree_, &QWidget::customContextMenuRequested, this, [this](const QPoint& p) {
+            QMenu m(this);
+            QAction* r = m.addAction("Reset to the default keys", this, [this] { reset_->click(); });
+            r->setEnabled(reset_->isEnabled());
+            m.exec(tree_->viewport()->mapToGlobal(p));
+        });
+        note_ = new QLabel(this);       // what the keys of the chosen context do: shown as the tool tip of the list and the buttons
         note_->setObjectName("contextNote");
-        note_->setWordWrap(true);
-        v->addWidget(note_);
+        note_->hide();
 
-        // ---- Shortcut keys: [   ] Add Replace Remove (and Reno's Reset)
-        QHBoxLayout* keyRow = new QHBoxLayout();
+        // ---- Shortcut keys: [   ] Add Replace Remove
         QLabel* kl = new QLabel("&Shortcut keys:", this);
-        keyRow->addWidget(kl);
+        at(kl, 12, 324, 80, 13);
         keyEdit_ = new QKeySequenceEdit(this);
         keyEdit_->setObjectName("shortcutKeys");
+        at(keyEdit_, 96, 321, 157, 20);
         keyEdit_->setMaximumSequenceLength(2);      // VEGAS's own keys go up to two in a row: Alt+D, D
-        keyEdit_->setClearButtonEnabled(true);
         kl->setBuddy(keyEdit_);
-        keyRow->addWidget(keyEdit_, 1);
-        add_ = button("&Add", "addKey", keyRow);
-        replace_ = button("Replace", "replaceKey", keyRow);
-        remove_ = button("&Remove", "removeKey", keyRow);
-        reset_ = button("Reset", "resetCommand", keyRow);
+        add_ = new QPushButton("&Add", this);
+        add_->setObjectName("addKey");
+        at(add_, 262, 319, 75, 23);
+        replace_ = new QPushButton("Replace", this);
+        replace_->setObjectName("replaceKey");
+        at(replace_, 346, 319, 75, 23);
+        remove_ = new QPushButton("&Remove", this);
+        remove_->setObjectName("removeKey");
+        at(remove_, 430, 319, 75, 23);
+        reset_ = new QPushButton("Reset", this);   // Reno's: the command list's context menu
+        reset_->setObjectName("resetCommand");
+        reset_->hide();
+        for (QPushButton* b : {add_, replace_, remove_, reset_}) b->setAutoDefault(false);
         reset_->setToolTip("Gives the selected command its default keys back");
-        v->addLayout(keyRow);
 
         // ---- Shortcut currently assigned to: commands that have the key typed, Locate
-        v->addWidget(new QLabel("Shortcut c&urrently assigned to:", this));
-        QHBoxLayout* ownRow = new QHBoxLayout();
+        QLabel* ol = new QLabel("Shortcut c&urrently assigned to:", this);
+        at(ol, 12, 355, 200, 13);
         owners_ = new QTreeWidget(this);
         owners_->setObjectName("assignedTo");
+        at(owners_, 12, 373, 409, 73);
         owners_->setColumnCount(3);
         owners_->setHeaderLabels(QStringList() << "Context" << "Command" << "Keys");
         owners_->setRootIsDecorated(false);
         owners_->setColumnWidth(0, 90);
         owners_->setColumnWidth(1, 300);
-        owners_->setFixedHeight(84);
-        static_cast<QLabel*>(v->itemAt(v->count() - 1)->widget())->setBuddy(owners_);
-        ownRow->addWidget(owners_, 1);
-        QVBoxLayout* locCol = new QVBoxLayout();
+        ol->setBuddy(owners_);
         locate_ = new QPushButton("Locate", this);
         locate_->setObjectName("locate");
-        locCol->addWidget(locate_);
-        locCol->addStretch(1);
-        ownRow->addLayout(locCol);
-        v->addLayout(ownRow);
+        at(locate_, 430, 373, 75, 23);
+        locate_->setAutoDefault(false);
 
-        QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-        QObject::connect(bb, &QDialogButtonBox::accepted, this, [this] { finish(); });
-        QObject::connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
-        v->addWidget(bb);
+        QPushButton* okb = new QPushButton("OK", this);
+        at(okb, 345, 455, 75, 23);
+        okb->setDefault(true);
+        QPushButton* cancelb = new QPushButton("Cancel", this);
+        at(cancelb, 430, 455, 75, 23);
+        QObject::connect(okb, &QPushButton::clicked, this, [this] { finish(); });
+        QObject::connect(cancelb, &QPushButton::clicked, this, &QDialog::reject);
 
         fillMaps();
         fillTree();
@@ -560,7 +663,6 @@ public:
         QObject::connect(locate_, &QPushButton::clicked, this, [this] { locate(); });
         QObject::connect(owners_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem*, int) { locate(); });
         updateButtons();
-        resize(640, 640);
     }
 
     // ---- for tests and the code below
@@ -796,6 +898,12 @@ public:
     }
 
 private:
+    void setNote(const QString& t)
+    {
+        note_->setText(t);
+        tree_->setToolTip(t);
+        contexts_->setToolTip(t);
+    }
     QPushButton* button(const QString& text, const char* name, QHBoxLayout* row)
     {
         QPushButton* b = new QPushButton(text, this);
@@ -886,7 +994,7 @@ private:
                     it->setToolTip(1, "Changed (default: " + (c.defaults.isEmpty() ? QString("none") : keysText(c.defaults)) + ")");
                 }
             }
-            note_->setText("The main window's commands: their keys work wherever the focus is in Reno's window.");
+            setNote("The main window's commands: their keys work wherever the focus is in Reno's window.");
         } else {
             const QString ctx = contexts_->tabText(contexts_->currentIndex());
             for (const FixedKey& k : fixedKeys()) {
@@ -894,9 +1002,9 @@ private:
                 QTreeWidgetItem* it = new QTreeWidgetItem(group(ctx), QStringList() << k.command << k.keysText);
                 it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             }
-            note_->setText(QString("Keys %1 acts on while it has the keyboard. They are fixed in Reno (VEGAS's defaults) and "
-                                   "cannot be changed here; a Global key given the same key takes it over.")
-                               .arg(ctx == "Track View" ? QString("the timeline") : "the " + ctx));
+            setNote(QString("Keys %1 acts on while it has the keyboard. They are fixed in Reno (VEGAS's defaults) and "
+                            "cannot be changed here; a Global key given the same key takes it over.")
+                        .arg(ctx == "Track View" ? QString("the timeline") : "the " + ctx));
         }
         for (const QString& g : order) tree_->addTopLevelItem(groups[g]);
         tree_->expandAll();
@@ -986,7 +1094,7 @@ private:
     QString mapName_;
     QComboBox* maps_ = nullptr;
     QPushButton *saveAs_ = nullptr, *delete_ = nullptr, *import_ = nullptr, *export_ = nullptr;
-    QTabBar* contexts_ = nullptr;
+    ContextBar* contexts_ = nullptr;
     QLineEdit* filter_ = nullptr;
     QTreeWidget* tree_ = nullptr;
     QLabel* note_ = nullptr;

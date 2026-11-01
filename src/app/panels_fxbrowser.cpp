@@ -76,6 +76,8 @@
 #include <QDrag>
 #include <QActionGroup>
 #include <QSplitter>
+#include <QTabBar>
+#include <cmath>
 #include <QFileSystemModel>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -123,8 +125,78 @@ struct FxRow {
     QString name, group, vendor, data, tip;
     bool works = true;
     bool package = false;  // a saved plug-in package (its group is the packages folder, listed last)
+    bool favorite = false;
     std::string pluginId;
 };
+
+// VEGAS 18's category bar: flat text tabs over the list (All Plug-ins, the groups, Third Party, Favorites). It keeps a data string
+// per tab, as the combo box it replaces did.
+class CategoryBar : public QTabBar {
+public:
+    explicit CategoryBar(QWidget* parent) : QTabBar(parent)
+    {
+        setExpanding(false);
+        setDrawBase(false);
+        setUsesScrollButtons(true);
+        setElideMode(Qt::ElideNone);
+        setFocusPolicy(Qt::NoFocus);
+        setObjectName("fxCategory");
+        setStyleSheet("QTabBar { background: transparent; }"
+                      "QTabBar::tab { background: transparent; color: #dcdcdc; padding: 3px 9px; border: none; margin: 0px; }"
+                      "QTabBar::tab:selected { background: #464646; color: #ffffff; }"
+                      "QTabBar::tab:hover:!selected { background: #383838; }");
+    }
+    QVariant currentData() const { return currentIndex() >= 0 ? tabData(currentIndex()) : QVariant(); }
+    void clear() { while (count()) removeTab(0); }
+    void addItem(const QString& text, const QString& data)
+    {
+        const int i = addTab(text);
+        setTabData(i, data);
+    }
+    int findData(const QString& data) const
+    {
+        for (int i = 0; i < count(); ++i)
+            if (tabData(i).toString() == data) return i;
+        return -1;
+    }
+};
+
+// A star for the list's favourites (outlined when the plug-in is not one).
+QIcon starIcon(bool filled)
+{
+    static QIcon on, off;
+    QIcon& ic = filled ? on : off;
+    if (ic.isNull()) {
+        QPixmap pm(14, 14);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QPolygonF star;
+        for (int k = 0; k < 10; ++k) {
+            const double a = -M_PI / 2 + k * M_PI / 5, r = k % 2 ? 2.8 : 6.2;
+            star << QPointF(7 + r * std::cos(a), 7.4 + r * std::sin(a));
+        }
+        p.setPen(QPen(filled ? QColor(240, 190, 40) : QColor(160, 160, 160), 1.0));
+        p.setBrush(filled ? QColor(240, 190, 40) : Qt::NoBrush);
+        p.drawPolygon(star);
+        ic = QIcon(pm);
+    }
+    return ic;
+}
+
+// The magnifier at the end of the search box.
+QIcon searchIcon()
+{
+    QPixmap pm(16, 16);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(QColor(70, 190, 255), 1.6));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QRectF(2, 2, 8, 8));
+    p.drawLine(QPointF(9, 9), QPointF(13.5, 13.5));
+    return QIcon(pm);
+}
 
 // The presets of the plug-in picked in a Video FX / Transitions / Media Generators window, as thumbnails. Dragging
 // one carries a package of that effect with the preset's settings.
@@ -136,8 +208,8 @@ public:
         setDragDropMode(QAbstractItemView::DragOnly);
         setDefaultDropAction(Qt::CopyAction);
         setViewMode(QListView::IconMode);
-        setIconSize(QSize(96, 54));
-        setGridSize(QSize(112, 82));
+        setIconSize(QSize(120, 68));
+        setGridSize(QSize(132, 100));
         setResizeMode(QListView::Adjust);
         setMovement(QListView::Static);
         setWordWrap(true);
@@ -173,7 +245,7 @@ struct FxBrowser::Impl {
     int packagesListener = 0;
     // VEGAS 18's category bar: All plug-ins, Favorites, Third party (with Filter by provider) and each plug-in group;
     // favorites are starred and saved.
-    QComboBox* category = nullptr;
+    CategoryBar* category = nullptr;
     QComboBox* provider = nullptr;
     QLabel* providerLabel = nullptr;
     QString favoritesKey() const { return QString("fxFavorites/%1").arg((int)kind); }
@@ -223,6 +295,25 @@ struct FxBrowser::Impl {
         return j.dump();
     }
 
+    // The line under the lists, as VEGAS's: the picked plug-in's name and what it is (the counts show while none is picked).
+    QString counts;
+    void describe(QTreeWidgetItem* it)
+    {
+        if (!status) return;
+        if (it && it->data(0, kRoleLeaf).toBool() && !it->data(0, kRolePackage).toBool()) {
+            QString name = it->text(0);
+            const QString tip = it->toolTip(0);
+            QString what = kind == AudioFx ? QString("audio effect") : QString("OFX, 32-bit floating point");
+            if (kind == AudioFx) {
+                const int i = name.lastIndexOf("  [");
+                if (i > 0) { what = name.mid(i + 3).chopped(1) + ", 32-bit floating point"; name = name.left(i); }
+            }
+            status->setText(name + ": " + what);
+        } else {
+            status->setText(counts);
+        }
+    }
+
     void fillPresets(QTreeWidgetItem* it)
     {
         if (!presets) return;
@@ -245,7 +336,7 @@ struct FxBrowser::Impl {
         }
         presetList = presetsFor(id, presetContextWord());
         presetsTitle->setText(QString("Presets of %1 (%2): drag one onto the timeline").arg(label).arg(presetList.size() + 1));
-        QPixmap blank(96, 54);
+        QPixmap blank(120, 68);
         blank.fill(QColor(40, 40, 44));
         for (int k = -1; k < (int)presetList.size(); ++k) {
             auto* item = new QListWidgetItem(QIcon(blank), k < 0 ? QString("(Default)") : QString::fromStdString(presetList[(size_t)k].name), presets);
@@ -261,7 +352,7 @@ struct FxBrowser::Impl {
     {
         const int k = item->data(Qt::UserRole + 1).toInt();
         const Json state = k >= 0 && (size_t)k < presetList.size() ? presetToState(presetList[(size_t)k]) : Json();
-        return fxThumbnail(presetPlugin, presetContextWord(), state, QSize(96, 54), phase);
+        return fxThumbnail(presetPlugin, presetContextWord(), state, QSize(120, 68), phase);
     }
 
     void drawNextThumb()
@@ -391,10 +482,11 @@ struct FxBrowser::Impl {
                 if (!r.package) groups.insert(r.group);
             QSignalBlocker b(category);
             category->clear();
-            category->addItem("All plug-ins", "all");
-            category->addItem(QString::fromUtf8("\u2605 Favorites"), "favorites");
-            category->addItem("Third party", "thirdparty");
+            category->addItem("All Plug-ins", "all");
             for (const QString& g : groups) category->addItem(g, "group:" + g);
+            category->addItem("Third Party", "thirdparty");
+            category->addItem("Favorites", "favorites");
+            category->setTabIcon(category->count() - 1, starIcon(true));
             const int i = category->findData(cat);
             category->setCurrentIndex(i >= 0 ? i : 0);
             cat = category->currentData().toString();
@@ -419,7 +511,7 @@ struct FxBrowser::Impl {
             if (cat == "favorites" && !favs.contains(favoriteKeyOf(r))) continue;
             if (cat == "thirdparty" && (providerOf(r).isEmpty() || (!pick.isEmpty() && providerOf(r) != pick))) continue;
             if (cat.startsWith("group:") && r.group != cat.mid(6)) continue;
-            if (favs.contains(favoriteKeyOf(r))) r.name = QString::fromUtf8("\u2605 ") + r.name;
+            r.favorite = favs.contains(favoriteKeyOf(r));
             shown.push_back(r);
         }
         std::sort(shown.begin(), shown.end(), [](const FxRow& a, const FxRow& b) {
@@ -440,12 +532,14 @@ struct FxBrowser::Impl {
                 group = new QTreeWidgetItem(tree);
                 group->setText(0, r.group);
                 group->setFlags(Qt::ItemIsEnabled);
+                group->setSizeHint(0, QSize(1, 1));
                 QFont f = group->font(0);
                 f.setBold(true);
                 group->setFont(0, f);
             }
             auto* it = new QTreeWidgetItem(group);
             it->setText(0, r.name);
+            if (!r.package) it->setIcon(0, starIcon(r.favorite));
             it->setData(0, kRoleData, r.data);
             it->setData(0, kRoleLeaf, true);
             it->setData(0, kRoleWorks, r.works);
@@ -466,9 +560,10 @@ struct FxBrowser::Impl {
         }
         tree->setUpdatesEnabled(true);
 
-        if (noCatalog) status->setText("No plug-ins known yet");
-        else if (filtering) status->setText(QString("%1 of %2 %3").arg(shown.size()).arg(all.size()).arg(noun(all.size() != 1)));
-        else status->setText(QString("%1 %2").arg(all.size()).arg(noun(all.size() != 1)));
+        if (noCatalog) counts = "No plug-ins known yet";
+        else if (filtering) counts = QString("%1 of %2 %3").arg(shown.size()).arg(all.size()).arg(noun(all.size() != 1));
+        else counts = QString("%1 %2").arg(all.size()).arg(noun(all.size() != 1));
+        describe(tree->currentItem());
     }
 };
 
@@ -480,32 +575,39 @@ FxBrowser::FxBrowser(Kind kind, QWidget* parent) : QWidget(parent), d(new Impl()
     const char* format = kind == VideoFx ? kMimeVideoFx : kind == AudioFx ? kMimeAudioFx : kind == Generators ? kMimeGenerator : kMimeTransition;
 
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(4, 4, 4, 4);
+    root->setContentsMargins(4, 4, 4, 0);
     root->setSpacing(4);
     d->search = new QLineEdit(this);
     d->search->setObjectName("searchBox");
     d->search->setClearButtonEnabled(true);
-    d->search->setPlaceholderText("Search plug-ins (name, group or vendor)");
+    d->search->setToolTip("Search plug-ins (name, group or vendor)");
+    d->search->addAction(searchIcon(), QLineEdit::TrailingPosition);
+    d->search->setFixedWidth(220);
+    QHBoxLayout* top = new QHBoxLayout();
+    top->setContentsMargins(0, 0, 0, 0);
+    top->addWidget(d->search);
+    top->addStretch(1);
+    root->addLayout(top);
     if (kind != AudioFx) {
         QHBoxLayout* cats = new QHBoxLayout();
-        d->category = new QComboBox(this);
-        d->category->setObjectName("fxCategory");
+        cats->setContentsMargins(0, 0, 0, 0);
+        cats->setSpacing(4);
+        d->category = new CategoryBar(this);
         d->providerLabel = new QLabel("Filter:", this);
         d->provider = new QComboBox(this);
         d->provider->setObjectName("fxProvider");
         cats->addWidget(d->category, 1);
         cats->addWidget(d->providerLabel);
-        cats->addWidget(d->provider, 1);
+        cats->addWidget(d->provider);
         root->addLayout(cats);
-        QObject::connect(d->category, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [impl](int) {
-            QSettings().setValue(QString("fxCategory/%1").arg((int)impl->kind), impl->category->currentData().toString());
+        QObject::connect(d->category, &QTabBar::currentChanged, this, [impl](int) {
+            QSettings().setValue(QString("fxCategory/%1").arg((int)impl->kind), impl->category->currentData());
             impl->rebuild();
         });
         QObject::connect(d->provider, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [impl](int) { impl->rebuild(); });
         QSignalBlocker b(d->category);
-        d->category->addItem("All plug-ins", QSettings().value(QString("fxCategory/%1").arg((int)kind), "all").toString());
+        d->category->addItem("All Plug-ins", QSettings().value(QString("fxCategory/%1").arg((int)kind), "all").toString());
     }
-    root->addWidget(d->search);
 
     d->stack = new QStackedWidget(this);
     d->tree = new FxTree(format, d->stack);
@@ -514,7 +616,8 @@ FxBrowser::FxBrowser(Kind kind, QWidget* parent) : QWidget(parent), d(new Impl()
     d->tree->setSelectionMode(QAbstractItemView::SingleSelection);
     d->tree->setIndentation(14);
     d->tree->setAnimated(false);
-    d->tree->setUniformRowHeights(true);
+    d->tree->setUniformRowHeights(false);   // (the group rows are a sliver: VEGAS lists the plug-ins flat under its category tabs)
+    d->tree->setIconSize(QSize(14, 14));
     d->stack->addWidget(d->tree);
 
     d->emptyPage = new QWidget(d->stack);
@@ -533,13 +636,13 @@ FxBrowser::FxBrowser(Kind kind, QWidget* parent) : QWidget(parent), d(new Impl()
     if (kind == AudioFx) {
         root->addWidget(d->stack, 1);
     } else {
-        QSplitter* split = new QSplitter(Qt::Vertical, this);
+        QSplitter* split = new QSplitter(Qt::Horizontal, this);
         split->setObjectName("fxBrowserSplit");
         split->setChildrenCollapsible(false);
         split->addWidget(d->stack);
         QWidget* pbox = new QWidget(split);
         QVBoxLayout* pv = new QVBoxLayout(pbox);
-        pv->setContentsMargins(0, 2, 0, 0);
+        pv->setContentsMargins(0, 0, 0, 0);
         pv->setSpacing(2);
         d->presetsTitle = new QLabel("Presets: pick a plug-in above", pbox);
         d->presetsTitle->setObjectName("fxPresetsTitle");
@@ -547,11 +650,14 @@ FxBrowser::FxBrowser(Kind kind, QWidget* parent) : QWidget(parent), d(new Impl()
         d->presets = new PresetList(format, pbox);
         d->presets->setObjectName("fxPresetThumbs");
         d->presets->setMinimumHeight(90);
+        d->presetsTitle->hide();   // (VEGAS shows the presets with no heading)
         pv->addWidget(d->presetsTitle);
         pv->addWidget(d->presets, 1);
         split->addWidget(pbox);
-        split->setStretchFactor(0, 3);
-        split->setStretchFactor(1, 2);
+        split->setStretchFactor(0, 0);
+        split->setStretchFactor(1, 1);
+        split->setSizes({210, 480});
+        d->stack->setMinimumWidth(140);
         root->addWidget(split, 1);
         d->thumbTimer = new QTimer(this);
         d->animTimer = new QTimer(this);
@@ -571,7 +677,7 @@ FxBrowser::FxBrowser(Kind kind, QWidget* parent) : QWidget(parent), d(new Impl()
         QObject::connect(d->presets, &QListWidget::itemActivated, this, [this](QListWidgetItem* it) {
             if (it && onActivated) onActivated(d->kind, it->data(Qt::UserRole).toString().toStdString());
         });
-        QObject::connect(d->tree, &QTreeWidget::currentItemChanged, this, [impl](QTreeWidgetItem* it, QTreeWidgetItem*) { impl->fillPresets(it); });
+        QObject::connect(d->tree, &QTreeWidget::currentItemChanged, this, [impl](QTreeWidgetItem* it, QTreeWidgetItem*) { impl->fillPresets(it); impl->describe(it); });
     }
 
     d->status = new QLabel(this);

@@ -172,7 +172,7 @@ int main(int argc, char** argv)
         if (!d) return;
         QTabWidget* tabs = child<QTabWidget>(d, "tabs");
         const QStringList want = {"General", "Video", "Preview Device", "Audio", "Audio Device", "MIDI", "VST Effects", "Editing", "Display",
-                                  "Sync", "External Control && Automation", "Deprecated Features", "File I/O", "Reno"};
+                                  "CD Settings", "Sync", "External Control && Automation", "Deprecated Features", "File I/O", "Reno"};
         QStringList have;
         for (int k = 0; tabs && k < tabs->count(); ++k) have << tabs->tabText(k);
         check(have == want, "preferences: VEGAS's tabs in VEGAS's order (and Reno's own last)", have.join(", ").toStdString());
@@ -183,7 +183,7 @@ int main(int argc, char** argv)
         }
         if (tabs) tabs->setCurrentIndex(0);
         QListWidget* gen = child<QListWidget>(d, "generalList");
-        check(gen && gen->count() == 20, "preferences: General has VEGAS 18's check boxes that do something in Reno (20 of its 34)", gen ? std::to_string(gen->count()) : "");
+        check(gen && gen->count() == 31, "preferences: General has VEGAS 18's check boxes (31 of its 34 are listed; 20 do something in Reno)", gen ? std::to_string(gen->count()) : "");
         // untick "Always show marker lines" (found by its key), change the recent count, then Default All restores them
         QListWidgetItem* lines = nullptr;
         for (int k = 0; gen && k < gen->count(); ++k)

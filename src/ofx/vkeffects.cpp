@@ -18,7 +18,7 @@
 namespace reno {
 namespace ofx {
 namespace builtin {
-namespace more { double unsharpSigma(double radius, int W, int H, bool& none); void chromaBlur8Widths(Ctx& c, int& rh, int bv[3]); }
+namespace more { double unsharpSigma(double radius, int W, int H, bool& none); }
 
 namespace {
 
@@ -497,12 +497,12 @@ AreaPush areaOf(Ctx& c, int W, int H)
     double cx, cy;
     c.xy("Center", cx, cy);
     const double sh = clampd(c.d("ScalingHorizontal"), 0, 10);
-    const double sv = c.b("ScalingProportional") ? sh * W / std::max(1, H) : clampd(c.d("ScalingVertical"), 0, 10);
+    const double sv = c.b("ScalingProportional") ? sh : clampd(c.d("ScalingVertical"), 0, 10);
     AreaPush a;
     a.rx = std::max(1e-3, sh * W * 0.5);
     a.ry = std::max(1e-3, sv * H * 0.5);
-    a.px0 = cx * W;
-    a.py0 = (1 - cy) * H;
+    a.px0 = cx * W + 0.5;
+    a.py0 = (1 - cy) * H + 0.5;
     return a;
 }
 
@@ -511,7 +511,7 @@ AreaPush areaOf(Ctx& c, int W, int H)
 bool planSwirl(Ctx& c, Plan& p)
 {
     const AreaPush a = areaOf(c, (int)p.w, (int)p.h);
-    const D2 X = d2(a.px0), Y = d2(a.py0), RX = d2(a.rx), RY = d2(a.ry), T = d2(clampd(c.d("Amount"), -1, 1) * 2 * 2 * kPi);
+    const D2 X = d2(a.px0), Y = d2(a.py0), RX = d2(a.rx), RY = d2(a.ry), T = d2(clampd(c.d("Amount"), -1, 1) * -15.0);
     P::Swirl pc = {p.w, p.h, X.h, X.l, Y.h, Y.l, RX.h, RX.l, RY.h, RY.l, T.h, T.l};
     p.add("swirl", 0, 1, p.w, p.h).setPush(pc);
     return true;
@@ -529,8 +529,8 @@ bool planPinchPunch(Ctx& c, Plan& p)
 bool planWave(Ctx& c, Plan& p)
 {
     const double W = p.w, H = p.h;
-    const D2 vn = d2(clampd(c.d("VerticalWaves"), 0, 1000)), hn = d2(clampd(c.d("HorizontalWaves"), 0, 1000)), va = d2(clampd(c.d("VerticalAmplitude"), -1, 1) * H),
-             ha = d2(clampd(c.d("HorizontalAmplitude"), -1, 1) * W), vp = d2(c.d("VerticalPhase")), hp = d2(c.d("HorizontalPhase"));
+    const D2 vn = d2(clampd(c.d("VerticalWaves"), 0, 1000)), hn = d2(clampd(c.d("HorizontalWaves"), 0, 1000)), va = d2(clampd(c.d("VerticalAmplitude"), -1, 1) * W),
+             ha = d2(clampd(c.d("HorizontalAmplitude"), -1, 1) * H), vp = d2(c.d("VerticalPhase")), hp = d2(c.d("HorizontalPhase"));
     P::Wave pc = {p.w, p.h, vn.h, vn.l, hn.h, hn.l, va.h, va.l, ha.h, ha.l, vp.h, vp.l, hp.h, hp.l};
     p.add("wave", 0, 1, p.w, p.h).setPush(pc);
     return true;
@@ -607,27 +607,8 @@ bool planBroadcastColors(Ctx& c, Plan& p)
 
 bool planChromaBlur(Ctx& c, Plan& p)
 {
-    if (c.levels) {
-        // 8-bit: chromaBlur8() in builtins_more_blur.cpp - three box passes across (widths 1, 1, 2 rh + 1) and three down on U and V, in the CPU's float steps
-        int rh, bv[3];
-        more::chromaBlur8Widths(c, rh, bv);
-        const int rad[6] = {0, 0, rh, (bv[0] - 1) / 2, (bv[1] - 1) / 2, (bv[2] - 1) / 2};
-        for (int k = 0; k < 6; ++k)
-            if (rad[k] < 0 || 2 * rad[k] + 1 > (int)(k < 3 ? p.w : p.h)) return false;      // (a window wider than the frame: the CPU's reads run off the row)
-        const int a = p.addBuf(p.w, p.h, 4), b = p.addBuf(p.w, p.h, 4);
-        P::Chroma8Split sp = {p.w, p.h};
-        p.add("chroma8_split", 0, a, p.w, p.h).setPush(sp);
-        int from = a, to = b;
-        for (int k = 0; k < 6; ++k) {
-            P::Chroma8BoxH pc = {p.w, p.h, (uint32_t)rad[k], 0u};
-            if (k < 3) p.add("chroma8_box_h", from, to, p.h, 1).setPush(pc);
-            else p.add("chroma8_box_v", from, to, p.w, 1).setPush(pc);
-            std::swap(from, to);
-        }
-        P::Chroma8Join jn = {p.w, p.h};
-        p.add("chroma8_join", from, 1, p.w, p.h).setPush(jn);
-        return true;
-    }
+    // 8-bit: chromaBlur8() in builtins_more_blur.cpp is a Gaussian on the colour differences with a clamp that has no kernel here: the CPU draws it
+    if (c.levels) return false;
     const std::vector<float> kx = chromaBlurKernel(false, c.px(clampd(c.d("HorizontalPixels"), 0, 10) + 1.0)), ky = chromaBlurKernel(true, c.px(2.4 * clampd(c.d("VerticalPixels"), 0, 10) + 1.0));
     const int t = p.addBuf(p.w, p.h, 4), t2 = p.addBuf(p.w, p.h, 4), t3 = p.addBuf(p.w, p.h, 4);
     {
@@ -1320,7 +1301,7 @@ const std::vector<CaseSet>& caseSets()
         {"spherize", {{"bulge", PM{{"Amount", {0.8}}, {"Center", {0.4, 0.6}}, {"ScalingHorizontal", {1.2}}}}, {"pinch", PM{{"Amount", {-0.7}}, {"ScalingProportional", {0}}, {"ScalingVertical", {0.6}}}}}},
         {"swirl", {{"strong", PM{{"Amount", {1.0}}}}, {"back", PM{{"Amount", {-0.6}}, {"Center", {0.3, 0.4}}, {"ScalingHorizontal", {0.8}}}}}},
         {"pinchpunch", {{"punch", PM{{"Amount", {1.0}}}}, {"pinch", PM{{"Amount", {-0.8}}, {"Center", {0.6, 0.3}}}}}},
-        {"wave", {{"strong", PM{{"VerticalWaves", {6}}, {"HorizontalWaves", {9}}, {"VerticalAmplitude", {0.15}}, {"HorizontalAmplitude", {0.1}}, {"VerticalPhase", {0.3}}, {"HorizontalPhase", {0.7}}}}}},
+        {"wave", {{"medium", PM{{"VerticalWaves", {14}}, {"HorizontalWaves", {14}}, {"VerticalAmplitude", {0.05}}, {"HorizontalAmplitude", {0.05}}}}, {"phase", PM{{"VerticalWaves", {5}}, {"VerticalAmplitude", {0.04}}, {"VerticalPhase", {0.8}}}}, {"strong", PM{{"VerticalWaves", {6}}, {"HorizontalWaves", {9}}, {"VerticalAmplitude", {0.15}}, {"HorizontalAmplitude", {0.1}}, {"VerticalPhase", {0.3}}, {"HorizontalPhase", {0.7}}}}}},
         {"minandmax", {{"max", PM{{"Operation", {1}}, {"HorizontalRange", {0.5}}, {"VerticalRange", {0.7}}}}, {"min round", PM{{"Operation", {0}}, {"HorizontalRange", {0.8}}, {"VerticalRange", {0.8}}, {"CircularAreaProcessing", {1}}}},
                        {"max round", PM{{"Operation", {1}}, {"HorizontalRange", {1.0}}, {"VerticalRange", {0.6}}, {"CircularAreaProcessing", {1}}}}}},
         {"gradientmap", {{"mix", PM{{"Amount", {0.7}}, {"Mode", {0}}}}, {"add", PM{{"Amount", {0.9}}, {"Mode", {1}}}}}},

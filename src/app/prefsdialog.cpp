@@ -24,10 +24,12 @@
 #include <QDialog>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
+#include <QCursor>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -46,6 +48,8 @@
 #include <QSpinBox>
 #include <QStorageInfo>
 #include <QTabWidget>
+#include <QTabBar>
+#include <QMouseEvent>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -55,6 +59,12 @@
 #include <QMediaDevices>
 #endif
 #include <cmath>
+#include <cstring>
+#include <map>
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#endif
 #include <functional>
 
 namespace reno {
@@ -99,7 +109,27 @@ QString freeSpace(const QString& folder)
 {
     const QString d = QDir::fromNativeSeparators(folder.trimmed());
     const QStorageInfo st(d.isEmpty() ? QDir::tempPath() : d);
-    return st.isValid() && st.bytesAvailable() > 0 ? QString("%1 MB").arg(st.bytesAvailable() / (1024 * 1024)) : QString("-");
+    if (!st.isValid() || st.bytesAvailable() <= 0) return QString("-");
+    const double gb = (double)st.bytesAvailable() / (1024.0 * 1024.0 * 1024.0);
+    return gb >= 1.0 ? QString("%1 Gigabytes").arg(gb, 0, 'f', 1) : QString("%1 Megabytes").arg(st.bytesAvailable() / (1024 * 1024));
+}
+
+// The computer's memory in MB (what the Dynamic RAM Preview can be set up to).
+qint64 physicalMemoryMb()
+{
+#ifdef _WIN32
+    MEMORYSTATUSEX m;
+    m.dwLength = sizeof(m);
+    if (GlobalMemoryStatusEx(&m)) return (qint64)(m.ullTotalPhys / (1024 * 1024));
+    return 0;
+#else
+    QFile f("/proc/meminfo");
+    if (f.open(QIODevice::ReadOnly)) {
+        const QList<QByteArray> parts = f.readLine().simplified().split(' ');
+        if (parts.size() >= 2) return parts[1].toLongLong() / 1024;
+    }
+    return 0;
+#endif
 }
 
 class ColorButton : public QToolButton {
@@ -107,7 +137,7 @@ public:
     ColorButton(QWidget* parent, const char* name) : QToolButton(parent)
     {
         setObjectName(name);
-        setFixedSize(48, 20);
+        setMinimumSize(24, 18);
         QObject::connect(this, &QToolButton::clicked, this, [this] {
             const QColor c = QColorDialog::getColor(color_, window(), "Color", QColorDialog::ShowAlphaChannel);
             if (c.isValid()) setColor(c);
@@ -211,16 +241,27 @@ struct GeneralItem {
 };
 const GeneralItem kGeneralItems[] = {
     {"prefs/openLastProject", "Automatically open last project on startup", ""},
-    {"prefs/confirmMediaDelete", "Confirm media deletion when still in use", ""},
+    {"prefs/confirmMediaDelete", "Confirm media file deletion when still in use", ""},
     {"prefs/savePrerenders", "Save active prerenders on project close", ""},
     {"prefs/closeMediaInactive", "Close media files when not the active application", ""},
     {"prefs/closePortsInactive", "Close audio and MIDI ports when not the active application", ""},
+    {"prefs/newsfeed", "Use Newsfeed to stay informed about VEGAS product updates", "Reno has no such feature"},
     {"prefs/promptMatchMedia", "Prompt to adjust project settings to match first media added to timeline", ""},
+    {"prefs/fileAssociations", "Check project file type associations at startup", "Reno has no such feature"},
+    {"prefs/joystick", "Enable joystick support", "Reno has no such feature"},
+    {"prefs/detect360", "Enable auto-detection of 360 media", "Reno has no such feature"},
     {"prefs/wave64", "Render large Wave files as Wave64", ""},
     {"prefs/wave4gb", "Allow Wave renders up to 4 GB", ""},
+    {"prefs/ignoreFactChunk", "Ignore fact chunk when opening compressed Wave files", "Reno has no such feature"},
+    {"prefs/pulldownRemoval", "Allow pulldown removal when opening 24p DV", "Reno has no such feature"},
+    {"prefs/aafFrameUnit", "AAF Export - Use frame unit for audio", "Reno has no such feature"},
+    {"prefs/aafClipEnvelope", "AAF Export - Use clip-based audio envelope", "Reno has no such feature"},
     {"prefs/mxfMultichannel", "Import MXF as multichannel", ""},
     {"prefs/stereoDualMono", "Import stereo as dual mono", ""},
+    {"prefs/noRecompress", "Enable no-recompress rendering", "Reno has no such feature"},
     {"prefs/qsv", "Enable QSV Encoding and Decoding (where available)", ""},
+    {"prefs/acesGpu", "Use GPU processing for ACES color management", "Reno has no such feature"},
+    {"prefs/openclInterop", "Enable OpenCL/GL Interop for Intel GPU", "Reno has no such feature"},
     {"prefs/promptKeepRecorded", "Prompt to keep files after recording", ""},
     {"prefs/fxUndo", "Create undos for FX parameter changes", ""},
     {"prefs/autoNameMarkers", "Automatically name regions and markers if not playing", ""},
@@ -260,19 +301,489 @@ QColor trackDefaultColor(int k)
     return colors[(size_t)k % 8];
 }
 
+// ---- VEGAS's Preferences layout: every tab's controls at the positions and sizes of the real dialog (prefs_layout.inc, from a
+// capture of VEGAS Pro 18). The dialog is 435 x 686 pixels with the title bar and frame included; the positions are
+// relative to the window's top left, so this is how far the client area is in from it.
+#include "prefs_layout.inc"
+
+constexpr int kFrameX = 1, kFrameY = 31;
+
+// Texts compare without the trailing spaces VEGAS leaves in some (the mnemonic & stays in).
+QString trimmed(const char* t) { return QString::fromUtf8(t).trimmed(); }
+
+// A color button as VEGAS draws them (the capture lists them as owner-drawn buttons).
+// One tab's page: places the controls Reno has at the cells VEGAS has for them, by their text, and finish() puts a disabled
+// stand-in at every cell Reno has nothing for (so the page always has all of VEGAS's controls, in its places).
+class Pg {
+public:
+    Pg() = default;
+    Pg(QWidget* inner, const PrefTabCells* cells) : inner_(inner), t_(cells), used_((size_t)cells->count, false) {}
+    QWidget* parent() const { return inner_; }
+
+    // A label: the & of the text is a mnemonic only when the label has a control to give the focus to (set with link()).
+    static QString plainLabel(QString t)
+    {
+        t.replace("&&", "\x01");
+        t.remove('&');
+        t.replace('\x01', '&');
+        return t;
+    }
+    static void link(QLabel* lab, QWidget* w)
+    {
+        if (!lab || !w) return;
+        if (w->focusPolicy() != Qt::NoFocus && !qobject_cast<QLabel*>(w)) {
+            lab->setText(lab->property("mnemonicText").toString());
+            lab->setBuddy(w);
+        }
+    }
+    QLabel* newLabel(const QString& text)
+    {
+        QLabel* l = new QLabel(plainLabel(text), inner_);
+        l->setProperty("mnemonicText", text);
+        return l;
+    }
+
+    // The first cell of this kind with this text (the n-th, counting from 'n'), or -1.
+    int find(const char* kind, const QString& text, int n = 0) const
+    {
+        for (int i = 0; i < t_->count; ++i)
+            if (!strcmp(t_->cells[i].kind, kind) && trimmed(t_->cells[i].text) == text.trimmed() && n-- == 0) return i;
+        return -1;
+    }
+    // The first cell of 'kind' after the cell 'from' that no control has taken yet.
+    int after(int from, const char* kind) const
+    {
+        for (int i = from + 1; i < t_->count; ++i)
+            if (!used_[(size_t)i] && !strcmp(t_->cells[i].kind, kind)) return i;
+        return -1;
+    }
+    QRect rect(int i) const { return QRect(t_->cells[i].x - 11, t_->cells[i].y - 96, t_->cells[i].w, t_->cells[i].h); }
+    template <class W> W* put(W* w, int cell)
+    {
+        if (cell < 0) {
+            w->hide();
+            return w;
+        }
+        used_[(size_t)cell] = true;
+        w->setParent(inner_);
+        w->setGeometry(rect(cell));
+        w->show();
+        return w;
+    }
+    QLabel* label(const QString& text, int n = 0)
+    {
+        const int c = find("label", text, n);
+        QLabel* l = newLabel(c >= 0 ? trimmed(t_->cells[c].text) : QString());
+        return put(l, c);
+    }
+    // A text label's partner: the 'kind' cell after the label with this text.
+    template <class W> W* beside(W* w, const QString& labelText, const char* kind = nullptr, int n = 0)
+    {
+        int l = find("label", labelText, n);
+        if (l >= 0) used_[(size_t)l] = true;
+        if (l >= 0 && !t_->cells[l].text[0]) l = -1;
+        QLabel* lab = nullptr;
+        if (l >= 0) {
+            lab = newLabel(trimmed(t_->cells[l].text));
+            lab->setGeometry(rect(l));
+            lab->show();
+        }
+        const char* k = kind ? kind : widgetKind(w);
+        put(w, l >= 0 ? after(l, k) : -1);
+        link(lab, w);
+        return w;
+    }
+    // A label with its edit box and spin arrows (one spin box).
+    template <class W> W* spin(W* w, const QString& labelText)
+    {
+        const int l = find("label", labelText);
+        QLabel* lab = nullptr;
+        if (l >= 0) {
+            lab = newLabel(trimmed(t_->cells[l].text));
+            lab->setGeometry(rect(l));
+            lab->show();
+            used_[(size_t)l] = true;
+        }
+        const int e = l >= 0 ? after(l, "edit") : -1;
+        const int s = e >= 0 ? after(e, "spin") : -1;
+        if (e < 0) {
+            w->hide();
+            return w;
+        }
+        QRect r = rect(e);
+        if (s >= 0) {
+            r = r.united(rect(s));
+            used_[(size_t)s] = true;
+        }
+        used_[(size_t)e] = true;
+        w->setParent(inner_);
+        w->setGeometry(r);
+        w->show();
+        link(lab, w);
+        return w;
+    }
+    // An edit box (and spin arrows) that follows another cell of the page and has no label of its own.
+    template <class W> W* edit(W* w, int e)
+    {
+        if (e < 0) {
+            w->hide();
+            return w;
+        }
+        const int s = after(e, "spin");
+        QRect r = rect(e);
+        if (s >= 0 && t_->cells[s].x == t_->cells[e].x + t_->cells[e].w) {
+            r = r.united(rect(s));
+            used_[(size_t)s] = true;
+        }
+        used_[(size_t)e] = true;
+        w->setParent(inner_);
+        w->setGeometry(r);
+        w->show();
+        return w;
+    }
+    // A check box, radio button or push button by its text.
+    template <class W> W* button(W* w, const QString& text, int n = 0)
+    {
+        const char* k = widgetKind(w);
+        int c = find(k, text, n);
+        if (c < 0 && !strcmp(k, "check")) c = find("push", text, n);
+        if (c >= 0) w->setText(trimmed(t_->cells[c].text));
+        return put(w, c);
+    }
+    int cellOfLabel(const QString& text) { return find("label", text); }
+    void take(int c)
+    {
+        if (c >= 0) used_[(size_t)c] = true;
+    }
+    bool has(const char* kind, const QString& text) const { return find(kind, text) >= 0; }
+
+    // Everything VEGAS has here that Reno gave no control to: disabled stand-ins (labels and separator lines as they are).
+    void finish()
+    {
+        for (int i = 0; i < t_->count; ++i) {
+            if (used_[(size_t)i]) continue;
+            const PrefCell& c = t_->cells[i];
+            const QString k = c.kind, text = trimmed(c.text);
+            QWidget* w = nullptr;
+            if (k == "label") {
+                if (text.isEmpty() && c.h <= 3) {
+                    QFrame* line = new QFrame(inner_);
+                    line->setFrameShape(QFrame::HLine);
+                    line->setFrameShadow(QFrame::Sunken);
+                    w = line;
+                } else {
+                    QLabel* l = new QLabel(text == "<value>" ? QString() : plainLabel(text), inner_);
+                    l->setWordWrap(c.h > 20);
+                    w = l;
+                }
+            } else if (k == "check") {
+                w = new QCheckBox(text, inner_);
+            } else if (k == "radio") {
+                w = new QRadioButton(text, inner_);
+            } else if (k == "push" || k == "defpush") {
+                w = new QPushButton(text, inner_);
+            } else if (k == "edit") {
+                if (c.h > 40) {
+                    QPlainTextEdit* e = new QPlainTextEdit(inner_);
+                    e->setReadOnly(true);
+                    w = e;
+                } else if (i + 1 < t_->count && !strcmp(t_->cells[i + 1].kind, "spin") && t_->cells[i + 1].x == c.x + c.w) {
+                    QSpinBox* s = new QSpinBox(inner_);
+                    s->setGeometry(rect(i).united(rect(i + 1)));
+                    used_[(size_t)i + 1] = true;
+                    s->setObjectName("standIn");
+                    s->setEnabled(false);
+                    s->show();
+                    used_[(size_t)i] = true;
+                    continue;
+                } else {
+                    w = new QLineEdit(inner_);
+                }
+            } else if (k == "combo") {
+                w = new QComboBox(inner_);
+            } else if (k == "slider") {
+                QSlider* s = new QSlider(Qt::Horizontal, inner_);
+                w = s;
+            } else if (k == "list") {
+                w = new QListWidget(inner_);
+            } else if (k == "listview") {
+                QTreeWidget* t = new QTreeWidget(inner_);
+                t->setRootIsDecorated(false);
+                w = t;
+            } else if (k == "color") {
+                w = new ColorButton(inner_, "standInColor");
+            } else if (k == "spin") {
+                continue;
+            } else if (k == "pane") {
+                continue;
+            } else {
+                continue;
+            }
+            w->setGeometry(rect(i));
+            w->setObjectName("standIn");
+            if (k != "label") {
+                w->setEnabled(false);
+                w->setToolTip("VEGAS has this here; Reno has no such setting.");
+            }
+            w->show();
+            used_[(size_t)i] = true;
+        }
+    }
+
+private:
+    static const char* widgetKind(QWidget* w)
+    {
+        if (qobject_cast<QRadioButton*>(w)) return "radio";
+        if (qobject_cast<QCheckBox*>(w)) return "check";
+        if (qobject_cast<QPushButton*>(w)) return "push";
+        if (qobject_cast<QComboBox*>(w)) return "combo";
+        if (qobject_cast<QSlider*>(w)) return "slider";
+        if (qobject_cast<QListWidget*>(w)) return "list";
+        if (qobject_cast<QTreeWidget*>(w)) return "listview";
+        if (qobject_cast<QPlainTextEdit*>(w) || qobject_cast<QLineEdit*>(w)) return "edit";
+        if (dynamic_cast<ColorButton*>(w)) return "color";
+        return "edit";
+    }
+    QWidget* inner_ = nullptr;
+    const PrefTabCells* t_ = nullptr;
+    std::vector<bool> used_;
+};
+
+// VEGAS's tab bar: the tabs wrap onto several rows that are stretched to the full width, and the row of the selected tab is
+// the one next to the page (the others keep their order above it).
+class WrapTabBar : public QTabBar {
+public:
+    explicit WrapTabBar(QWidget* parent) : QTabBar(parent)
+    {
+        setExpanding(false);
+        setDrawBase(false);
+        setFocusPolicy(Qt::TabFocus);
+    }
+    QSize sizeHint() const override { return QSize(421, 3 * 18 + 4); }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+    // Where the tabs are (bar coordinates): VEGAS's three rows, each stretched to the full width, the selected tab's row last.
+    // The rows are fixed (General ... VST Effects, Editing ... Sync, the rest) and the tabs share a row's width in the
+    // proportions VEGAS gives them, so the bar looks the same whatever the font.
+    std::vector<QRect> layoutRects() const
+    {
+        static const std::map<QString, int> widths = {
+            {"General", 52}, {"Video", 45}, {"Preview Device", 87}, {"Audio", 44}, {"Audio Device", 76}, {"MIDI", 44}, {"VST Effects", 69},
+            {"Editing", 99}, {"Display", 100}, {"CD Settings", 122}, {"Sync", 96}, {"External Control && Automation", 191},
+            {"Deprecated Features", 147}, {"File I/O", 79}};
+        const int n = count();
+        std::vector<std::vector<int>> rows(3);
+        for (int i = 0; i < n; ++i) rows[(size_t)(i < 7 ? 0 : i < 11 ? 1 : 2)].push_back(i);
+        auto nat = [&](int i) {
+            auto it = widths.find(tabText(i));
+            return it != widths.end() ? it->second : 45;
+        };
+        int sel = 0;
+        for (size_t r = 0; r < rows.size(); ++r)
+            for (int i : rows[r])
+                if (i == currentIndex()) sel = (int)r;
+        std::vector<std::vector<int>> order;
+        for (size_t r = 0; r < rows.size(); ++r)
+            if ((int)r != sel) order.push_back(rows[r]);
+        order.push_back(rows[(size_t)sel]);
+        std::vector<QRect> out((size_t)n);
+        for (size_t r = 0; r < order.size(); ++r) {
+            int sum = 0;
+            for (int i : order[r]) sum += nat(i);
+            int x = 2;
+            for (size_t k = 0; k < order[r].size(); ++k) {
+                const int i = order[r][k];
+                const int w = k + 1 == order[r].size() ? kRowWidth - (x - 2) : (int)std::lround((double)nat(i) * kRowWidth / std::max(1, sum));
+                out[(size_t)i] = QRect(x, 2 + (int)r * 18, w, 18);
+                x += w;
+            }
+        }
+        return out;
+    }
+    int hit(QPoint p) const
+    {
+        const std::vector<QRect> r = layoutRects();
+        for (size_t i = 0; i < r.size(); ++i)
+            if (r[i].contains(p)) return (int)i;
+        return -1;
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        const std::vector<QRect> rects = layoutRects();
+        for (int i = 0; i < count(); ++i) {
+            const bool sel = i == currentIndex();
+            const QRect r = rects[(size_t)i];
+            // Windows 10's tabs when the dialog is light: grey, white for the selected one, light blue under the mouse
+            const bool lightLook = palette().color(QPalette::Window).lightness() > 160;
+            const bool hot = !sel && lightLook && r.contains(mapFromGlobal(QCursor::pos())) && underMouse();
+            p.fillRect(r, sel ? palette().color(QPalette::Base) : hot ? QColor(216, 234, 249) : lightLook ? QColor(240, 240, 240) : palette().color(QPalette::Button));
+            p.setPen(lightLook ? QColor(217, 217, 217) : palette().color(QPalette::Mid));
+            p.drawRect(r.adjusted(0, 0, -1, sel ? 0 : -1));
+            p.setPen(palette().color(QPalette::ButtonText));
+            QString label = tabText(i);
+            label.replace("&&", "\x01").remove('&').replace('\x01', '&');
+            // a text wider than its tab (a wider font than VEGAS's) is drawn smaller rather than cut off
+            QFont f = font();
+            for (int px = f.pixelSize() > 0 ? f.pixelSize() : 12; px > 7 && QFontMetrics(f).horizontalAdvance(label) > r.width() - 6; --px) f.setPixelSize(px);
+            p.setFont(f);
+            p.drawText(r, Qt::AlignCenter, label);
+        }
+    }
+    void mousePressEvent(QMouseEvent* e) override
+    {
+        const int i = hit(e->pos());
+        if (i >= 0) setCurrentIndex(i);
+    }
+    void mouseReleaseEvent(QMouseEvent*) override {}
+
+private:
+    static constexpr int kRowWidth = 417;
+};
+
+class PrefsTabs : public QTabWidget {
+public:
+    explicit PrefsTabs(QWidget* parent) : QTabWidget(parent) { setTabBar(new WrapTabBar(this)); }
+};
+
+}  // namespace
+
+// Preferences > Audio Device > Advanced...: VEGAS's Advanced Audio Configuration (352 x 413 with its frame; positions are the
+// capture's less the frame's 1 and 31). The list holds the output and input devices; the settings of the selected one are kept
+// (QSettings "audioAdvanced/<device>/...") for VEGAS's names, while Reno's audio output chooses its own buffers.
+void advancedAudioConfiguration(QWidget* parent, const QString& deviceName, const QString& deviceId)
+{
+    QDialog d(parent);
+    d.setObjectName("advancedAudioConfiguration");
+    d.setWindowTitle("Advanced Audio Configuration");
+    QFont f = d.font();
+    f.setPixelSize(12);
+    d.setFont(f);
+    d.setFixedSize(352 - 2, 413 - 31 - 1);
+    auto at = [](QWidget* w, int x, int y, int cw, int ch) { w->setGeometry(x - 1, y - 31, cw, ch); return w; };
+    QLabel* devLabel = new QLabel("Audio &devices:", &d);
+    at(devLabel, 12, 42, 83, 13);
+    QListWidget* devices = new QListWidget(&d);
+    devices->setObjectName("audioDevices");
+    at(devices, 12, 57, 329, 96);
+    devLabel->setBuddy(devices);
+    const QString out = deviceName.isEmpty() ? QString("Default") : deviceName;
+    devices->addItem("Output : " + out);
+    devices->addItem("Input : Default");
+    devices->setCurrentRow(0);
+    QLabel* settingsLabel = new QLabel("Settings for selected audio device:", &d);
+    at(settingsLabel, 12, 159, 195, 13);
+    QCheckBox* interpolate = new QCheckBox("&Interpolate position (required for inaccurate devices)", &d);
+    at(interpolate, 24, 179, 278, 16);
+    QLabel* biasLabel = new QLabel("&Position bias (-64 to 64):", &d);
+    at(biasLabel, 24, 203, 135, 13);
+    QSlider* bias = new QSlider(Qt::Horizontal, &d);
+    bias->setRange(-64, 64);
+    at(bias, 177, 200, 135, 20);
+    biasLabel->setBuddy(bias);
+    QLabel* biasValue = new QLabel("0", &d);
+    at(biasValue, 319, 203, 21, 13);
+    QCheckBox* noPreroll = new QCheckBox("Do not pre-&roll buffers before starting playback", &d);
+    at(noPreroll, 24, 228, 270, 16);
+    QFrame* rule1 = new QFrame(&d);
+    rule1->setFrameShape(QFrame::HLine);
+    rule1->setFrameShadow(QFrame::Sunken);
+    at(rule1, 1, 254, 349, 2);
+    QLabel* buffersLabel = new QLabel("Audio &buffers:", &d);
+    at(buffersLabel, 24, 267, 135, 13);
+    QSlider* buffers = new QSlider(Qt::Horizontal, &d);
+    buffers->setRange(2, 16);
+    at(buffers, 177, 263, 135, 20);
+    buffersLabel->setBuddy(buffers);
+    QLabel* buffersValue = new QLabel("4", &d);
+    at(buffersValue, 319, 267, 21, 13);
+    QLabel* sizeLabel = new QLabel("Buffer &size (samples):", &d);
+    at(sizeLabel, 24, 294, 135, 13);
+    QComboBox* size = new QComboBox(&d);
+    size->setObjectName("bufferSize");
+    for (const char* t : {"MME", "64", "96", "128", "192", "256", "384", "512", "768", "1024", "1536", "2048", "3072", "4096", "8192", "16384"}) size->addItem(t);
+    at(size, 177, 291, 165, 21);
+    sizeLabel->setBuddy(size);
+    QLabel* prioLabel = new QLabel("Priorit&y:", &d);
+    at(prioLabel, 24, 322, 135, 13);
+    QComboBox* prio = new QComboBox(&d);
+    prio->setObjectName("audioPriority");
+    for (const char* t : {"Time Critical", "Highest", "Above Normal", "Normal", "Below Normal", "Lowest", "Idle"}) prio->addItem(t);
+    at(prio, 177, 319, 165, 21);
+    prioLabel->setBuddy(prio);
+    QFrame* rule2 = new QFrame(&d);
+    rule2->setFrameShape(QFrame::HLine);
+    rule2->setFrameShadow(QFrame::Sunken);
+    at(rule2, 9, 371, 334, 2);
+    QPushButton* ok = new QPushButton("OK", &d);
+    ok->setDefault(true);
+    at(ok, 268, 381, 75, 23);
+    QObject::connect(ok, &QPushButton::clicked, &d, &QDialog::accept);
+
+    // the settings of the selected device (output and input keep their own); kept for VEGAS's names
+    const QString base = "audioAdvanced/" + (deviceId.isEmpty() ? QString("default") : deviceId) + "/";
+    auto key = [&devices, base](const char* n) { return base + (devices->currentRow() == 1 ? "in/" : "out/") + n; };
+    QSettings st;
+    auto load = [&] {
+        interpolate->setChecked(st.value(key("interpolate"), true).toBool());
+        bias->setValue(st.value(key("bias"), 0).toInt());
+        noPreroll->setChecked(st.value(key("noPreroll"), false).toBool());
+        buffers->setValue(st.value(key("buffers"), 4).toInt());
+        size->setCurrentText(st.value(key("size"), "MME").toString());
+        prio->setCurrentText(st.value(key("priority"), "Time Critical").toString());
+        biasValue->setText(QString::number(bias->value()));
+        buffersValue->setText(QString::number(buffers->value()));
+    };
+    auto save = [&] {
+        st.setValue(key("interpolate"), interpolate->isChecked());
+        st.setValue(key("bias"), bias->value());
+        st.setValue(key("noPreroll"), noPreroll->isChecked());
+        st.setValue(key("buffers"), buffers->value());
+        st.setValue(key("size"), size->currentText());
+        st.setValue(key("priority"), prio->currentText());
+    };
+    int shown = 0;
+    load();
+    // the buffer size box is for the driver types that take a size; the default MME driver sets its own
+    size->setEnabled(false);
+    QObject::connect(bias, &QSlider::valueChanged, &d, [biasValue](int v) { biasValue->setText(QString::number(v)); });
+    QObject::connect(buffers, &QSlider::valueChanged, &d, [buffersValue](int v) { buffersValue->setText(QString::number(v)); });
+    QObject::connect(devices, &QListWidget::currentRowChanged, &d, [&](int row) {
+        if (row < 0) return;
+        const int now = devices->currentRow();
+        // keep what was shown for the device just left, then show the other's
+        devices->blockSignals(true);
+        devices->setCurrentRow(shown);
+        save();
+        devices->setCurrentRow(now);
+        devices->blockSignals(false);
+        shown = now;
+        load();
+    });
+    d.exec();
+    save();
+}
+
+namespace {
+
 class PrefsDialog : public QDialog {
 public:
     explicit PrefsDialog(QWidget* parent) : QDialog(parent), pr_(AppState::get().prefs)
     {
         setObjectName("preferencesDialog");
         setWindowTitle("Preferences");
-        setMinimumWidth(600);
-        resize(640, 640);
-        QVBoxLayout* root = new QVBoxLayout(this);
-        tabs_ = new QTabWidget(this);
+        // VEGAS's dialog is 435 x 686 with its frame; it has a fixed size
+        QFont f = font();
+        f.setPixelSize(12);
+        setFont(f);
+        setFixedSize(435 - 2 * kFrameX, 686 - kFrameY - kFrameX);
+        tabs_ = new PrefsTabs(this);
         tabs_->setObjectName("tabs");
-        tabs_->setUsesScrollButtons(true);
-        root->addWidget(tabs_, 1);
+        tabs_->setGeometry(7 - kFrameX, 38 - kFrameY, 421, 611);
+        tabs_->setDocumentMode(false);
+        tabs_->setStyleSheet("QTabWidget::pane { border: 1px solid #d9d9d9; margin: 0px; padding: 0px; background: #ffffff; }");
+        renoPage();
 
         buildGeneral();
         buildVideo();
@@ -283,33 +794,45 @@ public:
         buildVst();
         buildEditing();
         buildDisplay();
+        buildCd();
         buildSync();
         buildExternal();
         buildDeprecated();
         buildFileIo();
         buildReno();
 
+        fitFont();
         for (Bind& b : binds_) b.load();
 
-        QHBoxLayout* buttons = new QHBoxLayout();
-        buttons->addStretch(1);
-        QPushButton* ok = new QPushButton("OK", this);
-        ok->setObjectName("ok");
+        // OK, Cancel and Apply sit where VEGAS has them
+        auto button = [this](const QString& text, const char* name, int x) {
+            QPushButton* b = new QPushButton(text, this);
+            b->setObjectName(name);
+            b->setGeometry(x - kFrameX, 655 - kFrameY, 75, 23);
+            return b;
+        };
+        QPushButton* ok = button("OK", "ok", 191);
         ok->setDefault(true);
-        QPushButton* cancel = new QPushButton("Cancel", this);
-        cancel->setObjectName("cancel");
-        QPushButton* apply = new QPushButton("&Apply", this);
-        apply->setObjectName("apply");
-        buttons->addWidget(ok);
-        buttons->addWidget(cancel);
-        buttons->addWidget(apply);
-        root->addLayout(buttons);
+        QPushButton* cancel = button("Cancel", "cancel", 272);
+        QPushButton* apply = button("&Apply", "apply", 353);
         QObject::connect(ok, &QPushButton::clicked, this, [this] { applyAll(); accept(); });
         QObject::connect(cancel, &QPushButton::clicked, this, [this] { reject(); });
         QObject::connect(apply, &QPushButton::clicked, this, [this] { applyAll(); });
         const int last = QSettings().value("prefs/dialogTab", 0).toInt();
         if (last >= 0 && last < tabs_->count()) tabs_->setCurrentIndex(last);
-        QObject::connect(tabs_, &QTabWidget::currentChanged, this, [](int i) { QSettings().setValue("prefs/dialogTab", i); });
+        QObject::connect(tabs_, &QTabWidget::currentChanged, this, [this](int i) {
+            QSettings().setValue("prefs/dialogTab", i);
+            tabs_->tabBar()->update();
+            QTimer::singleShot(0, this, [this] { alignPages(); });
+        });
+        QTimer::singleShot(0, this, [this] { alignPages(); });
+    }
+
+protected:
+    void showEvent(QShowEvent* e) override
+    {
+        QDialog::showEvent(e);
+        alignPages();
     }
 
 private:
@@ -321,40 +844,162 @@ private:
     QTabWidget* tabs_ = nullptr;
     Preferences pr_;
     int tab_ = 0;
+    std::vector<QWidget*> inners_;
+    QWidget* renoInner_ = nullptr;
+    QFormLayout* renoForm_ = nullptr;
+    QString renoGroup_;
 
-    QWidget* page(const QString& title, const char* name, QWidget** body, std::vector<QPushButton*> extra = {})
+    // VEGAS's cells are sized for Segoe UI at 9 pt (12 px). With a wider font (any other platform's default) the texts would
+    // be cut off, so the dialog's font is made as much smaller as the tightest cell needs (never larger than 12 px and never
+    // below 10 px, and what is still too wide is given room); with Segoe UI nothing changes.
+    void fitFont()
+    {
+        double ratio = 1.0;
+        const QFontMetrics fm(font());
+        auto need = [&](QWidget* w, const QString& raw, int extra) {
+            QString t = raw;
+            t.replace("&&", "\x01");
+            t.remove('&');
+            t.replace('\x01', "&");
+            if (t.isEmpty() || w->width() <= 0) return;
+            const int have = w->width() - extra;
+            const int wide = fm.horizontalAdvance(t);
+            if (wide > have && have >= 30) {
+                ratio = std::min(ratio, (double)have / wide);
+            }
+        };
+        for (QWidget* in : inners_) {
+            if (in->parentWidget() == renoInner_) continue;
+            for (QWidget* w : in->findChildren<QWidget*>(QString(), Qt::FindChildrenRecursively)) {
+                if (QLabel* l = qobject_cast<QLabel*>(w)) {
+                    if (!l->wordWrap() && l->pixmap().isNull()) need(l, l->property("mnemonicText").isValid() ? l->property("mnemonicText").toString() : l->text(), 2);
+                } else if (QCheckBox* c = qobject_cast<QCheckBox*>(w)) need(c, c->text(), 20);
+                else if (QRadioButton* r = qobject_cast<QRadioButton*>(w)) need(r, r->text(), 20);
+                else if (QPushButton* p = qobject_cast<QPushButton*>(w)) need(p, p->text(), 14);
+                else if (QGroupBox* g = qobject_cast<QGroupBox*>(w)) need(g, g->title(), 20);
+            }
+        }
+        if (ratio < 1.0) {
+            QFont f = font();
+            f.setPixelSize(std::max(10, (int)std::floor(12 * std::max(ratio, 0.85))));
+            setFont(f);
+        }
+        // every control gets the size itself (some styles give the control classes fonts of their own that ignore the parent's)
+        for (QWidget* in : inners_) {
+            if (in->parentWidget() == renoInner_) continue;
+            in->setFont(font());
+            for (QWidget* w : in->findChildren<QWidget*>(QString(), Qt::FindChildrenRecursively))
+                if (!qobject_cast<QLabel*>(w) || w->objectName() != "note") w->setFont(font());
+        }
+        // What still does not fit gets as much more width as there is room for (up to the next control on its line).
+        const QFontMetrics fm2(font());
+        for (QWidget* in : inners_) {
+            if (in->parentWidget() == renoInner_) continue;
+            const QList<QWidget*> all = in->findChildren<QWidget*>(QString(), Qt::FindChildrenRecursively);
+            for (QWidget* w : all) {
+                QString raw;
+                int extra = 2;
+                if (QLabel* l = qobject_cast<QLabel*>(w)) {
+                    if (l->wordWrap() || !l->pixmap().isNull()) continue;
+                    raw = l->text();
+                } else if (QCheckBox* c = qobject_cast<QCheckBox*>(w)) { raw = c->text(); extra = 20; }
+                else if (QRadioButton* r = qobject_cast<QRadioButton*>(w)) { raw = r->text(); extra = 20; }
+                else continue;
+                raw.replace("&&", "\x01");
+                raw.remove('&');
+                raw.replace('\x01', "&");
+                const int wide = fm2.horizontalAdvance(raw) + extra;
+                if (raw.isEmpty() || wide <= w->width()) continue;
+                int right = in->width() - 2;
+                for (QWidget* o : all) {
+                    if (o == w || !o->isVisible() || o->parentWidget() != w->parentWidget()) continue;
+                    if (QFrame* fr = qobject_cast<QFrame*>(o)) if (!qobject_cast<QLabel*>(fr) && fr->frameShape() != QFrame::NoFrame) continue;
+                    if (o->x() >= w->x() + w->width() - 1 && o->y() < w->y() + w->height() && o->y() + o->height() > w->y())
+                        right = std::min(right, o->x() - 3);
+                }
+                w->resize(std::min(wide, std::max(w->width(), right - w->x())), w->height());
+            }
+        }
+    }
+
+    // The pages' controls are placed by the dialog's coordinates, so each page's inner widget is moved to where the dialog
+    // wants its top left whatever frame the style draws around the page.
+    void alignPages()
+    {
+        for (QWidget* in : inners_) {
+            const QPoint have = in->mapTo(this, QPoint(0, 0));
+            const QPoint want(11 - kFrameX, 96 - kFrameY);
+            if (have != want) in->move(in->pos() + want - have);
+        }
+    }
+
+    // A page of VEGAS's: a plain widget 413 x 549 with absolutely placed controls (see Pg), a "De&fault All" button of its
+    // own (and whatever buttons 'extra' lists, placed by their text) and a tab in the tab bar.
+    Pg vegasPage(const QString& title, const char* name, std::vector<QPushButton*> extra = {})
     {
         QWidget* outer = new QWidget(tabs_);
         outer->setObjectName(name);
-        QVBoxLayout* v = new QVBoxLayout(outer);
-        QScrollArea* scroll = new QScrollArea(outer);
-        scroll->setWidgetResizable(true);
-        scroll->setFrameShape(QFrame::NoFrame);
-        QWidget* inner = new QWidget(scroll);
-        scroll->setWidget(inner);
-        v->addWidget(scroll, 1);
-        QFrame* line = new QFrame(outer);
-        line->setFrameShape(QFrame::HLine);
-        line->setFrameShadow(QFrame::Sunken);
-        v->addWidget(line);
-        QHBoxLayout* h = new QHBoxLayout();
-        h->addStretch(1);
-        for (QPushButton* b : extra) {
-            b->setParent(outer);
-            h->addWidget(b);
-        }
-        QPushButton* def = new QPushButton("De&fault All", outer);
-        def->setObjectName("defaultAll");
-        h->addWidget(def);
-        v->addLayout(h);
+        QWidget* inner = new QWidget(outer);
+        inner->setObjectName("pageArea");
+        inner->setGeometry(0, 0, 413, 549);
+        inners_.push_back(inner);
         const int index = tabs_->addTab(outer, title);
         tab_ = index;
+        const PrefTabCells* cells = nullptr;
+        for (const PrefTabCells& t : kPrefTabs) {
+            const QString n = QString::fromUtf8(t.name);
+            // "tab 12 External Control & Automation": the title after the number ("&&" is how the tab shows it)
+            if (n.startsWith("tab ") && n.mid(n.indexOf(' ', 4) + 1) == QString(title).replace("&&", "&")) cells = &t;
+        }
+        Pg pg(inner, cells);
+        for (QPushButton* b : extra) pg.button(b, b->text());
+        QPushButton* def = new QPushButton("De&fault All", inner);
+        def->setObjectName("defaultAll");
+        pg.button(def, "De&fault All");
         QObject::connect(def, &QPushButton::clicked, this, [this, index] {
             for (Bind& b : binds_)
                 if (b.tab == index && b.reset) b.reset();
         });
-        *body = inner;
-        return outer;
+        return pg;
+    }
+
+    // Reno's own settings that VEGAS's tabs have no place for: their own tab at the end, in groups named for the tab they
+    // belong to.
+    void renoPage()
+    {
+        renoInner_ = new QWidget(tabs_);
+        renoInner_->setObjectName("renoTab");
+        QWidget* inner = new QWidget(renoInner_);
+        inner->setObjectName("pageArea");
+        inner->setGeometry(0, 0, 413, 549);
+        inners_.push_back(inner);
+        QScrollArea* scroll = new QScrollArea(inner);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidgetResizable(true);
+        scroll->setGeometry(8, 8, 397, 505);
+        QWidget* body = new QWidget(scroll);
+        scroll->setWidget(body);
+        renoForm_ = new QFormLayout(body);
+        QFrame* line = new QFrame(inner);
+        line->setFrameShape(QFrame::HLine);
+        line->setFrameShadow(QFrame::Sunken);
+        line->setGeometry(8, 512, 396, 2);
+        renoBody_ = body;
+        renoDefault_ = new QPushButton("De&fault All", inner);
+        renoDefault_->setObjectName("defaultAll");
+        renoDefault_->setGeometry(330, 520, 75, 23);
+    }
+    QWidget* renoBody_ = nullptr;
+    QPushButton* renoDefault_ = nullptr;
+
+    // The form of Reno's tab, with a heading for the group of the tab it belongs to (once per group).
+    QFormLayout* extra(const QString& group)
+    {
+        if (renoGroup_ != group) {
+            renoGroup_ = group;
+            renoForm_->addRow(heading(group, renoBody_));
+        }
+        return renoForm_;
     }
 
     void bindCheck(QCheckBox* c, const QString& key)
@@ -443,15 +1088,38 @@ private:
         binds_.push_back({tab_, [this, load] { load(pr_); }, [this, save] { save(pr_); }, [load] { load(Preferences()); }});
     }
 
+    // A Browse... button for an edit box.
+    void wireBrowse(QPushButton* b, QLineEdit* e, bool folder, const QString& filter = QString())
+    {
+        QObject::connect(b, &QPushButton::clicked, b, [e, folder, filter, b] {
+            const QString now = QDir::fromNativeSeparators(e->text());
+            const QString f = folder ? QFileDialog::getExistingDirectory(b->window(), "Browse For Folder", now)
+                                     : QFileDialog::getOpenFileName(b->window(), "Browse", now, filter);
+            if (!f.isEmpty()) e->setText(QDir::toNativeSeparators(f));
+        });
+    }
+    // The "N frames at F fps" text under a length setting.
+    void framesLabel(QLabel* fr, QDoubleSpinBox* s)
+    {
+        const double fps = std::max(1.0, AppState::get().project().settings.fps());
+        auto show = [s, fr, fps] { fr->setText(QString("%1 frames at %2 fps").arg((int)std::lround(s->value() * fps)).arg(fps, 0, 'f', 3)); };
+        QObject::connect(s, QOverload<double>::of(&QDoubleSpinBox::valueChanged), fr, [show](double) { show(); });
+        QTimer::singleShot(0, fr, show);
+    }
+    // A trackbar with its value shown beside it (VEGAS's way of setting a number): 'scale' units per 1 of the setting.
+    QSlider* trackbar(const char* name, int lo, int hi)
+    {
+        QSlider* s = new QSlider(Qt::Horizontal);
+        s->setObjectName(name);
+        s->setRange(lo, hi);
+        return s;
+    }
+
     void buildGeneral()
     {
-        QWidget* b;
-        page("General", "generalTab", &b);
-        QVBoxLayout* v = new QVBoxLayout(b);
-        v->addWidget(new QLabel("&General preferences:", b));
-        QListWidget* list = new QListWidget(b);
+        Pg p = vegasPage("General", "generalTab");
+        QListWidget* list = new QListWidget();
         list->setObjectName("generalList");
-        list->setMinimumHeight(330);
         for (const GeneralItem& g : kGeneralItems) {
             QListWidgetItem* it = new QListWidgetItem(QString::fromUtf8(g.text), list);
             it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
@@ -462,212 +1130,188 @@ private:
                               [it, key] { vprefs::set(key, it->checkState() == Qt::Checked); },
                               [it, key] { it->setCheckState(vprefs::defaultOf(key).toBool() ? Qt::Checked : Qt::Unchecked); }});
         }
-        v->addWidget(list, 1);
-        QHBoxLayout* recent = new QHBoxLayout();
-        recent->addWidget(check(b, "&Recently used project list:", "prefs/recentList", "recentList"));
-        QSpinBox* count = integer(b, "prefs/recentCount", "recentCount", 1, 9);
-        recent->addWidget(count);
-        recent->addStretch(1);
-        v->addLayout(recent);
-        v->addWidget(new QLabel("&Temporary files folder:", b));
-        QLineEdit* temp = textBox(b, "prefs/tempFolder", "tempFolder");
+        p.beside(list, "&General preferences:");
+        QCheckBox* recent = p.button(check(p.parent(), "&Recently used project list:", "prefs/recentList", "recentList"), "&Recently used project list:");
+        QSpinBox* count = integer(p.parent(), "prefs/recentCount", "recentCount", 1, 9);
+        p.edit(count, p.after(p.find("check", "&Recently used project list:"), "edit"));
+        (void)recent;
+        QLineEdit* temp = textBox(p.parent(), "prefs/tempFolder", "tempFolder");
         temp->setPlaceholderText(QDir::toNativeSeparators(QDir::tempPath()));
-        v->addWidget(browseRow(b, temp, true));
-        QHBoxLayout* fs = new QHBoxLayout();
-        fs->addWidget(new QLabel("Free storage space in selected folder:", b));
-        QLabel* space = new QLabel(b);
+        p.beside(temp, "&Temporary files folder:");
+        QPushButton* browse = p.button(new QPushButton("&Browse...", p.parent()), "&Browse...");
+        wireBrowse(browse, temp, true);
+        p.label("Free storage space in selected folder:");
+        QLabel* space = new QLabel(p.parent());
         space->setObjectName("tempFolderSpace");
-        fs->addWidget(space);
-        fs->addStretch(1);
-        v->addLayout(fs);
+        p.put(space, p.after(p.cellOfLabel("Free storage space in selected folder:"), "label"));
         auto showSpace = [temp, space] { space->setText(freeSpace(temp->text())); };
-        QObject::connect(temp, &QLineEdit::textChanged, b, [showSpace](const QString&) { showSpace(); });
-        QTimer::singleShot(0, b, showSpace);
+        QObject::connect(temp, &QLineEdit::textChanged, space, [showSpace](const QString&) { showSpace(); });
+        QTimer::singleShot(0, space, showSpace);
+        p.finish();
     }
 
     void buildVideo()
     {
-        QWidget* b;
-        page("Video", "videoTab", &b);
-        QFormLayout* f = new QFormLayout(b);
+        Pg p = vegasPage("Video", "videoTab");
+        QWidget* b = p.parent();
         QSpinBox* ram = new QSpinBox(b);
         ram->setObjectName("ramPreviewMb");
         ram->setRange(0, 65536);
-        bindPref([ram](const Preferences& p) { ram->setValue(p.ramPreviewMb); }, [ram](Preferences& p) { p.ramPreviewMb = ram->value(); });
-        f->addRow("&Dynamic RAM Preview max (MB):", ram);
-        f->addRow(note("Frames shown while playing or scrubbing are kept in this memory too, so going back over them plays from memory. 0 turns it off.", b));
+        bindPref([ram](const Preferences& pr) { ram->setValue(pr.ramPreviewMb); }, [ram](Preferences& pr) { pr.ramPreviewMb = ram->value(); });
+        p.spin(ram, "&Dynamic RAM Preview max (MB):");
+        QLabel* avail = new QLabel(QString("Max available: %1 MB").arg(physicalMemoryMb()), b);
+        p.put(avail, p.after(p.cellOfLabel("&Dynamic RAM Preview max (MB):"), "label"));
         QSpinBox* threads = new QSpinBox(b);
         threads->setObjectName("renderThreads");
         threads->setRange(0, 16);
-        threads->setSpecialValueText("Automatic");
-        bindPref([threads](const Preferences& p) { threads->setValue(p.renderThreads); }, [threads](Preferences& p) { p.renderThreads = threads->value(); });
-        f->addRow("Ma&ximum number of rendering threads:", threads);
+        threads->setSpecialValueText("Auto");
+        bindPref([threads](const Preferences& pr) { threads->setValue(pr.renderThreads); }, [threads](Preferences& pr) { pr.renderThreads = threads->value(); });
+        p.spin(threads, "Ma&ximum number of rendering threads:");
+        // GPU acceleration: one choice here (the card or not); the API and the way Reno picks are in Reno's own tab
+        QComboBox* gpu = new QComboBox(b);
+        gpu->setObjectName("gpuAccel");
+        gpu->addItem("Off", false);
+        gpu->addItem("Optimal", true);
+        binds_.push_back({tab_, [gpu] { gpu->setCurrentIndex(vprefs::on("prefs/gpuAccel") ? 1 : 0); },
+                          [gpu] { vprefs::set("prefs/gpuAccel", gpu->currentData().toBool()); },
+                          [gpu] { gpu->setCurrentIndex(vprefs::defaultOf("prefs/gpuAccel").toBool() ? 1 : 0); }});
+        p.beside(gpu, "&GPU acceleration of video processing:");
         QComboBox* numbers = new QComboBox(b);
         numbers->setObjectName("thumbnailNumbers");
         for (auto it : std::vector<std::pair<QString, QString>>{{"None", "none"}, {"Frame Numbers", "frames"}, {"Time", "time"}, {"Timecode", "timecode"}})
             numbers->addItem(it.first, it.second);
-        bindPref([numbers](const Preferences& p) { numbers->setCurrentIndex(std::max(0, numbers->findData(qs(p.thumbnailNumbers)))); },
-                 [numbers](Preferences& p) { p.thumbnailNumbers = s8(numbers->currentData().toString()); });
-        f->addRow("Show source frame &numbers on event thumbnails as:", numbers);
+        bindPref([numbers](const Preferences& pr) { numbers->setCurrentIndex(std::max(0, numbers->findData(qs(pr.thumbnailNumbers)))); },
+                 [numbers](Preferences& pr) { pr.thumbnailNumbers = s8(numbers->currentData().toString()); });
+        p.beside(numbers, "Show source frame &numbers on event thumbnails as:");
         QComboBox* thumbs = new QComboBox(b);
         thumbs->setObjectName("videoThumbnails");
         for (auto it : std::vector<std::pair<QString, QString>>{{"All", "all"}, {"Head, Center, Tail", "headCenterTail"}, {"Head, Tail", "headTail"}, {"Head", "head"}, {"None", "none"}})
             thumbs->addItem(it.first, it.second);
-        bindPref([thumbs](const Preferences& p) { thumbs->setCurrentIndex(std::max(0, thumbs->findData(qs(p.videoThumbnails)))); },
-                 [thumbs](Preferences& p) { p.videoThumbnails = s8(thumbs->currentData().toString()); });
-        f->addRow("Thumbnails to show in video &events:", thumbs);
-        f->addRow(check(b, "Automatically create video proxies for greater than 4K resolution media", "prefs/autoProxy4k", "autoProxy4k"));
-        f->addRow(check(b, "GPU acceleration of video processing", "prefs/gpuAccel", "gpuAccel"));
-        QComboBox* gpuApi = combo(b, "prefs/gpuApi", "gpuApi", {{"Vulkan", "vulkan"}, {"OpenGL", "opengl"}, {"Off (CPU only)", "off"}});
+        bindPref([thumbs](const Preferences& pr) { thumbs->setCurrentIndex(std::max(0, thumbs->findData(qs(pr.videoThumbnails)))); },
+                 [thumbs](Preferences& pr) { pr.videoThumbnails = s8(thumbs->currentData().toString()); });
+        p.beside(thumbs, "Thumbnails to show in video &events:");
+        QComboBox* proxy4k = new QComboBox(b);
+        proxy4k->setObjectName("autoProxy4k");
+        proxy4k->addItem("Auto", true);
+        proxy4k->addItem("Off", false);
+        binds_.push_back({tab_, [proxy4k] { proxy4k->setCurrentIndex(vprefs::on("prefs/autoProxy4k") ? 0 : 1); },
+                          [proxy4k] { vprefs::set("prefs/autoProxy4k", proxy4k->currentData().toBool()); },
+                          [proxy4k] { proxy4k->setCurrentIndex(vprefs::defaultOf("prefs/autoProxy4k").toBool() ? 0 : 1); }});
+        p.beside(proxy4k, "Automatically create video proxies for greater than 4K resolution media:");
+        auto safe = [&](const char* name, double hi, int dec, std::function<void(const Preferences&, QDoubleSpinBox*)> load,
+                        std::function<void(Preferences&, QDoubleSpinBox*)> save) {
+            QDoubleSpinBox* s = new QDoubleSpinBox(b);
+            s->setObjectName(name);
+            s->setRange(0, hi);
+            s->setDecimals(dec);
+            bindPref([s, load](const Preferences& pr) { load(pr, s); }, [s, save](Preferences& pr) { save(pr, s); });
+            return s;
+        };
+        p.spin(safe("actionSafe", 45, 1, [](const Preferences& pr, QDoubleSpinBox* s) { s->setValue(pr.actionSafe); },
+                    [](Preferences& pr, QDoubleSpinBox* s) { pr.actionSafe = s->value(); }),
+               "Action &safe area (%):");
+        QSpinBox* cols = new QSpinBox(b);
+        cols->setObjectName("gridColumns");
+        cols->setRange(1, 64);
+        bindPref([cols](const Preferences& pr) { cols->setValue(pr.gridColumns); }, [cols](Preferences& pr) { pr.gridColumns = cols->value(); });
+        p.spin(cols, "&Horizontal grid divisions (#):");
+        p.spin(safe("titleSafe", 45, 1, [](const Preferences& pr, QDoubleSpinBox* s) { s->setValue(pr.titleSafe); },
+                    [](Preferences& pr, QDoubleSpinBox* s) { pr.titleSafe = s->value(); }),
+               "&Title safe area (%):");
+        QSpinBox* rows = new QSpinBox(b);
+        rows->setObjectName("gridRows");
+        rows->setRange(1, 64);
+        bindPref([rows](const Preferences& pr) { rows->setValue(pr.gridRows); }, [rows](Preferences& pr) { pr.gridRows = rows->value(); });
+        p.spin(rows, "&Vertical grid divisions (#):");
+        // the preview's own switches: its right-click menu's Scale Video to Fit Preview Window and Simulate Device Aspect Ratio
+        QCheckBox* projectSize = p.button(new QCheckBox(b), "Display at project si&ze");
+        projectSize->setObjectName("displayAtProjectSize");
+        binds_.push_back({tab_, [projectSize] { projectSize->setChecked(!QSettings().value("preview/scaleToFit", true).toBool()); },
+                          [projectSize] { QSettings().setValue("preview/scaleToFit", !projectSize->isChecked()); }, [projectSize] { projectSize->setChecked(false); }});
+        QCheckBox* simulate = p.button(new QCheckBox(b), "Simulate device aspect &ratio");
+        simulate->setObjectName("simulateAspect");
+        binds_.push_back({tab_, [simulate] { simulate->setChecked(QSettings().value("preview/simulateAspect", false).toBool()); },
+                          [simulate] { QSettings().setValue("preview/simulateAspect", simulate->isChecked()); }, [simulate] { simulate->setChecked(false); }});
+        QComboBox* bg = combo(b, "prefs/previewBackground", "previewBackground",
+                              {{"Default", "default"}, {"Black", "black"}, {"White", "white"}, {"Checkerboard", "checkerboard"}});
+        bg->setToolTip("What the Video Preview shows where the picture is transparent (and round it)");
+        p.beside(bg, "Bac&kground color:");
+        p.beside(colorButton(b, "prefs/fadeTop", "fadeTop"), "Track fade to&p:", "color");
+        p.beside(colorButton(b, "prefs/fadeBottom", "fadeBottom"), "Track fade botto&m:", "color");
+        p.finish();
+
+        // Reno's own settings for this tab
+        QFormLayout* f = extra("Video");
+        f->addRow(note("Frames shown while playing or scrubbing are kept in the Dynamic RAM Preview too, so going back over them plays from memory. 0 turns it off.", renoBody_));
+        QComboBox* gpuApi = combo(renoBody_, "prefs/gpuApi", "gpuApi", {{"Vulkan", "vulkan"}, {"OpenGL", "opengl"}, {"Off (CPU only)", "off"}});
         gpuApi->setToolTip("Vulkan: built-in effects with GPU kernels run on the graphics card (falling back to the CPU if there is no usable Vulkan driver). "
                            "OpenGL: only plug-ins that render with OpenGL use the card. Off: everything on the CPU. "
                            "Plug-in GPU use also needs \"GPU acceleration\" above. \"reno_cli vkcheck\" tests Vulkan.");
         f->addRow("GPU &API:", gpuApi);
-        QComboBox* gpuPick = combo(b, "prefs/gpuPick", "gpuPick", {{"The quicker of card and CPU for each effect (measured)", "auto"}, {"Always the card", "gpu"}});
+        QComboBox* gpuPick = combo(renoBody_, "prefs/gpuPick", "gpuPick", {{"The quicker of card and CPU for each effect (measured)", "auto"}, {"Always the card", "gpu"}});
         gpuPick->setToolTip("A frame has to be sent to the card and back, so a simple effect can be quicker on the CPU. Reno times each effect both ways, once for each "
                             "graphics card and driver (behind the splash screen), and uses the quicker. The pictures are the same either way.");
-        QPushButton* gpuMeasure = new QPushButton("Measure again", b);
+        QPushButton* gpuMeasure = new QPushButton("Measure again", renoBody_);
         gpuMeasure->setObjectName("gpuMeasure");
         gpuMeasure->setToolTip("Times the effects on the CPU and on the card again (in the background; \"reno_cli gpupick\" does the same and prints the times).");
         QObject::connect(gpuMeasure, &QPushButton::clicked, [] { ofx::builtin::pick::startBackground(renoVersion(), true); });
-        QWidget* gpuRow = new QWidget(b);
+        QWidget* gpuRow = new QWidget(renoBody_);
         QHBoxLayout* gpuRowL = new QHBoxLayout(gpuRow);
         gpuRowL->setContentsMargins(0, 0, 0, 0);
         gpuRowL->addWidget(gpuPick, 1);
         gpuRowL->addWidget(gpuMeasure);
         f->addRow("GPU e&ffects:", gpuRow);
-        QComboBox* vegasFx = combo(b, "prefs/vegasFxSource", "vegasFxSource",
+        QComboBox* vegasFx = combo(renoBody_, "prefs/vegasFxSource", "vegasFxSource",
                                    {{"Reno's built-in versions (ignore the installed ones)", "builtin"}, {"VEGAS's own plug-ins when installed", "real"}});
         vegasFx->setToolTip("VEGAS's own effects (Gaussian Blur, Cookie Cutter, ...) are reproduced in Reno to match VEGAS's output. By default Reno uses its "
-                            "versions and ignores VEGAS's installed OpenFX plug-ins; effects Reno has no version of still come from the installed plug-ins. "
+                            "versions and does not even load VEGAS's installed OpenFX plug-ins (other OpenFX plug-ins are loaded as before). "
                             "The other choice uses VEGAS's plug-ins when VEGAS is installed and they work here. "
                             "Effects already in the project are recreated when this changes. (reno_cli vegasfx compares the two.)");
         f->addRow("VEGAS &effects:", vegasFx);
-        QComboBox* vegasEfx = combo(b, "prefs/vegasEfxSource", "vegasEfxSource",
+        QComboBox* vegasEfx = combo(renoBody_, "prefs/vegasEfxSource", "vegasEfxSource",
                                     {{"Reno's built-in versions", "builtin"}, {"The installed plug-ins (need VEGAS's licence)", "real"}});
         vegasEfx->setToolTip("VEGAS's eFX audio effects (Limiter, Compressor, Reverb, TubeStage, Phaser, ChorusFlanger) are MAGIX plug-ins that only run fully inside VEGAS "
                              "(the Limiter, for one, does not limit elsewhere). Reno's built-in versions read the same settings and show the same controls, but sound different. "
                              "Effects already in the project are recreated when this changes.");
         f->addRow("VEGAS &eFX audio effects:", vegasEfx);
-        QComboBox* vegasDx = combo(b, "prefs/vegasDxSource", "vegasDxSource",
+        QComboBox* vegasDx = combo(renoBody_, "prefs/vegasDxSource", "vegasDxSource",
                                    {{"Reno's built-in versions (ignore the installed ones)", "builtin"}, {"The installed DirectX plug-ins when they work", "real"}});
         vegasDx->setToolTip("VEGAS's DirectX audio effects (Reverb, Distortion, the EQs, Track Compressor, ...) are reproduced in Reno to sound the same. "
                             "By default Reno uses its versions and ignores the installed DirectX plug-ins. The other choice uses the installed ones on Windows "
                             "when they load, and Reno's version otherwise. Effects already in the project are recreated when this changes.");
         f->addRow("VEGAS &DirectX audio effects:", vegasDx);
-        {
-            QCheckBox* all = check(b, "Render every effect at the preview's size in smaller previews", "prefs/previewSizeAllFx", "previewSizeAllFx");
-            all->setToolTip("At Draft/Preview quality or a small preview window, effects that cannot render at a smaller size "
-                            "(no multi-resolution support, e.g. many third-party plug-ins) are still given the preview's frame, "
-                            "as VEGAS does. Much faster; they may look slightly different from the final render (sizes in pixels). "
-                            "Off: such effects work at the full project size in previews too. Final renders always use the full size.");
-            f->addRow(all);
-        }
-
-        f->addRow(heading("Video Preview display options", b));
-        QDoubleSpinBox* action = new QDoubleSpinBox(b);
-        action->setObjectName("actionSafe");
-        action->setRange(0, 45);
-        action->setDecimals(1);
-        bindPref([action](const Preferences& p) { action->setValue(p.actionSafe); }, [action](Preferences& p) { p.actionSafe = action->value(); });
-        QDoubleSpinBox* title = new QDoubleSpinBox(b);
-        title->setObjectName("titleSafe");
-        title->setRange(0, 45);
-        title->setDecimals(1);
-        bindPref([title](const Preferences& p) { title->setValue(p.titleSafe); }, [title](Preferences& p) { p.titleSafe = title->value(); });
-        QSpinBox* cols = new QSpinBox(b);
-        cols->setObjectName("gridColumns");
-        cols->setRange(1, 64);
-        bindPref([cols](const Preferences& p) { cols->setValue(p.gridColumns); }, [cols](Preferences& p) { p.gridColumns = cols->value(); });
-        QSpinBox* rows = new QSpinBox(b);
-        rows->setObjectName("gridRows");
-        rows->setRange(1, 64);
-        bindPref([rows](const Preferences& p) { rows->setValue(p.gridRows); }, [rows](Preferences& p) { p.gridRows = rows->value(); });
-        auto pair = [b](const QString& l1, QWidget* w1, const QString& l2, QWidget* w2) {
-            QWidget* row = new QWidget(b);
-            QHBoxLayout* h = new QHBoxLayout(row);
-            h->setContentsMargins(0, 0, 0, 0);
-            h->addWidget(new QLabel(l1, row));
-            h->addWidget(w1);
-            h->addSpacing(16);
-            h->addWidget(new QLabel(l2, row));
-            h->addWidget(w2);
-            h->addStretch(1);
-            return row;
-        };
-        f->addRow(pair("Action &safe area (%):", action, "&Horizontal grid divisions (#):", cols));
-        f->addRow(pair("&Title safe area (%):", title, "&Vertical grid divisions (#):", rows));
-        // the preview's own switches: its right-click menu's Scale Video to Fit Preview Window and Simulate Device
-        // Aspect Ratio
-        QCheckBox* projectSize = new QCheckBox("Display at project si&ze", b);
-        projectSize->setObjectName("displayAtProjectSize");
-        binds_.push_back({tab_, [projectSize] { projectSize->setChecked(!QSettings().value("preview/scaleToFit", true).toBool()); },
-                          [projectSize] { QSettings().setValue("preview/scaleToFit", !projectSize->isChecked()); }, [projectSize] { projectSize->setChecked(false); }});
-        QCheckBox* simulate = new QCheckBox("Simulate device aspect &ratio", b);
-        simulate->setObjectName("simulateAspect");
-        binds_.push_back({tab_, [simulate] { simulate->setChecked(QSettings().value("preview/simulateAspect", false).toBool()); },
-                          [simulate] { QSettings().setValue("preview/simulateAspect", simulate->isChecked()); }, [simulate] { simulate->setChecked(false); }});
-        {
-            QWidget* row = new QWidget(b);
-            QHBoxLayout* h = new QHBoxLayout(row);
-            h->setContentsMargins(0, 0, 0, 0);
-            h->addWidget(projectSize);
-            h->addWidget(simulate);
-            h->addStretch(1);
-            f->addRow(row);
-        }
-        QComboBox* bg = combo(b, "prefs/previewBackground", "previewBackground",
-                              {{"Default", "default"}, {"Black", "black"}, {"White", "white"}, {"Checkerboard", "checkerboard"}});
-        bg->setToolTip("What the Video Preview shows where the picture is transparent (and round it)");
-        f->addRow("Bac&kground color:", bg);
-        f->addRow(heading("Default track fade colors", b));
-        QWidget* fades = new QWidget(b);
-        {
-            QHBoxLayout* h = new QHBoxLayout(fades);
-            h->setContentsMargins(0, 0, 0, 0);
-            h->addWidget(new QLabel("Track fade to&p:", fades));
-            h->addWidget(colorButton(fades, "prefs/fadeTop", "fadeTop"));
-            h->addSpacing(20);
-            h->addWidget(new QLabel("Track fade botto&m:", fades));
-            h->addWidget(colorButton(fades, "prefs/fadeBottom", "fadeBottom"));
-            h->addStretch(1);
-        }
-        f->addRow(fades);
-        f->addRow(note("New video tracks get these fade colours (a track's own: its header's menu, Fade Colors).", b));
+        QCheckBox* all = check(renoBody_, "Render every effect at the preview's size in smaller previews", "prefs/previewSizeAllFx", "previewSizeAllFx");
+        all->setToolTip("At Draft/Preview quality or a small preview window, effects that cannot render at a smaller size "
+                        "(no multi-resolution support, e.g. many third-party plug-ins) are still given the preview's frame, "
+                        "as VEGAS does. Much faster; they may look slightly different from the final render (sizes in pixels). "
+                        "Off: such effects work at the full project size in previews too. Final renders always use the full size.");
+        f->addRow(all);
+        f->addRow(note("New video tracks get the fade colours above (a track's own: its header's menu, Fade Colors).", renoBody_));
     }
 
     void buildPreviewDevice()
     {
-        QWidget* b;
         QPushButton* devDefaults = new QPushButton("De&vice Defaults", this);
         devDefaults->setObjectName("deviceDefaults");
-        page("Preview Device", "previewDeviceTab", &b, {devDefaults});
-        QFormLayout* f = new QFormLayout(b);
+        Pg p = vegasPage("Preview Device", "previewDeviceTab", {devDefaults});
+        QWidget* b = p.parent();
         QComboBox* dev = combo(b, "prefs/pdDevice", "pdDevice", {{"Windows Graphics Card", "graphics"}, {"(None)", "none"}});
-        f->addRow("&Device:", dev);
+        p.beside(dev, "&Device:");
         QPlainTextEdit* details = new QPlainTextEdit(b);
         details->setObjectName("pdDetails");
         details->setReadOnly(true);
-        details->setFixedHeight(64);
-        f->addRow("Details:", details);
+        p.beside(details, "Details:");
         QComboBox* adapter = new QComboBox(b);
         adapter->setObjectName("pdAdapter");
         adapter->addItem("A display other than Reno's", -1);
         const QList<QScreen*> screens = QGuiApplication::screens();
         for (int k = 0; k < screens.size(); ++k)
-            adapter->addItem(QString("%1: %2 (%3 x %4)").arg(k + 1).arg(screens[k]->name()).arg(screens[k]->size().width()).arg(screens[k]->size().height()), k);
+            adapter->addItem(QString("%1. %2 x %3").arg(k + 1).arg(screens[k]->size().width()).arg(screens[k]->size().height()), k);
         binds_.push_back({tab_, [adapter] { adapter->setCurrentIndex(std::max(0, adapter->findData(vprefs::number("prefs/pdAdapter")))); },
                           [adapter] { vprefs::set("prefs/pdAdapter", adapter->currentData().toInt()); }, [adapter] { adapter->setCurrentIndex(0); }});
-        QPushButton* identify = new QPushButton("&Identify Displays", b);
+        p.beside(adapter, "Display adapter:", "combo");
+        QPushButton* identify = p.button(new QPushButton("Identify Displays", b), "Identify Displays");
         identify->setObjectName("identifyDisplays");
-        QWidget* arow = new QWidget(b);
-        {
-            QHBoxLayout* h = new QHBoxLayout(arow);
-            h->setContentsMargins(0, 0, 0, 0);
-            h->addWidget(adapter, 1);
-            h->addWidget(identify);
-        }
-        f->addRow("Display &adapter:", arow);
         QObject::connect(identify, &QPushButton::clicked, this, [] {
             const QList<QScreen*> all = QGuiApplication::screens();
             for (int k = 0; k < all.size(); ++k) {
@@ -684,21 +1328,22 @@ private:
             }
         });
         auto updateDetails = [details, dev] {
-            if (dev->currentData().toString() == "none") { details->setPlainText("No external preview device."); return; }
-            QString t = "Windows Graphics Card: the picture full screen on a display (View > External Monitor Display chooses it too).\n";
+            if (dev->currentData().toString() == "none") { details->setPlainText("No external preview device.\n"); return; }
+            QString t = "Device connected\n";
             for (QScreen* s : QGuiApplication::screens())
                 t += QString("%1: %2 x %3, %4 Hz\n").arg(s->name()).arg(s->size().width()).arg(s->size().height()).arg(s->refreshRate(), 0, 'f', 1);
             details->setPlainText(t);
         };
         QObject::connect(dev, QOverload<int>::of(&QComboBox::currentIndexChanged), b, [updateDetails](int) { updateDetails(); });
         QTimer::singleShot(0, b, updateDetails);
-        QCheckBox* scale = check(b, "Scale output to fit display", "prefs/pdScale", "pdScale");
-        f->addRow(scale);
-        f->addRow(check(b, "Apply deinterlace filter", "prefs/pdDeinterlace", "pdDeinterlace"));
-        f->addRow(check(b, "Adjust levels from studio RGB to computer RGB", "prefs/pdStudioRgb", "pdStudioRgb"));
-        f->addRow(check(b, "Display frames in video preview window during &playback", "prefs/pdShowInPreview", "pdShowInPreview"));
-        f->addRow(note("AJA, Blackmagic Design DeckLink and OHCI IEEE 1394 devices are not supported: Reno previews on a display "
-                       "(Tools > Preview on External Monitor, Alt+Shift+4).", b));
+        p.button(check(b, "Scale output to fit display", "prefs/pdScale", "pdScale"), "Scale output to fit display");
+        p.button(check(b, "Apply deinterlace filter", "prefs/pdDeinterlace", "pdDeinterlace"), "Apply deinterlace filter");
+        p.button(check(b, "Adjust levels from studio RGB to computer RGB", "prefs/pdStudioRgb", "pdStudioRgb"), "Adjust levels from studio RGB to computer RGB");
+        p.button(check(b, "Display frames in video preview window during &playback", "prefs/pdShowInPreview", "pdShowInPreview"),
+                 "Display frames in video preview window during &playback");
+        p.finish();
+        extra("Preview Device")->addRow(note("AJA, Blackmagic Design DeckLink and OHCI IEEE 1394 devices are not supported: Reno previews on a display "
+                                             "(Tools > Preview on External Monitor, Alt+Shift+4).", renoBody_));
         const int myTab = tab_;
         QObject::connect(devDefaults, &QPushButton::clicked, this, [this, myTab] {
             for (Bind& x : binds_)
@@ -708,9 +1353,8 @@ private:
 
     void buildAudio()
     {
-        QWidget* b;
-        page("Audio", "audioTab", &b);
-        QFormLayout* f = new QFormLayout(b);
+        Pg p = vegasPage("Audio", "audioTab");
+        QWidget* b = p.parent();
         QDoubleSpinBox* peak = new QDoubleSpinBox(b);
         peak->setObjectName("normalizePeakDb");
         peak->setRange(-60, 0);
@@ -718,62 +1362,61 @@ private:
         peak->setSingleStep(0.1);
         binds_.push_back({tab_, [peak] { peak->setValue(QSettings().value("prefs/normalizePeakDb", -0.1).toDouble()); },
                           [peak] { QSettings().setValue("prefs/normalizePeakDb", peak->value()); }, [peak] { peak->setValue(-0.1); }});
-        f->addRow("Normali&ze peak level (dB):", peak);
-        f->addRow(check(b, "Recor&d to Broadcast Wave Format", "prefs/recordBwf", "recordBwf"));
-        f->addRow(check(b, "Pr&ompt user when no track has been armed for record", "prefs/promptNoArmed", "promptNoArmed"));
-        f->addRow(new QLabel("Preferred audio &editor:", b));
+        p.spin(peak, "Normali&ze peak level (dB):");
+        p.button(check(b, "Recor&d to Broadcast Wave Format", "prefs/recordBwf", "recordBwf"), "Recor&d to Broadcast Wave Format");
+        p.button(check(b, "Pr&ompt user when no track has been armed for record", "prefs/promptNoArmed", "promptNoArmed"),
+                 "Pr&ompt user when no track has been armed for record");
         QLineEdit* editor = new QLineEdit(b);
         editor->setObjectName("audioEditor");
-        bindPref([editor](const Preferences& p) { editor->setText(qs(p.audioEditor)); }, [editor](Preferences& p) { p.audioEditor = s8(editor->text().trimmed()); });
-        f->addRow(browseRow(b, editor, false, "Programs (*.exe);;All files (*)"));
-        f->addRow(heading("Metronome", b));
-        QRadioButton* def = new QRadioButton("Use default &metronome sounds", b);
+        bindPref([editor](const Preferences& pr) { editor->setText(qs(pr.audioEditor)); }, [editor](Preferences& pr) { pr.audioEditor = s8(editor->text().trimmed()); });
+        p.beside(editor, "Preferred audio &editor:");
+        wireBrowse(p.button(new QPushButton("&Browse...", b), "&Browse..."), editor, false, "Programs (*.exe);;All files (*)");
+        QRadioButton* def = p.button(new QRadioButton("Use default &metronome sounds", b), "Use default &metronome sounds");
         def->setObjectName("metronomeDefault");
-        QRadioButton* custom = new QRadioButton("Use custom metronome so&unds", b);
+        QRadioButton* custom = p.button(new QRadioButton("Use custom metronome so&unds", b), "Use custom metronome so&unds");
         custom->setObjectName("metronomeCustom");
         binds_.push_back({tab_, [def, custom] { (vprefs::on("prefs/metronomeCustom") ? custom : def)->setChecked(true); },
                           [custom] { vprefs::set("prefs/metronomeCustom", custom->isChecked()); }, [def] { def->setChecked(true); }});
-        f->addRow(def);
-        f->addRow(custom);
         const QString soundFilter = "Sound files (*.wav *.mp3 *.flac *.ogg *.aif *.aiff);;All files (*)";
         QLineEdit* normal = textBox(b, "prefs/metronomeNormal", "metronomeNormal");
         QLineEdit* accent = textBox(b, "prefs/metronomeAccent", "metronomeAccent");
-        QWidget* nrow = browseRow(b, normal, false, soundFilter);
-        QWidget* arow = browseRow(b, accent, false, soundFilter);
-        f->addRow("&Normal:", nrow);
-        f->addRow("A&ccent:", arow);
-        auto enable = [custom, nrow, arow] {
-            nrow->setEnabled(custom->isChecked());
-            arow->setEnabled(custom->isChecked());
+        p.beside(normal, "&Normal:");
+        QPushButton* nb = p.button(new QPushButton("B&rowse...", b), "B&rowse...");
+        wireBrowse(nb, normal, false, soundFilter);
+        p.beside(accent, "A&ccent:");
+        QPushButton* ab = p.button(new QPushButton("Br&owse...", b), "Br&owse...");
+        wireBrowse(ab, accent, false, soundFilter);
+        auto enable = [custom, normal, accent, nb, ab] {
+            for (QWidget* w : std::vector<QWidget*>{normal, accent, nb, ab}) w->setEnabled(custom->isChecked());
         };
         QObject::connect(custom, &QRadioButton::toggled, b, [enable](bool) { enable(); });
         QTimer::singleShot(0, b, enable);
-        f->addRow(heading("Loudness configuration", b));
-        f->addRow(check(b, "Open editor when new loudness log is generated", "prefs/loudnessOpenEditor", "loudnessOpenEditor"));
+        p.button(check(b, "Open editor when new loudness log is generated", "prefs/loudnessOpenEditor", "loudnessOpenEditor"),
+                 "Open editor when new loudness log is generated");
+        p.finish();
 
-        f->addRow(heading("Multichannel files (Reno)", b));
-        QComboBox* mc = new QComboBox(b);
+        QFormLayout* f = extra("Audio");
+        QComboBox* mc = new QComboBox(renoBody_);
         mc->setObjectName("multichannelImport");
         for (auto it : std::vector<std::pair<QString, QString>>{{"One mono event per channel, each on its own track", "tracks"},
                                                                 {"One stereo event per pair of channels (group multichannel stereo pairs)", "pairs"},
                                                                 {"One event, all its channels mixed down to stereo", "mixdown"}})
             mc->addItem(it.first, it.second);
-        bindPref([mc](const Preferences& p) { mc->setCurrentIndex(std::max(0, mc->findData(qs(p.multichannelImport)))); },
-                 [mc](Preferences& p) { p.multichannelImport = s8(mc->currentData().toString()); });
+        bindPref([mc](const Preferences& pr) { mc->setCurrentIndex(std::max(0, mc->findData(qs(pr.multichannelImport)))); },
+                 [mc](Preferences& pr) { pr.multichannelImport = s8(mc->currentData().toString()); });
         f->addRow("Add multichannel audio as:", mc);
-        QCheckBox* pan = new QCheckBox("Set pan for new tracks from multichannel", b);
+        QCheckBox* pan = new QCheckBox("Set pan for new tracks from multichannel", renoBody_);
         pan->setObjectName("panMultichannelTracks");
-        bindPref([pan](const Preferences& p) { pan->setChecked(p.panMultichannelTracks); }, [pan](Preferences& p) { p.panMultichannelTracks = pan->isChecked(); });
+        bindPref([pan](const Preferences& pr) { pan->setChecked(pr.panMultichannelTracks); }, [pan](Preferences& pr) { pr.panMultichannelTracks = pan->isChecked(); });
         f->addRow(pan);
     }
 
     void buildAudioDevice()
     {
-        QWidget* b;
         QPushButton* adv = new QPushButton("Ad&vanced...", this);
         adv->setObjectName("audioAdvanced");
-        page("Audio Device", "audioDeviceTab", &b, {adv});
-        QFormLayout* f = new QFormLayout(b);
+        Pg p = vegasPage("Audio Device", "audioDeviceTab", {adv});
+        QWidget* b = p.parent();
         QComboBox* device = new QComboBox(b);
         device->setObjectName("audioDevice");
         device->addItem("The system's default device", QString());
@@ -782,22 +1425,56 @@ private:
 #else
         device->setEnabled(false);
 #endif
-        bindPref([device](const Preferences& p) {
-                     int i = device->findData(qs(p.audioDevice));
-                     if (i < 0 && !p.audioDevice.empty()) {
-                         device->addItem(QString("(not connected) %1").arg(qs(p.audioDevice)), qs(p.audioDevice));
+        bindPref([device](const Preferences& pr) {
+                     int i = device->findData(qs(pr.audioDevice));
+                     if (i < 0 && !pr.audioDevice.empty()) {
+                         device->addItem(QString("(not connected) %1").arg(qs(pr.audioDevice)), qs(pr.audioDevice));
                          i = device->count() - 1;
                      }
                      device->setCurrentIndex(std::max(0, i));
                  },
-                 [device](Preferences& p) { p.audioDevice = s8(device->currentData().toString()); });
-        f->addRow("&Default stereo and front playback device:", device);
-        QLabel* channels = new QLabel(b);
+                 [device](Preferences& pr) { pr.audioDevice = s8(device->currentData().toString()); });
+        p.beside(device, "&Default stereo and front playback device:");
+        QSlider* buffer = trackbar("playbackBuffer", 2, 100);
+        binds_.push_back({tab_, [buffer] { buffer->setValue((int)std::lround(vprefs::real("prefs/playbackBuffer") * 100)); },
+                          [buffer] { vprefs::set("prefs/playbackBuffer", buffer->value() / 100.0); },
+                          [buffer] { buffer->setValue((int)std::lround(vprefs::defaultOf("prefs/playbackBuffer").toDouble() * 100)); }});
+        buffer->setToolTip("How much sound is made ready before it is heard: larger stops gaps, smaller answers sooner. Used the next time playback starts.");
+        p.beside(buffer, "&Playback buffering (seconds):");
+        QLabel* bufferValue = new QLabel(b);
+        p.put(bufferValue, p.after(p.cellOfLabel("&Playback buffering (seconds):"), "label"));
+        QObject::connect(buffer, &QSlider::valueChanged, bufferValue, [bufferValue](int v) { bufferValue->setText(QString::number(v / 100.0, 'f', 2)); });
+        QComboBox* rec = new QComboBox(b);
+        rec->setObjectName("audioInputDevice");
+        rec->addItem("The system's default device", QString());
+#ifdef RENO_HAVE_QTMULTIMEDIA
+        for (const QAudioDevice& d : QMediaDevices::audioInputs()) rec->addItem(d.description(), QString::fromUtf8(d.id()));
+#endif
+        bindPref([rec](const Preferences& pr) { rec->setCurrentIndex(std::max(0, rec->findData(qs(pr.audioInputDevice)))); },
+                 [rec](Preferences& pr) { pr.audioInputDevice = s8(rec->currentData().toString()); });
+        p.beside(rec, "Default audi&o recording device:");
+        QCheckBox* autoLat = p.button(check(b, "Au&tomatically detect and offset for hardware recording latency", "prefs/autoRecordLatency", "autoRecordLatency"),
+                                      "Au&tomatically detect and offset for hardware recording latency");
+        QSlider* offset = trackbar("recordOffsetMs", -1000, 1000);
+        binds_.push_back({tab_, [offset] { offset->setValue((int)std::lround(vprefs::real("prefs/recordOffsetMs"))); },
+                          [offset] { vprefs::set("prefs/recordOffsetMs", (double)offset->value()); },
+                          [offset] { offset->setValue((int)std::lround(vprefs::defaultOf("prefs/recordOffsetMs").toDouble())); }});
+        offset->setToolTip("Recordings are placed this much earlier on the timeline (used when the box above is cleared)");
+        p.beside(offset, "Us&er offset (samples) (ms):");
+        QLabel* offsetValue = new QLabel(b);
+        p.put(offsetValue, p.after(p.cellOfLabel("Us&er offset (samples) (ms):"), "label"));
+        QObject::connect(offset, &QSlider::valueChanged, offsetValue, [offsetValue](int v) { offsetValue->setText(QString("%1 ms").arg(v)); });
+        QObject::connect(autoLat, &QCheckBox::toggled, b, [offset](bool on) { offset->setEnabled(!on); });
+        QTimer::singleShot(0, b, [offset, autoLat] { offset->setEnabled(!autoLat->isChecked()); });
+        p.finish();
+
+        QFormLayout* f = extra("Audio Device");
+        QLabel* channels = new QLabel(renoBody_);
         channels->setObjectName("deviceChannels");
-        f->addRow("Channels:", channels);
-        QCheckBox* downmix = new QCheckBox("Downmix 5.1 output to stereo", b);
+        f->addRow("Playback channels:", channels);
+        QCheckBox* downmix = new QCheckBox("Downmix 5.1 output to stereo", renoBody_);
         downmix->setObjectName("downmixOutput");
-        bindPref([downmix](const Preferences& p) { downmix->setChecked(p.downmixOutput); }, [downmix](Preferences& p) { p.downmixOutput = downmix->isChecked(); });
+        bindPref([downmix](const Preferences& pr) { downmix->setChecked(pr.downmixOutput); }, [downmix](Preferences& pr) { pr.downmixOutput = downmix->isChecked(); });
         f->addRow(QString(), downmix);
         auto showChannels = [device, downmix, channels] {
             const int n = audioOutputChannels(s8(device->currentData().toString()));
@@ -806,53 +1483,19 @@ private:
             else if (n > 0) t += " - 5.1 projects are folded down to stereo";
             channels->setText(t);
         };
-        QObject::connect(device, QOverload<int>::of(&QComboBox::currentIndexChanged), b, [showChannels](int) { showChannels(); });
-        QObject::connect(downmix, &QCheckBox::toggled, b, [showChannels](bool) { showChannels(); });
-        QTimer::singleShot(0, b, showChannels);
-        QDoubleSpinBox* buffer = real(b, "prefs/playbackBuffer", "playbackBuffer", 0.02, 1.0, 2, 0.01);
-        buffer->setToolTip("How much sound is made ready before it is heard: larger stops gaps, smaller answers sooner. Used the next time playback starts.");
-        f->addRow("&Playback buffering (seconds):", buffer);
-        QComboBox* rec = new QComboBox(b);
-        rec->setObjectName("audioInputDevice");
-        rec->addItem("The system's default device", QString());
-#ifdef RENO_HAVE_QTMULTIMEDIA
-        for (const QAudioDevice& d : QMediaDevices::audioInputs()) rec->addItem(d.description(), QString::fromUtf8(d.id()));
-#endif
-        bindPref([rec](const Preferences& p) { rec->setCurrentIndex(std::max(0, rec->findData(qs(p.audioInputDevice)))); },
-                 [rec](Preferences& p) { p.audioInputDevice = s8(rec->currentData().toString()); });
-        f->addRow("Default audi&o recording device:", rec);
-        QCheckBox* autoLat = check(b, "Au&tomatically detect and offset for hardware recording latency", "prefs/autoRecordLatency", "autoRecordLatency");
-        f->addRow(autoLat);
-        QDoubleSpinBox* offset = real(b, "prefs/recordOffsetMs", "recordOffsetMs", -1000, 1000, 1, 1);
-        offset->setSuffix(" ms");
-        offset->setToolTip("Recordings are placed this much earlier on the timeline (used when the box above is cleared)");
-        f->addRow("Us&er offset (ms):", offset);
-        QObject::connect(autoLat, &QCheckBox::toggled, b, [offset](bool on) { offset->setEnabled(!on); });
-        QTimer::singleShot(0, b, [offset, autoLat] { offset->setEnabled(!autoLat->isChecked()); });
-        QObject::connect(adv, &QPushButton::clicked, this, [this, device] {
-            const QString id = device->currentData().toString();
-            QString t = QString("Device: %1\n").arg(device->currentText());
-            t += QString("Output channels: %1\n").arg(audioOutputChannels(s8(id)));
-#ifdef RENO_HAVE_QTMULTIMEDIA
-            for (const QAudioDevice& d : QMediaDevices::audioOutputs())
-                if (QString::fromUtf8(d.id()) == id || (id.isEmpty() && d == QMediaDevices::defaultAudioOutput()))
-                    t += QString("Sample rates: %1 to %2 Hz\nChannels: %3 to %4\n").arg(d.minimumSampleRate()).arg(d.maximumSampleRate()).arg(d.minimumChannelCount()).arg(d.maximumChannelCount());
-#endif
-            t += "\nBuffers, priority and input monitoring are set by Windows' audio for this device.";
-            QMessageBox::information(this, "Advanced Audio Configuration", t);
-        });
+        QObject::connect(device, QOverload<int>::of(&QComboBox::currentIndexChanged), renoBody_, [showChannels](int) { showChannels(); });
+        QObject::connect(downmix, &QCheckBox::toggled, renoBody_, [showChannels](bool) { showChannels(); });
+        QTimer::singleShot(0, renoBody_, showChannels);
+        QObject::connect(adv, &QPushButton::clicked, this, [this, device] { advancedAudioConfiguration(this, device->currentText(), device->currentData().toString()); });
     }
 
     void buildMidi()
     {
-        QWidget* b;
-        page("MIDI", "midiTab", &b);
-        QVBoxLayout* v = new QVBoxLayout(b);
-        auto devList = [this, b, v](const QString& label, const char* name, const std::vector<std::string>& names, const QString& key) {
-            v->addWidget(new QLabel(label, b));
+        Pg p = vegasPage("MIDI", "midiTab");
+        QWidget* b = p.parent();
+        auto devList = [this, b, &p](const QString& label, const char* name, const std::vector<std::string>& names, const QString& key) {
             QListWidget* l = new QListWidget(b);
             l->setObjectName(name);
-            l->setFixedHeight(110);
             for (const std::string& n : names) {
                 QListWidgetItem* it = new QListWidgetItem(qs(n), l);
                 it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
@@ -861,7 +1504,7 @@ private:
                 QListWidgetItem* it = new QListWidgetItem("(no MIDI devices)", l);
                 it->setFlags(Qt::NoItemFlags);
             }
-            v->addWidget(l);
+            p.beside(l, label, "listview");
             auto load = [l](const QStringList& on) {
                 for (int k = 0; k < l->count(); ++k)
                     if (l->item(k)->flags() & Qt::ItemIsUserCheckable) l->item(k)->setCheckState(on.isEmpty() || on.contains(l->item(k)->text()) ? Qt::Checked : Qt::Unchecked);
@@ -881,16 +1524,15 @@ private:
         };
         devList("&Make these devices available for MIDI output:", "midiOutputs", midiOutputNames(), "prefs/midiOutputs");
         devList("Ma&ke these devices available for MIDI input:", "midiInputs", midiInputNames(), "prefs/midiInputs");
-        v->addWidget(note("Reno uses MIDI for timecode and clock (Options > Timecode, and the Sync tab), and has no control surfaces or "
-                          "soft synths.", b));
-        v->addStretch(1);
+        p.finish();
+        extra("MIDI")->addRow(note("Reno uses MIDI for timecode and clock (Options > Timecode, and the Sync tab), and has no control surfaces or "
+                                   "soft synths.", renoBody_));
     }
 
     void buildVst()
     {
-        QWidget* b;
-        page("VST Effects", "vstTab", &b);
-        QFormLayout* f = new QFormLayout(b);
+        Pg p = vegasPage("VST Effects", "vstTab");
+        QWidget* b = p.parent();
         QLineEdit* def = new QLineEdit(b);
         def->setObjectName("vstDefaultFolder");
         def->setReadOnly(true);
@@ -900,19 +1542,19 @@ private:
         def->setText("~/.vst; ~/.vst3; /usr/lib/vst; /usr/lib/vst3");
 #endif
         def->setToolTip("The folders Reno always looks in");
-        f->addRow("Default VST search folder:", def);
+        p.beside(def, "&Default VST search folder:");
         alt1_ = new QLineEdit(b);
         alt1_->setObjectName("vstFolder1");
         alt2_ = new QLineEdit(b);
         alt2_->setObjectName("vstFolder2");
-        f->addRow("Alternate VST search folder &1:", browseRow(b, alt1_, true));
-        f->addRow("Alternate VST search folder &2:", browseRow(b, alt2_, true));
-        f->addRow(new QLabel("Select VST effects to be available as audio plug-ins:", b));
+        p.beside(alt1_, "Alternate VST search folder &1:");
+        wireBrowse(p.button(new QPushButton("Br&owse...", b), "Br&owse..."), alt1_, true);
+        p.beside(alt2_, "Alternate VST search folder &2:");
+        wireBrowse(p.button(new QPushButton("Bro&wse...", b), "Bro&wse..."), alt2_, true);
         QTreeWidget* list = new QTreeWidget(b);
         list->setObjectName("vstList");
         list->setHeaderLabels({"Name", "File"});
         list->setRootIsDecorated(false);
-        list->setMinimumHeight(180);
         for (const AudioFxEntry& e : Catalog::get().audio()) {
             if (e.desc.format != "VST" && e.desc.format != "VST3" && e.desc.format != "VST2") continue;
             QTreeWidgetItem* it = new QTreeWidgetItem(list, {qs(e.desc.name), QDir::toNativeSeparators(qs(e.desc.path))});
@@ -920,8 +1562,11 @@ private:
             it->setData(0, Qt::UserRole, qs(e.desc.path));
             if (!e.ok) it->setToolTip(0, "This plug-in did not work when it was checked: " + qs(e.error));
         }
-        list->header()->resizeSection(0, 220);
-        f->addRow(list);
+        list->header()->resizeSection(0, 180);
+        p.beside(list, "Select VST &effects to be available as audio plug-ins:");
+        QPushButton* refresh = p.button(new QPushButton("&Refresh", b), "&Refresh");
+        refresh->setObjectName("vstRefresh");
+        QObject::connect(refresh, &QPushButton::clicked, this, [this] { applyAll(); runPluginScan(this, false); });
         binds_.push_back({tab_,
                           [list] {
                               const QStringList off = vprefs::list("prefs/vstDisabled");
@@ -937,118 +1582,103 @@ private:
                           [list] {
                               for (int k = 0; k < list->topLevelItemCount(); ++k) list->topLevelItem(k)->setCheckState(0, Qt::Checked);
                           }});
-        if (list->topLevelItemCount() == 0) f->addRow(note("No VST plug-ins have been found (Options > Look for New Plug-Ins looks again).", b));
+        p.finish();
+        QFormLayout* f = extra("VST Effects");
+        if (list->topLevelItemCount() == 0) f->addRow(note("No VST plug-ins have been found (Refresh looks again).", renoBody_));
         f->addRow(note("Cleared plug-ins are left out of the effect lists (projects that use them still load them). New folders are "
-                       "searched by Options > Look for New Plug-Ins.", b));
+                       "searched by Refresh.", renoBody_));
     }
 
     void buildEditing()
     {
-        QWidget* b;
-        page("Editing", "editingTab", &b);
-        QFormLayout* f = new QFormLayout(b);
-        QCheckBox* loop = new QCheckBox("Enable &looping on events by default", b);
-        loop->setObjectName("loopEvents");
-        bindPref([loop](const Preferences& p) { loop->setChecked(p.loopEvents); }, [loop](Preferences& p) { p.loopEvents = loop->isChecked(); });
-        f->addRow(loop);
-        QCheckBox* pitch = new QCheckBox("&Preserve pitch when stretching audio events", b);
-        pitch->setObjectName("preservePitch");
-        bindPref([pitch](const Preferences& p) { pitch->setChecked(p.preservePitch); }, [pitch](Preferences& p) { p.preservePitch = pitch->isChecked(); });
-        f->addRow(pitch);
-        f->addRow(check(b, "Cut, copy, and delete g&rouped events", "prefs/groupedCutCopy", "groupedCutCopy"));
-        {
-            QCheckBox* nq = new QCheckBox("Do &not quantize to frames for audio-only edits", b);
-            nq->setObjectName("noQuantizeAudio");
-            bindPref([nq](const Preferences& p) { nq->setChecked(p.noQuantizeAudioOnly); }, [nq](Preferences& p) { p.noQuantizeAudioOnly = nq->isChecked(); });
-            f->addRow(nq);
-        }
-        f->addRow(check(b, "&Collapse loop region when no time selection is present", "prefs/collapseLoop", "collapseLoop"));
-        f->addRow("&JKL / shuttle speed:", combo(b, "prefs/jklSpeed", "jklSpeed", {{"Slow", "slow"}, {"Medium", "medium"}, {"Fast", "fast"}}));
+        Pg p = vegasPage("Editing", "editingTab");
+        QWidget* b = p.parent();
+        auto boolBox = [&](const QString& text, const char* name, bool Preferences::*field) {
+            QCheckBox* c = p.button(new QCheckBox(b), text);
+            c->setObjectName(name);
+            bindPref([c, field](const Preferences& pr) { c->setChecked(pr.*field); }, [c, field](Preferences& pr) { pr.*field = c->isChecked(); });
+            return c;
+        };
+        boolBox("Enable &looping on events by default", "loopEvents", &Preferences::loopEvents);
+        boolBox("&Preserve pitch when stretching audio events", "preservePitch", &Preferences::preservePitch);
+        p.button(check(b, "Cut, copy, and delete g&rouped events", "prefs/groupedCutCopy", "groupedCutCopy"), "Cut, copy, and delete g&rouped events");
+        boolBox("Do &not quantize to frames for audio-only edits", "noQuantizeAudio", &Preferences::noQuantizeAudioOnly);
+        p.button(check(b, "&Collapse loop region when no time selection is present", "prefs/collapseLoop", "collapseLoop"),
+                 "&Collapse loop region when no time selection is present");
+        p.beside(combo(b, "prefs/jklSpeed", "jklSpeed", {{"Slow", "slow"}, {"Medium", "medium"}, {"Fast", "fast"}}), "&JKL / shuttle speed:");
         QDoubleSpinBox* qf = new QDoubleSpinBox(b);
         qf->setObjectName("quickFadeMs");
         qf->setRange(1, 1000);
         qf->setDecimals(0);
-        bindPref([qf](const Preferences& p) { qf->setValue(p.quickFadeMs); }, [qf](Preferences& p) { p.quickFadeMs = qf->value(); });
-        f->addRow("&Quick fade length for audio events (ms):", qf);
-        const double fps = std::max(1.0, AppState::get().project().settings.fps());
-        auto framesRow = [b, fps](QDoubleSpinBox* s) {
-            QWidget* row = new QWidget(b);
-            QHBoxLayout* h = new QHBoxLayout(row);
-            h->setContentsMargins(0, 0, 0, 0);
-            QLabel* fr = new QLabel(row);
-            h->addWidget(s);
-            h->addWidget(fr);
-            h->addStretch(1);
-            auto show = [s, fr, fps] { fr->setText(QString("Frames: %1 at %2 fps").arg((int)std::lround(s->value() * fps)).arg(fps, 0, 'f', 3)); };
-            QObject::connect(s, QOverload<double>::of(&QDoubleSpinBox::valueChanged), row, [show](double) { show(); });
-            QTimer::singleShot(0, row, show);
-            return row;
+        bindPref([qf](const Preferences& pr) { qf->setValue(pr.quickFadeMs); }, [qf](Preferences& pr) { pr.quickFadeMs = qf->value(); });
+        p.spin(qf, "&Quick fade length for audio events (ms):");
+        auto lengthBox = [&](const char* name, double lo, double hi, const QString& label, std::function<void(const Preferences&, QDoubleSpinBox*)> load,
+                             std::function<void(Preferences&, QDoubleSpinBox*)> save) {
+            QDoubleSpinBox* s = new QDoubleSpinBox(b);
+            s->setObjectName(name);
+            s->setRange(lo, hi);
+            s->setDecimals(3);
+            bindPref([s, load](const Preferences& pr) { load(pr, s); }, [s, save](Preferences& pr) { save(pr, s); });
+            p.spin(s, label);
+            QLabel* fr = new QLabel(b);
+            p.put(fr, p.after(p.cellOfLabel(label), "label"));
+            framesLabel(fr, s);
+            return s;
         };
-        QDoubleSpinBox* still = new QDoubleSpinBox(b);
-        still->setObjectName("stillLength");
-        still->setRange(0.1, 3600);
-        still->setDecimals(3);
-        bindPref([still](const Preferences& p) { still->setValue(p.stillLength); }, [still](Preferences& p) { p.stillLength = still->value(); });
-        f->addRow("New &still image length (seconds):", framesRow(still));
-        QDoubleSpinBox* cp = new QDoubleSpinBox(b);
-        cp->setObjectName("cursorPreview");
-        cp->setRange(0.1, 60);
-        cp->setDecimals(3);
-        bindPref([cp](const Preferences& p) { cp->setValue(p.cursorPreview); }, [cp](Preferences& p) { p.cursorPreview = cp->value(); });
-        f->addRow("Cursor preview &duration (seconds):", framesRow(cp));
+        lengthBox("stillLength", 0.1, 3600, "New &still image length (seconds):", [](const Preferences& pr, QDoubleSpinBox* s) { s->setValue(pr.stillLength); },
+                  [](Preferences& pr, QDoubleSpinBox* s) { pr.stillLength = s->value(); });
+        lengthBox("cursorPreview", 0.1, 60, "Cursor preview &duration (seconds):", [](const Preferences& pr, QDoubleSpinBox* s) { s->setValue(pr.cursorPreview); },
+                  [](Preferences& pr, QDoubleSpinBox* s) { pr.cursorPreview = s->value(); });
+        boolBox("Automatically &overlap multiple selected media when added", "autoOverlapMedia", &Preferences::autoOverlapMedia);
+        lengthBox("cutToOverlap", 0.01, 60, "Cu&t-to-overlap conversion (seconds):", [](const Preferences& pr, QDoubleSpinBox* s) { s->setValue(pr.cutToOverlap); },
+                  [](Preferences& pr, QDoubleSpinBox* s) { pr.cutToOverlap = s->value(); });
+        p.beside(combo(b, "prefs/overlapAlign", "overlapAlign", {{"Before cut", "before"}, {"Centered on cut", "center"}, {"After cut", "after"}}), "Align&ment:");
+        // Time selection envelope fades: the check box, its length in milliseconds (with the frames it comes to) and the alignment
+        boolBox("T&ime selection envelope fades (ms):", "timeSelEnvFades", &Preferences::timeSelEnvFades);
+        QDoubleSpinBox* len = new QDoubleSpinBox(b);
+        len->setObjectName("timeSelEnvFadeLength");
+        len->setRange(0, 60000);
+        len->setDecimals(0);
+        p.edit(len, p.after(p.find("check", "T&ime selection envelope fades (ms):"), "edit"));
+        QLabel* lenFrames = new QLabel(b);
+        p.put(lenFrames, p.after(p.find("check", "T&ime selection envelope fades (ms):"), "label"));
         {
-            auto boolRow = [&](const QString& text, const char* name, bool Preferences::*field) {
-                QCheckBox* c = new QCheckBox(text, b);
-                c->setObjectName(name);
-                bindPref([c, field](const Preferences& p) { c->setChecked(p.*field); }, [c, field](Preferences& p) { p.*field = c->isChecked(); });
-                f->addRow(c);
-            };
-            boolRow("Automatically &overlap multiple selected media when added", "autoOverlapMedia", &Preferences::autoOverlapMedia);
-            boolRow("Time selection &envelope fades", "timeSelEnvFades", &Preferences::timeSelEnvFades);
-            QWidget* row = new QWidget(b);
-            QHBoxLayout* rl = new QHBoxLayout(row);
-            rl->setContentsMargins(0, 0, 0, 0);
-            QDoubleSpinBox* len = new QDoubleSpinBox(row);
-            len->setObjectName("timeSelEnvFadeLength");
-            len->setRange(0, 60000);
-            len->setDecimals(0);
-            len->setSuffix(" ms");
-            QComboBox* align = new QComboBox(row);
-            align->setObjectName("timeSelEnvFadeAlign");
-            align->addItem("Outside", "outside");
-            align->addItem("Centered", "centered");
-            align->addItem("Inside", "inside");
-            rl->addWidget(len);
-            rl->addWidget(align, 1);
-            bindPref([len, align](const Preferences& p) {
-                len->setValue(p.timeSelEnvFadeLength * 1000.0);
-                const int i = align->findData(QString::fromStdString(p.timeSelEnvFadeAlign));
-                align->setCurrentIndex(i >= 0 ? i : 0);
-            }, [len, align](Preferences& p) {
-                p.timeSelEnvFadeLength = len->value() / 1000.0;
-                p.timeSelEnvFadeAlign = align->currentData().toString().toStdString();
+            const double fps = std::max(1.0, AppState::get().project().settings.fps());
+            QObject::connect(len, QOverload<double>::of(&QDoubleSpinBox::valueChanged), lenFrames, [lenFrames, fps](double v) {
+                lenFrames->setText(QString("%1 frames at %2 fps").arg((int)std::lround(v / 1000.0 * fps)).arg(fps, 0, 'f', 3));
             });
-            f->addRow("Envelope fade length / alignment:", row);
-            boolRow("Smooth and &thin automation data after recording or drawing", "thinAutomation", &Preferences::thinAutomation);
-            boolRow("Use the right mouse button to switch to the Selection Edit tool", "rightMouseSelect", &Preferences::rightMouseSelect);
         }
-        QDoubleSpinBox* ov = new QDoubleSpinBox(b);
-        ov->setObjectName("cutToOverlap");
-        ov->setRange(0.01, 60);
-        ov->setDecimals(3);
-        bindPref([ov](const Preferences& p) { ov->setValue(p.cutToOverlap); }, [ov](Preferences& p) { p.cutToOverlap = ov->value(); });
-        f->addRow("Cu&t-to-overlap conversion (seconds):", framesRow(ov));
-        f->addRow("Align&ment:", combo(b, "prefs/overlapAlign", "overlapAlign", {{"Before cut", "before"}, {"Centered on cut", "center"}, {"After cut", "after"}}));
-        f->addRow(check(b, "A&utomatically crop still images added to timeline", "prefs/autoCropStills", "autoCropStills"));
-        f->addRow("Smart split default length (frames):", integer(b, "prefs/smartSplitFrames", "smartSplitFrames", 1, 1000));
+        QComboBox* align = new QComboBox(b);
+        align->setObjectName("timeSelEnvFadeAlign");
+        align->addItem("Outside", "outside");
+        align->addItem("Centered", "centered");
+        align->addItem("Inside", "inside");
+        p.beside(align, "Alignm&ent:");
+        bindPref([len, align](const Preferences& pr) {
+            len->setValue(pr.timeSelEnvFadeLength * 1000.0);
+            const int i = align->findData(QString::fromStdString(pr.timeSelEnvFadeAlign));
+            align->setCurrentIndex(i >= 0 ? i : 0);
+        }, [len, align](Preferences& pr) {
+            pr.timeSelEnvFadeLength = len->value() / 1000.0;
+            pr.timeSelEnvFadeAlign = align->currentData().toString().toStdString();
+        });
+        p.button(check(b, "A&utomatically crop still images added to timeline", "prefs/autoCropStills", "autoCropStills"),
+                 "A&utomatically crop still images added to timeline");
+        QSpinBox* smart = integer(b, "prefs/smartSplitFrames", "smartSplitFrames", 1, 1000);
+        p.spin(smart, "Smart split default length (frames):");
+        p.finish();
+
+        QFormLayout* f = extra("Editing");
+        QCheckBox* rm = new QCheckBox("Use the right mouse button to switch to the Selection Edit tool", renoBody_);
+        rm->setObjectName("rightMouseSelect");
+        bindPref([rm](const Preferences& pr) { rm->setChecked(pr.rightMouseSelect); }, [rm](Preferences& pr) { pr.rightMouseSelect = rm->isChecked(); });
+        f->addRow(rm);
     }
 
     void buildDisplay()
     {
-        QWidget* b;
-        page("Display", "displayTab", &b);
-        QFormLayout* f = new QFormLayout(b);
-        f->addRow(heading("Track Colors", b));
+        Pg p = vegasPage("Display", "displayTab");
+        QWidget* b = p.parent();
         trackColors_.clear();
         const QStringList savedTracks = vprefs::list("prefs/trackColors");
         for (int k = 0; k < 8; ++k) trackColors_.push_back(k < savedTracks.size() && QColor(savedTracks[k]).isValid() ? QColor(savedTracks[k]) : trackDefaultColor(k));
@@ -1057,14 +1687,8 @@ private:
         track->setObjectName("trackColorIndex");
         for (int k = 0; k < 8; ++k) track->addItem(QString("Track Color %1").arg(k + 1));
         ColorButton* tc = new ColorButton(b, "trackColor");
-        QWidget* trow = new QWidget(b);
-        {
-            QHBoxLayout* h = new QHBoxLayout(trow);
-            h->setContentsMargins(0, 0, 0, 0);
-            h->addWidget(track, 1);
-            h->addWidget(tc);
-        }
-        f->addRow("&Track:", trow);
+        p.beside(track, "&Track:");
+        p.put(tc, p.after(p.cellOfLabel("&Track:"), "color"));
         QObject::connect(track, QOverload<int>::of(&QComboBox::currentIndexChanged), b, [this, tc](int i) {
             if (i >= 0 && i < (int)trackColors_.size()) tc->setColor(trackColors_[(size_t)i]);
         });
@@ -1086,7 +1710,6 @@ private:
                               for (int k = 0; k < 8; ++k) trackColors_[(size_t)k] = trackDefaultColor(k);
                               tc->setColor(trackColors_[(size_t)std::max(0, track->currentIndex())]);
                           }});
-        f->addRow(heading("Envelope Colors", b));
         envColors_.clear();
         for (const QString& s : vprefs::list("prefs/envelopeColors")) {
             const int eq = s.indexOf('=');
@@ -1096,14 +1719,8 @@ private:
         env->setObjectName("envelopeType");
         for (const auto& k : kEnvelopeKinds) env->addItem(k.first, k.second);
         ColorButton* ec = new ColorButton(b, "envelopeColor");
-        QWidget* erow = new QWidget(b);
-        {
-            QHBoxLayout* h = new QHBoxLayout(erow);
-            h->setContentsMargins(0, 0, 0, 0);
-            h->addWidget(env, 1);
-            h->addWidget(ec);
-        }
-        f->addRow("En&velope Type:", erow);
+        p.beside(env, "En&velope Type:");
+        p.put(ec, p.after(p.cellOfLabel("En&velope Type:"), "color"));
         auto envColorOf = [this](const QString& kind) { return envColors_.count(kind) ? envColors_[kind] : envelopeDefaultColor(kind); };
         QObject::connect(env, QOverload<int>::of(&QComboBox::currentIndexChanged), b, [env, ec, envColorOf](int) { ec->setColor(envColorOf(env->currentData().toString())); });
         ec->onChanged = [this, env](const QColor& c) {
@@ -1121,19 +1738,12 @@ private:
                               envColors_.clear();
                               ec->setColor(envelopeDefaultColor(env->currentData().toString()));
                           }});
-        f->addRow(heading("Snap Colors", b));
         QComboBox* snap = new QComboBox(b);
         snap->setObjectName("snapType");
         snap->addItem("Snap Indicator", "indicator");
         ColorButton* sc = new ColorButton(b, "snapColor");
-        QWidget* srow = new QWidget(b);
-        {
-            QHBoxLayout* h = new QHBoxLayout(srow);
-            h->setContentsMargins(0, 0, 0, 0);
-            h->addWidget(snap, 1);
-            h->addWidget(sc);
-        }
-        f->addRow("&Snap Type:", srow);
+        p.beside(snap, "&Snap Type:");
+        p.put(sc, p.after(p.cellOfLabel("&Snap Type:"), "color"));
         binds_.push_back({tab_,
                           [sc] {
                               QColor c(70, 170, 255);
@@ -1145,22 +1755,30 @@ private:
                               vprefs::set("prefs/snapColors", sc->color() == QColor(70, 170, 255) ? QStringList() : QStringList() << "indicator=" + sc->color().name());
                           },
                           [sc] { sc->setColor(QColor(70, 170, 255)); }});
-        f->addRow(check(b, "&Display timeline at bottom of main window", "prefs/timelineAtBottom", "timelineAtBottom"));
-        f->addRow(check(b, "&Position tabs at top of docked windows", "prefs/tabsAtTop", "tabsAtTop"));
-        f->addRow(check(b, "&Allow floating windows to dock (hold Ctrl to override)", "prefs/floatingDock", "floatingDock"));
-        f->addRow(check(b, "&Reverse Event Background Color", "prefs/reverseEventBg", "reverseEventBg"));
-        f->addRow(check(b, "&Use High DPI scaling (where available)", "prefs/highDpi", "highDpi"));
-        f->addRow(check(b, "Use Alternate HighDPI Settings", "prefs/altHighDpi", "altHighDpi"));
-        f->addRow(note("The High DPI settings are read when Reno starts.", b));
+        auto box = [&](const QString& text, const char* key, const char* name) { p.button(check(b, text, key, name), text); };
+        box("&Display timeline at bottom of main window", "prefs/timelineAtBottom", "timelineAtBottom");
+        box("&Position tabs at top of docked windows", "prefs/tabsAtTop", "tabsAtTop");
+        box("&Allow floating windows to dock (hold Ctrl to override)", "prefs/floatingDock", "floatingDock");
+        box("&Reverse Event Background Color", "prefs/reverseEventBg", "reverseEventBg");
+        box("&Use High DPI scaling (where available)", "prefs/highDpi", "highDpi");
+        box("Use Alternate HighDPI Settings", "prefs/altHighDpi", "altHighDpi");
+        p.finish();
+        extra("Display")->addRow(note("The High DPI settings are read when Reno starts.", renoBody_));
+    }
+
+    // CD Settings: Reno has no CD burning, so the page only shows VEGAS's controls.
+    void buildCd()
+    {
+        Pg p = vegasPage("CD Settings", "cdTab");
+        p.finish();
     }
 
     void buildSync()
     {
-        QWidget* b;
         QPushButton* adv = new QPushButton("Ad&vanced...", this);
         adv->setObjectName("syncAdvanced");
-        page("Sync", "syncTab", &b, {adv});
-        QFormLayout* f = new QFormLayout(b);
+        Pg p = vegasPage("Sync", "syncTab", {adv});
+        QWidget* b = p.parent();
         const std::vector<std::string> outs = midiOutputNames(), ins = midiInputNames();
         auto devCombo = [b](const char* name, const std::vector<std::string>& names) {
             QComboBox* c = new QComboBox(b);
@@ -1179,18 +1797,16 @@ private:
                              [c, key] { vprefs::set(key, c->currentData().toInt()); }, [c] { c->setCurrentIndex(0); }});
             return c;
         };
-        f->addRow(new QLabel("Generate MIDI Timecode settings:", b));
         QComboBox* mtcOut = devCombo("mtcOutputDevice", outs);
-        f->addRow("&Output device:", mtcOut);
-        f->addRow("F&rame rate:", rateCombo("mtcRate", "midi/mtcRate", binds_, tab_));
-        f->addRow(new QLabel("Generate MIDI Clock settings:", b));
+        p.beside(mtcOut, "&Output device:");
+        p.beside(rateCombo("mtcRate", "midi/mtcRate", binds_, tab_), "F&rame rate:");
         QComboBox* clockOut = devCombo("clockOutputDevice", outs);
         clockOut->setToolTip("Reno sends MIDI timecode and MIDI clock through one port: choosing one chooses both");
-        f->addRow("O&utput device:", clockOut);
-        f->addRow(new QLabel("Trigger from MIDI Timecode settings:", b));
+        p.beside(clockOut, "O&utput device:");
         QComboBox* mtcIn = devCombo("mtcInputDevice", ins);
-        f->addRow("&Input device:", mtcIn);
-        f->addRow("Fra&me rate:", rateCombo("chaseRate", "midi/chaseRate", binds_, tab_));
+        p.beside(mtcIn, "&Input device:");
+        p.beside(rateCombo("chaseRate", "midi/chaseRate", binds_, tab_), "Fra&me rate:");
+        p.finish();
         QObject::connect(mtcOut, QOverload<int>::of(&QComboBox::currentIndexChanged), b, [mtcOut, clockOut](int i) {
             if (clockOut->currentIndex() != i) clockOut->setCurrentIndex(i);
             (void)mtcOut;
@@ -1213,7 +1829,7 @@ private:
                               mtcOut->setCurrentIndex(0);
                               mtcIn->setCurrentIndex(0);
                           }});
-        f->addRow(note("Options > Timecode turns them on (F7, Shift+F7, Ctrl+F7).", b));
+        extra("Sync")->addRow(note("Options > Timecode turns them on (F7, Shift+F7, Ctrl+F7).", renoBody_));
         QObject::connect(adv, &QPushButton::clicked, this, [this] { syncAdvanced(); });
     }
 
@@ -1300,55 +1916,55 @@ private:
 
     void buildExternal()
     {
-        QWidget* b;
-        page("External Control && Automation", "externalTab", &b);
-        QFormLayout* f = new QFormLayout(b);
-        f->addRow(note("Reno supports no control surfaces (Mackie Control, TranzPort, FaderPort, generic MIDI).", b));
-        f->addRow("New &audio envelopes:", combo(b, "prefs/curveAudioEnv", "curveAudioEnv", kCurves));
-        f->addRow("New aud&io event gain:", combo(b, "prefs/curveAudioGain", "curveAudioGain", kCurves));
-        f->addRow("New audio F&X automation envelopes:", combo(b, "prefs/curveAudioFx", "curveAudioFx", kCurves));
-        f->addRow("New vide&o envelopes:", combo(b, "prefs/curveVideoEnv", "curveVideoEnv", kCurves));
-        f->addRow("New video eve&nt opacity:", combo(b, "prefs/curveVideoOpacity", "curveVideoOpacity", kCurves));
-        f->addRow("New video FX &keyframes:", combo(b, "prefs/curveVideoFx", "curveVideoFx", kKeyframeTypes));
-        f->addRow("New video &motion keyframes:", combo(b, "prefs/curveVideoMotion", "curveVideoMotion", kKeyframeTypes));
-        f->addRow("Track Motion d&efault smoothness:", real(b, "prefs/motionSmoothness", "motionSmoothness", 0, 100, 1, 1));
-        f->addRow("Pan/Crop defa&ult smoothness:", real(b, "prefs/panCropSmoothness", "panCropSmoothness", 0, 100, 1, 1));
+        Pg p = vegasPage("External Control && Automation", "externalTab");
+        QWidget* b = p.parent();
+        QCheckBox* thin = p.button(new QCheckBox(b), "Smooth and &thin automation data after recording or drawing");
+        thin->setObjectName("thinAutomation");
+        bindPref([thin](const Preferences& pr) { thin->setChecked(pr.thinAutomation); }, [thin](Preferences& pr) { pr.thinAutomation = thin->isChecked(); });
+        p.beside(combo(b, "prefs/curveAudioEnv", "curveAudioEnv", kCurves), "New &audio envelopes:");
+        p.beside(combo(b, "prefs/curveAudioGain", "curveAudioGain", kCurves), "New aud&io event gain:");
+        p.beside(combo(b, "prefs/curveAudioFx", "curveAudioFx", kCurves), "New audio F&X automation envelopes:");
+        p.beside(combo(b, "prefs/curveVideoEnv", "curveVideoEnv", kCurves), "New vide&o envelopes:");
+        p.beside(combo(b, "prefs/curveVideoOpacity", "curveVideoOpacity", kCurves), "New video eve&nt opacity:");
+        p.beside(combo(b, "prefs/curveVideoFx", "curveVideoFx", kKeyframeTypes), "New video FX &keyframes:");
+        p.beside(combo(b, "prefs/curveVideoMotion", "curveVideoMotion", kKeyframeTypes), "New video &motion keyframes:");
+        p.spin(real(b, "prefs/motionSmoothness", "motionSmoothness", 0, 100, 1, 1), "Track Motion d&efault smoothness:");
+        p.spin(real(b, "prefs/panCropSmoothness", "panCropSmoothness", 0, 100, 1, 1), "Pan/Crop defa&ult smoothness:");
+        p.finish();
+        extra("External Control && Automation")->addRow(note("Reno supports no control surfaces (Mackie Control, TranzPort, FaderPort, generic MIDI).", renoBody_));
     }
 
     void buildDeprecated()
     {
-        QWidget* b;
-        page("Deprecated Features", "deprecatedTab", &b);
-        QVBoxLayout* v = new QVBoxLayout(b);
-        QLabel* l = new QLabel("These features are no longer supported and may be removed from the application in a future version. To use "
-                               "the feature, select its checkbox below.",
-                               b);
-        l->setWordWrap(true);
-        v->addWidget(l);
-        v->addWidget(new QLabel("&Deprecated Features:", b));
+        Pg p = vegasPage("Deprecated Features", "deprecatedTab");
+        QWidget* b = p.parent();
+        QListWidget* list = new QListWidget(b);
+        list->setObjectName("deprecatedList");
         const QString kept = "Reno has no such feature; the setting only shows the menu item VEGAS shows for it";
-        v->addWidget(check(b, "Enable XDCam Explorer", "prefs/depXdcamExplorer", "depXdcamExplorer", kept));
-        v->addWidget(check(b, "Enable Import DVD Camcorder Disc", "prefs/depDvdCamcorder", "depDvdCamcorder", kept));
-        v->addStretch(1);
+        for (auto it : std::vector<std::pair<const char*, const char*>>{{"Enable XDCam Explorer", "prefs/depXdcamExplorer"},
+                                                                       {"Enable Import DVD Camcorder Disc", "prefs/depDvdCamcorder"}}) {
+            QListWidgetItem* li = new QListWidgetItem(it.first, list);
+            li->setFlags(li->flags() | Qt::ItemIsUserCheckable);
+            li->setToolTip("Kept: " + kept + ".");
+            const QString key = it.second;
+            binds_.push_back({tab_, [li, key] { li->setCheckState(vprefs::on(key) ? Qt::Checked : Qt::Unchecked); },
+                              [li, key] { vprefs::set(key, li->checkState() == Qt::Checked); },
+                              [li, key] { li->setCheckState(vprefs::defaultOf(key).toBool() ? Qt::Checked : Qt::Unchecked); }});
+        }
+        p.beside(list, "&Deprecated Features:");
+        p.finish();
     }
 
     void buildFileIo()
     {
-        QWidget* b;
-        page("File I/O", "fileIoTab", &b);
-        QFormLayout* f = new QFormLayout(b);
-        f->addRow(new QLabel("&File I/O options:", b));
+        Pg p = vegasPage("File I/O", "fileIoTab");
+        QWidget* b = p.parent();
         const std::vector<std::pair<QString, QString>> levels = {{"Off", "off"}, {"Basic", "basic"}, {"Detailed", "detailed"}};
-        f->addRow("Log Plugin Loading:", combo(b, "prefs/logPlugins", "logPlugins", levels));
-        f->addRow("Log Reads:", combo(b, "prefs/logReads", "logReads", levels));
-        f->addRow("Log Renders:", combo(b, "prefs/logRenders", "logRenders", levels));
-        // Decoding AVC/HEVC (and VP9, AV1, MPEG-2) on the graphics card, as VEGAS's "Enable hardware decoding": the card
-        // where it can, the processor for whatever it can't (decided file by file, silently).
-        f->addRow(heading("Hardware decoding", b));
-        QComboBox* hwMode = combo(b, "prefs/hwDecode", "hwDecode", {{"Auto (graphics card where possible)", "auto"}, {"Off (processor only)", "off"}});
-        hwMode->setToolTip("Decode H.264, HEVC, VP9, AV1 and MPEG-2 video on the graphics card. Applies to files opened from now on");
-        f->addRow("Hardware decoding:", hwMode);
-        std::vector<std::pair<QString, QString>> apis = {{"Automatic", ""}};
+        QListWidget* options = new QListWidget(b);
+        options->setObjectName("fileIoList");
+        p.beside(options, "&File I/O options:");
+        // The hardware decoder to use: Reno's choice of graphics API (on the Reno tab: whether to decode on the card at all)
+        std::vector<std::pair<QString, QString>> apis = {{"Auto", ""}};
         for (const std::string& api : reno::hardwareDecodeApis()) {
             const QString n = QString::fromStdString(api);
             const QString pretty = n == "d3d11va" ? "Direct3D 11 (any graphics card)" : n == "dxva2" ? "DXVA2 (any graphics card)" :
@@ -1357,29 +1973,43 @@ private:
             apis.push_back({pretty, n});
         }
         QComboBox* hwApi = combo(b, "prefs/hwDecodeApi", "hwDecodeApi", apis);
-        hwApi->setToolTip("Which graphics API decodes the video (Automatic tries them in turn)");
-        f->addRow("Hardware decoding API:", hwApi);
-        QSpinBox* hwCount = integer(b, "prefs/hwDecoders", "hwDecoders", 1, 64);
+        hwApi->setToolTip("Which graphics API decodes the video (Auto tries them in turn)");
+        p.beside(hwApi, "Hardware Decoder To Use:");
+        p.beside(combo(b, "prefs/logPlugins", "logPlugins", levels), "Log Plugin Loading:");
+        p.beside(combo(b, "prefs/logReads", "logReads", levels), "Log Reads:");
+        p.beside(combo(b, "prefs/logRenders", "logRenders", levels), "Log Renders:");
+        p.finish();
+
+        // Decoding AVC/HEVC (and VP9, AV1, MPEG-2) on the graphics card, as VEGAS's "Enable hardware decoding": the card
+        // where it can, the processor for whatever it can't (decided file by file, silently).
+        QFormLayout* f = extra("File I/O");
+        QComboBox* hwMode = combo(renoBody_, "prefs/hwDecode", "hwDecode", {{"Auto (graphics card where possible)", "auto"}, {"Off (processor only)", "off"}});
+        hwMode->setToolTip("Decode H.264, HEVC, VP9, AV1 and MPEG-2 video on the graphics card. Applies to files opened from now on");
+        f->addRow("Hardware decoding:", hwMode);
+        QSpinBox* hwCount = integer(renoBody_, "prefs/hwDecoders", "hwDecoders", 1, 64);
         hwCount->setToolTip("Graphics cards run a limited number of decoders at once; files beyond this many use the processor");
         f->addRow("Files decoded on the card at once:", hwCount);
-        QTimer::singleShot(0, b, [hwApi, hwCount, hwMode] {
+        auto hwEnable = [hwApi, hwCount, hwMode] {
             const bool on = hwMode->currentData().toString() != "off";
             hwApi->setEnabled(on);
             hwCount->setEnabled(on);
-        });
-        QObject::connect(hwMode, QOverload<int>::of(&QComboBox::currentIndexChanged), b, [hwApi, hwCount, hwMode](int) {
-            const bool on = hwMode->currentData().toString() != "off";
-            hwApi->setEnabled(on);
-            hwCount->setEnabled(on);
-        });
-        f->addRow(note(QString("The logs are text files in %1.").arg(QDir::toNativeSeparators(logFolder())), b));
+        };
+        QTimer::singleShot(0, b, hwEnable);
+        QObject::connect(hwMode, QOverload<int>::of(&QComboBox::currentIndexChanged), b, [hwEnable](int) { hwEnable(); });
+        f->addRow(note(QString("The logs are text files in %1.").arg(QDir::toNativeSeparators(logFolder())), renoBody_));
     }
 
     void buildReno()
     {
-        QWidget* b;
-        page("Reno", "renoTab", &b);
-        QFormLayout* f = new QFormLayout(b);
+        QWidget* b = renoBody_;
+        QFormLayout* f = renoForm_;
+        tab_ = tabs_->addTab(renoInner_, "Reno");
+        const int renoIndex = tab_;
+        QObject::connect(renoDefault_, &QPushButton::clicked, this, [this, renoIndex] {
+            for (Bind& x : binds_)
+                if (x.tab == renoIndex && x.reset) x.reset();
+        });
+        renoGroup_.clear();
 
         f->addRow(heading("Performance", b));
         QCheckBox* all = check(b, "Use all processors for rendering, effects and decoding", "prefs/useAllCores", "useAllCores");

@@ -582,99 +582,52 @@ static void convolvePlane(std::vector<float>& plane, int W, int H, const std::ve
     plane.swap(res);
 }
 
-// Chroma Blur in 8 bits, as VEGAS's code does it (float arithmetic on the premultiplied bytes B, G, R, A): Y = 0.299 b0 + 0.587 b1 + 0.114 b2, U = 0.436 b2 - (0.28886 b1 + 0.14713 b0),
-// V = 0.615 b0 - 0.51499 b1 - 0.10001 b2; U and V go through three box blurs across and three down (box widths for a Gaussian of sigma = radius, running sums in float, edge pixels repeated),
-// radius across = (int)(Horizontal + 1.5), down = (int)(Vertical + 1.5); back with 1.13983 / 0.39465, 0.5806 / 2.03211 and cut to whole levels.
-static void boxesForGauss(float radius, int out[3])
+// Chroma Blur in 8 bits, as VEGAS draws it in a project (fitted to its own pictures: Reno Effect Capture, 16 cases on two inputs, mean 0.4 to 0.7 levels off; the picture the
+// stand-alone plug-in gives when another host runs it is a different one, so this is NOT VEGAS's decoded code): luma Y = 0.299 R + 0.587 G + 0.114 B is kept; the colour differences
+// Cb = (B - Y) / 1.772 and Cr = (R - Y) / 1.402 are blurred with a true Gaussian of sigma 0.44 + 0.3 p pixels (p the Horizontal / Vertical pixels setting, so even 0 blurs a little),
+// edge pixels repeated; Cr is held to +-0.406 before the blur and the result is rounded to whole levels. The Cr limit is explained: the plug-in's analog V (0.615 R - 0.515 G - 0.1 B) held
+// to a signed byte (+-127 levels) is Cr +-0.405, and it gives VEGAS's pure red (221, 17, 0); the Gaussian itself is only fitted (the decoded 3-box code cannot give sigma 0.46 at 0 pixels,
+// so VEGAS's host runs another path of the plug-in than Reno's host does; which one is not known).
+static void gaussTaps(double sigma, std::vector<float>& k)
 {
-    const float s = radius;
-    float x7 = s * 12.0f;
-    x7 = x7 * s;
-    const int n = 3;
-    int wl = (int)std::floor(std::sqrt(x7 / 3.0f + 1.0f));
-    if (!(wl & 1)) wl -= 1;
-    const float t1 = (float)(wl * wl * n);
-    const float t2 = 12.0f * (float)wl;
-    const float t3 = 9.0f;
-    const float den = (float)wl * -4.0f - 4.0f;
-    float m = ((x7 - t1) - t2) - t3;
-    m = m / den;
-    const int mi = (int)std::round(m);
-    for (int i = 0; i < n; ++i) out[i] = (i < mi) ? wl : wl + 2;
-}
-static void boxPassH(const std::vector<float>& in, std::vector<float>& out, int W, int H, int r)
-{
-    const float inv = 1.0f / (float)(2 * r + 1);
-    for (int y = 0; y < H; ++y) {
-        const float* a = &in[(size_t)y * W];
-        float* o = &out[(size_t)y * W];
-        const float fv = a[0], lv = a[W - 1];
-        float val = (float)(r + 1) * fv;
-        for (int j = 0; j < r; ++j) val += a[j];
-        int ri = r, li = 0, ti = 0;
-        for (int j = 0; j <= r; ++j) { val += a[ri++] - fv; o[ti++] = val * inv; }
-        for (; ti < W - r; ++ti) { val += a[ri++] - a[li++]; o[ti] = val * inv; }
-        for (; ti < W; ++ti) { val += lv - a[li++]; o[ti] = val * inv; }
-    }
-}
-// VEGAS walks the picture bottom row first, so the running sums down the picture start at the bottom.
-static void boxPassV(const std::vector<float>& in, std::vector<float>& out, int W, int H, int r)
-{
-    const float inv = 1.0f / (float)(2 * r + 1);
-    auto at = [&](int x, int k) -> size_t { return (size_t)(H - 1 - k) * W + x; };
-    for (int x = 0; x < W; ++x) {
-        const float fv = in[at(x, 0)], lv = in[at(x, H - 1)];
-        float val = (float)(r + 1) * fv;
-        for (int j = 0; j < r; ++j) val += in[at(x, j)];
-        int ri = r, li = 0, ti = 0;
-        for (int j = 0; j <= r; ++j) { val += in[at(x, ri++)] - fv; out[at(x, ti++)] = val * inv; }
-        for (; ti < H - r; ++ti) { val += in[at(x, ri++)] - in[at(x, li++)]; out[at(x, ti)] = val * inv; }
-        for (; ti < H; ++ti) { val += lv - in[at(x, li++)]; out[at(x, ti)] = val * inv; }
-    }
-}
-// the box widths of the three passes down, and the radius of the last pass across (shared with the Vulkan plan)
-void chromaBlur8Widths(Ctx& c, int& rh, int bv[3])
-{
-    rh = (int)(c.px(clampd(c.d("HorizontalPixels"), 0, 10)) + 1.5);
-    const int rv = (int)(c.px(clampd(c.d("VerticalPixels"), 0, 10)) + 1.5);
-    boxesForGauss((float)rv, bv);
+    const int n = std::max(1, (int)std::ceil(4.5 * sigma));
+    k.assign((size_t)(2 * n + 1), 0.f);
+    double sum = 0;
+    for (int i = -n; i <= n; ++i) sum += std::exp(-(double)i * i / (2.0 * sigma * sigma));
+    for (int i = -n; i <= n; ++i) k[(size_t)(i + n)] = (float)(std::exp(-(double)i * i / (2.0 * sigma * sigma)) / sum);
 }
 static void chromaBlur8(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     const size_t N = (size_t)W * H;
-    std::vector<float> Y(N), U(N), V(N), tmp(N);
+    const double kr = 0.299, kb = 0.114, kg = 1.0 - kr - kb;
+    std::vector<float> Y(N), cb(N), cr(N);
     std::vector<unsigned char> alpha(N);
     for (int j = 0; j < H; ++j)
         for (int i = 0; i < W; ++i) {
             const float* p = c.src.at(i, j);
-            const float b0 = (float)v8::toLevel(p[2]), b1 = (float)v8::toLevel(p[1]), b2 = (float)v8::toLevel(p[0]);
+            const double r = v8::toLevel(p[0]) / 255.0, g = v8::toLevel(p[1]) / 255.0, b = v8::toLevel(p[2]) / 255.0;
             const size_t k = (size_t)j * W + i;
-            Y[k] = (b0 * 0.299f + b1 * 0.587f) + b2 * 0.114f;
-            U[k] = b2 * 0.436f - (b1 * 0.28886f + b0 * 0.14713f);
-            V[k] = (b0 * 0.615f - b1 * 0.51499f) - b2 * 0.10001f;
+            const double y = kr * r + kg * g + kb * b;
+            Y[k] = (float)y;
+            cb[k] = (float)((b - y) / (2.0 * (1.0 - kb)));
+            cr[k] = (float)std::min(0.406, std::max(-0.406, (r - y) / (2.0 * (1.0 - kr))));
             alpha[k] = (unsigned char)v8::toLevel(p[3]);
         }
-    // across: three passes of widths 1, 1, 2 rh + 1; down: three passes with the widths of a Gaussian of sigma rv
-    int rh, bv[3];
-    chromaBlur8Widths(c, rh, bv);
-    const int bh[3] = {1, 1, 2 * rh + 1};
-    for (std::vector<float>* pl : {&U, &V}) {
-        for (int k = 0; k < 3; ++k) { boxPassH(*pl, tmp, W, H, (bh[k] - 1) / 2); pl->swap(tmp); }
-        for (int k = 0; k < 3; ++k) { boxPassV(*pl, tmp, W, H, (bv[k] - 1) / 2); pl->swap(tmp); }
-    }
-    auto cut = [](float v) { return v8::fromLevel((int)(0.f > v ? 0.f : std::min(255.0f, v))); };
+    std::vector<float> kx, ky;
+    gaussTaps(0.44 + 0.3 * c.px(clampd(c.d("HorizontalPixels"), 0, 10)), kx);
+    gaussTaps(0.44 + 0.3 * c.px(clampd(c.d("VerticalPixels"), 0, 10)), ky);
+    convolvePlane(cb, W, H, kx, true); convolvePlane(cr, W, H, kx, true);
+    convolvePlane(cb, W, H, ky, false); convolvePlane(cr, W, H, ky, false);
+    auto level = [](double v) { return (int)std::lround(std::min(255.0, std::max(0.0, v * 255.0))); };
     for (int j = 0; j < H; ++j)
         for (int i = 0; i < W; ++i) {
             const size_t k = (size_t)j * W + i;
-            const float y = Y[k], u = U[k], v = V[k];
-            const float v0 = (u * 0.0f + y) + v * 1.13983f;
-            const float v1 = (y - u * 0.39465f) - v * 0.5806f;
-            const float v2 = (u * 2.03211f + y) + v * 0.0f;
+            const double r = Y[k] + 2.0 * (1.0 - kr) * cr[k], b = Y[k] + 2.0 * (1.0 - kb) * cb[k], g = (Y[k] - kr * r - kb * b) / kg;
             float* o = c.out.at(i, j);
-            o[2] = cut(v0);
-            o[1] = cut(v1);
-            o[0] = cut(v2);
+            o[0] = v8::fromLevel(level(r));
+            o[1] = v8::fromLevel(level(g));
+            o[2] = v8::fromLevel(level(b));
             o[3] = v8::fromLevel(alpha[k]);
         }
 }

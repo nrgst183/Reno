@@ -7,8 +7,18 @@ and runs the same plug-ins (OpenFX video effects, VST2/VST3/DirectX audio effect
 Windows first; most of it also runs on Linux.
 
 Not affiliated with VEGAS, MAGIX or Sony. No VEGAS code or files are included. Reno has its own versions of VEGAS's
-effects, made to match VEGAS's output, and uses them by default even when VEGAS is installed (Preferences can switch
-to the installed plug-ins). Effects Reno has no version of still need VEGAS Pro installed.
+effects - all of VEGAS Pro 18's video effects, transitions and generators - made to match VEGAS's output, and uses
+them even when VEGAS is installed (VEGAS's own effect plug-ins are not loaded unless Preferences > Video says to).
+
+## Screenshots
+
+![The main window: media, preview, master bus and the timeline](docs/screenshots/main.png)
+
+| Audio Mixing layout | Video event effects |
+|---|---|
+| ![The Audio Mixing layout with the mixing console](docs/screenshots/mixing.png) | ![The video event effects window](docs/screenshots/effects.png) |
+
+(Made with generated test media; `tests/ui/vegasshot_test.cpp` renders them.)
 
 ## Features
 
@@ -109,8 +119,8 @@ Tests are in `tests/`, one program per `.cpp`; each file's header says how to bu
 real VEGAS projects or VEGAS output read their location from environment variables (`RENO_SAMPLES` and others, see
 [docs/NOTES.md](docs/NOTES.md)) and skip when they aren't set.
 
-`tools/scripts/` has VEGAS scripts that record VEGAS's output so Reno can be compared against it, including
-`Reno Plugin Fuzz.cs`, which tests every installed effect (compare with `tools/fuzz_compare.py`).
+The tools used to record VEGAS's output and compare Reno against it (VEGAS capture scripts, comparison scripts) are
+development tools kept out of the repository (see `.gitignore`).
 
 ## Third-party code
 

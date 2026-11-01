@@ -4,7 +4,10 @@
 #include "pollrate.h"
 #include "playback.h"
 #include "recorder.h"
+#include <QAction>
 #include <QContextMenuEvent>
+#include <QFrame>
+#include <QPushButton>
 #include <QDir>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -27,6 +30,65 @@ using namespace tw;
 namespace {
 
 const char* const kTileNames[] = {"Timecode", "Playback Frame Rate", "Master Peak", "Project", "Recording", "Disk Space"};
+
+// A row of VEGAS's Dashboard workflow: a pictogram with the step's number, and the step's name in bold.
+class StepButton : public QPushButton {
+public:
+    StepButton(int number, const QString& text, QWidget* parent) : QPushButton(text, parent), number_(number)
+    {
+        setFlat(true);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::NoFocus);
+        QFont f = font();
+        f.setBold(true);
+        setFont(f);
+        setFixedHeight(42);
+        setStyleSheet("QPushButton { background: transparent; border: none; color: #f0f0f0; text-align: left; padding-left: 70px; }"
+                      "QPushButton:hover:enabled { background: #5a5a5a; }"
+                      "QPushButton:disabled { color: #8a8a8a; }");
+    }
+
+protected:
+    void paintEvent(QPaintEvent* e) override
+    {
+        QPushButton::paintEvent(e);
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const bool on = isEnabled();
+        const QColor ink = on ? QColor(235, 235, 235) : QColor(120, 120, 120);
+        const QColor accent = on ? QColor(236, 98, 70) : QColor(110, 110, 110);
+        const QRectF art(14, (height() - 30) / 2.0, 30, 30);
+        p.setPen(QPen(ink, 1.6));
+        p.setBrush(Qt::NoBrush);
+        switch (number_) {
+        case 1: p.drawRect(art.adjusted(6, 6, -3, -3)); p.drawLine(QPointF(art.left() + 14, art.top() + 12), QPointF(art.left() + 22, art.top() + 20)); break;
+        case 2: p.drawLine(QPointF(art.left() + 8, art.top() + 8), QPointF(art.left() + 24, art.top() + 8)); p.drawLine(QPointF(art.left() + 16, art.top() + 8), QPointF(art.left() + 16, art.top() + 25)); break;
+        case 3: p.setBrush(accent); p.drawEllipse(art.adjusted(12, 10, -2, -2)); p.setBrush(ink); p.drawRect(art.adjusted(6, 6, -14, -14)); break;
+        case 4: p.drawRect(art.adjusted(6, 8, -4, -8)); p.drawLine(art.topRight() + QPointF(-4, 8), art.bottomLeft() + QPointF(6, -8)); break;
+        case 5: { QFont it = font(); it.setItalic(true); it.setBold(false); it.setPixelSize(20); p.setFont(it); p.drawText(art, Qt::AlignCenter, "fx"); break; }
+        case 6: p.drawRect(art.adjusted(6, 6, -6, -6)); p.setBrush(accent); p.drawEllipse(art.adjusted(15, 15, -2, -2)); break;
+        default: {   // Power User Mode: a gauge
+            p.drawArc(art.adjusted(3, 6, -3, -6), 0, 180 * 16);
+            p.setPen(QPen(accent, 2));
+            p.drawLine(art.center() + QPointF(0, 4), art.center() + QPointF(8, -6));
+            break;
+        }
+        }
+        if (number_ >= 1 && number_ <= 6) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(on ? QColor(235, 235, 235) : QColor(110, 110, 110));
+            p.drawEllipse(QRectF(art.left() - 2, art.top() - 2, 13, 13));
+            QFont nf = font();
+            nf.setPixelSize(10);
+            p.setFont(nf);
+            p.setPen(QColor(40, 40, 40));
+            p.drawText(QRectF(art.left() - 2, art.top() - 2, 13, 13), Qt::AlignCenter, QString::number(number_));
+        }
+    }
+
+private:
+    int number_;
+};
 
 // One tile: a title over a big reading (and a smaller line), or two bars for the meters.
 class TileWidget : public QWidget {
@@ -98,6 +160,9 @@ struct Dashboard::Impl {
     TileWidget* tiles[TileCount] = {};
     bool shown[TileCount] = {true, true, true, true, true, true};
     QGridLayout* grid = nullptr;
+    QWidget* tilesBox = nullptr;       // Reno's tiles: what Power User Mode shows
+    QWidget* workflow = nullptr;       // VEGAS's numbered steps
+    StepButton* steps[7] = {};
     QTimer* timer = nullptr;
     PollRate* pollRate = nullptr;          // slows the timer when nothing plays or records
     // frame rate: when frames were shown lately
@@ -185,6 +250,12 @@ struct Dashboard::Impl {
             }
         }
         for (TileWidget* t : tiles) t->update();
+        // steps 4 to 6 wait for something on the timeline (VEGAS greys them in an empty project)
+        if (steps[3]) {
+            steps[3]->setEnabled(events > 0);
+            steps[4]->setEnabled(events > 0);
+            steps[5]->setEnabled(events > 0);
+        }
         if (pollRate) pollRate->ticked(playing || (rec && (rec->recording() || rec->inputOpen())));
     }
 };
@@ -195,14 +266,61 @@ Dashboard::Dashboard(Playback* playback, Recorder* recorder, QWidget* parent) : 
     d->pb = playback;
     d->rec = recorder;
     auto* v = new QVBoxLayout(this);
-    v->setContentsMargins(4, 4, 4, 4);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(0);
+    d->tilesBox = new QWidget(this);
+    d->tilesBox->setObjectName("dashboardTiles");
+    auto* tv = new QVBoxLayout(d->tilesBox);
+    tv->setContentsMargins(4, 4, 4, 4);
     d->grid = new QGridLayout();
     d->grid->setSpacing(4);
-    v->addLayout(d->grid);
-    v->addStretch(1);
+    tv->addLayout(d->grid);
+    tv->addStretch(1);
+    // VEGAS's Dashboard: the workflow in six steps; Power User Mode swaps it for Reno's readings (the tiles below)
+    d->workflow = new QWidget(this);
+    d->workflow->setObjectName("dashboardWorkflow");
+    auto* wv = new QVBoxLayout(d->workflow);
+    wv->setContentsMargins(0, 8, 0, 8);
+    wv->setSpacing(0);
+    const char* const stepNames[] = {"Add/Arrange Media", "Add Text and Titles", "Add Graphic Elements", "Add Video Transitions", "Add Video Effects", "Render As", "Power User Mode"};
+    for (int k = 0; k < 7; ++k) {
+        d->steps[k] = new StepButton(k + 1, stepNames[k], d->workflow);
+        d->steps[k]->setObjectName(QString("dashboardStep%1").arg(k + 1));
+        if (k == 6) {
+            QFrame* rule = new QFrame(d->workflow);
+            rule->setFrameShape(QFrame::HLine);
+            rule->setStyleSheet("color: #6e6e6e;");
+            wv->addSpacing(14);
+            wv->addWidget(rule);
+            wv->addSpacing(14);
+        }
+        wv->addWidget(d->steps[k]);
+    }
+    wv->addStretch(1);
+    v->addWidget(d->workflow);
+    v->addWidget(d->tilesBox, 1);
+    d->tilesBox->hide();
+    // each step runs the command of the same name (the window's own actions)
+    auto run = [this](const char* action) {
+        if (QWidget* w = window())
+            if (QAction* a = w->findChild<QAction*>(action))
+                if (a->isEnabled()) a->trigger();
+    };
+    QObject::connect(d->steps[0], &QPushButton::clicked, this, [run] { run("showMedia"); });
+    QObject::connect(d->steps[1], &QPushButton::clicked, this, [run] { run("insertText"); });
+    QObject::connect(d->steps[2], &QPushButton::clicked, this, [run] { run("showGenerators"); });
+    QObject::connect(d->steps[3], &QPushButton::clicked, this, [run] { run("showTransitions"); });
+    QObject::connect(d->steps[4], &QPushButton::clicked, this, [run] { run("showVideoFx"); });
+    QObject::connect(d->steps[5], &QPushButton::clicked, this, [run] { run("render"); });
+    QObject::connect(d->steps[6], &QPushButton::clicked, this, [this] {
+        const bool tiles = !d->tilesBox->isVisible();
+        d->tilesBox->setVisible(tiles);
+        for (int k = 0; k < 6; ++k) d->steps[k]->setVisible(!tiles);
+        d->steps[6]->setText(tiles ? "Workflow Mode" : "Power User Mode");
+    });
     QSettings st;
     for (int k = 0; k < TileCount; ++k) {
-        d->tiles[k] = new TileWidget(kTileNames[k], this);
+        d->tiles[k] = new TileWidget(kTileNames[k], d->tilesBox);
         d->tiles[k]->setObjectName(QString("dashboardTile%1").arg(k));
         d->shown[k] = st.value(QString("dashboard/tile%1").arg(k), true).toBool();
     }

@@ -658,12 +658,15 @@ void colorBalance(Ctx& c)
     });
 }
 
+// VEGAS's Threshold (measured on its pictures, the 25 / 40 / 50 / 60 / 75 % presets): every colour channel on its own becomes white when it reaches the
+// level and black below it (not the brightness of the pixel); the default level is 25 %.
 void threshold(Ctx& c)
 {
     const float t = (float)c.d("Threshold");
     perPixel(c, [&](float& r, float& g, float& b) {
-        const float v = luma(r, g, b) >= t - 1e-5f ? 1.f : 0.f;
-        r = g = b = v;
+        r = r >= t - 1e-5f ? 1.f : 0.f;
+        g = g >= t - 1e-5f ? 1.f : 0.f;
+        b = b >= t - 1e-5f ? 1.f : 0.f;
     });
 }
 
@@ -1652,7 +1655,7 @@ void addFilters(std::vector<Def>& out)
                          {dbl("Red", "Red", 0, -1, 1), dbl("Green", "Green", 0, -1, 1), dbl("Blue", "Blue", 0, -1, 1),
                           choice("Type", "Type", 1, {"Highlights", "Midtones", "Shadow"}), boolean("PreserveLuminosity", "Preserve luminosity", true)},
                          colorBalance));
-    out.push_back(filter("threshold", "Threshold", "Black or white by brightness", {dbl("Threshold", "Threshold", 0.5, 0, 1)}, threshold));
+    out.push_back(filter("threshold", "Threshold", "Each colour channel black or white by level", {dbl("Threshold", "Threshold", 0.25, 0, 1)}, threshold));
     out.push_back(filter("mirror", "Mirror", "One side reflected over the other",
                          {dbl("Angle", "Angle", 0, -360, 360), point("Center", "Center", 0.5, 0.5), rgba("Background", "Background", 0, 0, 0, 0)}, mirror));
     out.push_back(filter("gaussianblur", "Gaussian Blur", "A soft blur",

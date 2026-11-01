@@ -1124,23 +1124,39 @@ void layerDimensionality(Ctx& c)
 // Deform: squeeze, shear and curve the frame's edges.
 void deform(Ctx& c)
 {
+    // VEGAS's legacy Deform, measured on its own pictures (not read from its code). Everything is scaled by Amount, positions are continuous
+    // (pixel index + 0.5) and the centre is the pixel-index centre (W/2 + 0.5, H/2 + 0.5).
+    //  Squeeze: the row's (column's) scale runs linearly 1 -> 1 - Squeeze from the far edge to the named one (Top: 0 at the top row at 1).
+    //  Shear: a full frame width (height) across the frame at 1: source x = X - ShearHorizontal * W / H * (Y - cy), source y = Y - ShearVertical * H / W * (X - cx).
+    //  Curve: the named edge is displaced along the axis by Curve * half the frame times q = 4 u (1 - u) (u across the frame); Top and Bottom edges move
+    //  up, Left and Right edges move right; the rest of the picture is stretched linearly between the two edges. With both edges of a pair curved, each
+    //  gets half a frame back (the pair bends as one: a 1/1 pair keeps the centre where it was).
     const int W = c.out.w, H = c.out.h;
     const double amount = c.d("Amount"), sl = c.d("SqueezeLeft") * amount, sr = c.d("SqueezeRight") * amount, st = c.d("SqueezeTop") * amount, sb = c.d("SqueezeBottom") * amount;
-    const double sh = (c.d("ShearHorizontal") - 1.0) * amount, sv = c.d("ShearVertical") * amount;
+    const double shh = c.d("ShearHorizontal") * amount, shv = c.d("ShearVertical") * amount;
     const double cl = c.d("CurveLeft") * amount, cr = c.d("CurveRight") * amount, ct = c.d("CurveTop") * amount, cb = c.d("CurveBottom") * amount;
     const Color bgc = c.color("Background");
+    const double cx = W * 0.5 + 0.5, cy = H * 0.5 + 0.5, kx = shh * W / H, ky = shv * H / W;
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
-            double u = (x + 0.5) / W, v = (y + 0.5) / H;
-            const double sq = (1 - v) * st + v * sb;                     // horizontal squeeze by row
-            const double sqv = (1 - u) * sl + u * sr;
-            double su = (u - 0.5) / std::max(0.05, 1 - sq) + 0.5, sv2 = (v - 0.5) / std::max(0.05, 1 - sqv) + 0.5;
-            su += sh * (v - 0.5) * 1.0; sv2 += sv * (u - 0.5);
-            su += (ct * (1 - v) + cb * v) * 0.5 * std::sin(kPi * v) * 0.5;
-            sv2 += (cl * (1 - u) + cr * u) * 0.5 * std::sin(kPi * u) * 0.5;
+            const double X = x + 0.5, Y = y + 0.5;
             float* o = c.out.at(x, y);
-            if (su < 0 || su > 1 || sv2 < 0 || sv2 > 1) { put(o, bgc); continue; }
-            c.src.sample(su * W, sv2 * H, o);
+            // curves (on the output position)
+            double u = X / W, v = Y / H;
+            const double qx = 4 * u * (1 - u), qy = 4 * v * (1 - v);
+            const double hh = 0.5 * H, wh = 0.5 * W;
+            const double yt = (-hh * ct) * qx + (hh * ct) * cb, yb = H - (hh * cb) * qx + (hh * cb) * ct;
+            const double xl = (wh * cl) * qy - (wh * cl) * cr, xr = W + (wh * cr) * qy - (wh * cr) * cl;
+            const double dyc = yb - yt, dxc = xr - xl;
+            if (dyc < 1e-6 * H || dxc < 1e-6 * W) { put(o, bgc); continue; }
+            const double X1 = W * (X - xl) / dxc, Y1 = H * (Y - yt) / dyc;
+            // squeeze and shear
+            const double sH = 1 - (st * (1 - Y1 / H) + sb * (Y1 / H)), sV = 1 - (sl * (1 - X1 / W) + sr * (X1 / W));
+            if (sH < 1e-4 || sV < 1e-4) { put(o, bgc); continue; }
+            const double xs = cx + (X1 - cx) / sH - kx * (Y1 - cy);
+            const double ys = cy + (Y1 - cy) / sV - ky * (X1 - cx);
+            if (xs < 0 || xs > W || ys < 0 || ys > H) { put(o, bgc); continue; }
+            c.src.sample(xs, ys, o);
         }
     });
 }

@@ -17,7 +17,7 @@ ofx::Plugin* findVideoPlugin(const std::string& id, std::string* error)
     host.loadBinary(ofx::kBuiltinBinaryPath, nullptr);     // Reno's built-in plug-ins are always there (once)
     ofx::Plugin* pl = host.findPlugin(id);
     // Preferences > Video, "always use Reno's built-in versions": VEGAS's own effects are not looked for as files at all.
-    const bool builtinFirst = host.config.preferBuiltinVegasFx && ofx::isVegasOwnEffect(id);
+    const bool builtinFirst = host.useBuiltinFor(id);
     if (pl && pl->binary && pl->binary->builtin && !builtinFirst) pl = nullptr;     // a real one of the same identifier is looked for first
     if (!pl) {
         VideoFxEntry e;
@@ -36,9 +36,10 @@ ofx::Plugin* findVideoPlugin(const std::string& id, std::string* error)
     }
     if (!pl) {
         // not in the catalog: look through the standard folders (once per file; loadBinary remembers)
-        static std::once_flag once;
-        std::call_once(once, [&] {
-            for (const auto& f : ofx::Host::findBinaries(ofx::Host::defaultSearchDirs()))
+        // (VEGAS's own bundles are left out while the built-ins are used; once for each of the two cases)
+        static std::once_flag once[2];
+        std::call_once(once[host.skipVegasBundles() ? 1 : 0], [&] {
+            for (const auto& f : host.usableBinaries(ofx::Host::defaultSearchDirs()))
                 if (!Catalog::get().crashedWhenTried(f)) host.loadBinary(f, nullptr);
         });
         pl = host.findPlugin(id);
@@ -321,7 +322,7 @@ void FxRuntime::prepareVideo(const FxSlot& s, const Project& p, const char* role
         if (it != video_.end()) {
             ofx::Instance* have = it->second.inst.get();
             // up to date unless made for another frame size or rate, or for the other choice of VEGAS plug-in / built-in
-            const bool sourceSame = it->second.builtinChosen == ofx::Host::get().config.preferBuiltinVegasFx || !ofx::isVegasOwnEffect(s.pluginId);
+            const bool sourceSame = it->second.builtinChosen == ofx::Host::get().useBuiltinFor(s.pluginId) || !ofx::isVegasOwnEffect(s.pluginId);
             if (!have || (sourceSame && have->setup.width == p.settings.width && have->setup.height == p.settings.height &&
                           std::fabs(have->setup.fps - p.settings.fps()) < 1e-9)) return;
         }
@@ -339,7 +340,7 @@ void FxRuntime::prepareVideo(const FxSlot& s, const Project& p, const char* role
         retire(std::move(old), std::vector<AudioFx>());
     }
     VideoFx fx;
-    fx.builtinChosen = ofx::Host::get().config.preferBuiltinVegasFx;
+    fx.builtinChosen = ofx::Host::get().useBuiltinFor(s.pluginId);
     std::string err, fellBack;
     ofx::Plugin* pl = findVideoPlugin(s.pluginId, &err);
     if (pl) {

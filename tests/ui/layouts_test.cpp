@@ -9,6 +9,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QListWidget>
 #include <QDialog>
 #include <QDir>
 #include <QDockWidget>
@@ -17,6 +18,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QTimer>
+#include <QListWidget>
 #include <QTreeWidget>
 
 using namespace reno;
@@ -173,16 +175,18 @@ int main(int argc, char** argv)
         withDialog([&] { if (QAction* x = w.findChild<QAction*>("organizeLayouts")) x->trigger(); },
                    [](QDialog* d) {
                        QTreeWidget* list = d->findChild<QTreeWidget*>("layoutList");
-                       QComboBox* key = d->findChild<QComboBox*>("layoutKey");
+                       QListWidget* slotList = d->findChild<QListWidget*>("layoutSlots");
+                       QPushButton* assign = d->findChild<QPushButton*>("layoutAssign");
                        QPushButton* del = d->findChild<QPushButton*>("layoutDelete");
-                       if (!list || !key || !del) { d->reject(); return; }
+                       if (!list || !slotList || !assign || !del) { d->reject(); return; }
                        // "Layout 4" goes; "Editing" moves to 9
                        for (int k = 0; k < list->topLevelItemCount(); ++k)
                            if (list->topLevelItem(k)->text(0) == "Layout 4") list->setCurrentItem(list->topLevelItem(k));
                        del->click();
                        for (int k = 0; k < list->topLevelItemCount(); ++k)
                            if (list->topLevelItem(k)->text(0) == "Editing") list->setCurrentItem(list->topLevelItem(k));
-                       key->setCurrentIndex(key->findData(9));
+                       slotList->setCurrentRow(9);
+                       assign->click();
                        d->accept();
                    });
         uitest::settle(100);

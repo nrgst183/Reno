@@ -88,8 +88,10 @@ bool inOrder(const QStringList& have, const QStringList& want, QString* missing)
     return true;
 }
 
-void checkOrder(const QStringList& have, const QStringList& want, const std::string& name)
+void checkOrder(const QStringList& have, QStringList want, const std::string& name)
 {
+    // (VEGAS's separators are not in the capture of its menus, so only the order of the items is checked)
+    want.removeAll("-");
     QString missing;
     const bool ok = inOrder(have, want, &missing);
     check(ok, name, ok ? std::string() : ("missing or out of order: " + missing + " in [" + have.join(" | ") + "]").toStdString());
@@ -238,10 +240,10 @@ int main(int argc, char** argv)
         for (QAction* m : w.menuBar()->actions()) bar << plain(m->text());
         check(bar.join(",") == "File,Edit,View,Insert,Tools,Options,Help", "the menu bar is VEGAS's", bar.join(",").toStdString());
         auto menuOf = [](const QString& path) { QAction* a = item(path); return a ? a->menu() : nullptr; };
-        checkOrder(texts(menuOf("File")), {"New...", "New Empty Project", "Open...", "Close", "-", "Save", "Save As...", "Incremental Save", "Render As...",
-                                           "Import", "Add Media...", "Properties...", "Exit"}, "File: VEGAS's items in its order");
+        checkOrder(texts(menuOf("File")), {"New...", "Open...", "Close", "-", "Save", "Save As...", "Incremental Save", "Render As...",
+                                           "Import", "Properties...", "Exit"}, "File: VEGAS's items in its order");
         checkOrder(texts(menuOf("Edit")), {"Undo", "Redo", "-", "Cut", "Copy", "Paste", "Paste Repeat...", "Paste Insert", "Paste Event Attributes",
-                                           "Selectively Paste Event Attributes...", "-", "Delete", "Trim", "Trim Start", "Trim End", "Split", "Smart Split",
+                                           "Selectively Paste Event Attributes", "-", "Delete", "Trim", "Trim Start", "Trim End", "Split", "Smart Split",
                                            "Event Heal", "Close Gaps", "-", "Navigate", "Post-Edit Ripple", "Select", "Editing Tool", "-", "Switches", "Take",
                                            "Group", "Stream", "Channels", "-", "Undo All", "Clear Edit History..."},
                    "Edit: VEGAS's items in its order");
@@ -253,7 +255,7 @@ int main(int argc, char** argv)
                                                     "Move Right by Selected Event", "-", "Move Cursor to Playhead", "Center View around Cursor"},
                    "Edit > Navigate");
         checkOrder(texts(menuOf("Edit/Post-Edit Ripple")), {"Affected Tracks", "Affected Tracks, Bus Tracks, Markers, and Regions",
-                                                            "Affected Tracks, Markers, and Regions", "All Tracks, Markers, and Regions"}, "Edit > Post-Edit Ripple");
+                                                            "All Tracks, Markers, and Regions"}, "Edit > Post-Edit Ripple");
         checkOrder(texts(menuOf("Edit/Select")), {"Select All", "Select All After Cursor", "-", "Select Event Start", "Select Event End",
                                                   "Enter Expanded Edit Mode", "Exit Edit Mode", "-", "Loop Playback", "-", "Zoom Selection",
                                                   "Set Selection to View", "Set Selection to Project", "Select Loop Region", "-", "Set Selection Start",
@@ -270,24 +272,24 @@ int main(int argc, char** argv)
         checkOrder(texts(menuOf("Edit/Group")), {"Create New", "-", "Remove From", "Clear", "Select All", "-", "Cut All", "Copy All", "Delete All"},
                    "Edit > Group");
         checkOrder(texts(menuOf("Edit/Channels")), {"Both", "Left Only", "Right Only", "Combine", "Swap"}, "Edit > Channels");
-        checkOrder(texts(menuOf("View")), {"Toolbar", "Status Bar", "-", "Window Layouts", "-", "Focus to Timeline", "Window", "-", "Bus Tracks", "-",
+        checkOrder(texts(menuOf("View")), {"Toolbar", "Status Bar", "-", "Window Layouts", "-", "Focus to Timeline", "Window", "-",
                                            "Event Media Markers", "Active Take Information", "Audio Event Waveforms", "Event Buttons", "Event Fade Lengths",
                                            "Video Event Edge Edit Frames", "Event Headers", "Event Length", "-", "Audio Envelopes", "Video Envelopes",
                                            "Show Envelopes", "-", "Minimize All Tracks", "Rebuild Audio Peaks"}, "View: VEGAS's items in its order");
         checkOrder(texts(menuOf("View/Window")), {"Explorer", "Trimmer", "Master Bus", "Video Preview", "Project Media", "Project Notes", "Transitions",
                                                   "Video FX", "Media Generators", "Plug-In Manager", "Video Scopes", "Edit Details", "Device Explorer",
                                                   "Loudness Meters", "Dashboard"}, "View > Window: VEGAS's windows in its order");
-        checkOrder(texts(menuOf("View/Audio Envelopes")), {"Track Mute", "Track Volume", "Track Pan"}, "View > Audio Envelopes");
+        checkOrder(texts(menuOf("View/Audio Envelopes")), {"Track Mute", "Track Volume", "Pan"}, "View > Audio Envelopes");
         checkOrder(texts(menuOf("View/Video Envelopes")), {"Track Mute", "Track Composite Level", "Track Fade to Color", "-", "Event Velocity", "-",
                                                            "Motion Blur Amount", "Video Supersampling"}, "View > Video Envelopes");
         checkOrder(texts(menuOf("Insert")), {"Audio Envelopes", "Video Envelopes", "-", "Audio Track", "Video Track", "-", "Audio Bus", "-", "Empty Event",
                                              "Text...", "Generated Media...", "-", "Time...", "-", "Marker", "Region", "-", "Audio CD Track Region",
                                              "Audio CD Track Index", "-", "Command..."}, "Insert: VEGAS's items in its order");
-        checkOrder(texts(menuOf("Tools")), {"Audio", "Video", "-", "Render to New Track...", "Preview on External Monitor", "Selectively Prerender Video...",
-                                            "Clean Up Prerendered Video", "Build Dynamic RAM Preview", "-", "Scripting", "Multicamera", "-",
+        checkOrder(texts(menuOf("Tools")), {"Audio", "Video", "-", "Render to New Track...", "Selectively Prerender Video...",
+                                            "Clean Up Prerendered Video...", "Build Dynamic RAM Preview", "-", "Scripting", "Multicamera", "-",
                                             "Clean Project Media", "Rebuild Offline Nested Audio"}, "Tools: VEGAS's items in its order");
         checkOrder(texts(menuOf("Tools/Audio")), {"Open in Audio Editor", "-", "Audio Event FX...", "Apply Non-Real-Time Event FX...", "-", "Track FX..."}, "Tools > Audio");
-        checkOrder(texts(menuOf("Tools/Video")), {"Video Event Pan/Crop...", "Video Event FX...", "Media FX...", "Color Grading", "Motion Tracking", "-",
+        checkOrder(texts(menuOf("Tools/Video")), {"Media FX...", "Video Event Pan/Crop...", "Video Event FX...", "Color Grading", "Motion Tracking", "-",
                                                   "Video Track FX...", "Track Motion...", "-", "Video Output FX..."}, "Tools > Video");
         checkOrder(texts(menuOf("Tools/Scripting")), {"Run Script...", "Rescan Script Menu Folder", "-", "Alpha Script", "Folder"},
                    "Tools > Scripting: VEGAS's items, then the scripts of the Script Menu folders (sub-folders as submenus)");
@@ -295,13 +297,13 @@ int main(int argc, char** argv)
         check(item("Tools/Scripting/Folder/Beta") != nullptr, "Tools > Scripting > Folder > Beta (a script in a sub-folder)");
         checkOrder(texts(menuOf("Tools/Multicamera")), {"Create Multicamera Track", "Enable Multicamera Editing"}, "Tools > Multicamera");
         checkOrder(texts(menuOf("Options")), {"Quantize to Frames", "-", "Enable Snapping", "Snap to Grid", "Snap to Markers", "Snap to All Events", "-",
-                                              "Grid Spacing", "Ruler Format", "-", "Automatic Crossfades", "Quickfade Audio Edits", "Auto Ripple", "Ripple", "Lock Envelopes to Events",
+                                              "Grid Spacing", "Ruler Format", "-", "Automatic Crossfades", "Quickfade Audio Edits", "Ripple", "Lock Envelopes to Events",
                                               "Ignore Event Grouping", "Slip All Takes", "-", "Loop Playback", "-", "Timecode", "-", "Preferences..."},
                    "Options: VEGAS's items in its order");
         checkOrder(texts(menuOf("Options/Ripple")), {"Auto Ripple", "-", "Affected Tracks", "Affected Tracks, Bus Tracks, Markers, and Regions",
                                                      "All Tracks, Markers, and Regions"}, "Options > Ripple");
         checkOrder(texts(menuOf("Options/Timecode")), {"Generate MIDI Timecode", "Generate MIDI Clock", "Trigger from MIDI Timecode"}, "Options > Timecode");
-        checkOrder(texts(menuOf("Help")), {"Contents and Index", "What's This?", "Keyboard Shortcuts..."}, "Help");
+        checkOrder(texts(menuOf("Help")), {"Contents and Index", "What's This?", "Keyboard Shortcuts"}, "Help");
         // what Reno cannot do is there, greyed, saying why
         QAction* slip = item("Edit/Editing Tool/Slip Tool");
         check(slip && slip->isEnabled() && slip->isCheckable(), "Edit > Editing Tool > Slip Tool is a working tool");
@@ -467,7 +469,7 @@ int main(int argc, char** argv)
             for (QCheckBox* b : dlg->findChildren<QCheckBox*>())
                 b->setChecked(b->text() == "Fade In" || b->text() == "Fade Out");
         });
-        check(trigger("Edit/Selectively Paste Event Attributes..."), "Edit > Selectively Paste Event Attributes... is there");
+        check(trigger("Edit/Selectively Paste Event Attributes"), "Edit > Selectively Paste Event Attributes is there");
         d = app.project().findEvent(dst);
         check(d && near(d->fadeIn, 0.5) && near(d->fadeOut, 0.25) && d->panCrop.empty() && !d->reduceFlicker && near(d->gain, 1.0),
               "Selectively Paste Event Attributes: only what was ticked (the fades)");
@@ -650,8 +652,8 @@ int main(int argc, char** argv)
         app.undo();
         check(eventCount(ids.v1) == 2 && near(app.project().markers[0].time, 4.0), "... and undoes");
         QTimer::singleShot(150, [] {
-            if (QInputDialog* d = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
-                d->setTextValue("1.5");
+            if (QDialog* d = qobject_cast<QDialog*>(QApplication::activeModalWidget())) {
+                if (QLineEdit* e = d->findChild<QLineEdit*>("insertTimeEdit")) e->setText("1.5");
                 d->accept();
             }
         });

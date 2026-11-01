@@ -287,36 +287,44 @@ def buf_sample(S, buf, w, h, x, y):
     return res.get()
 
 # ---------------------------------------------------------------------------------------------------------- Deform
-@kernel("deform", WH + dpush('st', 'sb', 'sl', 'sr', 'sh', 'sv', 'ct', 'cb', 'cl', 'cr') + [('br', 'f'), ('bg', 'f'), ('bb', 'f'), ('ba', 'f')], [PIC_IN, PIC_OUT, TABLE])
+@kernel("deform", WH + dpush('st', 'sb', 'sl', 'sr', 'sh', 'sv', 'ct', 'cb', 'cl', 'cr') + [('br', 'f'), ('bg', 'f'), ('bb', 'f'), ('ba', 'f')], [PIC_IN, PIC_OUT])
 def deform(S):
-    # deform() in builtins_more_creative.cpp, in doubles; the table holds sin(pi v) of every row, then sin(pi u) of every column, as the bits of doubles
+    # deform() in builtins_more_creative.cpp, in doubles, operation for operation. Pushed: the squeezes and curves times Amount, and the shears already
+    # as kx = shh * W / H, ky = shv * H / W (the host computes them in the CPU's order)
     P = S.p
     with S.in_range(P.w, P.h):
         wd, hd = SF.from_u32(S, P.w), SF.from_u32(S, P.h)
-        u = (SF.from_u32(S, S.gx) + 0.5) / wd
-        v = (SF.from_u32(S, S.gy) + 0.5) / hd
-        tab = S.buf('table')
-        sinv = ld_sf(S, tab, S.gy * 2)
-        sinu = ld_sf(S, tab, (P.h + S.gx) * 2)
-        st, sb, sl, sr, sh, sv = [pd(P, n) for n in ('st', 'sb', 'sl', 'sr', 'sh', 'sv')]
+        X = SF.from_u32(S, S.gx) + 0.5
+        Y = SF.from_u32(S, S.gy) + 0.5
+        st, sb, sl, sr, kx, ky = [pd(P, n) for n in ('st', 'sb', 'sl', 'sr', 'sh', 'sv')]
         ct, cb, cl, cr = [pd(P, n) for n in ('ct', 'cb', 'cl', 'cr')]
-        sq = (1.0 - v) * st + v * sb
-        sqv = (1.0 - u) * sl + u * sr
-        t1 = 1.0 - sq
-        t2 = 1.0 - sqv
-        m1 = SF.sel(S, SF.const(S, 0.05) < t1, t1, SF.const(S, 0.05))
-        m2 = SF.sel(S, SF.const(S, 0.05) < t2, t2, SF.const(S, 0.05))
-        su = (u - 0.5) / m1 + 0.5
-        sv2 = (v - 0.5) / m2 + 0.5
-        su = su + (sh * (v - 0.5)) * 1.0
-        sv2 = sv2 + sv * (u - 0.5)
-        su = su + (((ct * (1.0 - v) + cb * v) * 0.5) * sinv) * 0.5
-        sv2 = sv2 + (((cl * (1.0 - u) + cr * u) * 0.5) * sinu) * 0.5
-        outside = (su < 0.0) | (su > 1.0) | (sv2 < 0.0) | (sv2 > 1.0)
+        cx = wd * 0.5 + 0.5
+        cy = hd * 0.5 + 0.5
+        u = X / wd
+        v = Y / hd
+        qx = (u * 4.0) * (1.0 - u)
+        qy = (v * 4.0) * (1.0 - v)
+        hh = hd * 0.5
+        wh = wd * 0.5
+        yt = ((hh * ct) * -1.0) * qx + (hh * ct) * cb
+        yb = (hd - (hh * cb) * qx) + (hh * cb) * ct
+        xl = (wh * cl) * qy - (wh * cl) * cr
+        xr = (wd + (wh * cr) * qy) - (wh * cr) * cl
+        dyc = yb - yt
+        dxc = xr - xl
+        bad1 = (dyc < hd * 1e-6) | (dxc < wd * 1e-6)
+        X1 = (wd * (X - xl)) / dxc
+        Y1 = (hd * (Y - yt)) / dyc
+        sH = 1.0 - (st * (1.0 - Y1 / hd) + sb * (Y1 / hd))
+        sV = 1.0 - (sl * (1.0 - X1 / wd) + sr * (X1 / wd))
+        bad2 = (sH < 1e-4) | (sV < 1e-4)
+        xs = (cx + (X1 - cx) / sH) - kx * (Y1 - cy)
+        ys = (cy + (Y1 - cy) / sV) - ky * (X1 - cx)
+        outside = bad1 | bad2 | (xs < 0.0) | (xs > wd) | (ys < 0.0) | (ys > hd)
         i = S.gy * P.w + S.gx
         res = S.var('v4', S.vec4(P.br, P.bg, P.bb, P.ba))
         with S.if_(~outside):
-            res.set(buf_sample(S, S.buf('in0'), P.w, P.h, su * wd, sv2 * hd))
+            res.set(buf_sample(S, S.buf('in0'), P.w, P.h, xs, ys))
         S.buf('out').store(i, res.get())
 
 # ---------------------------------------------------------------------------------------------------------- Displacement Map, Height Map

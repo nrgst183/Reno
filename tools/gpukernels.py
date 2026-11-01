@@ -266,8 +266,9 @@ def blackandwhite(S):
 @kernel("threshold", WH + [('t', 'f')], [PIC_IN, PIC_OUT])
 def threshold(S):
     def body(S, r, g, b):
-        v = S.select(luma(S, r, g, b) >= S.p.t - 1e-5, S.f(1.0), S.f(0.0))
-        return v, v, v
+        def ch(x):
+            return S.select(x >= S.p.t - 1e-5, S.f(1.0), S.f(0.0))
+        return ch(r), ch(g), ch(b)
     pixel_row(S, body)
 
 @kernel("colorbalance", WH + [('dr', 'f'), ('dg', 'f'), ('db', 'f'), ('type', 'u'), ('keep', 'u')], [PIC_IN, PIC_OUT])
@@ -918,8 +919,7 @@ def swirl(S):
         f = (1.0 - r) * (1.0 - r)
         ang = turn * f
         sa, ca = sf_sincos(S, ang)
-        ux, uy = dx * rx, dy * ry
-        samp = sample_clamped_d(S, S.buf('in0'), P.w, P.h, px0 + ux * ca - uy * sa, py0 + ux * sa + uy * ca)
+        samp = sample_clamped_d(S, S.buf('in0'), P.w, P.h, px0 + (dx * ca - dy * sa) * rx, py0 + (dx * sa + dy * ca) * ry)
         S.buf('out').store(i, S.select(r >= 1.0, S.buf('in0').load(i), samp))
 
 @kernel("pinchpunch", WH + dpush('px0', 'py0', 'rx', 'ry', 'amount'), [PIC_IN, PIC_OUT])
@@ -932,8 +932,8 @@ def pinchpunch(S):
         dx = (SF.from_u32(S, S.gx) + 0.5 - px0) / rx
         dy = (SF.from_u32(S, S.gy) + 0.5 - py0) / ry
         r = (dx * dx + dy * dy).sqrt()
-        sn = sf_sin(S, r * 3.141592653589793)
-        k = 1.0 - amount * 0.6 * sn * sn * (1.0 - r)
+        sn = sf_sin(S, (1.0 - r) * 1.5707963267948966)       # cos(pi r / 2)
+        k = 1.0 - amount * 0.8 * sn * sn
         samp = sample_clamped_d(S, S.buf('in0'), P.w, P.h, px0 + dx * k * rx, py0 + dy * k * ry)
         S.buf('out').store(i, S.select((r >= 1.0) | (r < 1e-12), S.buf('in0').load(i), samp))
 
@@ -945,13 +945,11 @@ def wave(S):
     with S.in_range(P.w, P.h):
         i = S.gy * P.w + S.gx
         vn, hn, va, ha, vp, hp = pd(P, 'vn'), pd(P, 'hn'), pd(P, 'va'), pd(P, 'ha'), pd(P, 'vp'), pd(P, 'hp')
-        xc = SF.from_u32(S, S.gx) + 0.5
-        yc = SF.from_u32(S, S.gy) + 0.5
-        fy = yc / SF.from_u32(S, S.max(P.h, 1))
-        fx = xc / SF.from_u32(S, S.max(P.w, 1))
-        sx = ha * sf_sin(S, (hn * fy + hp) * 6.283185307179586)
-        sy = va * sf_sin(S, (vn * fx + vp) * 6.283185307179586)
-        S.buf('out').store(i, sample_clamped_d(S, S.buf('in0'), P.w, P.h, xc + sx, yc + sy))
+        xi = SF.from_u32(S, S.gx)
+        yi = SF.from_u32(S, S.gy)
+        sx = va * sf_sin(S, (vn * yi / SF.from_u32(S, S.max(P.h, 1))) * 3.141592653589793 + vp)
+        sy = ha * sf_sin(S, (hn * xi / SF.from_u32(S, S.max(P.w, 1))) * 3.141592653589793 + hp)
+        S.buf('out').store(i, sample_clamped_d(S, S.buf('in0'), P.w, P.h, xi + 0.5 + sx, yi + 0.5 + sy))
 
 # ---------------------------------------------------------------------------------------------------------- noise, border, white balance, min and max
 def hash3(S, x, y, z):

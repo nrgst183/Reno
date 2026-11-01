@@ -232,6 +232,61 @@ std::vector<std::string> Host::findBinaries(const std::vector<std::string>& dirs
     return unique;
 }
 
+// VEGAS effects that keep using VEGAS's own plug-in although Reno prefers its built-ins. Empty on purpose: add an identifier here (for instance
+// "com.sonycreativesoftware:smart_upscale", whose AI result Reno cannot reproduce) and the effect is made from VEGAS's plug-in when it is installed
+// and works (else from the built-in); VEGAS's bundles are then scanned again.
+static const char* const kVegasRealAllowed[] = {nullptr};
+
+std::vector<std::string>& Host::vegasRealAllowed()
+{
+    static std::vector<std::string> v = [] {
+        std::vector<std::string> t;
+        for (const char* const* p = kVegasRealAllowed; *p; ++p) t.push_back(*p);
+        return t;
+    }();
+    return v;
+}
+
+bool Host::useBuiltinFor(const std::string& id) const
+{
+    if (!config.preferBuiltinVegasFx || !isVegasOwnEffect(id)) return false;
+    for (const auto& a : vegasRealAllowed()) if (a == id) return false;
+    return true;
+}
+
+bool Host::skipVegasBundles() const
+{
+    return config.preferBuiltinVegasFx && vegasRealAllowed().empty();
+}
+
+bool Host::isVegasBundleFile(const std::string& path)
+{
+    const std::string low = toLower(path);
+    for (const auto& d : vegasProgramDirs()) {
+        std::string base = toLower(pathJoin(d, "OFX Video Plug-Ins"));
+        if (low.size() > base.size() && low.compare(0, base.size(), base) == 0 && (low[base.size()] == '/' || low[base.size()] == '\\')) return true;
+    }
+    // the bundles VEGAS Pro 18 ships, wherever they were copied to
+    for (const char* b : {"filters", "magixaifx", "magixcvfx", "ofxstitch", "stabilize", "titlesandtext", "vfx1", "ofx360stabilizer", "ofxrotation",
+                          "spica_cutout", "spica_resizer"}) {
+        const std::string name = std::string(b) + ".ofx.bundle";
+        for (const char sep : {'/', '\\'}) {
+            const std::string part = std::string(1, sep) + name + std::string(1, sep);
+            if (low.find(part) != std::string::npos) return true;
+        }
+    }
+    return false;
+}
+
+std::vector<std::string> Host::usableBinaries(const std::vector<std::string>& dirs) const
+{
+    std::vector<std::string> all = findBinaries(dirs);
+    if (!skipVegasBundles()) return all;
+    std::vector<std::string> out;
+    for (const auto& f : all) if (!isVegasBundleFile(f)) out.push_back(f);
+    return out;
+}
+
 thread_local Plugin* Host::currentPlugin = nullptr;
 
 static void dropImages(Instance* inst)
@@ -342,7 +397,7 @@ Plugin* Host::findPlugin(const std::string& id) const
     // A plug-in that failed to load loses to one that did not; a real plug-in (VEGAS's) wins over Reno's built-in of the same identifier (unless
     // Preferences > Video prefers the built-in); then the newest version.
     Plugin* best = nullptr;
-    const bool toBuiltin = config.preferBuiltinVegasFx && isVegasOwnEffect(id);
+    const bool toBuiltin = useBuiltinFor(id);
     auto rank = [toBuiltin](const Plugin* p) {
         const bool builtin = p->binary && p->binary->builtin;
         return (p->failed || p->crashed || p->unusable ? 0 : 2) + (builtin == toBuiltin ? 1 : 0);

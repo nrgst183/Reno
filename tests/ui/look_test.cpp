@@ -245,7 +245,7 @@ int main(int argc, char** argv)
               (end ? end->text() : QString()).toStdString() + " " + (length ? length->text() : QString()).toStdString());
         st().setLoop(0, 0);
         QLabel* disk = w.statusBar()->findChild<QLabel*>("diskSpace");
-        check(disk && disk->text().contains("GB"), "the status bar tells the free disk space", disk ? disk->text().toStdString() : "");
+        check(disk && disk->text().startsWith("Record Time (2 channels): "), "the status bar tells the record time the free disk space allows", disk ? disk->text().toStdString() : "");
         for (const char* name : {"toolEnvelope", "lockEnvelopes", "autoCrossfade"}) {
             QAction* a = w.findChild<QAction*>(name);
             check(a && a->isEnabled() && a->isCheckable(), std::string("working: ") + name);

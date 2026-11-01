@@ -403,7 +403,8 @@ own command-line argument wins) and print a `SKIP` line, which does not count as
 | `RENO_TEST_PLUGIN` | the test OpenFX plug-in file (`effects.ofx`) for `tests/ofx` and `tests/vegas/vegofxstate` |
 | `RENO_TEST_VST_DIR` | folder with test VST2 plug-ins (`vegofxstate`) |
 | `RENO_EFX_REF` | text dump of the real eFX plug-ins' settings (`efx_test`'s sweep) |
-| `RENO_EFFECT_REF` | folder written by `tools/scripts/Reno Effect Reference.cs` (`tools/effectref_compare.py`) |
+| `RENO_EFFECT_REF` | folder written by the older script "Reno Effect Reference" (`tools/effectref_compare.py`; `tools/effect_capture_compare.py` reads these folders too) |
+| `RENO_EFFECT_CAPTURE` | folder written by `tools/scripts/Reno Effect Capture.cs` (every VEGAS effect, transition and generator; compared by `tools/effect_capture_compare.py`) |
 | `RENO_VEGAS_DIR` | a VEGAS Pro 18 program folder (`ScriptPortal.Vegas.dll`, `Script Menu`, `OFX Video Plug-Ins`) |
 | `RENO_VEGAS_FILES` | peak files (.sfk) and an audio proxy (.sfap0) made by VEGAS, with their .wav, named `peaks_a.wav`/`peaks_a.sfk`, `peaks_b.wav`/`peaks_b.sfk` and `nested.veg.sfap0`, for `vegasfiles_test` and `peakfiles_test` |
 | `RENO_WINFORMS_DIR`, `RENO_USER_SCRIPTS` | a real `System.Windows.Forms.dll`, and a folder with your own VEGAS scripts (`tests/scripting`, `tests/compare/bridge_test.sh`) |

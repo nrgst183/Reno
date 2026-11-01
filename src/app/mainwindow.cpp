@@ -116,6 +116,7 @@
 #include "recovery.h"
 #include "../engine/timefmt.h"
 #include "pluginchooser.h"
+#include "dialoglook.h"
 #include "timeline.h"
 #include "fxwindow.h"
 #include "mixer.h"
@@ -251,6 +252,7 @@ public:
     // Docked window tab close button: a plain light cross as in VEGAS (Fusion's boxed image showed as a red box).
     void drawPrimitive(PrimitiveElement pe, const QStyleOption* o, QPainter* p, const QWidget* w) const override
     {
+        if (lightDrawPrimitive(this, pe, o, p, w)) return;   // the light dialogs (dialoglook.cpp)
         if (pe != PE_IndicatorTabClose || !o) {
             QProxyStyle::drawPrimitive(pe, o, p, w);
             return;
@@ -275,6 +277,7 @@ public:
 
     void drawComplexControl(ComplexControl cc, const QStyleOptionComplex* o, QPainter* p, const QWidget* w) const override
     {
+        if (lightDrawComplex(this, cc, o, p, w)) return;
         const QStyleOptionSlider* s = qstyleoption_cast<const QStyleOptionSlider*>(o);
         if (cc != CC_ScrollBar || !s) {
             QProxyStyle::drawComplexControl(cc, o, p, w);
@@ -360,6 +363,7 @@ void applyTheme()
     for (QPalette::ColorRole r : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
         p.setColor(QPalette::Disabled, r, QColor(118, 118, 118));
     QApplication::setPalette(p);
+    installDialogLook();   // dialogs shown from now on are light, as VEGAS's older ones (dialoglook.h)
     // VEGAS text is Segoe UI 8 pt (a sans-serif of the same widths elsewhere)
     QFont f = QApplication::font();
 #ifdef _WIN32
@@ -593,7 +597,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"View", "Show / Hide the Right Docking Area", "Ctrl+Shift+F11", S::Window, ""},
         {"View", "Show Waveforms", "Ctrl+Shift+W", S::Window, ""},
         {"View", "Show Event Buttons", "Ctrl+Shift+C", S::Window, "Pan/Crop, FX and the menu on each event"},
-        {"View", "Show Event Headers", "Ctrl+Alt+M", S::Window, "events' names on tracks of any height"},
+        {"View", "Show Event Headers", "Ctrl+Shift+M", S::Window, "events' names on tracks of any height"},
         {"View", "Set Track Heights to Default", "Ctrl+`", S::Window, ""},
         {"View", "Minimize / Restore the Window Docking Area", "F11 or Alt+`", S::Window, ""},
         {"View", "Zoom In Until Each Thumbnail Is a Frame", "Alt+Up", S::Window, ""},
@@ -924,21 +928,21 @@ QWidget* masterPage(QWidget* parent, QWidget* masterBus, std::function<void()> s
     auto* h = new QHBoxLayout(bar);
     h->setContentsMargins(4, 0, 4, 0);
     h->setSpacing(2);
-    QToolButton* props = flatButton(bar, "masterProperties", Ico::Settings, "Audio Properties: the project's audio settings");
+    QToolButton* props = flatButton(bar, "masterProperties", Ico::Settings, "Project Audio Properties...");
     QObject::connect(props, &QToolButton::clicked, page, [parent] { runProjectPropertiesAudio(parent); });
     h->addWidget(props);
-    QToolButton* downmix = flatButton(bar, "masterDownmix", Ico::Downmix, "Downmix Output: hear the mix in stereo (a 5.1 project) or in mono");
+    QToolButton* downmix = flatButton(bar, "masterDownmix", Ico::Downmix, "Downmix Output");
     QMenu* downmixMenu = new QMenu(downmix);
     downmix->setMenu(downmixMenu);
     downmix->setPopupMode(QToolButton::InstantPopup);
     QObject::connect(downmixMenu, &QMenu::aboutToShow, page, [downmixMenu, pb] { fillDownmixMenu(downmixMenu, pb); });
     h->addWidget(downmix);
-    QToolButton* dim = flatButton(bar, "masterDim", Ico::Dim, "Dim Output (Ctrl+Shift+F12): what is heard 20 dB quieter");
+    QToolButton* dim = flatButton(bar, "masterDim", Ico::Dim, "Dim Output");
     QObject::connect(dim, &QToolButton::clicked, page, [parent] {
         if (QAction* a = parent->findChild<QAction*>("dimOutput")) a->trigger();
     });
     h->addWidget(dim);
-    QToolButton* mixer = flatButton(bar, "showMixingConsole", Ico::Mixer, "Mixing Console (Ctrl+Alt+5)");
+    QToolButton* mixer = flatButton(bar, "showMixingConsole", Ico::Mixer, "Open Mixing Console");
     QObject::connect(mixer, &QToolButton::clicked, page, [showMixer] { showMixer(); });
     h->addWidget(mixer);
     h->addStretch(1);
@@ -1108,6 +1112,7 @@ MainWindow::MainWindow() : a_(new Actions())
     installKeyboardMap(this);
     installTrackDefaults();
     addPreferenceFileItems(this);
+    conformMenusToVegas(menuBar());
 
     // status bar: messages at the left; recording time left and free disk space at the right
     statusText_ = new QLabel(this);
@@ -1118,6 +1123,7 @@ MainWindow::MainWindow() : a_(new Actions())
     statusBar()->addPermanentWidget(diskText_);
     statusBar()->setSizeGripEnabled(false);
     statusBar()->setFixedHeight(20);
+    statusText_->setText("Complete: 00:00:00");     // what VEGAS's status bar shows while nothing is going on
     app.onStatus = [this](const std::string& s) { statusText_->setText(QString::fromStdString(s)); };
     installAudioProxyUi(this);
     QTimer* disk = new QTimer(this);
@@ -1589,7 +1595,7 @@ void MainWindow::buildActions()
         tl->options().showEventButtons = on;
         tl->optionsChanged();
     });
-    checkable("eventHeaders", "Show Event &Headers", keys({"Ctrl+Alt+M"}), [tl](bool on) {
+    checkable("eventHeaders", "Show Event &Headers", keys({"Ctrl+Shift+M", "Ctrl+Alt+M"}), [tl](bool on) {
         tl->options().eventHeaders = on;
         tl->optionsChanged();
     });
@@ -2091,7 +2097,7 @@ void MainWindow::buildToolBars()
     main->setIconSize(QSize(16, 16));
     main->setMovable(false);
     main->setFixedHeight(39);
-    for (const char* n : {"new", "open", "save", "saveAs", "properties", "cut", "copy", "paste"}) main->addAction(a.get(n));
+    for (const char* n : {"new", "open", "save", "render", "properties", "cut", "copy", "paste"}) main->addAction(a.get(n));
     for (const char* n : {"undo", "redo"}) {
         const bool undo = n[0] == 'u';
         QToolButton* b = new QToolButton(main);
@@ -2130,6 +2136,14 @@ void MainWindow::buildToolBars()
         b->setMenu(m);
         main->addWidget(b);
     }
+    // the buttons' tool tips as VEGAS words them (the menu items keep their own texts)
+    const struct { const char* action; const char* tip; } tips[] = {
+        {"newPlain", "New Empty Project (Ctrl+Shift+N)"}, {"open", "Open (Ctrl+O)"}, {"save", "Save (Ctrl+S)"}, {"render", "Render As"},
+        {"properties", "Properties (Alt+Enter)"}, {"cut", "Cut (Ctrl+X)"}, {"copy", "Copy (Ctrl+C)"}, {"paste", "Paste (Ctrl+V)"}};
+    for (const auto& t : tips)
+        if (QAction* ta = a.get(t.action)) ta->setToolTip(t.tip);
+    if (QToolButton* ub = main->findChild<QToolButton*>("undoButton")) ub->setToolTip("Undo (Ctrl+Z)");
+    if (QToolButton* rb = main->findChild<QToolButton*>("redoButton")) rb->setToolTip("Redo (Ctrl+Y; Ctrl+Shift+Z)");
     addToolBar(Qt::TopToolBarArea, main);
     a.toolbars->addAction(main->toggleViewAction());
     QAction* status = a.toolbars->addAction("Status Bar");
@@ -2503,9 +2517,13 @@ void MainWindow::showDiskSpace()
         diskText_->clear();
         return;
     }
+    // VEGAS's status bar tells how long the free space lasts for recording: "Record Time (2 channels): 99:27:35" (24 bit, the
+    // project's sample rate, two channels)
     const double gb = (double)disk.bytesAvailable() / (1024.0 * 1024.0 * 1024.0);
-    diskText_->setText(gb >= 100 ? QString("Free Disk Space: %1 GB").arg(gb, 0, 'f', 0) : QString("Free Disk Space: %1 GB").arg(gb, 0, 'f', 1));
-    diskText_->setToolTip(QString("Space left on the disk of %1").arg(QDir::toNativeSeparators(dir)));
+    const int rate = std::max(8000, AppState::get().project().settings.sampleRate);
+    const long long secs = (long long)((double)disk.bytesAvailable() / (double)(rate * 2 * 3));
+    diskText_->setText(QString("Record Time (2 channels): %1:%2:%3").arg(secs / 3600, 2, 10, QChar('0')).arg(secs / 60 % 60, 2, 10, QChar('0')).arg(secs % 60, 2, 10, QChar('0')));
+    diskText_->setToolTip(QString("Space left on the disk of %1: %2 GB").arg(QDir::toNativeSeparators(dir)).arg(gb, 0, 'f', 1));
 }
 
 static void splitPair(const std::string& data, std::string& id, std::string& label)

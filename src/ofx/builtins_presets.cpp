@@ -4,6 +4,8 @@
 #include "builtins_vfxdata.h"
 #include "builtins_magixdata.h"
 #include "builtins_colordata.h"
+#include "builtins_vegaspresets.h"
+#include <set>
 #include <sstream>
 
 namespace reno {
@@ -164,6 +166,11 @@ std::vector<P> table()
         {"com.vegascreativesoftware:addnoise", f, "Grainy", {{D, "NoiseLevel", "0.3"}, {B, "Monochromatic", "true"}, {B, "GaussianNoise", "true"}, {B, "Animate", "true"}}},
         {"com.vegascreativesoftware:addnoise", f, "Color Noise", {{D, "NoiseLevel", "0.5"}, {B, "Monochromatic", "false"}, {B, "GaussianNoise", "false"}, {B, "Animate", "true"}}},
         {"com.vegascreativesoftware:threshold", f, "50%", {{D, "Threshold", "0.5"}}},
+        {"com.vegascreativesoftware:threshold", f, "25 %", {{D, "Threshold", "0.25"}}},
+        {"com.vegascreativesoftware:threshold", f, "40 %", {{D, "Threshold", "0.4"}}},
+        {"com.vegascreativesoftware:threshold", f, "50 %", {{D, "Threshold", "0.5"}}},
+        {"com.vegascreativesoftware:threshold", f, "60 %", {{D, "Threshold", "0.6"}}},
+        {"com.vegascreativesoftware:threshold", f, "75 %", {{D, "Threshold", "0.75"}}},
         {"com.vegascreativesoftware:linearblur", f, "Horizontal Light", {{D, "Angle", "0"}, {D, "Amount", "0.05"}}},
         {"com.vegascreativesoftware:linearblur", f, "Vertical Light", {{D, "Angle", "90"}, {D, "Amount", "0.05"}}},
         {"com.vegascreativesoftware:colorbalance", f, "Warm Midtones", {{D, "Red", "0.1"}, {D, "Green", "0"}, {D, "Blue", "-0.1"}, {C, "Type", "1"}, {B, "PreserveLuminosity", "true"}}},
@@ -198,6 +205,13 @@ std::vector<P> table()
         {"com.vegascreativesoftware:pinchpunch", f, "Medium Punch", {{D, "Amount", "0.5"}, {D, "ScalingHorizontal", "1"}, {D, "ScalingVertical", "1"}, {B, "ScalingProportional", "true"}}},
         {"com.vegascreativesoftware:pinchpunch", f, "Maximum Pinch", {{D, "Amount", "-1"}, {D, "ScalingHorizontal", "1"}, {D, "ScalingVertical", "1"}, {B, "ScalingProportional", "true"}}},
         {"com.vegascreativesoftware:pinchpunch", f, "Medium Pinch", {{D, "Amount", "-0.5"}, {D, "ScalingHorizontal", "1"}, {D, "ScalingVertical", "1"}, {B, "ScalingProportional", "true"}}},
+        // (VEGAS's "Half Scale" Pinch/Punch presets draw exactly the full-size effect: the scaling is not part of what they set)
+        {"com.vegascreativesoftware:pinchpunch", f, "Maximum Punch, Half Scale", {{D, "Amount", "1"}, {D, "ScalingHorizontal", "1"}, {D, "ScalingVertical", "1"}, {B, "ScalingProportional", "true"}}},
+        {"com.vegascreativesoftware:pinchpunch", f, "Maximum Pinch, Half Scale", {{D, "Amount", "-1"}, {D, "ScalingHorizontal", "1"}, {D, "ScalingVertical", "1"}, {B, "ScalingProportional", "true"}}},
+        {"com.vegascreativesoftware:deform", f, "Reset to None", {{D, "ShearHorizontal", "0"}}},
+        {"com.vegascreativesoftware:swirl", f, "Reset to None", {{D, "Amount", "0"}}},
+        {"com.vegascreativesoftware:pinchpunch", f, "Reset to None", {{D, "Amount", "0"}}},
+        {"com.vegascreativesoftware:wave", f, "Reset to None", {{D, "VerticalAmplitude", "0"}, {D, "HorizontalAmplitude", "0"}}},
         {"com.vegascreativesoftware:wave", f, "Large", {{D, "VerticalWaves", "5.4"}, {D, "HorizontalWaves", "5.4"}, {D, "VerticalAmplitude", "0.05"}, {D, "HorizontalAmplitude", "0.05"}, {D, "VerticalPhase", "0"}, {D, "HorizontalPhase", "0"}}},
         {"com.vegascreativesoftware:wave", f, "Medium", {{D, "VerticalWaves", "14"}, {D, "HorizontalWaves", "14"}, {D, "VerticalAmplitude", "0.05"}, {D, "HorizontalAmplitude", "0.05"}, {D, "VerticalPhase", "0"}, {D, "HorizontalPhase", "0"}}},
         {"com.vegascreativesoftware:wave", f, "Small", {{D, "VerticalWaves", "20"}, {D, "HorizontalWaves", "20"}, {D, "VerticalAmplitude", "0.03"}, {D, "HorizontalAmplitude", "0.03"}, {D, "VerticalPhase", "0"}, {D, "HorizontalPhase", "0"}}},
@@ -253,7 +267,18 @@ const std::string& builtinPresetPackage()
     static const std::string xml = [] {
         std::ostringstream o;
         o << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<OfxPresetPackage>\n";
+        // VEGAS's own presets come first and win over a hand-written entry of the same plugin and name
+        std::set<std::string> fromVegas;
+        for (int k = 0; k < builtin::kVegasPresetChunkCount; ++k) {
+            const std::string chunk = builtin::kVegasPresetChunks[k];
+            o << "  " << chunk;
+            for (size_t at = chunk.find("<OfxPreset plugin=\""); at != std::string::npos; at = chunk.find("<OfxPreset plugin=\"", at + 1)) {
+                const size_t pe = chunk.find('"', at + 19), ns = chunk.find(" name=\"", pe), ne = ns == std::string::npos ? ns : chunk.find('"', ns + 7);
+                if (pe != std::string::npos && ne != std::string::npos) fromVegas.insert(chunk.substr(at + 19, pe - at - 19) + "|" + chunk.substr(ns + 7, ne - ns - 7));
+            }
+        }
         for (const P& p : table()) {
+            if (fromVegas.count(std::string(p.plugin) + "|" + xmlEscape(p.name))) continue;
             o << "  <OfxPreset plugin=\"" << p.plugin << "\" context=\"" << p.context << "\" name=\"" << xmlEscape(p.name) << "\">\n";
             o << "    <OfxPlugin>" << p.plugin << "</OfxPlugin>\n    <OfxPluginVersion>1 0</OfxPluginVersion>\n";
             for (const V& v : p.values)

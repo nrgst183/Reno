@@ -387,7 +387,7 @@ void TimelineWidget::Impl::paintHeaders(QPainter& p, const QRect& clip)
                 p.setBrush(QColor(0, 0, 0, 40));
                 p.drawRect(h.name.adjusted(-2, 0, 0, -1));
             }
-            if (!tr.name.empty()) {
+            if (!tr.name.empty() && !minimized.count(tr.id)) {      // VEGAS shows no name on a minimised track
                 p.setFont(q->font());
                 p.setPen(current ? kTextOnLight : text);
                 p.drawText(h.name.adjusted(1, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft,

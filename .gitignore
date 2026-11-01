@@ -106,3 +106,26 @@ desktop.ini
 
 # ---- downloaded dependencies (tools/get_ffmpeg.*)
 /deps/
+
+# ---- development tools for comparing Reno with VEGAS (kept locally, not part of Reno)
+/tools/scripts/
+/tools/vegas/vegas_ui_capture.*
+/tools/vegas/vegas_audiofx_capture.bat
+/tools/vegas/DEVTOOLS.txt
+/tools/vegas/Reno Bridge.cs
+/tools/vegas/BRIDGE.txt
+/tools/vegas/bridge_scripts/
+/tools/vegas/dlgcheck.py
+/tools/vegas/dlgparse.py
+/tools/effect_capture_compare.py
+/tools/effect_capture_inputs.py
+/tools/effectref_compare.py
+/tools/vegasref_compare.py
+/tools/fuzz_compare.py
+/tools/random_fx_analyze.py
+/tools/gpu_report.bat
+/tools/analysis_params.txt
+/tools/ofxparams/
+/tests/compare/
+/tests/cli/fuzz_compare_test.sh
+/tests/cli/fuzz_fakegen.cpp

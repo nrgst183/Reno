@@ -1,6 +1,8 @@
 // The first part of VEGAS Pro 18's manual in the main window: see vegasextras.h.
 #include "vegasextras.h"
 #include "fxlibrary.h"
+#include "dialoglook.h"
+#include <QIntValidator>
 #include "mainwindow.h"
 #include "playback.h"
 #include "timeline.h"
@@ -1010,103 +1012,196 @@ void advancedSaveDialog(MainWindow* w)
     QSettings s;
     QDialog d(w);
     d.setObjectName("advancedSaveDialog");
-    d.setWindowTitle("Advanced Save");
-    QVBoxLayout* v = new QVBoxLayout(&d);
+    d.setWindowTitle("VEGAS Advanced Save Utility");
+    makeDialogDark(&d);   // VEGAS 18's Advanced Save Utility is dark
+    // VEGAS's window is 649 x 412 with its frame; positions are the capture's less the frame's 1 and 31
+    QFont fnt = d.font();
+    fnt.setPixelSize(12);
+    d.setFont(fnt);
+    d.setFixedSize(649 - 2, 412 - 31 - 1);
+    QPalette pal = d.palette();
+    pal.setColor(QPalette::Window, QColor(45, 45, 45));
+    pal.setColor(QPalette::Base, QColor(62, 62, 62));
+    pal.setColor(QPalette::Button, QColor(55, 55, 55));
+    for (QPalette::ColorRole r : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText}) {
+        pal.setColor(QPalette::Active, r, QColor(230, 230, 230));
+        pal.setColor(QPalette::Inactive, r, QColor(230, 230, 230));
+        pal.setColor(QPalette::Disabled, r, QColor(118, 118, 118));
+    }
+    d.setPalette(pal);
+    d.setStyleSheet("QPushButton { background: #373737; border: none; color: #e6e6e6; }"
+                    "QPushButton:hover:enabled { background: #464646; }"
+                    "QPushButton:disabled { color: #767676; }"
+                    "QLineEdit { background: #3e3e3e; border: 1px solid #5a5a5a; color: #e6e6e6; padding-left: 2px; }"
+                    "QLineEdit:disabled { color: #767676; border-color: #505050; }");
+    auto at = [](QWidget* wd, int x, int y, int cw, int ch) { wd->setGeometry(x - 1, y - 31, cw, ch); return wd; };
+    auto panel = [&](int x, int y, int cw, int ch) {
+        QWidget* pn = new QWidget(&d);
+        pn->setAutoFillBackground(true);
+        QPalette pp = pn->palette();
+        pp.setColor(QPalette::Window, QColor(70, 70, 70));
+        pn->setPalette(pp);
+        at(pn, x, y, cw, ch);
+        return pn;
+    };
+    panel(7, 107, 635, 131)->setObjectName("backupPanel");
+    panel(0, 358, 649, 54)->setObjectName("backupFooter");
+
     QCheckBox* live = new QCheckBox("Live Save", &d);
     live->setObjectName("liveSave");
     live->setChecked(s.value("backup/liveSave", false).toBool());
     live->setToolTip("The project is saved after every edit (once it has been saved once)");
-    v->addWidget(live);
-    QGroupBox* adv = new QGroupBox("Use Advanced Backup", &d);
-    adv->setObjectName("useAdvancedBackup");
-    adv->setCheckable(true);
-    adv->setChecked(s.value("backup/advanced", false).toBool());
-    QFormLayout* f = new QFormLayout(adv);
-    auto spinRow = [&](const char* name, const QString& label, const char* onKey, bool onDefault, const char* key, int def, int lo, int hi) {
-        QCheckBox* c = new QCheckBox(label, adv);
-        c->setObjectName(name);
-        c->setChecked(s.value(onKey, onDefault).toBool());
-        QSpinBox* sp = new QSpinBox(adv);
-        sp->setRange(lo, hi);
-        sp->setValue(s.value(key, def).toInt());
-        f->addRow(c, sp);
-        return std::make_pair(c, sp);
+    at(live, 47, 49, 540, 15);
+    QPushButton* help = new QPushButton("?", &d);
+    help->setObjectName("backupHelp");
+    at(help, 587, 44, 30, 24);
+    QCheckBox* advanced = new QCheckBox("Use Advanced Backup", &d);
+    advanced->setObjectName("useAdvancedBackup");
+    advanced->setChecked(s.value("backup/advanced", false).toBool());
+    at(advanced, 47, 78, 470, 15);
+    QPushButton* restore = new QPushButton("Restore...", &d);
+    restore->setObjectName("restoreBackups");
+    at(restore, 517, 78, 100, 24);
+
+    // a row of the panel: tick box, name, a number with its two arrow buttons, and the unit
+    struct Row {
+        QCheckBox* on;
+        QLineEdit* num;
+        QPushButton *up, *down;
+        QLabel *name, *unit;
+        int lo, hi;
     };
-    auto minutes = spinRow("backupMinutes", "Backup Interval (Minutes):", "backup/minutesOn", true, "backup/minutes", 10, 1, 60);
-    auto hours = spinRow("backupHours", "Backup Interval (Hours):", "backup/hoursOn", false, "backup/hours", 1, 1, 10);
-    auto daily = spinRow("backupDaily", "Archive Daily Backups:", "backup/dailyOn", false, "backup/dailyCount", 10, 1, 500);
-    auto realtime = spinRow("backupRealtime", "Archive Real-Time Backups:", "backup/realtime", false, "backup/realtimeCount", 50, 1, 500);
-    f->addRow(new QLabel("Save Location:", adv));
-    QRadioButton* temp = new QRadioButton("Temporary Files Folder", adv);
-    QRadioButton* proj = new QRadioButton("Use Current Project Folder", adv);
-    QRadioButton* sel = new QRadioButton("Select Folder", adv);
-    const QString where = s.value("backup/location", "temp").toString();
-    (where == "project" ? proj : where == "folder" ? sel : temp)->setChecked(true);
-    f->addRow(temp);
-    f->addRow(proj);
-    QWidget* folderRow = new QWidget(adv);
-    QHBoxLayout* fh = new QHBoxLayout(folderRow);
-    fh->setContentsMargins(0, 0, 0, 0);
-    QLineEdit* folder = new QLineEdit(QDir::toNativeSeparators(s.value("backup/folder").toString()), folderRow);
-    QPushButton* browse = new QPushButton("Browse...", folderRow);
-    fh->addWidget(folder, 1);
-    fh->addWidget(browse);
-    f->addRow(sel, folderRow);
+    auto row = [&](const char* objName, int y, const QString& label, const QString& unit, const char* onKey, bool onDefault, const char* key, int def, int lo, int hi) {
+        Row r;
+        r.lo = lo;
+        r.hi = hi;
+        r.on = new QCheckBox(&d);
+        r.on->setObjectName(objName);
+        r.on->setChecked(s.value(onKey, onDefault).toBool());
+        at(r.on, 67, y, 20, 29);
+        r.name = new QLabel(label, &d);
+        at(r.name, 87, y + 2, 220, 25);
+        r.num = new QLineEdit(QString::number(std::max(lo, std::min(hi, s.value(key, def).toInt()))), &d);
+        r.num->setValidator(new QIntValidator(lo, hi, r.num));
+        at(r.num, 312, y + 5, 50, 19);
+        r.up = new QPushButton(QString::fromUtf8("\xCB\x84"), &d);
+        at(r.up, 367, y + 5, 20, 19);
+        r.down = new QPushButton(QString::fromUtf8("\xCB\x85"), &d);
+        at(r.down, 387, y + 5, 20, 19);
+        r.unit = new QLabel(unit, &d);
+        at(r.unit, 407, y + 2, unit == "Minutes" ? 53 : unit == "Hours" ? 42 : 32, unit == "Minutes" ? 25 : 26);
+        QObject::connect(r.up, &QPushButton::clicked, r.num, [r] { r.num->setText(QString::number(std::min(r.hi, r.num->text().toInt() + 1))); });
+        QObject::connect(r.down, &QPushButton::clicked, r.num, [r] { r.num->setText(QString::number(std::max(r.lo, r.num->text().toInt() - 1))); });
+        return r;
+    };
+    Row minutes = row("backupMinutes", 112, "Backup Interval", "Minutes", "backup/minutesOn", true, "backup/minutes", 10, 1, 60);
+    Row hours = row("backupHours", 141, "Backup Interval", "Hours", "backup/hoursOn", false, "backup/hours", 1, 1, 10);
+    Row daily = row("backupDaily", 171, "Archive Daily Backups", "Max", "backup/dailyOn", false, "backup/dailyCount", 10, 1, 500);
+    Row realtime = row("backupRealtime", 201, "Archive Real-Time Backups", "Max", "backup/realtime", false, "backup/realtimeCount", 50, 1, 500);
+
+    QLabel* where = new QLabel("Save Location:", &d);
+    QFont bold = where->font();
+    bold.setBold(true);
+    where->setFont(bold);
+    at(where, 47, 244, 91, 26);
+    QRadioButton* temp = new QRadioButton("Temporary Files Folder", &d);
+    at(temp, 67, 270, 138, 15);
+    QRadioButton* proj = new QRadioButton("Use Current Project Folder", &d);
+    at(proj, 225, 270, 158, 15);
+    QRadioButton* sel = new QRadioButton("Select Folder", &d);
+    at(sel, 403, 270, 87, 15);
+    const QString loc = s.value("backup/location", "temp").toString();
+    (loc == "project" ? proj : loc == "folder" ? sel : temp)->setChecked(true);
+    QLineEdit* folder = new QLineEdit(QDir::toNativeSeparators(s.value("backup/folder").toString()), &d);
+    folder->setObjectName("backupFolder");
+    at(folder, 67, 292, 430, 20);
+    QPushButton* browse = new QPushButton("Browse...", &d);
+    at(browse, 517, 290, 100, 25);
     QObject::connect(browse, &QPushButton::clicked, &d, [&d, folder, sel] {
         const QString x = QFileDialog::getExistingDirectory(&d, "Backup Folder", QDir::fromNativeSeparators(folder->text()));
         if (!x.isEmpty()) { folder->setText(QDir::toNativeSeparators(x)); sel->setChecked(true); }
     });
-    auto enable = [=] {
-        adv->setEnabled(!live->isChecked());
-        const bool rt = realtime.first->isChecked();
-        for (auto p : {minutes, hours, daily}) { p.first->setEnabled(!rt); p.second->setEnabled(!rt && p.first->isChecked()); }
-        realtime.second->setEnabled(rt);
-    };
-    for (QCheckBox* c : {live, minutes.first, hours.first, daily.first, realtime.first}) QObject::connect(c, &QCheckBox::toggled, &d, [enable](bool) { enable(); });
-    enable();
-    v->addWidget(adv);
-    QHBoxLayout* h = new QHBoxLayout();
-    QPushButton* restore = new QPushButton("Restore...", &d);
-    restore->setObjectName("restoreBackups");
     QPushButton* clearAll = new QPushButton("Clear all backups", &d);
     clearAll->setObjectName("clearAllBackups");
+    at(clearAll, 52, 328, 220, 25);
     QPushButton* clearThis = new QPushButton("Clear current project backups", &d);
     clearThis->setObjectName("clearProjectBackups");
-    h->addWidget(restore);
-    h->addWidget(clearAll);
-    h->addWidget(clearThis);
-    v->addLayout(h);
+    at(clearThis, 282, 328, 220, 25);
+
+    QLabel* lastLabel = new QLabel("Last backup for current project:", &d);
+    at(lastLabel, 47, 372, 178, 26);
+    QLabel* lastTime = new QLabel("None", &d);
+    at(lastTime, 225, 372, 39, 26);
+    {
+        const QStringList mine = backupFiles(true);
+        QDateTime newest;
+        for (const QString& fn : mine) newest = std::max(newest, QFileInfo(fn).lastModified());
+        if (newest.isValid()) {
+            lastTime->setText(newest.toString("yyyy-MM-dd HH:mm"));
+            lastTime->setFixedWidth(120);
+        }
+    }
+    QPushButton* ok = new QPushButton("OK", &d);
+    ok->setObjectName("ok");
+    ok->setDefault(true);
+    at(ok, 407, 373, 100, 22);
+    QPushButton* cancel = new QPushButton("Cancel", &d);
+    at(cancel, 517, 373, 100, 22);
+
+    // what is on and off: Live Save saves after each edit so no backups; Real-Time replaces the timed ones
+    auto enable = [=] {
+        const bool adv = advanced->isChecked() && !live->isChecked();
+        advanced->setEnabled(!live->isChecked());
+        const bool rt = realtime.on->isChecked();
+        for (const Row* r : {&minutes, &hours, &daily}) {
+            const bool onRow = adv && !rt;
+            r->on->setEnabled(onRow);
+            r->name->setEnabled(onRow);
+            r->num->setEnabled(onRow && r->on->isChecked());
+            r->up->setEnabled(onRow && r->on->isChecked());
+            r->down->setEnabled(onRow && r->on->isChecked());
+            r->unit->setEnabled(onRow);
+        }
+        realtime.on->setEnabled(adv);
+        realtime.name->setEnabled(adv);
+        realtime.num->setEnabled(adv && rt);
+        realtime.up->setEnabled(adv && rt);
+        realtime.down->setEnabled(adv && rt);
+        realtime.unit->setEnabled(adv);
+        folder->setEnabled(sel->isChecked());
+        browse->setEnabled(sel->isChecked());
+    };
+    for (QAbstractButton* c : std::initializer_list<QAbstractButton*>{live, advanced, minutes.on, hours.on, daily.on, realtime.on, temp, proj, sel})
+        QObject::connect(c, &QAbstractButton::toggled, &d, [enable](bool) { enable(); });
+    enable();
+    QObject::connect(help, &QPushButton::clicked, &d, [&d] {
+        QMessageBox::information(&d, "Advanced Save",
+                                 "Live Save saves the project after every edit. Advanced Backup keeps copies of the project: one every so many "
+                                 "minutes or hours, the last few days' (Archive Daily Backups), or one for every change (Archive Real-Time Backups). "
+                                 "Restore... opens one of them.");
+    });
     QObject::connect(restore, &QPushButton::clicked, &d, [&d, w] { d.accept(); restoreBackupDialog(w); });
     auto clear = [&d](bool current) {
         const QStringList files = backupFiles(current);
         if (files.isEmpty()) return;
         if (QMessageBox::question(&d, "Advanced Save", QString("Delete %1 backup file%2?").arg(files.size()).arg(files.size() == 1 ? "" : "s")) != QMessageBox::Yes) return;
-        for (const QString& f : files) QFile::remove(f);
+        for (const QString& fn : files) QFile::remove(fn);
     };
     QObject::connect(clearAll, &QPushButton::clicked, &d, [clear] { clear(false); });
     QObject::connect(clearThis, &QPushButton::clicked, &d, [clear] { clear(true); });
-    QHBoxLayout* b = new QHBoxLayout();
-    b->addStretch(1);
-    QPushButton* ok = new QPushButton("OK", &d);
-    ok->setObjectName("ok");
-    ok->setDefault(true);
-    QPushButton* cancel = new QPushButton("Cancel", &d);
-    b->addWidget(ok);
-    b->addWidget(cancel);
-    v->addLayout(b);
     QObject::connect(ok, &QPushButton::clicked, &d, &QDialog::accept);
     QObject::connect(cancel, &QPushButton::clicked, &d, &QDialog::reject);
     if (d.exec() != QDialog::Accepted) return;
     s.setValue("backup/liveSave", live->isChecked());
-    s.setValue("backup/advanced", adv->isChecked());
-    s.setValue("backup/minutesOn", minutes.first->isChecked());
-    s.setValue("backup/minutes", minutes.second->value());
-    s.setValue("backup/hoursOn", hours.first->isChecked());
-    s.setValue("backup/hours", hours.second->value());
-    s.setValue("backup/dailyOn", daily.first->isChecked());
-    s.setValue("backup/dailyCount", daily.second->value());
-    s.setValue("backup/realtime", realtime.first->isChecked());
-    s.setValue("backup/realtimeCount", realtime.second->value());
+    s.setValue("backup/advanced", advanced->isChecked());
+    s.setValue("backup/minutesOn", minutes.on->isChecked());
+    s.setValue("backup/minutes", minutes.num->text().toInt());
+    s.setValue("backup/hoursOn", hours.on->isChecked());
+    s.setValue("backup/hours", hours.num->text().toInt());
+    s.setValue("backup/dailyOn", daily.on->isChecked());
+    s.setValue("backup/dailyCount", daily.num->text().toInt());
+    s.setValue("backup/realtime", realtime.on->isChecked());
+    s.setValue("backup/realtimeCount", realtime.num->text().toInt());
     s.setValue("backup/location", proj->isChecked() ? "project" : sel->isChecked() ? "folder" : "temp");
     s.setValue("backup/folder", QDir::fromNativeSeparators(folder->text().trimmed()));
     if (live->isChecked() && AppState::get().path().empty())

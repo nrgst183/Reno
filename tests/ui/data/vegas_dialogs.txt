@@ -1,0 +1,218 @@
+# VEGAS Pro 18 dialogs (visible Win32 controls incl. OK/Cancel), from the UI capture; positions relative to the dialog window.
+# kind <tab> text <tab> x <tab> y <tab> w <tab> h ; edit/combo/list contents are left out. The header gives the window size.
+
+## Insert Time (281x105)
+label	&Amount of time to insert:	9	42	129	13
+edit		187	39	86	20
+push	OK	117	73	75	23
+push	Cancel	198	73	75	23
+
+## Save Layout As (632x159)
+label	Name:	18	62	33	13
+edit		57	57	233	23
+label	Shortcut:	300	60	47	13
+combo		354	57	269	21
+label	Folder:	16	98	36	13
+edit		57	94	488	23
+push	Browse...	550	94	75	23
+push	OK	237	127	75	23
+push	Cancel	324	127	75	23
+
+## Organize Layouts (596x372)
+label	Current layout folder:	13	41	122	13
+edit		13	59	488	23
+push	Browse...	510	59	75	23
+label	Available layouts in current folder:	13	94	215	13
+list		13	112	195	176
+label	Current layouts in menu:	306	94	188	13
+list		306	112	195	176
+push	&Assign ->	219	177	75	23
+push	Move &Up	510	111	75	23
+push	Move &Down	510	142	75	23
+push	&Clear	510	190	75	23
+push	Activate	510	220	75	23
+push	Delete Layout	13	294	195	23
+push	Explore Containing Folder...	306	294	195	23
+push	OK	429	337	75	23
+push	Cancel	510	337	75	23
+
+## Customize Toolbar (538x235)
+push	&Close	463	41	66	23
+push	R&eset	463	68	66	23
+push	&Help	463	96	66	23
+push	Move &Up	463	151	66	23
+push	Move &Down	463	179	66	23
+label	A&vailable toolbar buttons:	7	39	126	16
+list		7	59	180	163
+push	&Add ->	198	99	66	23
+push	<- &Remove	198	132	66	23
+label	Current &toolbar buttons:	274	39	117	16
+list		274	59	180	163
+
+## Customize Keyboard (517x490)
+label	Keyboard &map:	12	41	495	13
+combo		12	59	323	21
+push	&Delete	430	57	75	23
+push	Save As...	346	57	75	23
+label	Show &commands containing:	12	90	495	13
+edit		12	108	493	20
+list		12	201	493	106
+label	&Shortcut keys:	12	324	72	13
+edit		96	321	157	20
+push	&Add	262	319	75	23
+push	Replace	346	319	75	23
+push	&Remove	430	319	75	23
+label	Shortcut c&urrently assigned to:	12	355	153	13
+listview		12	373	409	73
+push	Locate	430	373	75	23
+push	OK	345	455	75	23
+push	Cancel	430	455	75	23
+
+## Save Keyboard Map As (352x131)
+label	Save this keyboard map as:	12	42	329	13
+edit		12	62	329	23
+push	OK	177	96	75	23
+push	Cancel	265	96	75	23
+
+## Advanced Audio Configuration (352x413)
+label	Audio &devices:	12	42	83	13
+list		12	57	329	96
+label	Settings for selected audio device:	12	159	195	13
+check	&Interpolate position (required for inaccurate devices)	24	179	278	16
+label	&Position bias (-64 to 64):	24	203	135	13
+slider		177	200	135	20
+label	0	319	203	21	13
+check	Do not pre-&roll buffers before starting playback	24	228	270	16
+label		1	254	349	2
+label	Audio &buffers:	24	267	135	13
+slider		177	263	135	20
+label	4	319	267	21	13
+label	Buffer &size (samples):	24	294	135	13
+combo		177	291	165	21
+label	Priorit&y:	24	322	135	13
+combo		177	319	165	21
+label		9	371	334	2
+push	OK	268	381	75	23
+
+# About (the tab control and its page are not listed; "edit" cells with no border are the read-only text lines)
+## About General (532x384)
+label		19	73	77	77
+label		110	70	321	13
+label	<value>	110	84	321	13
+label		110	99	321	13
+label		110	114	321	13
+label		110	128	327	13
+label	This product is licensed to:	110	148	321	13
+edit		125	162	306	13
+edit		125	177	306	13
+label	Serial Number:	128	192	98	13
+edit		242	192	300	13
+label	Machine ID:	128	206	98	13
+edit		242	206	189	13
+label		110	229	321	2
+label		110	237	321	73
+push	OK	450	353	75	23
+
+## About Computer (532x384)
+label	&Computer properties:	19	68	413	13
+edit		19	83	495	237
+push	OK	450	353	75	23
+
+## About Components (532x384)
+label	&Component information:	19	68	413	13
+edit		19	83	495	237
+push	OK	450	353	75	23
+
+## About Multimedia Devices (532x384)
+label	&Multimedia devices info:	19	68	413	13
+edit		19	83	495	237
+push	OK	450	353	75	23
+
+## About Copyrights and Patents (532x384)
+label	The following copyrights apply:	19	68	377	13
+label		19	94	405	26
+label		19	130	405	26
+push	OK	450	353	75	23
+
+# Slideshow Creator (the picture area under the toolbar is listed as one list; buttons with no text are the toolbar's)
+## Slideshow Pictures (538x397)
+color		7	59	24	22
+color		31	59	24	22
+color		59	59	24	22
+color		83	59	24	22
+color		111	59	24	22
+color		135	59	24	22
+color		163	59	24	22
+color		187	59	24	22
+color		211	59	24	22
+color		235	59	24	22
+color		259	59	24	22
+list		7	90	523	247
+label	Add Pictures	7	90	523	85
+push	Create	447	346	85	24
+label	Total: 0	0	377	45	20
+label	00:00:00.00	471	377	67	20
+
+## Slideshow Settings (538x397)
+group	Slideshow Placement	10	65	515	71
+radio	Start at cursor	19	84	93	18
+radio	Start at:	19	107	62	18
+edit		173	106	121	20
+group	Duration	10	142	515	76
+radio	Time per picture (sec):	19	162	135	18
+spinbox		173	161	120	20
+radio	Total length:	19	189	85	18
+edit		173	188	121	20
+label	Time per picture (sec): 0.00	318	191	142	17
+group	Effects	10	224	515	76
+label	Effect:	16	246	36	17
+combo		173	243	121	21
+label	Overlap (sec):	16	273	75	17
+spinbox		173	271	120	20
+push	Default All	10	306	100	24
+push	Use as Defaults	117	306	110	24
+push	Create	447	346	85	24
+label	Total: 0	0	377	45	20
+label	00:00:00.00	471	377	67	20
+
+## Advanced Save (649x412)
+check	Live Save	47	49	540	15
+push	?	587	44	30	24
+check	Use Advanced Backup	47	78	470	15
+push	Restore...	517	78	100	24
+check		67	112	20	29
+label	Backup Interval	87	114	220	25
+edit		312	117	50	19
+push	˄	367	117	20	19
+push	˅	387	117	20	19
+label	Minutes	407	114	53	25
+check		67	141	20	30
+label	Backup Interval	87	143	220	26
+edit		312	146	50	20
+push	˄	367	146	20	20
+push	˅	387	146	20	20
+label	Hours	407	143	42	26
+check		67	171	20	30
+label	Archive Daily Backups	87	173	220	26
+edit		312	176	50	20
+push	˄	367	176	20	20
+push	˅	387	176	20	20
+label	Max	407	173	32	26
+check		67	201	20	30
+label	Archive Real-Time Backups	87	203	220	26
+edit		312	206	50	20
+push	˄	367	206	20	20
+push	˅	387	206	20	20
+label	Max	407	203	32	26
+label	Save Location:	47	244	91	26
+radio	Temporary Files Folder	67	270	138	15
+radio	Use Current Project Folder	225	270	158	15
+radio	Select Folder	403	270	87	15
+edit		67	292	430	20
+push	Browse...	517	290	100	25
+push	Clear all backups	52	328	220	25
+push	Clear current project backups	282	328	220	25
+label	Last backup for current project:	47	372	178	26
+label	None	225	372	39	26
+push	OK	407	373	100	22
+push	Cancel	517	373	100	22

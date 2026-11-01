@@ -10,6 +10,7 @@
 #include "../../src/ofx/fxcompare.h"
 #include "../../src/ofx/probe.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 using namespace reno;
@@ -204,12 +205,57 @@ static void testSwitching(const std::string& standin)
     fx.clear();
 }
 
+// VEGAS's own bundles are not looked for while the built-ins are used; the allow table brings an effect back to VEGAS's plug-in.
+static void testNoVegasBundles(const std::string& standin)
+{
+    ofx::Host& host = ofx::Host::get();
+    const std::string root = "vegasfx_test_dirs";
+    const std::string vb = root + "/Vfx1.ofx.bundle/Contents/Win64";
+    const std::string ob = root + "/Other.ofx.bundle/Contents/Win64";
+    std::string cmd = "rm -rf " + root;
+    for (const char* arch : {"Win64", "Linux-x86-64", "MacOS"})       // (the folder the host looks in depends on the system)
+        cmd += std::string(" && mkdir -p ") + root + "/Vfx1.ofx.bundle/Contents/" + arch + " " + root + "/Other.ofx.bundle/Contents/" + arch +
+               " && touch " + root + "/Vfx1.ofx.bundle/Contents/" + arch + "/Vfx1.ofx " + root + "/Other.ofx.bundle/Contents/" + arch + "/Other.ofx";
+    if (std::system(cmd.c_str()) != 0) { check(false, "test folders made"); return; }
+    check(ofx::Host::isVegasBundleFile(vb + "/Vfx1.ofx"), "Vfx1.ofx.bundle is recognised as VEGAS's");
+    check(!ofx::Host::isVegasBundleFile(ob + "/Other.ofx"), "another bundle is not");
+
+    host.config.preferBuiltinVegasFx = true;
+    ofx::Host::vegasRealAllowed().clear();
+    check(host.skipVegasBundles(), "built-ins preferred and nothing allowed: VEGAS's bundles are skipped");
+    std::vector<std::string> u = host.usableBinaries({root});
+    check(u.size() == 1 && u[0].find("Other.ofx") != std::string::npos, "usableBinaries leaves VEGAS's bundle out, keeps the other");
+    check(ofx::Host::findBinaries({root}).size() == 2, "findBinaries (the checking tools) still finds both");
+
+    host.config.preferBuiltinVegasFx = false;
+    check(!host.skipVegasBundles() && host.usableBinaries({root}).size() == 2, "preference 'real': both are used");
+
+    host.config.preferBuiltinVegasFx = true;
+    ofx::Host::vegasRealAllowed().push_back("com.vegascreativesoftware:invert");
+    check(!host.skipVegasBundles() && host.usableBinaries({root}).size() == 2, "an allowed effect: VEGAS's bundles are scanned again");
+    check(!host.useBuiltinFor("com.vegascreativesoftware:invert"), "  the allowed effect is not made from the built-in");
+    check(host.useBuiltinFor("com.vegascreativesoftware:sepia"), "  the others still are");
+    check(!host.useBuiltinFor("reno.test.nothere"), "  and a non-VEGAS id is never");
+
+    std::string err;
+    host.loadBinary(standin, &err);
+    host.loadBinary(ofx::kBuiltinBinaryPath, nullptr);
+    std::string e2;
+    ofx::Plugin* pl = findVideoPlugin("com.vegascreativesoftware:invert", &e2);
+    check(pl && !(pl->binary && pl->binary->builtin), "findVideoPlugin: the allowed effect comes from VEGAS's (stand-in) plug-in");
+    ofx::Host::vegasRealAllowed().clear();
+    pl = findVideoPlugin("com.vegascreativesoftware:invert", &e2);
+    check(pl && pl->binary && pl->binary->builtin, "table emptied: the built-in again");
+    std::system(("rm -rf " + root).c_str());
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 2) { std::fprintf(stderr, "usage: vegasfx_test <standinfx.ofx>\n"); return 2; }
     testPresets();
     testPng();
     testSwitching(argv[1]);
+    testNoVegasBundles(argv[1]);
     std::printf("%d passed, %d failed\n", gPass, gFail);
     return gFail ? 1 : 0;
 }

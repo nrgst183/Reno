@@ -1,0 +1,65 @@
+# VEGAS Pro 18 tool bars (tool tips of the buttons in the main window capture, left to right; enabled: 1 or 0 when nothing is open)
+
+## Standard
+New Empty Project (Ctrl+Shift+N)	1
+Open (Ctrl+O)	1
+Save (Ctrl+S)	1
+Render As	0
+Properties (Alt+Enter)	1
+Cut (Ctrl+X)	0
+Copy (Ctrl+C)	0
+Paste (Ctrl+V)	0
+Undo (Ctrl+Z)	0
+Redo (Ctrl+Y; Ctrl+Shift+Z)	0
+
+## Video Preview
+Project Video Properties... (Alt+Enter)	1
+Video Preview on External Monitor (Alt+Shift+4)	1
+Applies video effects to all video events in your project.	1
+Split Screen View	1
+Displays graphical overlays in the Video Preview and Trimmer windows to help you perform visual alignment and color analysis.	1
+Copy Snapshot to Clipboard	1
+Save Snapshot to File...	1
+Open Snapshot in VEGAS Image	1
+Preview in spatial view for 360 editing	0
+Preview in High Dynamic Range using Project ACES View Transform	0
+
+## Master Bus
+Project Audio Properties...	1
+Downmix Output	1
+Dim Output	1
+Open Mixing Console	1
+
+## Timeline
+Record (Ctrl+R)	1
+Loop Playback (Ctrl+Shift+L; Q)	1
+Play From Start (Shift+Space; Shift+F12)	1
+Play (Space; Ctrl+Space; F12)	1
+Pause (Enter; Play; Ctrl+F12)	1
+Stop (Esc; Stop)	1
+Go to Start (Ctrl+Home)	1
+Go to End (Ctrl+End)	1
+Previous Frame (Alt+Left)	1
+Next Frame (Alt+Right)	1
+Use to select/resize/move events, navigate the timeline, and edit envelopes.  Combine with Ctrl, Alt, and Shift for more advanced edits.	1
+Use to add, delete, select, and move envelope points without moving events.	1
+Use to select events by drawing a selecting box in the timeline. 	1
+Use to magnify an area of the timeline.	1
+Delete (Delete)	0
+Use to remove portions of events that are outside of the time selection.	0
+Removes portions of events before the cursor position.	0
+Removes portions of events after the cursor position.	0
+Splits selected events at the cursor position.	0
+Splits a selected event using the current time selection to create a visually smooth transition.	0
+Prevents the selected events from moving along the timeline.	0
+Insert Marker (M)	1
+Insert Region (R)	1
+Toggles snapping in the main timeline and Trimmer window. Snapping helps you align event moves and edits.	1
+Automatically create crossfades when you overlap two events.	1
+Automatically move the contents of the timeline after performing edits that add or remove time.	1
+Automatically move envelope points when moving events on the timeline.	1
+Override event groups without removing the groups.	1
+Show or hide the HDR-compatible color grading tools.	1
+Close the current nested timeline and open its parent timeline.	0
+Open the currently selected event as a nested timeline.	0
+Create and open a nested timeline from the currently selected timeline events.	0

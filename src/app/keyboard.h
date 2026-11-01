@@ -93,5 +93,8 @@ struct KeyboardDialogHooks {
 };
 extern KeyboardDialogHooks keyboardDialogHooks;
 
+// VEGAS's Save Keyboard Map As box (352 x 131): the name typed, or empty when cancelled.
+QString askKeyboardMapName(QWidget* parent, const QString& start);
+
 }  // namespace app
 }  // namespace reno

@@ -13,7 +13,9 @@ namespace {
 
 const char* const kGroup = "Reno Built-in";
 
-// The ellipse round Center that Swirl, Pinch/Punch and Spherize work inside (Scaling: size as a fraction of the frame; Proportional: a circle as wide as the horizontal scaling).
+// The ellipse round Center that Swirl and Pinch/Punch work inside (Scaling: size as a fraction of the frame; Proportional: the vertical scaling follows the horizontal one,
+// so the ellipse keeps the frame's shape). VEGAS counts from the pixel's index, not its middle: the centre of a 320 x 180 frame is pixel (160, 90), so the area's
+// centre is half a pixel further on than the frame's middle (measured on VEGAS's own pictures, exact to 0.01 pixel).
 struct Area {
     double px0, py0, rx, ry;
     Area(Ctx& c, int W, int H)
@@ -21,21 +23,22 @@ struct Area {
         double cx, cy;
         c.xy("Center", cx, cy);
         const double sh = clampd(c.d("ScalingHorizontal"), 0, 10);
-        const double sv = c.b("ScalingProportional") ? sh * W / std::max(1, H) : clampd(c.d("ScalingVertical"), 0, 10);
+        const double sv = c.b("ScalingProportional") ? sh : clampd(c.d("ScalingVertical"), 0, 10);
         rx = std::max(1e-3, sh * W * 0.5);
         ry = std::max(1e-3, sv * H * 0.5);
-        px0 = cx * W;
-        py0 = (1 - cy) * H;
+        px0 = cx * W + 0.5;
+        py0 = (1 - cy) * H + 0.5;
     }
 };
 
 // ------------------------------------------------------------------ Swirl
-// Turned about Center, most at the centre and not at all at the ellipse's edge: Amount 1 is two turns clockwise, -1 two turns the other way.
+// Turned about Center, most at the centre and not at all at the ellipse's edge: the angle is Amount x 15 radians x (1 - r)^2 for r the distance from the centre in
+// ellipse radii (measured on VEGAS's presets: Maximum, Medium, Clockwise, Counter Clockwise, Half Scale; the error is a fraction of a level). Amount 1 turns clockwise.
 void swirl(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     const Area a(c, W, H);
-    const double turn = clampd(c.d("Amount"), -1, 1) * 2 * 2 * kPi;
+    const double turn = clampd(c.d("Amount"), -1, 1) * -15.0;
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const double dx = (x + 0.5 - a.px0) / a.rx, dy = (y + 0.5 - a.py0) / a.ry;
@@ -44,14 +47,15 @@ void swirl(Ctx& c)
             if (r >= 1) { std::memcpy(o, c.src.at(x, y), sizeof(float) * 4); continue; }
             const double f = (1 - r) * (1 - r);
             const double ang = turn * f, ca = std::cos(ang), sa = std::sin(ang);
-            const double ux = dx * a.rx, uy = dy * a.ry;
-            c.src.sampleClamped(a.px0 + ux * ca - uy * sa, a.py0 + ux * sa + uy * ca, o);
+            // (turned in the ellipse's own units, so a frame-shaped ellipse is a circle for it: the picture is sheared, not rotated rigidly)
+            c.src.sampleClamped(a.px0 + (dx * ca - dy * sa) * a.rx, a.py0 + (dx * sa + dy * ca) * a.ry, o);
         }
     });
 }
 
 // ------------------------------------------------------------------ Pinch/Punch
-// Amount > 0 punches the middle of the ellipse out towards you (magnified), < 0 pinches it in; the edge stays put.
+// Amount > 0 punches the middle of the ellipse out towards you (magnified), < 0 pinches it in; the edge stays put. The picture is taken from the point
+// (1 - 0.8 x Amount x cos^2(pi r / 2)) times as far from the centre (r in ellipse radii): measured on VEGAS's Maximum / Medium Punch and Pinch (0.1 .. 12 levels mean squared).
 void pinchPunch(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
@@ -63,27 +67,29 @@ void pinchPunch(Ctx& c)
             const double r = std::sqrt(dx * dx + dy * dy);
             float* o = c.out.at(x, y);
             if (r >= 1 || r < 1e-12) { std::memcpy(o, c.src.at(x, y), sizeof(float) * 4); continue; }
-            const double s = std::sin(kPi * r);
-            const double k = 1 - amount * 0.6 * s * s * (1 - r);
+            const double cs = std::cos(kPi * 0.5 * r);
+            const double k = 1 - amount * 0.8 * cs * cs;
             c.src.sampleClamped(a.px0 + dx * k * a.rx, a.py0 + dy * k * a.ry, o);
         }
     });
 }
 
 // ------------------------------------------------------------------ Wave
-// Vertical waves move the frame up and down (a wave along its width), horizontal waves left and right (along its height).
+// Measured on VEGAS's pictures of its Wave presets (Large, Medium, Small, Vertical Only, Horizontal Only; the sine fits to 0.01 pixel and 0.002 waves): the vertical
+// waves move every pixel row sideways, by Amplitude x the frame's WIDTH x sin(pi x Waves x y / height + Phase); the horizontal waves move every column up and down,
+// by Amplitude x the frame's HEIGHT x sin(pi x Waves x x / width + Phase). "Waves" counts half waves (Large is 5.4 = 2.7 waves over the frame), the phase is in
+// radians, and x and y are the pixel's index (not its middle). The first picture of a pixel is taken from (x + sideways move, y + up/down move), both from the
+// pixel's own place.
 void wave(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     const double vn = clampd(c.d("VerticalWaves"), 0, 1000), hn = clampd(c.d("HorizontalWaves"), 0, 1000);
-    const double va = clampd(c.d("VerticalAmplitude"), -1, 1) * H, ha = clampd(c.d("HorizontalAmplitude"), -1, 1) * W;
+    const double va = clampd(c.d("VerticalAmplitude"), -1, 1) * W, ha = clampd(c.d("HorizontalAmplitude"), -1, 1) * H;
     const double vp = c.d("VerticalPhase"), hp = c.d("HorizontalPhase");
     forRows(H, W, [&](int y) {
-        const double fy = (y + 0.5) / std::max(1, H);
-        const double sx = ha * std::sin(2 * kPi * (hn * fy + hp));
+        const double sx = va * std::sin(kPi * vn * y / std::max(1, H) + vp);
         for (int x = 0; x < W; ++x) {
-            const double fx = (x + 0.5) / std::max(1, W);
-            const double sy = va * std::sin(2 * kPi * (vn * fx + vp));
+            const double sy = ha * std::sin(kPi * hn * x / std::max(1, W) + hp);
             c.src.sampleClamped(x + 0.5 + sx, y + 0.5 + sy, c.out.at(x, y));
         }
     });
@@ -114,18 +120,18 @@ std::vector<PDef> areaParams(double amount)
 
 void addFiltersDistort(std::vector<Def>& out)
 {
-    out.push_back(filter("swirl", "Swirl", "The picture twisted round a centre", areaParams(0.5), swirl));
-    out.push_back(filter("pinchpunch", "Pinch/Punch", "The middle of the picture punched out or pinched in", areaParams(0.5), pinchPunch));
+    out.push_back(filter("swirl", "Swirl", "The picture twisted round a centre", areaParams(1.0), swirl));
+    out.push_back(filter("pinchpunch", "Pinch/Punch", "The middle of the picture punched out or pinched in", areaParams(1.0), pinchPunch));
     {
         std::vector<PDef> ps = {dbl("VerticalWaves", "Vertical waves", 14, 0, 1000), dbl("HorizontalWaves", "Horizontal waves", 14, 0, 1000),
-                                dbl("VerticalAmplitude", "Vertical amplitude", 0.05, -1, 1), dbl("HorizontalAmplitude", "Horizontal amplitude", 0.05, -1, 1),
+                                dbl("VerticalAmplitude", "Vertical amplitude", 0, -1, 1), dbl("HorizontalAmplitude", "Horizontal amplitude", 0, -1, 1),
                                 dbl("VerticalPhase", "Vertical phase", 0, -1000, 1000), dbl("HorizontalPhase", "Horizontal phase", 0, -1000, 1000)};
         for (auto& p : ps) {
             if (p.name.find("Waves") != std::string::npos) p.dmax = 50;
             if (p.name.find("Amplitude") != std::string::npos) { p.dmin = 0; p.dmax = 0.2; }
-            if (p.name.find("Phase") != std::string::npos) { p.dmin = 0; p.dmax = 1; }
+            if (p.name.find("Phase") != std::string::npos) { p.dmin = 0; p.dmax = 6.2832; }
         }
-        out.push_back(filter("wave", "Wave", "The picture rippled up and down and side to side", ps, wave));
+        out.push_back(filter("wave", "Wave", "The picture rippled up and down and side to side (VEGAS: the defaults leave it as it is)", ps, wave));
     }
 }
 

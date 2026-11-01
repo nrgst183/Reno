@@ -5,6 +5,7 @@
 // tree on the left and the folder's contents in columns filling the window; OK, Cancel, Add, Remove, Save As... down
 // the right. Reno adds a search box.
 #include "pluginchooser.h"
+#include "dialoglook.h"
 #include "vprefs.h"
 #include "fxlibrary.h"
 #include "../engine/catalog.h"
@@ -1208,6 +1209,7 @@ PluginChooser::PluginChooser(ChooserKind kind, const QString& title, const FxCha
     if (!d->single) d->chain = chain;
     d->chainSel = d->chain.empty() ? -1 : 0;
     setObjectName("PluginChooser");
+    makeDialogDark(this);   // VEGAS 18 draws the chooser dark
     setWindowTitle(title);
     setSizeGripEnabled(true);
     setStyleSheet(
@@ -1216,9 +1218,9 @@ PluginChooser::PluginChooser(ChooserKind kind, const QString& title, const FxCha
         "QToolButton#chooserChainItem { padding: 1px 6px; }");
 
     QGridLayout* g = new QGridLayout(this);
-    g->setContentsMargins(6, 6, 6, 6);
+    g->setContentsMargins(3, 3, 1, 2);   // VEGAS: OK at 1267,3; the folder bar at 2,41 and the lists to 2,66
     g->setHorizontalSpacing(6);
-    g->setVerticalSpacing(5);
+    g->setVerticalSpacing(4);
 
     d->chainBox = new QWidget(this);
     d->chainBox->setObjectName("chooserChainBox");
@@ -1414,7 +1416,7 @@ PluginChooser::PluginChooser(ChooserKind kind, const QString& title, const FxCha
     d->select("all");
     d->syncChain();
 
-    QSize want(1340, 760);
+    QSize want(1344, 715);   // VEGAS's chooser is 1346 x 746 with its frame
     const QSize saved = QSettings().value("pluginChooser/size").toSize();
     if (saved.isValid() && saved.width() >= 400 && saved.height() >= 300) want = saved;
     if (QScreen* screen = parent ? parent->screen() : QGuiApplication::primaryScreen())

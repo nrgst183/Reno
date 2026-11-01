@@ -32,6 +32,7 @@
 #include <QFile>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -430,10 +431,30 @@ void MainWindow::buildVegasMenus()
     act("insertTime", "&Time...", QList<QKeySequence>(), [this, &app] {
         const double fps = app.project().settings.fps();
         const double len = app.loopEnd > app.loopStart ? app.loopEnd - app.loopStart : 1.0;
-        bool ok = false;
-        const QString text = QInputDialog::getText(this, "Insert Time", "Amount of time to insert at the cursor:", QLineEdit::Normal,
-                                                   QString::fromStdString(timecode(len, fps)), &ok);
-        if (!ok) return;
+        // VEGAS's Insert Time box: 281 x 105 with its frame (positions below are the capture's less the 1, 31 of the frame)
+        QDialog dlg(this);
+        dlg.setObjectName("insertTimeDialog");
+        dlg.setWindowTitle("Insert Time");
+        QFont f = dlg.font();
+        f.setPixelSize(12);
+        dlg.setFont(f);
+        dlg.setFixedSize(281 - 2, 105 - 31 - 1);
+        QLabel* lab = new QLabel("&Amount of time to insert:", &dlg);
+        lab->setGeometry(9 - 1, 42 - 31, 150, 13);
+        QLineEdit* edit = new QLineEdit(QString::fromStdString(timecode(len, fps)), &dlg);
+        edit->setObjectName("insertTimeEdit");
+        edit->setGeometry(187 - 1, 39 - 31, 86, 20);
+        lab->setBuddy(edit);
+        QPushButton* okb = new QPushButton("OK", &dlg);
+        okb->setGeometry(117 - 1, 73 - 31, 75, 23);
+        okb->setDefault(true);
+        QPushButton* cancelb = new QPushButton("Cancel", &dlg);
+        cancelb->setGeometry(198 - 1, 73 - 31, 75, 23);
+        QObject::connect(okb, &QPushButton::clicked, &dlg, &QDialog::accept);
+        QObject::connect(cancelb, &QPushButton::clicked, &dlg, &QDialog::reject);
+        edit->selectAll();
+        if (dlg.exec() != QDialog::Accepted) return;
+        const QString text = edit->text();
         const double t = readTime(text, fps);
         if (!(t > 0)) { app.status("Could not read that length. Type it as 00:00:01;00 or as seconds."); return; }
         app.insertTime(app.project().quantize(app.cursor()), t);

@@ -10,6 +10,15 @@
 //   vegasfx      the whole run (runVegasFxReport)
 //   vegasfxrun   one effect in one context from one source, in the process the run started for it
 //   vegasfxlist  the effects in one plug-in file
+//   vegasfxdescribe  --out FILE [--only TEXT] [--size WxH]: every built-in effect, per context, with its settings (type, size, default, allowed and shown
+//                ranges, choices) and presets (JSON), for planning a capture (tools/effect_capture_compare.py --plan)
+//
+// A scenario given to vegasfxrun (--scenarios-in) is { "name", "kind", "frames", "set": { setting: [numbers] | "text" } } and may also give:
+//   "a" / "b"            a raw picture file (width x height x 4 bytes, premultiplied BGRA, bottom row first) for the effect's source / a transition's "to" clip
+//   "seqA" / "seqB"      a list of such files, one per frame (a moving clip)
+//   "times"              the effect's time for each frame (default 10, 11, ...); "timeline": the position on the timeline (OfxPropVegasTimeCode) for each frame
+//   "progress"           a transition's progress (0..1) for each frame (default: evenly spread over the frames)
+// "frames" grows to the longest of these lists. tools/effect_capture_compare.py makes these from the manifest of tools/scripts/"Reno Effect Capture.cs".
 #pragma once
 #include "ofxhost.h"
 

@@ -442,6 +442,7 @@ struct RunSpec {
     int first = 0;
     bool quick = false;
     int maxParams = 12;
+    std::string only;               // vegasfxdescribe: only effects whose id or label contains this
 };
 
 Plugin* findIn(Binary* b, const std::string& id)
@@ -477,12 +478,83 @@ InstanceSetup setupFor(const RunSpec& rs)
     return setup;
 }
 
-void hookClips(Instance& inst, const RunSpec& rs)
+// A picture from a raw file: w x h x 4 bytes, premultiplied BGRA, bottom row first (what reno_cli vegasfx --keep-real writes, and what
+// tools/effect_capture_compare.py makes from the capture's PNGs). Null if the file is not there or has another size.
+ImagePtr loadRawPicture(const std::string& path, int w, int h)
+{
+    std::string data;
+    if (!readFile(path, data) || data.size() != (size_t)w * (size_t)h * 4) return nullptr;
+    ImagePtr img = Image::make(w, h, PixelDepth::Byte, false);
+    if (!img) return nullptr;
+    for (int y = 0; y < h; ++y) std::memcpy(img->row(y), data.data() + (size_t)y * (size_t)w * 4, (size_t)w * 4);
+    return img;
+}
+
+// The pictures a scenario hands the effect instead of the built-in test pattern (scenario keys "a" / "b": one picture for every
+// frame; "seqA" / "seqB": one picture per frame; "times": the time of each frame). The source of a clip finds the picture of the
+// frame nearest the time it is asked for (when "times" lists a time for every picture; else the picture of frame number t), so effects that look at
+// neighbouring frames (Slow Motion, Flicker) get the clip's own.
+struct Feed {
+    std::vector<ImagePtr> a, b;
+    std::vector<double> times;
+    bool any() const { return !a.empty() || !b.empty(); }
+    ImagePtr pick(bool second, double t) const
+    {
+        const std::vector<ImagePtr>& v = second ? (b.empty() ? a : b) : a;
+        if (v.empty()) return nullptr;
+        if (v.size() == 1) return v[0];
+        if (times.size() != v.size()) {                 // a clip longer than the frames asked for: the picture of frame number t
+            const long k = std::lround(t);
+            return v[(size_t)std::max(0L, std::min((long)v.size() - 1, k))];
+        }
+        size_t best = 0;
+        for (size_t k = 1; k < times.size(); ++k)
+            if (std::fabs(times[k] - t) < std::fabs(times[best] - t)) best = k;
+        return v[best];
+    }
+};
+
+// Loads the pictures a scenario names. False (with 'err') if one of them cannot be read.
+bool loadFeed(const Json& scen, int w, int h, int frames, Feed& feed, std::string& err)
+{
+    auto one = [&](const char* key, std::vector<ImagePtr>& into) -> bool {
+        const Json& j = scen.get(key);
+        if (!j.isString() || j.asString().empty()) return true;
+        ImagePtr img = loadRawPicture(j.asString(), w, h);
+        if (!img) { err = std::string("cannot read the picture ") + j.asString() + " (" + key + ")"; return false; }
+        into.push_back(img);
+        return true;
+    };
+    auto seq = [&](const char* key, std::vector<ImagePtr>& into) -> bool {
+        const Json& j = scen.get(key);
+        if (!j.isArray()) return true;
+        for (const auto& e : j.items()) {
+            ImagePtr img = loadRawPicture(e.asString(), w, h);
+            if (!img) { err = "cannot read the picture " + e.asString() + " (" + key + ")"; return false; }
+            into.push_back(img);
+        }
+        return true;
+    };
+    if (!one("a", feed.a) || !one("b", feed.b) || !seq("seqA", feed.a) || !seq("seqB", feed.b)) return false;
+    const Json& tm = scen.get("times");
+    if (tm.isArray())
+        for (const auto& e : tm.items()) feed.times.push_back(e.asDouble());
+    (void)frames;
+    return true;
+}
+
+void hookClips(Instance& inst, const RunSpec& rs, const std::shared_ptr<Feed>& feed = nullptr)
 {
     const int w = rs.width, h = rs.height;
     for (const auto& name : inst.inputClipNames()) {
         const bool to = name == kOfxImageEffectTransitionSourceToClipName;
-        inst.setClipSource(name, [w, h, to](double t) { return sourceFrame(w, h, t, to); });
+        inst.setClipSource(name, [w, h, to, feed](double t) {
+            if (feed && feed->any()) {
+                ImagePtr img = feed->pick(to, t);
+                if (img) return img;
+            }
+            return sourceFrame(w, h, t, to);
+        });
     }
 }
 
@@ -493,7 +565,9 @@ void runScenario(Plugin* pl, const RunSpec& rs, const Json& scen, int index, Jso
     rec["index"] = index;
     rec["name"] = scen.get("name").asString();
     rec["kind"] = scen.get("kind").asString();
-    const int frames = std::max(1, scen.get("frames").asInt(1));
+    int frames = std::max(1, scen.get("frames").asInt(1));
+    for (const char* key : {"times", "progress", "timeline", "seqA", "seqB"})      // (a list longer than "frames" gives the frames)
+        if (scen.get(key).isArray()) frames = std::max(frames, (int)scen.get(key).size());
     rec["frames"] = frames;
     std::string err;
     std::unique_ptr<Instance> inst = pl->createInstance(rs.context, setupFor(rs), &err);
@@ -509,7 +583,25 @@ void runScenario(Plugin* pl, const RunSpec& rs, const Json& scen, int index, Jso
         for (const auto& s : missing) m.push(s);
         rec["missingSettings"] = m;
     }
-    hookClips(*inst, rs);
+    // pictures, times, transition progress and timeline positions the scenario gives (tools/effect_capture_compare.py): see Feed
+    std::shared_ptr<Feed> feed = std::make_shared<Feed>();
+    {
+        std::string fe;
+        if (!loadFeed(scen, rs.width, rs.height, frames, *feed, fe)) {
+            rec["ok"] = false;
+            rec["error"] = fe;
+            return;
+        }
+    }
+    auto listOf = [&](const char* key) {
+        std::vector<double> v;
+        const Json& j = scen.get(key);
+        if (j.isArray())
+            for (const auto& e : j.items()) v.push_back(e.asDouble());
+        return v;
+    };
+    const std::vector<double> progressList = listOf("progress"), timelineList = listOf("timeline");
+    hookClips(*inst, rs, feed);
     Param* progress = rs.context == kOfxImageEffectContextTransition ? inst->params.find(kOfxImageEffectTransitionParamName) : nullptr;
     const bool filter = rs.context != kOfxImageEffectContextGenerator && rs.context != kOfxImageEffectContextTransition;
     Json ms = Json::array();
@@ -517,11 +609,15 @@ void runScenario(Plugin* pl, const RunSpec& rs, const Json& scen, int index, Jso
     bool ok = true;
     std::string e;
     for (int f = 0; f < frames; ++f) {
-        const double t = 10.0 + f;
-        if (progress) inst->userSetValue(progress, std::vector<double>{frames == 1 ? 0.5 : (f + 1.0) / (frames + 1.0)}, t);
+        const double t = (size_t)f < feed->times.size() ? feed->times[(size_t)f] : 10.0 + f;
+        if (progress) {
+            const double pv = (size_t)f < progressList.size() ? progressList[(size_t)f] : (frames == 1 ? 0.5 : (f + 1.0) / (frames + 1.0));
+            inst->userSetValue(progress, std::vector<double>{pv}, t);
+        }
         const auto t0 = std::chrono::steady_clock::now();
         RenderOptions ro;
         ro.interactive = false;
+        if ((size_t)f < timelineList.size()) ro.timelineTime = timelineList[(size_t)f];
         std::string re;
         ImagePtr out = inst->render(t, ro, &re);
         const double took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -536,7 +632,8 @@ void runScenario(Plugin* pl, const RunSpec& rs, const Json& scen, int index, Jso
         if (isBlank(*out)) ++blank;
         if (isTransparent(*out)) ++transparent;
         if (filter) {
-            ImagePtr src = sourceFrame(rs.width, rs.height, t, false);
+            ImagePtr src = feed->any() ? feed->pick(false, t) : nullptr;
+            if (!src) src = sourceFrame(rs.width, rs.height, t, false);
             if (src && sameBytes(*out, *src)) ++same;
         }
         writeFile(pathJoin(rs.dir, strfmt("%s_%d_%d.bgra", rs.tag.c_str(), index, f)),
@@ -715,6 +812,130 @@ int childList(const std::string& file, const std::string& outPath, bool stubs)
     return 0;
 }
 
+// What the built-ins are, for planning a capture (tools/effect_capture_compare.py --plan, the script "Reno Effect Capture.cs"): per effect and context
+// the settings (type, size, default, smallest / largest allowed and shown values, choices, text) and the presets with their settings.
+const char* kindName(ParamKind k)
+{
+    switch (k) {
+        case ParamKind::Int: return "Integer";
+        case ParamKind::Double: return "Double";
+        case ParamKind::Bool: return "Boolean";
+        case ParamKind::Choice: return "Choice";
+        case ParamKind::RGBA: return "RGBA";
+        case ParamKind::RGB: return "RGB";
+        case ParamKind::Double2D: return "Double2D";
+        case ParamKind::Int2D: return "Integer2D";
+        case ParamKind::Double3D: return "Double3D";
+        case ParamKind::Int3D: return "Integer3D";
+        case ParamKind::String: return "String";
+        case ParamKind::Custom: return "Custom";
+        case ParamKind::Group: return "Group";
+        case ParamKind::Page: return "Page";
+        case ParamKind::PushButton: return "PushButton";
+        default: return "Unknown";
+    }
+}
+
+int describeBuiltins(const std::string& outPath, const std::string& only, int width, int height)
+{
+    Json res = Json::object();
+    Json effects = Json::array();
+    Host& host = Host::get();
+    std::string err;
+    Binary* bin = host.loadBinary(std::string(kBuiltinBinaryPath), &err);
+    if (!bin) {
+        std::fprintf(stderr, "reno_cli vegasfxdescribe: the built-in effects could not be loaded: %s\n", err.c_str());
+        return 1;
+    }
+    const std::vector<PresetEntry> allPresets = parsePresetPackage(builtinPresetPackage());
+    auto limit = [](double v) { return std::isfinite(v) && std::fabs(v) < 1.0e30; };
+    for (const auto& up : bin->plugins) {
+        Plugin* pl = up.get();
+        if (!containsNoCase(pl->info.id, only) && !containsNoCase(pl->info.label, only)) continue;
+        std::string le;
+        if (!pl->load(&le)) continue;
+        Json e = Json::object();
+        e["id"] = pl->info.id;
+        e["label"] = pl->info.label;
+        e["group"] = pl->info.grouping;
+        Json contexts = Json::array();
+        std::vector<std::string> ctxs;
+        const std::string f = pl->filterContext();
+        if (!f.empty()) ctxs.push_back(f);
+        if (pl->supportsContext(kOfxImageEffectContextGenerator)) ctxs.push_back(kOfxImageEffectContextGenerator);
+        if (pl->supportsContext(kOfxImageEffectContextTransition)) ctxs.push_back(kOfxImageEffectContextTransition);
+        for (const std::string& ctx : ctxs) {
+            RunSpec rs;
+            rs.context = ctx;
+            rs.width = width;
+            rs.height = height;
+            std::string ie;
+            std::unique_ptr<Instance> inst = pl->createInstance(ctx, setupFor(rs), &ie);
+            if (!inst) continue;
+            Json c = Json::object();
+            c["context"] = shortContext(ctx);
+            Json params = Json::array();
+            for (const auto& p : inst->params.params) {
+                if (p->kind == ParamKind::Group || p->kind == ParamKind::Page || p->kind == ParamKind::PushButton) continue;
+                if (p->name == kOfxImageEffectTransitionParamName) continue;        // (how far the transition is: the capture sets that by the frame)
+                Json j = Json::object();
+                j["name"] = p->name;
+                j["label"] = p->label();
+                j["type"] = kindName(p->kind);
+                j["dim"] = p->dim;
+                j["secret"] = p->secret();
+                j["parent"] = p->parent();
+                if (p->isText()) j["default"] = p->str;
+                else {
+                    j["default"] = numbersJson(p->value);
+                    Json mn = Json::array(), mx = Json::array(), dmn = Json::array(), dmx = Json::array();
+                    for (int k = 0; k < p->dim; ++k) {
+                        const double a = p->props.getDouble(kOfxParamPropMin, k, -DBL_MAX), b = p->props.getDouble(kOfxParamPropMax, k, DBL_MAX);
+                        const double c1 = p->props.getDouble(kOfxParamPropDisplayMin, k, -DBL_MAX), d = p->props.getDouble(kOfxParamPropDisplayMax, k, DBL_MAX);
+                        mn.push(limit(a) ? Json(a) : Json());
+                        mx.push(limit(b) ? Json(b) : Json());
+                        dmn.push(limit(c1) ? Json(c1) : Json());
+                        dmx.push(limit(d) ? Json(d) : Json());
+                    }
+                    j["min"] = mn;
+                    j["max"] = mx;
+                    j["displayMin"] = dmn;
+                    j["displayMax"] = dmx;
+                }
+                if (p->kind == ParamKind::Choice) {
+                    Json ch = Json::array();
+                    for (const std::string& n : p->choices()) ch.push(n);
+                    j["choices"] = ch;
+                }
+                params.push(j);
+            }
+            c["params"] = params;
+            Json presets = Json::array();
+            const std::string ctxShort = shortContext(ctx);
+            for (const PresetEntry& pe : allPresets) {
+                if (pe.plugin != pl->info.id) continue;
+                if (!pe.context.empty() && toLower(pe.context) != toLower(ctxShort) && !(pe.context == "General")) continue;
+                Json pj = Json::object();
+                pj["name"] = pe.name;
+                Json set = Json::object();
+                for (const PresetValue& v : pe.values) {
+                    if (v.isText) set[v.name] = v.text;
+                    else set[v.name] = numbersJson(v.numbers);
+                }
+                pj["set"] = set;
+                presets.push(pj);
+            }
+            c["presets"] = presets;
+            contexts.push(c);
+        }
+        e["contexts"] = contexts;
+        effects.push(e);
+    }
+    res["effects"] = effects;
+    writeJsonFile(outPath, res);
+    return 0;
+}
+
 }  // namespace
 
 int runVegasFxChild(const std::string& cmd, const std::vector<std::string>& args)
@@ -740,12 +961,17 @@ int runVegasFxChild(const std::string& cmd, const std::vector<std::string>& args
         else if (a == "--first") { std::string v; next(v); rs.first = std::atoi(v.c_str()); }
         else if (a == "--max-params") { std::string v; next(v); rs.maxParams = std::atoi(v.c_str()); }
         else if (a == "--quick") rs.quick = true;
+        else if (a == "--only") next(rs.only);
         else if (a == "--stubs") stubs = true;
         else if (a == "--gpu-off") Host::get().config.gpu = false;
         else if (cmd == "vegasfxlist" && file.empty()) file = a;
     }
     Host::get().config.stubUnknownSuites = stubs;
     Host::get().applyConfig();
+    if (cmd == "vegasfxdescribe") {
+        if (rs.outJson.empty()) { std::fprintf(stderr, "reno_cli vegasfxdescribe --out FILE [--only TEXT] [--size WxH]\n"); return 2; }
+        return describeBuiltins(rs.outJson, rs.only, rs.width, rs.height);
+    }
     if (cmd == "vegasfxlist") return childList(file, rs.scenariosOut.empty() ? rs.outJson : rs.scenariosOut, stubs);
     if (rs.outJson.empty() || rs.id.empty() || rs.context.empty() || rs.dir.empty() || (rs.source != "real" && rs.source != "builtin")) {
         std::fprintf(stderr, "reno_cli vegasfxrun: not meant to be run by hand (reno_cli vegasfx runs it)\n");
