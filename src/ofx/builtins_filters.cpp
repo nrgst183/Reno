@@ -2,6 +2,7 @@
 // VEGAS's plug-ins are not installed. The output approximates VEGAS's. See builtins.h.
 #include <mutex>
 #include "builtins_impl.h"
+#include "builtins_more_internal.h"
 #include "builtins_vec.h"
 #include "builtins_deriche.h"
 #include "vegas8.h"
@@ -763,11 +764,125 @@ static void mirror8General(Ctx& c, float theta, double cx, double cy)
 // Mirror: the side of the line through Center that the angle points to (0 top, 90 left, 180 bottom, -90 right) is kept and reflected.
 // Measured on VEGAS: a pixel exactly on the line (by index, not centre) is reflected too; the bilinear reflection blends into Background
 // at the frame edge; for slanted lines the samples shift along the kept direction (0.4 px * kx * |ky|, 0.2 px per axis at 45 degrees).
+// Mirror as VEGAS's OpenCL kernels draw it (read from the decoded kernels and from the host code of mirrorOpenCLProcessor: Center * (size - 1), the angle bands, the Background as (r, g, b, 0)): lines along an axis have kernels of their own (rows or columns past the line are read back from the other side with a
+// linear mix between two neighbours, and past the frame the Background), every other angle goes through the general one, which reflects each pixel on the line through Center and reads the
+// four taps of the reflected point by hand (taps outside the picture are the Background). The line passes through (Center x * (W - 1), Center y * (H - 1)) of the kernel's picture.
+static void mirrorOpenCl(Ctx& c, double cxn, double cyn)
+{
+    const int W = c.out.w, H = c.out.h;
+    const bool q = c.host8;
+    float bg[4];
+    { const Color bc = c.color("Background"); bg[0] = (float)bc.r; bg[1] = (float)bc.g; bg[2] = (float)bc.b; bg[3] = 0.f; }
+    std::vector<float> a((size_t)W * H * 4), o((size_t)W * H * 4);
+    const double ang = c.d("Angle");
+    // the host (mirrorOpenCLProcessor): the angle in radians as a float, kept within +-2 pi; four bands of +-0.5 degree round 0, 180, 90 and 270 degrees pick the axis kernels, anything else the general one
+    const float th = (float)std::fmod(ang * 0.01745329252, 6.28318530718);
+    auto in = [&](float lo, float hi) { return th >= lo && th <= hi; };
+    int kind = -1;      // 0: keep the rows above (in the kernel's picture) the line (angle 180), 1: below (angle 0), 2: keep the left (90), 3: keep the right (270)
+    if (in(-0.008726646f, 0.008726646f)) kind = 1;
+    else if (in(3.1328659f, 3.1503193f) || in(-3.1503193f, -3.1328659f)) kind = 0;
+    else if (in(1.5620697f, 1.5795230f) || in(-4.7211156f, -4.7036624f)) kind = 2;
+    else if (in(4.7036624f, 4.7211156f) || in(-1.5795230f, -1.5620697f)) kind = 3;
+    // (the axis kernels are fed the picture bottom row first, the general one top row first: the two fit the captured pictures only that way)
+    const bool topFirst = kind < 0;
+    for (int y = 0; y < H; ++y) std::memcpy(&a[(size_t)y * W * 4], c.src.at(0, topFirst ? y : H - 1 - y), (size_t)W * 4 * sizeof(float));
+    auto px = [&](int x, int y) { return &a[((size_t)y * W + x) * 4]; };
+    auto mixv = [](const float* p0, const float* p1, float t, float* r) { for (int k = 0; k < 4; ++k) r[k] = p0[k] + (p1[k] - p0[k]) * t; };
+    auto store = [&](int x, int y, const float* v) {
+        float* d = &o[((size_t)y * W + x) * 4];
+        for (int k = 0; k < 4; ++k) d[k] = q ? more::oclWriteLevel(v[k]) : v[k];
+    };
+    const float v5 = (float)(cxn * (W - 1)), v6 = (float)((topFirst ? 1.0 - cyn : cyn) * (H - 1));
+    if (kind == 0 || kind == 1) {
+        const int v10 = (int)v6;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                float r[4];
+                bool lineRow;
+                if (kind == 0) lineRow = !(y < v10) && y < std::min((int)std::fma(2.0f, v6, 1.0f), H);
+                else lineRow = !(y < std::min((int)std::fma(2.0f, v6, (float)-H), H)) && y <= std::min(v10, H - 1);
+                if (kind == 1 && y < std::min((int)std::fma(2.0f, v6, (float)-H), H)) { std::memcpy(r, bg, sizeof r); store(x, y, r); continue; }
+                if (!lineRow) { std::memcpy(r, px(x, y), sizeof r); store(x, y, r); continue; }
+                const float v13 = std::fma(2.0f, v6, (float)-y);
+                const int v14 = (int)v13;
+                const float v15 = v13 - (float)v14;
+                if (v14 < 0 || v14 >= H) std::memcpy(r, bg, sizeof r);
+                else if (v14 == H - 1) mixv(px(x, v14), bg, v15, r);
+                else mixv(px(x, v14), px(x, v14 + 1), v15, r);
+                store(x, y, r);
+            }
+    } else if (kind == 2 || kind == 3) {
+        const int v20 = (int)v5;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                float r[4];
+                const bool refl = kind == 2 ? !(x < v20) : (x <= v20);
+                if (!refl) { std::memcpy(r, px(x, y), sizeof r); store(x, y, r); continue; }
+                const float v13 = std::fma(2.0f, v5, (float)-x);
+                const int v14 = (int)v13;
+                const float v15 = v13 - (float)v14;
+                if (v14 < 0 || v14 >= W) std::memcpy(r, bg, sizeof r);
+                else if (v14 == W - 1) mixv(px(v14, y), bg, v15, r);
+                else mixv(px(v14, y), px(v14 + 1, y), v15, r);
+                store(x, y, r);
+            }
+    } else {
+        const float v7 = th;
+        const float sx = 1.f, sy = 1.f;
+        const float v5g = v5 / sx, v6g = v6 / sy;
+        const float v22 = -std::tan(v7), v23 = -1.0f / v22;
+        for (int y = 0; y < H; ++y) {
+            const float v24 = (float)y / sy;
+            const float v25 = std::fma(v6g - v24, v23, v5g) * sx;
+            const int v26 = (int)v25 + 1;
+            int v27, v28;
+            if (v7 > 0.f) { v27 = std::min(v26, W); v28 = W; } else { v27 = 0; v28 = std::min(v26, W); }
+            int x = 0;
+            for (; x < v27; ++x) store(x, y, px(x, y));
+            for (; x < v28; ++x) {
+                const float v29 = (float)x / sx;
+                const float v30 = (std::fma(v29, -v23, v24) + std::fma(v22, v5g, -v6g)) / (v22 - v23);
+                const float v31 = std::fma(v22, v30 - v5g, v6g);
+                const float rx = (std::fma(v30, 2.f, -v29)) * sx, ry = (std::fma(v31, 2.f, -v24)) * sy;
+                const int v36 = (int)rx, v37 = (int)ry;
+                float r[4];
+                if (v36 < -1 || v36 >= W || v37 < -1 || v37 >= H) { std::memcpy(r, bg, sizeof r); store(x, y, r); continue; }
+                const float* t[4];
+                if (v36 < 0) {
+                    t[0] = t[2] = bg;
+                    if (v37 < 0) { t[1] = bg; t[3] = px(0, 0); }
+                    else { t[1] = px(0, v37); t[3] = v37 >= H - 1 ? bg : px(0, v37 + 1); }
+                } else if (v36 >= W - 1) {
+                    t[1] = t[3] = bg;
+                    if (v37 < 0) { t[0] = bg; t[2] = px(v36, 0); }
+                    else { t[0] = px(v36, v37); t[2] = v37 >= H - 1 ? bg : px(v36, v37 + 1); }
+                } else if (v37 < 0) {
+                    t[0] = t[1] = bg; t[2] = px(v36, 0); t[3] = px(v36 + 1, 0);
+                } else if (v37 >= H - 1) {
+                    t[2] = t[3] = bg; t[0] = px(v36, v37); t[1] = px(v36 + 1, v37);
+                } else {
+                    t[0] = px(v36, v37); t[1] = px(v36 + 1, v37); t[2] = px(v36, v37 + 1); t[3] = px(v36 + 1, v37 + 1);
+                }
+                const float fx = rx - (float)v36, fy = ry - (float)v37;
+                float m0[4], m1[4];
+                mixv(t[0], t[1], fx, m0);
+                mixv(t[2], t[3], fx, m1);
+                mixv(m0, m1, fy, r);
+                store(x, y, r);
+            }
+            for (; x < W; ++x) store(x, y, px(x, y));
+        }
+    }
+    c.out.ensure(W, H);
+    for (int y = 0; y < H; ++y) std::memcpy(c.out.at(0, topFirst ? y : H - 1 - y), &o[(size_t)y * W * 4], (size_t)W * 4 * sizeof(float));
+}
+
 void mirror(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     double cx, cy;
     c.xy("Center", cx, cy);
+    if (c.openCl) { mirrorOpenCl(c, cx, cy); return; }
     if (c.levels) {
         const float th = (float)std::fmod(c.d("Angle") * 0.01745329252, 6.28318530718);
         static const float bands[8][2] = {{-0.008726646f, 0.008726646f}, {3.1328659f, 3.1503193f}, {-3.1503193f, -3.1328659f}, {1.5620697f, 1.5795230f},
@@ -851,44 +966,131 @@ void sharpen(Ctx& c)
     });
 }
 
-// Pixelate as VEGAS: per axis, cells of 2 / (1 - p) pixels counted from the bottom row (pixelateAxis); a cell shows the truncated average
-// of the K x K window at its start, K = cell size truncated; the largest setting is one cell.
+// Pixelate as VEGAS draws it (its pictures): per axis, cells of 2 / (1 - p) pixels (pixelateAxis; vertical counted from the bottom row, horizontal from the right column);
+// a cell shows the average of its own pixels. In an 8-bit frame the horizontal pass comes first and is cut to whole levels (halves down) before the vertical pass averages
+// those and cuts again; the largest setting is one cell.
+// Pixelate as VEGAS's OpenCL kernels draw it (read from the decoded kernels): two passes over the picture (rows of cells first, then columns), each walking along a line, adding the pixels
+// of a cell in a float sum and writing the sum / count back over the cell; the cell's length is (int)(S * (k + 1) - last index) with S = n / cells (floats; the first (int)S, the last one
+// what is left), cells counted from the left and from the top row of the kernel's picture. The count of cells per axis is the one of pixelateAxis. In an 8-bit project the picture between the
+// passes and the result are 8-bit levels (more::oclWriteLevel). The kernel's picture is bottom row first.
+static void pixelateCellsOcl(int n, int cells, bool vertical, std::vector<std::pair<int, int>>& out)
+{
+    out.clear();
+    if (cells <= 0 || cells >= n) { for (int i = 0; i < n; ++i) out.push_back({i, 1}); return; }
+    const float S = (float)n / (float)cells;
+    int len = vertical ? (int)(S * (float)cells - S * (float)(cells - 1)) : (int)S;
+    int k = 0, start = 0;
+    for (int i = 0; i < n; ++i) {
+        if (i - start + 1 == len || i == n - 1) {
+            out.push_back({start, i - start + 1});
+            start = i + 1;
+            ++k;
+            len = cells != k ? (int)(S * (float)(k + 1) - (float)i) : (vertical ? (int)S : n - i);
+        }
+    }
+}
+
+static void pixelateOpenCl(Ctx& c, int nxCells, int nyCells)
+{
+    const int W = c.out.w, H = c.out.h;
+    const bool q = c.host8;
+    std::vector<float> a((size_t)W * H * 4), b((size_t)W * H * 4);
+    for (int y = 0; y < H; ++y) std::memcpy(&a[(size_t)y * W * 4], c.src.at(0, H - 1 - y), (size_t)W * 4 * sizeof(float));
+    std::vector<std::pair<int, int>> cx, cy;
+    pixelateCellsOcl(W, nxCells, false, cx);
+    pixelateCellsOcl(H, nyCells, true, cy);
+    // rows of cells (along x)
+    for (int y = 0; y < H; ++y)
+        for (const auto& cell : cx) {
+            float s[4] = {0, 0, 0, 0};
+            for (int i = 0; i < cell.second; ++i) {
+                const int x = cell.first + i;
+                for (int k = 0; k < 4; ++k) s[k] += a[((size_t)y * W + x) * 4 + k];
+            }
+            for (int k = 0; k < 4; ++k) {
+                float v = s[k] / (float)cell.second;
+                if (q) v = more::oclWriteLevel(v);
+                for (int i = 0; i < cell.second; ++i) {
+                    const int x = cell.first + i;
+                    b[((size_t)y * W + x) * 4 + k] = v;
+                }
+            }
+        }
+    // columns of cells (along y; the kernel starts at its last row)
+    for (int x = 0; x < W; ++x)
+        for (const auto& cell : cy) {
+            float s[4] = {0, 0, 0, 0};
+            for (int i = 0; i < cell.second; ++i) {
+                const int y = H - 1 - (cell.first + i);
+                for (int k = 0; k < 4; ++k) s[k] += b[((size_t)y * W + x) * 4 + k];
+            }
+            for (int k = 0; k < 4; ++k) {
+                float v = s[k] / (float)cell.second;
+                if (q) v = more::oclWriteLevel(v);
+                for (int i = 0; i < cell.second; ++i) {
+                    const int y = H - 1 - (cell.first + i);
+                    a[((size_t)y * W + x) * 4 + k] = v;
+                }
+            }
+        }
+    c.out.ensure(W, H);
+    for (int y = 0; y < H; ++y) std::memcpy(c.out.at(0, H - 1 - y), &a[(size_t)y * W * 4], (size_t)W * 4 * sizeof(float));
+}
+
 void pixelate(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     std::vector<int> sx, sy;
-    int kx = 1, ky = 1;
-    pixelateAxis(W, clampd(c.d("HorizontalPixelization"), 0, 1), c.scale, sx, kx);
-    pixelateAxis(H, clampd(c.d("VerticalPixelization"), 0, 1), c.scale, sy, ky);
+    pixelateAxis(W, clampd(c.d("HorizontalPixelization"), 0, 1), c.scale, true, sx);
+    pixelateAxis(H, clampd(c.d("VerticalPixelization"), 0, 1), c.scale, false, sy);
     const int nx = (int)sx.size() - 1, ny = (int)sy.size() - 1;
-    // nothing set on either axis: VEGAS copies the picture bytes
-    const bool copyOnly = std::fabs((float)c.d("HorizontalPixelization")) <= 1e-6f && std::fabs((float)c.d("VerticalPixelization")) <= 1e-6f;
+    if (nx < 1 || ny < 1) return;
+    if (c.openCl) { pixelateOpenCl(c, nx, ny); return; }
+    const bool q8 = c.levels || c.host8;
+    if (q8) {
+        // the cell's mean, cut to the level at or below it, a half going down: (2 sum + n - 1) / (2 n)
+        std::vector<int> mid((size_t)nx * H * 4);
+        forRows(H, W * 4, [&](int y) {
+            for (int cx = 0; cx < nx; ++cx) {
+                int tot[4] = {0, 0, 0, 0};
+                for (int x = sx[(size_t)cx]; x < sx[(size_t)cx + 1]; ++x) {
+                    const float* q = c.src.at(x, y);
+                    for (int k = 0; k < 4; ++k) tot[k] += v8::toLevel(q[k]);
+                }
+                const long long n = sx[(size_t)cx + 1] - sx[(size_t)cx];
+                for (int k = 0; k < 4; ++k) mid[((size_t)y * nx + cx) * 4 + k] = (int)((2 * (long long)tot[k] + n - 1) / (2 * n));
+            }
+        });
+        forRows(ny, W * 8, [&](int cy) {
+            const int yb0 = sy[(size_t)cy], yb1 = sy[(size_t)cy + 1];
+            const long long n = yb1 - yb0;
+            for (int cx = 0; cx < nx; ++cx) {
+                long long tot[4] = {0, 0, 0, 0};
+                for (int yb = yb0; yb < yb1; ++yb)
+                    for (int k = 0; k < 4; ++k) tot[k] += mid[((size_t)(H - 1 - yb) * nx + cx) * 4 + k];
+                float avg[4];
+                for (int k = 0; k < 4; ++k) avg[k] = v8::fromLevel((int)((2 * tot[k] + n - 1) / (2 * n)));
+                for (int yb = yb0; yb < yb1; ++yb)
+                    for (int x = sx[(size_t)cx]; x < sx[(size_t)cx + 1]; ++x) std::memcpy(c.out.at(x, H - 1 - yb), avg, sizeof avg);
+            }
+        });
+        return;
+    }
     forRows(ny, W * 8, [&](int cy) {
-        // the cell's rows counted from the bottom: yb in [sy[cy], sy[cy + 1]); its window yb in [sy[cy], sy[cy] + ky)
         const int yb0 = sy[(size_t)cy], yb1 = sy[(size_t)cy + 1];
-        const int wy0 = yb0, wy1 = std::min(H, yb0 + ky);
         for (int cx = 0; cx < nx; ++cx) {
             const int x0 = sx[(size_t)cx], x1 = sx[(size_t)cx + 1];
-            const int wx0 = x0, wx1 = std::min(W, x0 + kx);
             double s[4] = {0, 0, 0, 0};
-            for (int yb = wy0; yb < wy1; ++yb) {
+            for (int yb = yb0; yb < yb1; ++yb) {
                 const int y = H - 1 - yb;
-                for (int x = wx0; x < wx1; ++x) {
+                for (int x = x0; x < x1; ++x) {
                     const float* q = c.src.at(x, y);
-                    for (int k = 0; k < 4; ++k) s[k] += c.levels ? (double)v8::toLevel(q[k]) : (double)q[k];
+                    for (int k = 0; k < 4; ++k) s[k] += (double)q[k];
                 }
             }
-            const double n = (double)(wx1 - wx0) * (wy1 - wy0);
+            const double n = (double)(x1 - x0) * (yb1 - yb0);
             float avg[4];
-            for (int k = 0; k < 4; ++k) {
-                if (c.levels) {
-                    // VEGAS: the window's byte sum times 1 / area (double), cut; then the cell's byte goes back through a double (b / 255) and the
-                    // fill multiplies by 255 and cuts: sometimes one level lower. Nothing set on either axis: the bytes are copied.
-                    int b = (int)(s[k] * (1.0 / n));
-                    if (!copyOnly) b = (int)std::min(255.0, ((double)b * 0.00392156862745098) * 255.0);
-                    avg[k] = v8::fromLevel(b);
-                } else avg[k] = (float)(s[k] / n);
-            }
+            for (int k = 0; k < 4; ++k) avg[k] = (float)(s[k] / n);
             for (int yb = yb0; yb < yb1; ++yb) {
                 const int y = H - 1 - yb;
                 for (int x = x0; x < x1; ++x) std::memcpy(c.out.at(x, y), avg, sizeof avg);
@@ -1092,7 +1294,7 @@ void chromaKeyerGpuSetup(Ctx& c, int W, int H, ChromaKeyerSetup& o)
     const double key[3] = {kc.r, kc.g, kc.b};
     const double low = clampd(c.d("LowThreshold"), 0, 1), high = clampd(c.d("HighThreshold"), 0, 1);
     keyerHsl(key[0], key[1], key[2], o.kh, o.ks, o.kl);
-    const float lowF = (float)low, highF = (float)(high <= low ? low : 1.0);
+    const float lowF = (float)low, highF = (float)(high <= low ? low : high);
     o.lowF = lowF;
     o.hiF = highF - 9.99999997e-07f;
     o.krF = (float)key[0]; o.kgF = (float)key[1]; o.kbF = (float)key[2];
@@ -1211,8 +1413,8 @@ void chromaKeyer(Ctx& c)
     std::vector<float> mask((size_t)W * H);
     double kh, ks, kl;
     keyerHsl(key[0], key[1], key[2], kh, ks, kl);
-    // (measured: a high threshold above the low one makes the ramp run to 1, at or below it the alpha is a hard cut at the low one)
-    const float lowF = (float)low, highF = (float)(high <= low ? low : 1.0), krF = (float)key[0], kgF = (float)key[1], kbF = (float)key[2];
+    // (VEGAS's pictures: the alpha ramps from the low threshold to the high one; at or below the low one it is a hard cut at the low one)
+    const float lowF = (float)low, highF = (float)(high <= low ? low : high), krF = (float)key[0], kgF = (float)key[1], kbF = (float)key[2];
     float invRange = 0.f;
     { const float diff = highF - lowF; const float ad = (float)std::fabs((double)diff); if (!(1e-6f > ad)) invRange = 1.0f / diff; }
     double val[256], inv[256];
@@ -1381,7 +1583,8 @@ void border(Ctx& c)
     auto px = [&](int x, int y) { return c.src.at(x, H - 1 - y); };
     auto outp = [&](int x, int y) { return c.out.at(x, H - 1 - y); };
     auto v8 = [&](float v) { return q8 ? (float)roundNonNeg(std::min(std::max(v, 0.f), 1.f) * 255.f) : v * 255.f; };
-    auto chOfByte = [](int k) { return k == 3 ? 3 : 2 - k; };
+    // (8-bit frames lie blue first in memory, float ones red first; VEGAS's plug-in works in memory order)
+    auto chOfByte = [q8](int k) { return k == 3 ? 3 : (q8 ? 2 - k : k); };
     if (type == 2) {
         const int xi = g.xi, xr = g.xr, yb = g.yb, yt = g.yt;
         const float* cc = g.cc;
@@ -1433,10 +1636,10 @@ void border(Ctx& c)
                     const int ch = chOfByte(kb);
                     float v;
                     if (q8) { const int iv = (int)v8(s[ch]) * xs.face[k][kb]; v = (float)(iv / 256); }
-                    else v = v8(s[ch]) * (float)xs.face[k][kb] / 256.f;
+                    else v = std::floor(v8(s[ch]) * (float)xs.face[k][kb] / 256.f);       // (VEGAS's captured float pictures lose the fraction: whole levels)
                     o[ch] = std::min(v, al) / 255.f;
                 }
-                o[3] = 0.f;
+                o[3] = q8 ? 0.f : s[3];            // (the 8-bit routine leaves the faces' alpha 0; VEGAS's float picture keeps the picture's alpha)
             }
     }
     (void)bx;
@@ -1671,7 +1874,7 @@ void addFilters(std::vector<Def>& out)
                          {dbl("Angle", "Angle", 0, -360, 360), dbl("Amount", "Amount", 0, 0, 1)}, linearBlur));
     out.push_back(filter("chromakeyer", "Chroma Keyer", "A colour (a blue or green screen) made transparent",
                          {rgb("color", "Color", 24.0 / 255.0, 71.0 / 255.0, 241.0 / 255.0), dbl("LowThreshold", "Low threshold", 0, 0, 1),
-                          dbl("HighThreshold", "High threshold", 0.4, 0, 1), dbl("BlurAmount", "Blur amount", 0, 0, 1),
+                          dbl("HighThreshold", "High threshold", 1, 0, 1), dbl("BlurAmount", "Blur amount", 0, 0, 1),
                           boolean("ShowMaskOnly", "Show mask only", false)},
                          chromaKeyer));
     {

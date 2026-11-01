@@ -472,7 +472,20 @@ int main(int argc, char** argv)
             int lowest2 = -1, lowest5 = -1;
             for (int y = 0; y < 90; ++y) for (int x = 0; x < 160; ++x) { if (pixel(a2, x, y).r > 200) lowest2 = y; if (pixel(a5, x, y).r > 200) lowest5 = y; }
             check(lowest2 > lowest5, "Credit Roll: it rolls up", strfmt("%d then %d", lowest2, lowest5));
-            check(gRasterCalls == 4 * 3 && gLastRequest.text != "// a comment", "Credit Roll: the comment line is not drawn (the title and the two columns are)", strfmt("%d calls", gRasterCalls));
+            check(gRasterCalls >= 4 * 3 && gLastRequest.text != "// a comment", "Credit Roll: the comment line is not drawn (the title and the two columns are, and the dot a leader is made of)", strfmt("%d calls", gRasterCalls));
+        }
+        // Credit Roll with its own text: VEGAS's default credits come in from the bottom at 1 frame height in 6 seconds (15 of 90 lines at 1 s; the test's text has no margin, so the check leaves a few lines of room)
+        {
+            Project dr = rig.generated(kV + "creditroll", Json::object());
+            ImagePtr d0 = rig.render(dr, 0.0), d1 = rig.render(dr, 1.0), d6 = rig.render(dr, 4.5);
+            auto whitesIn = [&](ImagePtr im, int y0, int y1) {
+                int n = 0;
+                for (int y = y0; y < y1; ++y) for (int x = 0; x < 160; ++x) if (pixel(im, x, y).r > 200) ++n;
+                return n;
+            };
+            check(whitesIn(d0, 0, 86) == 0 && whitesIn(d1, 0, 70) == 0 && whitesIn(d1, 70, 90) > 0,
+                  "Credit Roll (defaults): a black frame, then 'Title Text' climbing in from the bottom at VEGAS's speed", strfmt("%d / %d / %d", whitesIn(d0, 0, 86), whitesIn(d1, 0, 70), whitesIn(d1, 70, 90)));
+            check(whitesIn(d6, 0, 90) > whitesIn(d1, 0, 90), "Credit Roll (defaults): more of the credits are in view later");
         }
         ps["AnimationName"] = str("_Title07");
         Project fade = rig.generated(kV + "titlesandtext", ps);
@@ -886,10 +899,12 @@ int main(int argc, char** argv)
         check(im && std::abs(a.r - a.b) < 40 && std::abs(a.r - a.g) < 40, "Saturation Adjust at -1 takes the colour away", pxs(a));
         // Channel Blend: red from blue
         ps = Json::object();
-        ps["BLUE weight B"] = val({0}); ps["BLUE weight G"] = val({0}); ps["BLUE weight R"] = val({1});      // (VEGAS names the outputs and inputs in B, G, R order: the "BLUE" output is the picture's red, its "R" weight reads the picture's blue)
+        ps["BLUE weight B"] = val({0}); ps["BLUE weight G"] = val({0}); ps["BLUE weight R"] = val({1});
         im = rig.render(rig.filtered("solid:200,10,10", kV + "channelblend", ps));
         a = pixel(im, 80, 45);
-        check(im && a.r > 180, "Channel Blend takes the red channel from the blue one", pxs(a));
+        // (VEGAS draws Channel Blend on float RGBA frames and numbers the channels in memory order, so "BLUE" is the picture's red and its
+        // "R" weight reads the picture's blue: red takes the blue's 10, where the 8-bit BGRA reading gave 200 - VEGAS's own pictures show the former)
+        check(im && a.r < 20 && a.g < 20, "Channel Blend takes the red channel from the blue one", pxs(a));
         // Mask Generator: luminance as grey
         im = rig.render(rig.filtered("split:0,0,0,255,255,255", kV + "maskgenerator"));
         a = pixel(im, 20, 45); b = pixel(im, 140, 45);
@@ -929,6 +944,16 @@ int main(int argc, char** argv)
         int differ = 0;
         for (int x = 0; im && x < 160; x += 2) differ += std::abs(pixel(im, x, 45).r - 128) > 2;
         check(im && differ > 10, "Film Grain adds grain", strfmt("%d differ", differ));
+        // Light Rays (from VEGAS's own code): the white half's light runs out over the black half; with no Strength the picture comes out as it went in
+        ps = Json::object();
+        ps["group0Strength"] = val({1.0}); ps["group0Sensitivity"] = val({0.0});
+        im = rig.render(rig.filtered("split:0,0,0,255,255,255", kV + "lightrays", ps));
+        a = pixel(im, 70, 45); b = pixel(im, 20, 45);
+        check(im && a.r > 20 && a.r >= b.r, "Light Rays carries the white half's light over the black half, less far out", pxs(a) + " / " + pxs(b));
+        ps["group0Strength"] = val({0.0});
+        im = rig.render(rig.filtered("split:0,0,0,255,255,255", kV + "lightrays", ps));
+        a = pixel(im, 70, 45);
+        check(im && a.r < 3, "Light Rays with no Strength leaves the picture alone", pxs(a));
         // Lens Flare adds light
         ps = Json::object();
         ps["LightPosition"] = val({0.3, 0.7}); ps["Intensity"] = val({1});

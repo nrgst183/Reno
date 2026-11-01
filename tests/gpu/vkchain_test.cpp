@@ -158,15 +158,15 @@ int main()
     Json blur = Json::object();
     blur["HorizontalRange"] = val({0.4});
     blur["VerticalRange"] = val({0.2});
-    Json mir = Json::object();
-    mir["Angle"] = val({20});
+    Json vig = Json::object();
+    vig["Strength"] = val({0.5});
     Json ccs = Json::object();
     ccs["RotateHue"] = val({100});
     const Case cases[] = {
         {"one effect (Invert)", {{"invert", Json()}}, false},
         {"two effects (Brightness and Contrast, HSL Adjust)", {{"brightnessandcontrast", bc}, {"hsladjust", hue}}, false},
         {"four effects (brightness, hue, blur, sharpen)", {{"brightnessandcontrast", bc}, {"hsladjust", hue}, {"gaussianblur", blur}, {"sharpen", Json()}}, false},
-        {"a chain with a mirror and Color Corrector (Secondary)", {{"mirror", mir}, {"colorcorrectorsecondary", ccs}, {"invert", Json()}}, false},
+        {"a chain with a vignette and Color Corrector (Secondary)", {{"vignette", vig}, {"colorcorrectorsecondary", ccs}, {"invert", Json()}}, false},
         {"the same on a track", {{"brightnessandcontrast", bc}, {"hsladjust", hue}, {"sharpen", Json()}}, true},
     };
     for (const Case& cs : cases) {

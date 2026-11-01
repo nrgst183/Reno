@@ -159,6 +159,61 @@ bool radialBlurSteps(const RbSetup& g, int W, int H, std::vector<uint32_t>& rec,
     return true;
 }
 
+// Radial Blur as VEGAS's OpenCL kernels draw it (GPU acceleration on; Type Proportional / Fixed radius, read from the decoded kernels): the picture is unwrapped to polar form (columns = angle,
+// rows = radius, 2.828427125 = 2 sqrt 2 frame radii; the Center sets where the radius starts), every column is run outwards as a one-pole recursion (row y = row(y) + (row(y - back) - row(y)) * w, with
+// back = y - round(y * s1) for Proportional and y - round(s0) for Fixed, s0 = Strength^2 + 1, s1 = 0.018 Strength^1.5 / (H / 300), w = (Strength^(300 / H))^0.25) and wrapped back. The taps are read
+// as the card's texture unit does (oclLinear4: weights cut to 1/256, pixel coordinates without the half). In an 8-bit project the two middle pictures are 8-bit textures (rounded to a level); the last
+// conversion to a level is floor(v * 255 + 0.46) (fitted: the captured pictures are 96% exact, the rest one level off). Type Gaussian (a Deriche pass in the kernels) is not ported.
+static void radialBlurOpenCl(Ctx& c, const RbSetup& g, int W, int H)
+{
+    const bool q = c.host8;
+    const float pi = 3.14159274f, two = 2.828427125f;
+    const double Hd = H;
+    const double st = c.d("Strength"), k = Hd / 300.0;
+    const float s0 = (float)(std::pow(st, 2.0) + 1.0), s1 = (float)(std::pow(st, 1.5) * 0.018 / k), w = (float)std::pow(std::pow(st, 1.0 / k), 0.25);
+    double pcx, pcy;
+    c.xy("Center", pcx, pcy);
+    const float v56x = (float)(2 * pcx - 1), v56y = (float)(2 * pcy - 1);
+    std::vector<float> src((size_t)W * H * 4), P((size_t)W * H * 4), out((size_t)W * H * 4);
+    for (int y = 0; y < H; ++y) std::memcpy(&src[(size_t)y * W * 4], c.src.at(0, H - 1 - y), (size_t)W * 4 * sizeof(float));
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            const float xn = (float)x / (float)W, yn = (float)y / (float)H;
+            const float a = (xn / 0.5f - 1.f) * pi, r = yn * two;
+            float px = r * std::sin(a) + v56x, py = r * std::cos(a) + v56y;
+            px = (px / 2.f + 0.5f) * (float)W; py = (py / 2.f + 0.5f) * (float)H;
+            float* o = &P[((size_t)y * W + x) * 4];
+            oclLinear4(src, W, H, px, py, o);
+            if (q) for (int ch = 0; ch < 4; ++ch) o[ch] = oclUnormLevel(o[ch], 0.5f);
+        }
+    });
+    std::vector<float> buf = P;
+    for (int y = 0; y < H; ++y) {
+        int back;
+        if (g.type == 1) back = y <= s0 ? 0 : y - (int)std::nearbyint((double)((float)y * (s0 / (float)y)));
+        else back = y - (int)std::nearbyint((double)((float)y * s1));
+        back = std::max(0, std::min(y, back));
+        const float* p = &P[(size_t)y * W * 4];
+        const float* bk = &buf[(size_t)back * W * 4];
+        float* o = &buf[(size_t)y * W * 4];
+        for (int i = 0; i < W * 4; ++i) o[i] = p[i] + (bk[i] - p[i]) * w;
+    }
+    if (q) for (float& v : buf) v = oclUnormLevel(v, 0.5f);
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            const float xn = (float)x / (float)W, yn = (float)y / (float)H;
+            const float vx = (xn / 0.5f - 1.f) - v56x, vy = (yn / 0.5f - 1.f) - v56y;
+            const float a2 = std::atan2(vx, vy), r2 = std::sqrt(vx * vx + vy * vy);
+            const float u = ((a2 / pi) / 2.f + 0.5f) * (float)W, vv = (r2 / two) * (float)H;
+            float* o = &out[((size_t)y * W + x) * 4];
+            oclLinear4(buf, W, H, u, vv, o);
+            if (q) for (int ch = 0; ch < 4; ++ch) o[ch] = oclWriteLevel(o[ch]);
+        }
+    });
+    c.out.ensure(W, H);
+    for (int y = 0; y < H; ++y) std::memcpy(c.out.at(0, H - 1 - y), &out[(size_t)y * W * 4], (size_t)W * 4 * sizeof(float));
+}
+
 void radialBlur(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
@@ -166,6 +221,7 @@ void radialBlur(Ctx& c)
     RbSetup g;
     radialBlurSetup(c, W, H, g);
     if (g.pass) { copyThrough(c); return; }
+    if (c.openCl && g.type != 2) { radialBlurOpenCl(c, g, W, H); return; }
     const bool q8 = g.q8;
     // the picture bottom row first; 8-bit values (exact levels) or floats in 0..255
     std::vector<float> src((size_t)W * H * 4), dst;
@@ -487,6 +543,119 @@ static void rankFilter8(Ctx& c, float rank, bool topFirst, bool colsDesc)
 }
 static void minMax8(Ctx& c, bool maximum) { rankFilter8(c, maximum ? 1.f : 0.f, false, false); }
 
+// Median and Min and Max as VEGAS's OpenCL kernels draw them (one pass per channel, R G B A alike; Min and Max read their rank, 0 or 1, as an interval of one unit of weight, 'interval'). The window is the weighted quadrant kernel of the 8-bit code above, its weights turned into whole
+// numbers ((int)(weight * 20000)); a pixel's histogram holds those weights at the level (round to nearest of value * 255) of every tap inside the picture, and the answer is the level
+// where the running total reaches (int)(total * rank) (rank = Offset kept in 0.001 .. 0.999; below one half the level whose total goes past it, from one half the first that reaches it).
+// Along a row the histogram is not rebuilt: the kernel starts with the whole window at the first pixel and then adds the column of weights entering and takes away the column leaving, with
+// the differences between neighbouring weights (also cut to whole numbers), so the same steps are made here (their roundings stay in the sums). Taps outside the picture count 0.
+// All of it runs on a picture half the size (every second pixel kept, the window's reach halved, kOclReachScale), which is read back to full size with the bicubic read (VEGAS's kernels do the
+// scaling both ways before and after).
+static void medianOpenCl(Ctx& c, float rank, float rxf, float ryf, bool circle, bool interval)
+{
+    const int W = c.out.w, H = c.out.h;
+    const int Wh = W / 2, Hh = H / 2;
+    c.out.ensure(W, H);
+    if (Wh < 1 || Hh < 1) { copyThrough(c); return; }
+    const MinMaxKernel k = circle ? minMaxCircleKernel(rxf, ryf) : minMaxRectKernel(rxf, ryf);
+    struct Ent { int dx, dy, z; };
+    std::vector<Ent> full, edge;
+    for (int dy = 1 - k.ny; dy < k.ny; ++dy)
+        for (int dx = 1 - k.nx; dx < k.nx; ++dx) {
+            const float w = k.at(std::abs(dx), std::abs(dy));
+            if ((double)w > 1e-17) full.push_back(Ent{dx, dy, (int)(w * 20000.f)});
+        }
+    for (int dy = 0; dy < k.ny; ++dy)
+        for (int dx = 0; dx < k.nx; ++dx) {
+            const float w = dx + 1 < k.nx ? k.at(dx, dy) - k.at(dx + 1, dy) : k.at(dx, dy);
+            if ((double)w > 1e-17) edge.push_back(Ent{dx, dy, (int)(w * 20000.f)});
+        }
+    // the half-size picture (every second pixel, counted from the bottom row), as levels (R, G, B, A)
+    std::vector<unsigned char> lv((size_t)Wh * Hh * 4);
+    for (int y = 0; y < Hh; ++y) {
+        const float* row = c.src.at(0, H - 1 - 2 * y);
+        unsigned char* d = &lv[(size_t)y * Wh * 4];
+        for (int x = 0; x < Wh; ++x)
+            for (int ch = 0; ch < 4; ++ch) d[x * 4 + ch] = (unsigned char)std::nearbyint(std::min(std::max(row[2 * x * 4 + ch] * 255.f, 0.f), 255.f));
+    }
+    std::vector<float> half((size_t)Wh * Hh * 4, 0.f);
+    forRows(Hh, Wh * (int)std::min<size_t>(edge.size() + 64, 4096), [&](int y) {
+        for (int ch = 0; ch < 4; ++ch) {
+            std::vector<int> hist(256, 0);
+            auto tap = [&](int xx, int yy, int z, int sign) {
+                if (xx < 0 || xx >= Wh || yy < 0 || yy >= Hh) return;
+                hist[lv[((size_t)yy * Wh + xx) * 4 + ch]] += sign * z;
+            };
+            for (const Ent& e : full) tap(e.dx, y + e.dy, e.z, 1);
+            for (int x = 0; x < Wh; ++x) {
+                if (x > 0)
+                    for (const Ent& e : edge) {
+                        tap(x + e.dx, y + e.dy, e.z, 1);
+                        tap(x - e.dx - 1, y + e.dy, e.z, -1);
+                        if (e.dy != 0) {
+                            tap(x - e.dx - 1, y - e.dy, e.z, -1);
+                            tap(x + e.dx, y - e.dy, e.z, 1);
+                        }
+                    }
+                int cum[256], run = 0;
+                for (int b = 0; b < 256; ++b) { run += hist[b]; cum[b] = run; }
+                int pick = 0;
+                if (!interval) {
+                    const int t = (int)((float)cum[255] * rank);
+                    for (int b = 0; b < 256; ++b) {
+                        const bool hit = rank < 0.5f ? (t < cum[b] && cum[b] - hist[b] <= t) : (t <= cum[b] && cum[b] - hist[b] < t);
+                        if (hit) { pick = b; break; }
+                    }
+                } else {
+                    // Min and Max: the mean level of the one unit of weight that starts at rank * (total - 1) (the weights taken as pixels: / 20000), summed as the kernel's 64 lanes do
+                    const float sc = 20000.f;
+                    const float tot = (float)cum[255] / sc;
+                    const float mid = rank * (tot - 1.f) + 0.5f, hi = mid + 0.5f, lo = mid - 0.5f;
+                    float lane[64];
+                    for (int l = 0; l < 64; ++l) {
+                        float acc = 0.f;
+                        for (int j = 0; j < 4; ++j) {
+                            const int b = l * 4 + j;
+                            const float prev = b > 0 ? (float)cum[b - 1] / sc : 0.f, cur = (float)cum[b] / sc, h = (float)hist[b] / sc;
+                            float term = 0.f;
+                            if (prev < hi && cur >= lo) {
+                                if (prev >= lo) term = cur > hi ? (hi - prev) * (float)b : h * (float)b;
+                                else term = cur > hi ? (float)b : (cur - lo) * (float)b;
+                            }
+                            acc = j == 0 ? term : acc + term;
+                        }
+                        lane[l] = acc;
+                    }
+                    float grp[16], quad[4];
+                    for (int g = 0; g < 16; ++g) grp[g] = (lane[4 * g + 2] + lane[4 * g + 3]) + (lane[4 * g] + lane[4 * g + 1]);
+                    for (int g = 0; g < 4; ++g) quad[g] = (grp[4 * g + 2] + grp[4 * g + 3]) + (grp[4 * g] + grp[4 * g + 1]);
+                    pick = (int)((quad[2] + quad[3]) + (quad[0] + quad[1]));
+                    pick = std::max(0, std::min(255, pick));
+                }
+                half[((size_t)y * Wh + x) * 4 + ch] = (float)pick / 255.f;
+            }
+        }
+    });
+    // back to full size: the bicubic read at half the pixel coordinates, written as 8-bit levels
+    forRows(H, W, [&](int yt) {
+        const int y = H - 1 - yt;
+        float* o = c.out.at(0, yt);
+        for (int x = 0; x < W; ++x) {
+            float v[4];
+            oclBicubic4(half, Wh, Hh, (float)x / 2.f, (float)y / 2.f, v);
+            for (int ch = 0; ch < 4; ++ch) o[x * 4 + ch] = oclWriteLevel(v[ch]);
+        }
+    });
+}
+static const float kOclReachScale = 0.5f;
+static bool medianOpenClApplies(Ctx& c, float& rx, float& ry)
+{
+    auto clamp01 = [](double v) { return v < 0 ? 0.0 : std::min(1.0, v); };
+    const float big = (float)std::max(c.out.w, c.out.h);
+    rx = (float)(clamp01(c.d("HorizontalRange")) * kOclReachScale * big * 0.05f);
+    ry = (float)(clamp01(c.d("VerticalRange")) * kOclReachScale * big * 0.05f);
+    return c.openCl && c.out.w > 0 && c.out.h > 0;
+}
+
 // Median / Min and Max: over a (square or round) neighbourhood of each pixel.
 void neighbourhood(Ctx& c, bool median, bool maximum)
 {
@@ -539,9 +708,22 @@ void neighbourhood(Ctx& c, bool median, bool maximum)
         }
     });
 }
-void median(Ctx& c) { neighbourhood(c, true, false); }
+void median(Ctx& c)
+{
+    float rx, ry;
+    if (medianOpenClApplies(c, rx, ry)) {
+        medianOpenCl(c, (float)clampd(c.d("Offset"), 0.001, 0.999), rx, ry, c.b("CircularAreaProcessing"), false);
+        return;
+    }
+    neighbourhood(c, true, false);
+}
 void minAndMax(Ctx& c)
 {
+    float rx, ry;
+    if (medianOpenClApplies(c, rx, ry)) {
+        medianOpenCl(c, c.i("Operation") != 0 ? 1.f : 0.f, rx, ry, c.b("CircularAreaProcessing"), true);
+        return;
+    }
     // the exact 8-bit path costs the window's area per pixel: very large windows on large frames use the plain filter below
     const double reach = 0.05 * std::max(c.out.w, c.out.h) + 2.0;
     if (c.levels && (double)c.out.w * c.out.h * (2 * reach + 1) * (2 * reach + 1) < 6e9) { minMax8(c, c.i("Operation") == 1); return; }

@@ -122,12 +122,22 @@ struct Ctx {
     OfxParamSetHandle params = nullptr;
     double time = 0;                    // frames
     double fps = 0;
+    // The timeline time (frames) a VEGAS host gives (kVegasPropTimeCode); -1: not given (then 'time' is taken as the frames since the event's start).
+    double timelineTime = -1;
+    // The time stamp VEGAS's older (DirectX) effects seed their random numbers from: the 100 ns ticks since the start of the event, each end cut to whole
+    // ticks first (frame 210 less frame 200 of a 30 fps timeline is 3333334, frame 310 less 300 is 3333333), as a 32-bit number.
+    int32_t legacySeedTime() const;
     int frameW = 0, frameH = 0;
     // The render scale: pixels of this frame per pixel of the project's frame (1: project size; 0.5: half-size preview). Sizes an effect measures in
     // pixels (radius, distance, line width, text size) are multiplied by it with px(); fractions of the frame need nothing.
     double scale = 1.0;
     // The picture is 8-bit: effects that VEGAS cuts to whole levels (truncating, as VEGAS's own do) do so; a float picture is left as computed.
     bool levels = true;
+    // The host's frame is 8-bit, also when 'levels' is off because VEGAS draws the effect in float (vegasDrawsFloat): the pictures VEGAS keeps between its passes are 8-bit.
+    bool host8 = true;
+    // VEGAS renders this effect with its OpenCL kernels (vegasUsesOpenCl): effects whose kernels are ported draw as those do (float, intermediate pictures of 8 bits where the kernels
+    // write them); off, they draw like VEGAS's CPU code (GPU acceleration off in VEGAS).
+    bool openCl = false;
     double px(double v) const { return v * scale; }
     // For effects that take pixel INDICES (not centres) as positions: the index in this frame of the point that is full-size pixel index x (0 at scale 1);
     // add it to the index of a pixel here.
@@ -158,6 +168,23 @@ struct Ctx {
     // The source clip's frame range as the host states it (kOfxImageEffectPropFrameRange; 0, 0 when not known); set for effects that fetch other frames.
     double clipFirst = 0, clipLast = 0;
 };
+
+// 100 ns ticks of a frame number at 'fps' (whole ticks, cut): VEGAS counts a frame of 29.97 as 333667 ticks and so on from the rational rate.
+inline long long vegasTicks(double frame, double fps)
+{
+    if (!(fps > 0 && fps < 10000)) fps = 30;
+    long double num = fps, den = 1;
+    const long double x1001 = (long double)fps * 1001.0L, x1000 = (long double)fps * 1000.0L;
+    if (std::fabs((double)(x1001 - std::floor(x1001 + 0.5L))) < 0.01) { num = std::floor(x1001 + 0.5L); den = 1001; }
+    else if (std::fabs((double)(x1000 - std::floor(x1000 + 0.5L))) < 1e-6) { num = std::floor(x1000 + 0.5L); den = 1000; }
+    return (long long)std::floor((long double)frame * 1e7L * den / num + 1e-6L);
+}
+
+inline int32_t Ctx::legacySeedTime() const
+{
+    const double at = timelineTime >= 0 ? timelineTime : time, start = timelineTime >= 0 ? timelineTime - time : 0.0;
+    return (int32_t)(uint32_t)(vegasTicks(at, fps) - vegasTicks(start, fps));
+}
 
 // What a Def::changed function is given when a setting changes (a button pressed or a value edited): the setting's name, the time, and ways to read and
 // write the effect's settings and fetch the source clip's frame at any time. Only effects that analyse the picture or keep two settings in step have one.
@@ -238,6 +265,10 @@ void applyVegasGroups(std::vector<Def>& all);
 // Color Corrector (Secondary)'s gamma curve ((Y + c) / (1 + c)) ^ a for a Gamma setting (builtins_filters2.cpp; the GPU planner uses it too).
 void secondaryGammaCurve(double gamma, float& c, float& a);
 
+void vegasTiesDown(Buf& b);                 // float result of such an effect going into an 8-bit frame: values exactly half way between two levels go to the lower one (builtins.cpp)
+bool vegasDrawsFloat(const std::string& id);      // effects VEGAS draws in float even in an 8-bit project (builtins.cpp): Ctx::levels stays off for them
+bool vegasUsesOpenCl(const std::string& id);      // VEGAS renders it with its OpenCL kernels (GPU acceleration on, and the effect has an OpenCL processor); builtins.cpp
+
 // Levels' gamma curve as 4097 values over 0..1 (builtins_filters.cpp; the GPU planner uses it too).
 void levelsGammaTable(double gamma, float* lut4097);
 double levelsCurve(double t, double gamma);     // (the exact curve the table is taken from)
@@ -262,7 +293,7 @@ inline void unpremul(const float* p, float& r, float& g, float& b, float& a)
 // A colour value (0..1) cut to whole 8-bit levels the way VEGAS does: truncated, not rounded (a small added amount keeps a value that is a whole level up to float noise on it).
 // Linear Blur's taps (builtins_filters.cpp): n taps each way, the step (sx, sy) in pixels, the weights from the centre outwards (summing to 1 over both sides)
 void linearBlurTaps(double len, double dx, double dy, int& n, double& sx, double& sy, std::vector<float>& wt);
-void pixelateAxis(int n, double p, double scale, std::vector<int>& starts, int& K);
+void pixelateAxis(int n, double p, double scale, bool fromEnd, std::vector<int>& starts);
 // Chroma Blur's kernel (builtins_more_blur.cpp): a box (triangle = false) of radius r or a triangle of half width r, normalised, 2n+1 taps.
 std::vector<float> chromaBlurKernel(bool triangle, double r);
 // A value of 0 .. 2^31 rounded to the nearest whole number, halves up (what std::lround gives there, without a library call).

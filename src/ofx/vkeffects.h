@@ -22,6 +22,7 @@ struct GpuFrame {
     uint64_t inSerial = 0, outSerial = 0;
     bool noInput = false;       // a generator
     bool deferOut = false;      // leave the download out (gpu::FrameIO::deferOut)
+    bool tiesDown = false;      // 8-bit frame from an effect VEGAS draws in float: exact halves go to the lower level (vegasTiesDown)
 };
 
 // Renders effect 'd' (its Def::gpu) on the GPU: false when it cannot (the GPU is off or absent, the settings need the CPU,

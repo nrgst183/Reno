@@ -7,6 +7,8 @@
 #include "builtins_impl.h"
 #include "builtins_vfxdata.h"
 #include "vkfilters.h"
+#include "ofxhost.h"
+#include "vfxgradwipe.h"
 #include "../core/base.h"
 #include <algorithm>
 #include <cmath>
@@ -704,10 +706,23 @@ void histogramFx(Ctx& c)
 // The procedural gradients of VEGAS's Gradient Wipe presets (index 1.. of the "Gradient" list below; 0 is the diagonal above). The incoming picture
 // arrives where the value is below the progress, so a value of 0 is where the wipe starts. Read from VEGAS's own pictures of Linear Top-Bottom, Linear
 // Bottom-Left Diagonal and Circle Out (inferred, not VEGAS's numbers); the other linear ones follow by turning those over, Box and the bars are guesses.
-const char* const kWipeShapes[] = {"Linear Top-Left Diagonal", "Linear Left-Right", "Linear Right-Left", "Linear Top-Bottom", "Linear Bottom-Top",
-                                   "Linear Top-Right Diagonal", "Linear Bottom-Left Diagonal", "Linear Bottom-Right Diagonal", "Horizontal Open", "Vertical Open",
-                                   "Circle Out", "Circle In", "Box Out", "Box In", "Horizontal Alternating Bars", "Vertical Alternating Bars",
-                                   "Horizontal Alternating Bilinear Bars", "Vertical Alternating Bilinear Bars"};
+// VEGAS's own gradient list (its order is the "Gradient" choice's); 'kProc' is the procedural stand-in of each (an index of wipeShape; 0, the diagonal, for the ones
+// that are a picture only).
+const char* const kWipeShapes[28] = {"Star", "Heart", "Expanding Spiral", "Spiral", "Puzzle Pieces", "Nebulous", "Turbulent Noise", "Soft Noise", "Paint Splatter",
+                                     "Horizontal Alternating Bars", "Vertical Alternating Bars", "Horizontal Alternating Bilinear Bars", "Vertical Alternating Bilinear Bars",
+                                     "Linear Left-Right", "Linear Right-Left", "Linear Top-Bottom", "Linear Bottom-Top", "Linear Top-Left Diagonal", "Linear Top-Right Diagonal",
+                                     "Linear Bottom-Left Diagonal", "Linear Bottom-Right Diagonal", "Horizontal Open", "Vertical Open", "Circle Out", "Circle In", "Box Out", "Box In",
+                                     "Floral Growth"};
+const int kProc[28] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 15, 16, 17, 1, 2, 3, 4, 0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0};
+
+// vidpcore.dll of an installed VEGAS (or the file RENO_VIDPCORE_DLL names), whose pictures the picture gradients are; empty when there is none
+std::string gradientDll()
+{
+    if (const char* e = std::getenv("RENO_VIDPCORE_DLL"))
+        if (*e) return vgw::findDll({});
+    static const std::string found = vgw::findDll(Host::vegasProgramDirs());
+    return found;
+}
 
 double wipeShape(int shape, double u, double v, int W, int H)
 {
@@ -745,11 +760,48 @@ double wipeShape(int shape, double u, double v, int W, int H)
 void gradientWipe(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
-    const int shape = c.i("Gradient");
+    const int vi = std::max(0, std::min(27, c.i("Gradient")));
+    const int shape = kProc[vi];
     const bool hf = c.b("HorizontalFlip"), vf = c.b("VerticalFlip"), hm = c.b("HorizontalMirror"), vm = c.b("VerticalMirror");
     const bool reverse = c.i("Direction") == 1, stretch = c.b("AutoContrastStretch"), keepAspect = c.b("MaintainAspectRatio");
     const double blend = clampd(c.d("ThresholdBlend"), 0, 1) * 0.5, blur = clampd(c.d("GradientBlur"), 0, 1);
     const double p = clampd(c.progress, 0, 1);
+    // VEGAS's own picture of the gradient, when a VEGAS is installed: its mask and mix, as its code does them
+    if (const std::shared_ptr<const vgw::Picture> pic = vgw::loadPicture(gradientDll(), vi)) {
+        vgw::Settings st;
+        st.progress = p;
+        st.blend = blend;     // (the effect's ThresholdBlend is twice the blend VEGAS works with: 'blend' above is already halved)
+        st.reverse = reverse;
+        st.autoContrast = stretch;
+        st.keepAspect = vgw::desc(vi).keepAspect != keepAspect;
+        std::vector<uint8_t> m8;
+        vgw::frameMask(*pic, st, W, H, m8);
+        std::vector<float> mf;
+        if (blur > 0.001) {
+            mf.assign(m8.begin(), m8.end());
+            gaussianBlurPlane(mf, W, H, blur * 0.1 * W, blur * 0.1 * W);
+        }
+        const bool lv = c.levels;
+        forRows(H, W, [&](int y) {
+            const int sy = vgw::foldIndex(y, H, vm, vf);
+            for (int x = 0; x < W; ++x) {
+                const int sx = vgw::foldIndex(x, W, hm, hf);
+                const size_t mi = (size_t)sy * W + sx;
+                const float* a = c.src.at(x, y);
+                const float* b = c.src2.at(x, y);
+                float* o = c.out.at(x, y);
+                if (lv) {
+                    const int m = mf.empty() ? m8[mi] : (int)clampd(mf[mi] + 0.5, 0, 255);
+                    const int w = vgw::weight14(m);
+                    for (int k = 0; k < 4; ++k) o[k] = (float)vgw::mix8((int)(a[k] * 255.f + 0.5f), (int)(b[k] * 255.f + 0.5f), w) / 255.f;
+                } else {
+                    const float w = (mf.empty() ? (float)m8[mi] : mf[mi]) / 255.f;
+                    for (int k = 0; k < 4; ++k) o[k] = a[k] * w + b[k] * (1.f - w);
+                }
+            }
+        });
+        return;
+    }
     const double aspect = keepAspect ? (double)W / std::max(1, H) : 1.0;
     std::vector<float> g((size_t)W * H);
     for (int y = 0; y < H; ++y) {
@@ -945,8 +997,8 @@ void addFiltersVegasRest(std::vector<Def>& out)
         if (!d.id.empty()) {
             d.transition = true;
             d.group = kGroup;
-            d.description = "A wipe along a gradient (Reno's own, standing in for VEGAS Gradient Wipe).";
-            vfxTune(d, "ThresholdBlend", 0.1, 0, 1);
+            d.description = "A wipe along a gradient (VEGAS's own gradient pictures are read from an installed VEGAS; Reno's own gradients stand in without one).";
+            vfxTune(d, "ThresholdBlend", 0.0, 0, 1);
             {
                 std::vector<std::string> names;
                 for (const char* n : kWipeShapes) names.push_back(n);

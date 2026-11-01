@@ -47,8 +47,17 @@ def unpack_f32(S):
 @kernel("pack_u8", WH + [('bgra', 'u'), ('pad', 'u')], [(0, 'in0', 'v4', 'r'), (2, 'raw', 'u', 'w')])
 def pack_u8(S):
     # what store() does in builtins.cpp: alpha made sane and limited to 0..1, a colour never above alpha, rounded halves up
+    # (pad = 1: an effect VEGAS draws in float - vegasTiesDown() on the CPU: a value 0 < v < 1 first goes to ceil(v * 255 - 0.5) / 255, so exact halves round down)
     with S.in_range(S.p.w, S.p.h):
-        p = S.buf('in0').load(S.gy * S.p.w + S.gx)
+        p0 = S.buf('in0').load(S.gy * S.p.w + S.gx)
+        td = S.ne(S.p.pad, 0)
+        def tie(v):
+            t = SF.from_f32(S, v) * 255.0 + 0.5            # (exact: 24 + 8 bits in a double)
+            fl = t.floor_i32()
+            k = fl - S.select(t > SF.from_i32(S, fl), S.i(0), S.i(1))
+            q = S.to_f(k) * S.f(1.0 / 255.0)
+            return S.select(td & (v > 0.0) & (v < 1.0), q, v)
+        p = S.vec4(tie(p0.x), tie(p0.y), tie(p0.z), tie(p0.w))
         a3 = S.select(p.w >= 0.0, p.w, S.f(0.0))
         a = S.select(a3 > 1.0, S.f(1.0), a3)
         def rnd(vf):
@@ -79,6 +88,14 @@ def copy_px(S):
     with S.in_range(S.p.w, S.p.h):
         i = S.gy * S.p.w + S.gx
         S.buf('out').store(i, S.buf('in0').load(i))
+
+@kernel("swap_rb", WH, [PIC_IN, PIC_OUT])
+def swap_rb(S):
+    """red and blue exchanged (effects that VEGAS runs in memory order on float frames: see the effects that call it)"""
+    with S.in_range(S.p.w, S.p.h):
+        i = S.gy * S.p.w + S.gx
+        q = S.buf('in0').load(i)
+        S.buf('out').store(i, S.vec4(q.z, q.y, q.x, q.w))
 
 # ---------------------------------------------------------------------------------------------------------- shared pieces
 def unpremul(S, p):

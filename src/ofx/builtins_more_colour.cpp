@@ -122,13 +122,17 @@ void saturationAdjust(Ctx& c)
 // above 1 - 2(1-x)(1-B)) with Contrast as the amount. Diffusion blurs the luma layer (Gaussian 0.205 px per percent at 320 wide). The tint multiplies the layer per channel by 1 + 1.137 x tint x
 // (T - luma(T)) (T = the correction hue at full saturation). Low / High trim bend the layer by Softlight's spline; the vignette is a RectangleMask / EllipseMask as in shapeMaskVelvet.
 // White Balance, rebuilt from VEGAS's code. Works on 8-bit bytes in two steps:
-// White Balance, rebuilt from VEGAS's code, on 8-bit bytes. 1. A 1024-entry table indexed by luma x 4 (rounded) gives the luma (x Brightness, from 0.25 steps, held to 0..255) and the shift of U, V
+// White Balance, rebuilt from VEGAS's code, on 8-bit bytes. 1. A 1024-entry table indexed by luma x 4 (rounded) gives the luma (x Brightness, from 0.25 steps, not held to 255) and the shift of U, V
 // (BT.601, 0..255 scale) = cos / sin of Angle x Amount^2 x 127.5; each pixel goes to Y, U, V, is shifted and goes back (R from 1.1402509 V, G from 0.3947313 U + 0.5808092 V, B from 2.0325203 U), rounded.
 // 2. With HasData ("Equalize Histogram") each channel is stretched by its own histogram: lo = level below which 0.5% of pixels lie, hi = highest level with at most 99.5% below;
 // new = (old - lo x 255/256) x 256 / (hi - lo), held to 0..255, taken from the frame being drawn.
 // VEGAS draws from a hidden Angle, Amount, Brightness and HasData (Temperature, Tint and the neutral colour are dialog settings it converts). Reno has no Angle, so wbAngle derives it from temperature
-// and tint with a model fitted to two VEGAS pictures (mired scale: warmer or bluer than 6500 K moves U, the tint moves V); the default temperature gives 0. Older Reno values (-1..1) mean the default.
-static const double kWbDefaultKelvin = 6500.0;
+// and tint; at the untouched temperature and tint the angle is 90 degrees (a captured picture with only Amount set), and moving the temperature or tint sets Amount too (see whiteBalanceChanged).
+// Older Reno values (-1..1) mean the default.
+static const double kWbDefaultKelvin = 6000.0;      // VEGAS's live default (Reno Effect Capture: effects.txt)
+// With the temperature moved and the tint left at 0, VEGAS's pictures fit a tint of about 10.5 (the tint of its default neutral grey; inferred from three captured
+// temperatures, all within the rounding of the pictures).
+static const double kWbNeutralTint = 10.5;
 // Robertson's isotherm table (reciprocal temperature in mired, u, v, slope), as VEGAS keeps it.
 static const double kWbRob[31][4] = {
     {0.0, 0.18006, 0.26352, -0.24341},    {10.0, 0.18066, 0.26589, -0.25479},   {20.0, 0.18133, 0.26846, -0.26876},
@@ -144,12 +148,17 @@ static const double kWbRob[31][4] = {
     {600.0, 0.33724, 0.36051, -116.45}};
 // Temperature and tint to the angle of the correction, the way VEGAS does it: Robertson's table gives u, v (moved along the isotherm by the tint / -3000),
 // then x, y, XYZ (Y = 1), a fixed matrix to RGB, BT.601 U and V of that colour, and the angle is atan2(-V, -U) in degrees (0..360).
-static double wbAngle(double kelvin, double tint)
+// 'mag' (when given) gets the amount-squared that moves the colour of this temperature and tint to grey (the length of its U, V, 0..1): what VEGAS puts into
+// Amount when the temperature or the tint is moved.
+static double wbAngle(double kelvin, double tint, double* mag = nullptr)
 {
+    if (mag) *mag = 0.0;
     if (!(kelvin >= 100.0)) kelvin = kWbDefaultKelvin;
     kelvin = clampd(kelvin, 1700.0, 15000.0);
     tint = clampd(tint, -100.0, 100.0);
-    if (kelvin == kWbDefaultKelvin && tint == 0.0) return 0.0;
+    // the untouched state: VEGAS starts with a correction angle of 90 degrees and an amount of 0
+    if (kelvin == kWbDefaultKelvin && tint == 0.0) return 90.0;
+    if (tint == 0.0) tint = kWbNeutralTint;
     const double t13 = tint * -0.0003333333333333333;
     const double m = 1000000.0 / kelvin;
     int i = 0;
@@ -178,6 +187,7 @@ static double wbAngle(double kelvin, double tint)
     const double bb = Z * 0.9912520182;
     const double yl = (gg * 0.587 + r * 0.299) + bb * 0.114;
     const double U = ((bb - yl) * 0.492000013589859) / 127.5, V = ((r - yl) * 0.8769999742507935) / 127.5;
+    if (mag) *mag = std::sqrt(U * U + V * V) * 127.5;
     double ang;
     if (-U == 0.0) ang = (-V >= 0.0) ? 90.0 : 270.0;
     else {
@@ -205,7 +215,7 @@ void whiteBalanceSettings(Ctx& c, std::vector<float>& tab, bool& shift, bool& ha
         const float su = (float)(std::cos(ang) * s2 * 127.5), sv = (float)(std::sin(ang) * s2 * 127.5);
         for (int i = 0; i < 1024; ++i) {
             double y = ((double)i * 0.25 / 255.0) * 255.0 * bright;
-            y = y < 0.0 ? 0.0 : (y > 255.0 ? 255.0 : y);
+            y = y < 0.0 ? 0.0 : y;      // not held to 255: with Brightness 2 the luma goes above it and only the finished R, G, B are clamped (captured picture)
             tab[(size_t)i * 3] = sv;
             tab[(size_t)i * 3 + 1] = su;
             tab[(size_t)i * 3 + 2] = (float)y;
@@ -284,6 +294,15 @@ void whiteBalanceChanged(Change& ch)
 {
     if (ch.param == "EnhanceHistogram") { ch.setI("HasData", 1); return; }
     if (ch.param == "ClearData") { ch.setI("HasData", 0); return; }
+    if (ch.param == "ColorTemperature" || ch.param == "ColorTint") {
+        // VEGAS sets the amount from the new temperature and tint (its captured pictures with only the temperature or the tint set show the full correction at
+        // an amount of 0); a later change of Amount overrides it. The untouched pair gives 0.
+        double mag = 0.0;
+        const double k = ch.d("ColorTemperature"), t = ch.d("ColorTint");
+        if (!(k == kWbDefaultKelvin && t == 0.0)) wbAngle(k, t, &mag);
+        ch.setD("AmountOfCorrection", std::min(1.0, std::sqrt(mag)));
+        return;
+    }
     if (ch.param != "SelectWhiteColor") return;
     Buf f;
     if (!ch.source(ch.time, f)) return;
@@ -949,11 +968,14 @@ void broadcastColors(Ctx& c)
 void channelBlend(Ctx& c)
 {
     float w[4][5];
+    // 8-bit frames lie in memory blue first, float ones red first, and VEGAS's plug-in numbers the channels in memory order
     const char* names[4] = {"BLUE", "GREEN", "RED", "ALPHA"};
+    const char* namesF[4] = {"RED", "GREEN", "BLUE", "ALPHA"};
     const char* parts[5] = {" weight B", " weight G", " weight R", " weight A", " weight Offset"};
+    const char* partsF[5] = {" weight R", " weight G", " weight B", " weight A", " weight Offset"};
     const bool normalise = c.b("Normalize");
     for (int o = 0; o < 4; ++o)
-        for (int i = 0; i < 5; ++i) w[o][i] = (float)c.d((std::string(names[o]) + parts[i]).c_str());
+        for (int i = 0; i < 5; ++i) w[o][i] = (float)c.d((std::string(c.levels ? names[o] : namesF[o]) + (c.levels ? parts[i] : partsF[i])).c_str());
     const int W = c.out.w, H = c.out.h;
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {

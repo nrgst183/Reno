@@ -308,7 +308,7 @@ void ccYFill(std::vector<CcEntry>& e, bool curve, double offset, double gamma, d
             double v = ccCurveAt(cur, x);
             v = v * 255.0;
             v = v * gain + offset;
-            v = (0.0 > v) ? 0.0 : (255.0 < v ? 255.0 : v);
+            // (the luma is not held to 0..255 here: with Gain 2 or Offset +-254 it goes past, and only the finished R, G, B are clamped - VEGAS's captured pictures)
             e[i].y = (float)(delta ? v - (double)i * 0.25 : v);
         }
     } else {

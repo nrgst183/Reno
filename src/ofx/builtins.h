@@ -23,6 +23,12 @@ extern const char* const kBuiltinBinaryPath;     // "builtin:reno"
 bool isBuiltinPath(const std::string& path);
 // Whether this built-in (by identifier) is a filter that renders on the Vulkan path now, so a frame handed to it may still be only on the card.
 bool builtinGpuChainable(const std::string& id);
+// VEGAS's "GPU acceleration" (Preferences > Video; the host's HostConfig::gpu). On (the default, as in the user's VEGAS), the built-in copies of VEGAS's effects that have an OpenCL
+// processor in VEGAS draw as VEGAS's OpenCL kernels do (float); off, as VEGAS's CPU code does. Host::applyConfig passes the setting on.
+namespace builtin {
+void setVegasGpuAcceleration(bool on);
+bool vegasGpuAcceleration();
+}
 
 // The OpenFX entry points of the built-in "binary".
 int builtinNumberOfPlugins();

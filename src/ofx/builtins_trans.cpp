@@ -4,6 +4,7 @@
 #include "builtins_vfxdata.h"
 #include "builtins_deriche.h"
 #include "transrec.h"
+#include "vfxvenetian.h"
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -167,9 +168,11 @@ void run(Ctx& c)
                 }
                 break;
             case 5: case 6: {
+                // the picture's mean level against the progress, in float (VEGAS's pictures put the 50% threshold between the sums 382 and 383, the mean 127.5, which the
+                // whole-number form (sum * 4 / 3 against 1024ths) did not: it cut at 509 / 510 of 1020 in one type and at 512 in the other)
                 const int* T = type == 5 ? A : B;
-                const int avg4 = ((T[0] + T[1] + T[2]) * 4) / 3;
-                const bool useA = type == 5 ? avg4 > w1024 : avg4 < 1024 - w1024;
+                const float s2 = (float)(2 * (T[0] + T[1] + T[2]));
+                const bool useA = type == 5 ? s2 > (float)((double)pf * 1530.0) : s2 < (float)((1.0 - (double)pf) * 1530.0);
                 for (int k = 0; k < 4; ++k) O[k] = useA ? A[k] : B[k];
                 break;
             }
@@ -467,7 +470,7 @@ void clockWipe8(Ctx& c)
                 int r;
                 if (useA) r = av;
                 else if (useB) r = bv;
-                else { const int d = (bv - av) * wgt; r = (av + ((d + (d < 0 ? 255 : 0)) >> 8)) & 255; }
+                else r = dis::lerp8(av, bv, wgt);
                 o[k] = (float)(r / 255.0);
             }
         }
@@ -578,8 +581,7 @@ void linearWipe8(Ctx& c)
             const int wgt = (g != g || g >= 2147483648.0f || g < -2147483648.0f) ? 0 : ((int)g & 255);
             for (int k = 0; k < 4; ++k) {
                 const int a = to8(fa[k]), b = to8(fb[k]);
-                const int d = (a - b) * wgt;
-                o[k] = (float)(((b + ((d + (d < 0 ? 255 : 0)) >> 8)) & 255) / 255.0);
+                o[k] = (float)(dis::lerp8(b, a, wgt) / 255.0);
             }
         }
     });
@@ -1118,6 +1120,24 @@ uint16_t irisWindowMask(int shape)
     return m;
 }
 
+// With the centre on the frame's edge the shape is not symmetric about it, and VEGAS's picture is scaled as if the edge rows / columns were also reflected about
+// the centre (a pixel less far): Triangle with its centre on the top edge reaches 262.96 there where the frame itself reaches 207.46 (found from the captured
+// pictures; the edge loops of Vfx1.ofx 0x1805d6be0 - read from code - take the maximum over the rows 0 and H-1 and the columns 0 and W-1 only, which does not
+// give this). A shape that gives the same distance at the reflected point (the circle) adds nothing. 0 when there is nothing to add.
+float irisReflectedMax(int W, int H, int nx, int ny, double cxn, double cyn, float cxf, float cyf, int shape, float A, float sx, float sy)
+{
+    float mx = 0.f;
+    if (nx != 1 || ny != 1) return mx;
+    auto reflect = [&](int xi, int yi, bool alongY) {
+        const int ex = (int)(2.0f * cxf) - xi, ey = (int)(2.0f * cyf) - yi;
+        const float d0 = irisDistance(xi, yi, cxf, cyf, shape, A, sx, sy);
+        if (irisDistance(ex, ey, cxf, cyf, shape, A, sx, sy) == d0) return;
+        mx = std::max(mx, irisDistance(alongY ? xi : ex - 1, alongY ? ey - 1 : yi, cxf, cyf, shape, A, sx, sy));
+    };
+    if (cyn <= 0.001 || cyn >= 0.999) for (int x = 0; x < W; ++x) { reflect(x, 0, true); reflect(x, H - 1, true); }
+    if (cxn <= 0.001 || cxn >= 0.999) for (int j = 0; j < H; ++j) { reflect(0, j, false); reflect(W - 1, j, false); }
+    return mx;
+}
 void irisFx(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
@@ -1175,6 +1195,7 @@ void irisFx(Ctx& c)
         if (j == 0 || j == H - 1) { for (int x = 0; x < W; ++x) mx = std::max(mx, mrow[x]); }
         else { mx = std::max(mx, mrow[0]); mx = std::max(mx, mrow[W - 1]); }
     }
+    mx = std::max(mx, irisReflectedMax(W, H, nx, ny, cxn, cyn, cxf, cyf, shape, A, sx, sy));
     // (VEGAS fills the top row from a pointer that has only moved one row up: its two end pixels land in the second row)
     map[(size_t)W] = map[(size_t)(H - 1) * W];
     map[(size_t)W + W - 1] = map[(size_t)(H - 1) * W + W - 1];
@@ -1353,21 +1374,47 @@ void starWipe(Ctx& c)
     });
 }
 
+// Venetian Blinds, from VEGAS's own code (sftrans1.dll, read and checked bit for bit against its profile builder and lookup; see vfxvenetian.h): a profile of alpha bytes
+// across twice the frame's diagonal (a blind is the frame's width over NumberOfBlinds long, opening from its middle by the progress), blurred by VEGAS's Gaussian with
+// Feather x its length, read at each pixel's distance from the centre along Angle (rows counted from the top of the picture buffer); the incoming picture is mixed in by that alpha,
+// the 8-bit way for 8-bit pictures and in floats for float ones.
 void venetian(Ctx& c)
 {
-    const double ang = c.d("Angle") * kPi / 180.0, dx = std::cos(ang), dy = std::sin(ang);
-    const double n = std::max(1.0, c.d("NumberOfBlinds"));
-    const double span = std::fabs(dx) + std::fabs(dy);
-    // Each blind opens outwards from its middle: the incoming picture covers the middle Progress of every blind's width (VEGAS's own capture of the
-    // presets; the blinds are counted from the frame's edge, so with the angle at 0 the first one starts at the left).
-    const double aw = (double)c.out.w, ah = (double)c.out.h;
-    (void)span;
-    wipe(c, [&](double u, double v) {
-        // distances are in pixels and the blinds are counted in frame widths, whatever the angle
-        const double pos = ((u - 0.5) * aw * dx + (v - 0.5) * ah * dy) / aw * n + 0.5;
-        const double f = pos - std::floor(pos);
-        return std::fabs(f - 0.5) * 2.0;
-    }, clampd(c.d("Feather"), 0, 1) * 0.5 + 0.002, 0.0, Color());
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    vfxvb::Params p;
+    p.blinds = std::max(1.0, c.d("NumberOfBlinds"));      // (the preset "One Vertical Blind" has 0: one blind)
+    p.angleDeg = c.d("Angle");
+    p.feather = c.d("Feather");
+    p.progress = c.progress;
+    const vfxvb::Setup s = vfxvb::setup(p, W, H);
+    std::vector<uint8_t> tbl = vfxvb::profile(p, s);
+    if (s.blur && s.progress14 != 0 && s.n > 0) {
+        Buf b;
+        b.resize(s.n, 1);
+        for (int i = 0; i < s.n; ++i) b.at(i, 0)[0] = tbl[(size_t)i] / 255.f;
+        vegasDericheBlur(b, s.blurSize, 0.0, true);
+        for (int i = 0; i < s.n; ++i) tbl[(size_t)i] = (uint8_t)std::min(255, std::max(0, (int)std::lrintf(b.at(i, 0)[0] * 255.f)));
+    }
+    const bool levels = c.levels;
+    forRows(H, W, [&](int y) {
+        const int base = vfxvb::rowBase(s, y);
+        for (int x = 0; x < W; ++x) {
+            const int alpha = vfxvb::alphaAt(tbl, vfxvb::positionAt(s, base, x));
+            const float* a = c.src.at(x, y);
+            const float* b = c.src2.at(x, y);
+            float* o = c.out.at(x, y);
+            for (int k = 0; k < 4; ++k) {
+                if (levels) {
+                    const float fa = std::isfinite(a[k]) ? std::min(std::max(a[k], 0.f), 1.f) : 0.f;
+                    const float fb = std::isfinite(b[k]) ? std::min(std::max(b[k], 0.f), 1.f) : 0.f;
+                    o[k] = vfxvb::mix8(roundNonNeg(fa * 255.f), roundNonNeg(fb * 255.f), alpha) * (1.f / 255.f);
+                } else {
+                    o[k] = vfxvb::mixF(a[k], b[k], alpha);
+                }
+            }
+        }
+    });
 }
 
 
@@ -1814,6 +1861,7 @@ void render(const Img8& paper, const Img8& bg, Img8& out, int layers, float ang,
                 if (!hit(a, b, L, t)) continue;
                 float row, col;
                 back(t, row, col);
+                row += 0.5f; col += 0.5f;      // (VEGAS's pictures sample the page half a pixel along the buffer's axes, as Slide's moved frame)
                 const float fr = std::floor(row), fc = std::floor(col);
                 const int ri = cvtt(fr), ci = cvtt(fc);
                 if (ri == INT_MIN || ci == INT_MIN || ri + 1 < 0 || ri >= h || ci + 1 < 0 || ci >= w) continue;
@@ -1826,7 +1874,7 @@ void render(const Img8& paper, const Img8& bg, Img8& out, int layers, float ang,
                 if (ci < 0 || ci + 1 >= w || ri < 0 || ri + 1 >= h) flag = 0x80 + L;
                 uint8_t P[4];
                 for (int k = 0; k < 4; ++k)
-                    P[k] = (uint8_t)((unsigned)(((p11[k] * wx + p10[k] * (256 - wx)) * wy + (p01[k] * wx + p00[k] * (256 - wx)) * (256 - wy))) >> 16);
+                    P[k] = (uint8_t)((unsigned)(((p11[k] * wx + p10[k] * (256 - wx)) * wy + (p01[k] * wx + p00[k] * (256 - wx)) * (256 - wy)) + 0x4000u) >> 16);      // (+ a quarter level before the cut, as the Slide blit)
                 if (t.light) {
                     for (int k = 0; k < 3; ++k) P[k] = mix8(P[k], t.col[k], t.light);
                     P[3] = mix8(P[3], 255, t.light);
@@ -2175,12 +2223,13 @@ inline int ce14(int v) { return -fl14(-v); }                                    
 inline int dtoi(double v) { return (v > -2147483648.0 && v < 2147483648.0) ? (int)v : INT_MIN; }
 
 // 14-bit bilinear of the four pixels, VEGAS's scalar rounding
+thread_local unsigned gBilBias = 0x800000u;     // the rounding added before the shift (0x400000 for the moved frame of Slide and Spiral, see gPhaseX)
 inline void bil(const uint8_t* r0, const uint8_t* r1, int i0, int i1, int fx, int fy, uint8_t* out)
 {
     const unsigned w00 = (unsigned)((0x4000 - fy) * (0x4000 - fx)) >> 4, w10 = (unsigned)((0x4000 - fx) * fy) >> 4;
     const unsigned w01 = (unsigned)((0x4000 - fy) * fx) >> 4, w11 = (unsigned)(fx * fy) >> 4;
     for (int k = 0; k < 4; ++k)
-        out[k] = (uint8_t)((r0[i0 * 4 + k] * w00 + r1[i0 * 4 + k] * w10 + r0[i1 * 4 + k] * w01 + r1[i1 * 4 + k] * w11 + 0x800000u) >> 24);
+        out[k] = (uint8_t)((r0[i0 * 4 + k] * w00 + r1[i0 * 4 + k] * w10 + r0[i1 * 4 + k] * w01 + r1[i1 * 4 + k] * w11 + gBilBias) >> 24);
 }
 
 // same as VEGAS's SSE2 code (16-bit weights from 0x3fff, products kept to 16 bits, +4, >> 3)
@@ -2206,8 +2255,13 @@ inline void mixInto(uint8_t* d, const uint8_t* p, int alpha)
 // Vfx1.ofx 0x1806c8f10 with filtering off (0x1806ceba0): the source rectangle S into the destination rectangle D
 void boxSmall(Img8& dst, const Img8& src, const Rect& D1, const Rect& S, int scx, int scy);
 
+// Where the source is sampled, in 1/16384 pixels added to the source position of every destination pixel (set around a draw by moveIn; Slide and Spiral in VEGAS's
+// pictures sample the moved frame half a pixel along the buffer's own axes: right and (rows top first) up, edges repeated; the destination rectangle is not moved)
+thread_local int gPhaseX = 0, gPhaseY = 0;
+
 void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr, int filt = 0)
 {
+    const int phx = gPhaseX, phy = gPhaseY;
     const int dw = dst.w, dh = dst.h;
     const Rect S1 = isect(Sr, Rect{0, 0, src.w << 14, src.h << 14});
     if (S1.x1 - S1.x0 < 0x4000 || S1.y1 - S1.y0 < 0x4000) return;
@@ -2263,6 +2317,9 @@ void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr, int filt = 
         op.t.push_back((int)(uint32_t)ib);
         op.t.push_back(src.w);
         op.t.push_back(src.h);
+        op.t.push_back(phx);
+        op.t.push_back(phy);
+        op.t.push_back((int)gBilBias);
         gRec->ops.push_back(std::move(op));
         return;
     }
@@ -2272,6 +2329,8 @@ void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr, int filt = 
         if (536870911.0 > area) { boxSmall(dst, src, D1, S, scx, scy); return; }
     }
     auto srcRows = [&](int y, const uint8_t*& r0, const uint8_t*& r1, int& fy) {
+        y += phy;
+        if (y < 0) y = 0;
         const int r = y / 16384;
         fy = y % 16384;
         r0 = src.at(0, r);
@@ -2287,7 +2346,7 @@ void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr, int filt = 
         const uint8_t *r0, *r1;
         int fy;
         srcRows(y, r0, r1, fy);
-        int x = S.x0;
+        int x = S.x0 + phx;
         int alpha = (dtoi(rcov * (double)fcc * k14) * 255) >> 14;
         uint8_t P[4];
         int i0, i1, fx;
@@ -2312,7 +2371,7 @@ void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr, int filt = 
         const uint8_t *r0, *r1;
         int fy;
         srcRows(y, r0, r1, fy);
-        int x = S.x0;
+        int x = S.x0 + phx;
         uint8_t P[4];
         int i0, i1, fx;
         colOf(x, i0, i1, fx);
@@ -2324,7 +2383,8 @@ void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr, int filt = 
         if (n > 0) {
             for (int k = 0; k < (n & ~1); ++k, ++c, x += sx) {
                 const int j0 = x >> 14, f = x & 0x3fff;
-                bilSse(r0, r1, j0, j0 + (j0 != last ? 1 : 0), f, fy, dst.at(c, drow));
+                if (phx | phy) bil(r0, r1, j0, j0 + (j0 != last ? 1 : 0), f, fy, dst.at(c, drow));
+                else bilSse(r0, r1, j0, j0 + (j0 != last ? 1 : 0), f, fy, dst.at(c, drow));
             }
             if (n & 1) {
                 colOf(x, i0, i1, fx);
@@ -2608,7 +2668,8 @@ void moveIn(Ctx& c, double angleDeg, double zoom, bool slide)
         const double sa = std::sin(a), ca = std::cos(a);
         const double k = slide ? s / std::max(std::fabs(sa), std::fabs(ca)) : s;
         const double ax = (r10 - (W * z * 0.5 + bsz + feather)) * k, ay = (edx - (H * z * 0.5 + bsz + feather)) * k;
-        const int bx = dtoi(ca * ax + 0.5), by = dtoi(sa * ay + 0.5);
+        // (rounded half up, not cut towards zero: for negative values the cut leaves the frame one 16384th of a pixel off its place, which VEGAS's pictures do not show)
+        const int bx = dtoi(std::floor(ca * ax + 0.5)), by = dtoi(std::floor(sa * ay + 0.5));
         const int dx = dtoi((1.0 - z) * W * 0.5 + 0.5) + bx, dy = dtoi((1.0 - z) * H * 0.5 + 0.5) + by;
         rect = Rect{rect.x0 + dx, rect.y0 + dy, rect.x1 + dx, rect.y1 + dy};
         e0 = rect.x0; e1 = rect.y0; e2 = rect.x1; e3 = rect.y1;
@@ -2616,7 +2677,9 @@ void moveIn(Ctx& c, double angleDeg, double zoom, bool slide)
         const int e = dtoi(-(s / x1) * feather);
         e0 = rect.x0 - e; e2 = rect.x1 + e; e1 = rect.y0 - e; e3 = rect.y1 + e;
     }
+    gPhaseX = 0x2000; gPhaseY = -0x2000; gBilBias = 0x400000u;
     blit(dst, *src1, rect, full);
+    gPhaseX = gPhaseY = 0; gBilBias = 0x800000u;
     uint8_t col[4];
     colourBytes(c.color("BorderColor"), col);
     border(dst, {{e1, e3, e2, 3}, {e1, e3, e0, 1}, {e0, e2, e1, 0}, {e0, e2, e3, 2}}, bsz, feather, col);
@@ -3375,14 +3438,16 @@ void barndoorFx8(Ctx& c)
     clearDst(dst, w, h);
     const Rect full = {0, 0, W, H};
     blit(dst, *base, full, full, 0);
+    // (VEGAS leaves out one pixel row / column of the doors, the first of the right door, in its buffer's order: the outgoing picture shows there; the mapping of the rest is the same)
+    const int one = g > 0 && g < L ? 0x4000 : 0;
     std::vector<Edge> edges;
     if (!vert) {
         blit(dst, *door, Rect{0, 0, g, H}, Rect{L - g, 0, L, H}, 0);
-        blit(dst, *door, Rect{W - g, 0, W, H}, Rect{L, 0, L + g, H}, 0);
+        blit(dst, *door, Rect{W - g + one, 0, W, H}, Rect{L + one, 0, L + g, H}, 0);
         edges.push_back(Edge{0, H, e2, 1});
         edges.push_back(Edge{0, H, W - e2, 3});
     } else {
-        blit(dst, *door, Rect{0, 0, W, g}, Rect{0, L - g, W, L}, 0);
+        blit(dst, *door, Rect{0, 0, W, g - one}, Rect{0, L - g, W, L - one}, 0);      // (the top picture row of this door is the last one drawn: the rows run upwards in VEGAS's buffer)
         blit(dst, *door, Rect{0, H - g, W, H}, Rect{0, L, W, L + g}, 0);
         edges.push_back(Edge{0, W, e2, 0});
         edges.push_back(Edge{0, W, H - e2, 2});
@@ -3396,6 +3461,10 @@ void barndoorFx8(Ctx& c)
 }  // namespace
 
 uint16_t transrec::irisWindow(int shape) { return irisWindowMask(shape); }
+float transrec::irisReflectedMax(int W, int H, int nx, int ny, double cxn, double cyn, float cxf, float cyf, int shape, float A, float sx, float sy)
+{
+    return irisReflectedMax(W, H, nx, ny, cxn, cyn, cxf, cyf, shape, A, sx, sy);
+}
 void transrec::starField(Ctx& c, std::vector<double>& field) { ::reno::ofx::builtin::starField(c, field); }
 void transrec::starMask(Ctx& c, std::vector<float>& mask, float& amp) { starMask8(c, mask, amp); }
 

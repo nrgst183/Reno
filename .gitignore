@@ -122,6 +122,7 @@ desktop.ini
 /tools/effectref_compare.py
 /tools/vegasref_compare.py
 /tools/fuzz_compare.py
+/tools/ocl_decode.py
 /tools/random_fx_analyze.py
 /tools/gpu_report.bat
 /tools/analysis_params.txt

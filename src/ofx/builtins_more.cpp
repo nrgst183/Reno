@@ -154,7 +154,7 @@ void addFiltersMore(std::vector<Def>& out)
             vfxTune(d, "Normalize", 0, NAN, NAN);
         }
         if (std::string(r.id) == "whitebalance") {
-            vfxTune(d, "ColorTemperature", 6500, 1700, 15000); vfxTune(d, "ColorTint", 0, -100, 100); vfxTune(d, "Brightness", 1, 0.1, 2);
+            vfxTune(d, "ColorTemperature", 6000, 1700, 15000); vfxTune(d, "ColorTint", 0, -100, 100); vfxTune(d, "Brightness", 1, 0.1, 2);
             // VEGAS's three buttons (its resource file lists them with the settings): the order of its file
             insertParam(d, "AmountOfCorrection", button("SelectWhiteColor", "Select neutral color"));
             d.params.push_back(button("EnhanceHistogram", "Equalize Histogram"));

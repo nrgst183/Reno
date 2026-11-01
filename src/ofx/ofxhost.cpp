@@ -106,6 +106,7 @@ void Host::applyConfig()
     s.setInt(kOfxParamHostPropPageRowColumnCount, 0, 1);
     s.setPointer(kOfxPropHostOSHandle, config.mainWindow);
     s.setString(kOfxImageEffectPropOpenGLRenderSupported, (config.gpu && gl::available()) ? "true" : "false");
+    builtin::setVegasGpuAcceleration(config.vegasGpu);       // (the built-in copies of VEGAS's effects follow VEGAS's GPU acceleration setting)
     s.setInt(kOfxImageEffectPropRenderQualityDraft, 1);
     s.setString(kOfxImageEffectHostPropNativeOrigin, kOfxHostNativeOriginBottomLeft);
     if (config.vegasExtensions) {

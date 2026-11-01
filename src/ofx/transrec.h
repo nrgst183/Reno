@@ -33,6 +33,8 @@ bool record(const std::string& shortId, Ctx& c, Rec& r);
 
 // The cells that can hold a pixel for an Iris shape (irisWindowMask in builtins_trans.cpp), for the planner.
 uint16_t irisWindow(int shape);
+// The extra largest distance of an Iris whose centre is on the frame's edge (builtins_trans.cpp), 0 when none.
+float irisReflectedMax(int W, int H, int nx, int ny, double cxn, double cyn, float cxf, float cyf, int shape, float A, float sx, float sy);
 // Star Wipe: the wave position of every pixel of the float picture (row by row from the top), and the mask of the 8-bit picture (bottom row first) with its amplitude.
 void starField(Ctx& c, std::vector<double>& field);
 void starMask(Ctx& c, std::vector<float>& mask, float& amp);

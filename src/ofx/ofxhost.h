@@ -407,6 +407,10 @@ struct HostConfig {
     // Render effects with OpenGL on the graphics card where they can, as VEGAS does (Preferences > Video: "GPU acceleration of video processing";
     // reno_cli --gpu on|off): the host then reports kOfxImageEffectPropOpenGLRenderSupported "true" when a context can be made (call applyConfig after changing).
     bool gpu = true;
+    // What VEGAS's own GPU acceleration does to its effects, reproduced by the built-in copies: true (default, as in the user's VEGAS, "Optimal - NVIDIA") draws the effects
+    // that have an OpenCL kernel in VEGAS the way those kernels do (float, whatever the project's depth); false draws them like VEGAS with GPU acceleration off (its CPU code).
+    // Not the same as gpu above (Reno's own use of the graphics card). Preferences > Video "Draw VEGAS effects like VEGAS with GPU acceleration", reno_cli --vegas-gpu on|off.
+    bool vegasGpu = true;
     // For VEGAS's own effects (isVegasOwnEffect) that Reno has a built-in reproduction of: true (default) always uses the built-in and ignores VEGAS's
     // installed plug-in; false uses VEGAS's plug-in when installed and working. Effects Reno has no version of always use the installed plug-in. While true, VEGAS's own
     // bundles are not scanned or loaded at all (skipVegasBundles), except for the effects in the table vegasRealAllowed() (empty).

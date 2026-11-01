@@ -32,6 +32,7 @@ std::vector<P> table()
     const char* tp = "com.vegascreativesoftware:testpattern";
     const char* cg = "com.vegascreativesoftware:colorgradient";
     const char* tt = "com.vegascreativesoftware:titlesandtext";
+    const char* cr = "com.vegascreativesoftware:creditroll";
     const char* g = "Generator";
     const char* f = "Filter";
     auto noise = [](const char* style, const char* layers, const char* c1, const char* c2, const char* fx, const char* fy, const char* amp, const char* bias, const char* lo = "0", const char* hi = "1",
@@ -50,6 +51,14 @@ std::vector<P> table()
         return std::vector<V>{{S, "Text", text}, {D, "FontSize", size}, {D2, "Location", loc}, {C, "Alignment", align}, {RGBA, "TextColor", color},
                               {B, "ShadowEnable", shadow ? "true" : "false"}, {D, "OutlineWidth", outline}};
     };
+    // VEGAS Credit Roll's presets (their names are VEGAS's; the values were fitted to VEGAS's own pictures of them)
+    auto roll = [](const char* anim, const char* size, const char* color, const char* bgc, const char* text, const char* y = "0.5", bool left = false) {
+        return std::vector<V>{{C, "Animation", anim}, {B, "LeftSide", left ? "true" : "false"}, {D, "FontSize", size}, {RGBA, "TextColor", color}, {RGBA, "Background", bgc},
+                              {S, "Text", text}, {D, "TimedY", y}};
+    };
+    const char* rollText = " Title Text\nSubitem Text\nItem Left\tItem Right\nLonger Item Left\tLonger Item Right";
+    const char* rollTitle = " Title Text\nSubitem Text";
+    const char* rollItems = "Item Left\tItem Right\nLonger Item Left\tLonger Item Right";
     auto anim = [](std::vector<V> v, const char* name) {
         v.push_back({S, "AnimationName", name});
         return v;
@@ -98,24 +107,35 @@ std::vector<P> table()
         {cg, g, "Blue Movie Border", {{C, "GradientType", "2"}, {S, "GradientStops", "0.0000 0.000 0.000 0.000 0.000;0.7580 0.000 0.000 0.000 0.000;0.7614 0.000 0.000 1.000 0.024;0.8827 0.000 0.000 1.000 0.988;0.8864 0.000 0.000 1.000 1.000;1.0000 0.000 0.000 1.000 1.000"}, {D2, "Center", "0.5 0.5"}, {D2, "Radius", "0.55 0.535"}}},
         {cg, g, "Eclipse", {{C, "GradientType", "1"}, {S, "GradientStops", "0.0000 0.000 0.000 0.000 1.000;0.4912 0.000 0.000 0.000 1.000;0.4961 0.125 0.114 0.016 1.000;0.4989 0.231 0.204 0.027 1.000;0.5011 0.290 0.255 0.035 1.000;0.5139 0.706 0.627 0.082 1.000;0.5210 0.925 0.824 0.110 1.000;0.5237 1.000 0.882 0.118 1.000;0.9013 0.000 0.000 0.000 1.000;1.0000 0.000 0.000 0.000 1.000"}, {D2, "Center", "0.5 0.5"}, {D2, "Radius", "0.5 0.6125"}}},
         {cg, g, "Fancy Wooden Board", {{C, "GradientType", "0"}, {S, "GradientStops", "0.0000 0.000 0.000 0.000 0.000;0.2944 0.000 0.000 0.000 0.000;0.3000 1.000 0.561 0.039 0.098;0.3056 1.000 0.561 0.067 0.231;0.3333 1.000 0.561 0.059 0.910;0.3389 0.988 0.553 0.059 1.000;0.4111 0.608 0.243 0.000 1.000;0.4167 0.592 0.231 0.000 1.000;0.6611 1.000 0.580 0.000 1.000;0.7444 0.537 0.188 0.000 1.000;0.7500 0.529 0.180 0.000 0.914;0.7833 0.518 0.184 0.000 0.212;0.7889 0.541 0.165 0.000 0.094;0.7944 0.000 0.000 0.000 0.000;1.0000 0.000 0.000 0.000 0.000"}, {D2, "Start", "0.5 1"}, {D2, "End", "0.5 0"}}},
-        // Gradient Wipe's procedural presets (its picture-based ones need VEGAS's own gradient pictures, which Reno does not carry)
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Left-Right", {{C, "Gradient", "1"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Right-Left", {{C, "Gradient", "2"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Top-Bottom", {{C, "Gradient", "3"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Bottom-Top", {{C, "Gradient", "4"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Top-Right Diagonal", {{C, "Gradient", "5"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Bottom-Left Diagonal", {{C, "Gradient", "6"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Bottom-Right Diagonal", {{C, "Gradient", "7"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Horizontal Open", {{C, "Gradient", "8"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Vertical Open", {{C, "Gradient", "9"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Circle Out", {{C, "Gradient", "10"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Circle In", {{C, "Gradient", "11"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Box Out", {{C, "Gradient", "12"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Box In", {{C, "Gradient", "13"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Horizontal Alternating Bars", {{C, "Gradient", "14"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Vertical Alternating Bars", {{C, "Gradient", "15"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Horizontal Alternating Bilinear Bars", {{C, "Gradient", "16"}}},
-        {"com.vegascreativesoftware:gradientwipe", "Transition", "Vertical Alternating Bilinear Bars", {{C, "Gradient", "17"}}},
+        // Gradient Wipe's presets, in VEGAS's own list order (its pictures are read from an installed VEGAS at run time; without one Reno's procedural stand-ins draw the linear, circle, box and bar ones)
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Star", {{C, "Gradient", "0"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Heart", {{C, "Gradient", "1"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Expanding Spiral", {{C, "Gradient", "2"}, {D, "ThresholdBlend", "0.2"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Spiral", {{C, "Gradient", "3"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Puzzle Pieces", {{C, "Gradient", "4"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Nebulous", {{C, "Gradient", "5"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Turbulent Noise", {{C, "Gradient", "6"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Soft Noise", {{C, "Gradient", "7"}, {D, "ThresholdBlend", "0.2"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Paint Splatter", {{C, "Gradient", "8"}, {D, "ThresholdBlend", "0.06"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Horizontal Alternating Bars", {{C, "Gradient", "9"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Vertical Alternating Bars", {{C, "Gradient", "10"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Horizontal Alternating Bilinear Bars", {{C, "Gradient", "11"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Vertical Alternating Bilinear Bars", {{C, "Gradient", "12"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Left-Right", {{C, "Gradient", "13"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Right-Left", {{C, "Gradient", "14"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Top-Bottom", {{C, "Gradient", "15"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Bottom-Top", {{C, "Gradient", "16"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Top-Left Diagonal", {{C, "Gradient", "17"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Top-Right Diagonal", {{C, "Gradient", "18"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Bottom-Left Diagonal", {{C, "Gradient", "19"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Linear Bottom-Right Diagonal", {{C, "Gradient", "20"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Horizontal Open", {{C, "Gradient", "21"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Vertical Open", {{C, "Gradient", "22"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Circle Out", {{C, "Gradient", "23"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Circle In", {{C, "Gradient", "24"}, {D, "ThresholdBlend", "0.1"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Box Out", {{C, "Gradient", "25"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Box In", {{C, "Gradient", "26"}, {D, "ThresholdBlend", "0"}}},
+        {"com.vegascreativesoftware:gradientwipe", "Transition", "Floral Growth", {{C, "Gradient", "27"}, {D, "ThresholdBlend", "0.06"}}},
         {cb, g, "Large Tiles", tiles("0.1", "0.1", "true", "0", "0", "0 0 0 1", "1 1 1 1")},
         {cb, g, "Small Tiles", tiles("0.03", "0.03", "true", "0", "0", "0 0 0 1", "1 1 1 1")},
         {cb, g, "Horizontal Stripes", tiles("1", "0.07", "false", "0", "0.5", "0 0 0 0", "1 0.7 0.6 1")},
@@ -162,6 +182,14 @@ std::vector<P> table()
         {tt, g, "Popup", anim(title("Popup", "60", "0.5 0.5", "4", "1 0.85 0.2 1", false, "4"), "_Popup")},
         {tt, g, "Fall Down", anim(title("Fall Down", "48", "0.5 0.5", "4", "1 1 1 1", false, "4"), "_Fall_Down")},
         {tt, g, "Earthquake", anim(title("EARTHQUAKE", "60", "0.5 0.5", "4", "0.9 0.3 0.1 1", true, "0"), "_Earthquake")},
+        {cr, g, "Plain Scrolling on Black", roll("0", "16", "1 1 1 1", "0 0 0 1", rollText)},
+        {cr, g, "Scrolling on Transparent", roll("0", "26.67", "1 0 0 1", "0 0 0 0", rollText)},
+        {cr, g, "Timed, Fade on Black", roll("2", "26.67", "1 1 1 1", "0 0 0 1", rollTitle, "0.442")},
+        {cr, g, "Timed, Zoom In/Out on Blue", roll("3", "26.67", "1 1 1 1", "0 0 1 0.5", rollTitle, "0.553")},
+        {cr, g, "Scrolling, Left Side, on Semi-Black", roll("0", "32.4", "0.8 1 0.8 1", "0 0 0 0.5", rollText, "0.5", true)},
+        {cr, g, "Timed, Scroll Right, on Frosty White", roll("5", "26.67", "0 0 0 1", "1 1 1 0.847", rollText)},
+        {cr, g, "Timed, Wipe In/Out, on Black", roll("4", "26.67", "0.8 0.8 0.8 1", "0 0 0 1", rollItems, "0.536")},
+        {cr, g, "Backward Scrolling, Primary Colors", roll("1", "26.67", "1 0 0 1", "0 0 0 0", rollText)},
         {tt, g, "Scroll", anim(title("Credits\nDirected by\nStarring", "36", "0.5 0.5", "4", "1 1 1 1", false, "0"), "_Scroll")},
         {tt, g, "Scroll Left", anim(title("News crawl text goes here", "28", "0.5 0.1", "4", "1 1 1 1", false, "0"), "_Scroll_Left")},
         {"com.vegascreativesoftware:invert", f, "100% Inversion", {{D, "BlendAmount", "1"}}},
@@ -190,8 +218,8 @@ std::vector<P> table()
         {"com.vegascreativesoftware:pixelate", f, "Large", {{D, "HorizontalPixelization", "0.5"}, {D, "VerticalPixelization", "0.5"}}},
         {"com.vegascreativesoftware:sharpen", f, "Light", {{D, "Amount", "0.25"}}},
         {"com.vegascreativesoftware:sharpen", f, "Heavy", {{D, "Amount", "1"}}},
-        {"com.vegascreativesoftware:chromakeyer", f, "Blue Screen", {{RGB, "color", "0.094 0.278 0.945"}, {D, "LowThreshold", "0"}, {D, "HighThreshold", "0.4"}}},
-        {"com.vegascreativesoftware:chromakeyer", f, "Green Screen", {{RGB, "color", "0.161 0.957 0.094"}, {D, "LowThreshold", "0"}, {D, "HighThreshold", "0.4"}}},
+        {"com.vegascreativesoftware:chromakeyer", f, "Blue Screen", {{RGB, "color", "0.094 0.278 0.945"}, {D, "LowThreshold", "0"}, {D, "HighThreshold", "1"}}},
+        {"com.vegascreativesoftware:chromakeyer", f, "Green Screen", {{RGB, "color", "0.161 0.957 0.094"}, {D, "LowThreshold", "0"}, {D, "HighThreshold", "1"}}},
         {"com.vegascreativesoftware:border", f, "Soft Edge", {{C, "Type", "0"}, {D, "Size", "0.05"}}},
         {"com.vegascreativesoftware:border", f, "Solid White Border", {{C, "Type", "2"}, {D, "Size", "0.1"}, {RGBA, "color", "1 1 1 1"}}},
         {"com.vegascreativesoftware:border", f, "Bevel", {{C, "Type", "1"}, {D, "Size", "0.1"}, {D, "Angle", "135"}, {RGBA, "color", "1 1 1 1"}}},
@@ -246,6 +274,7 @@ std::vector<P> table()
         {"com.vegascreativesoftware:swirl", f, "Reset to None", {{D, "Amount", "0"}}},
         {"com.vegascreativesoftware:pinchpunch", f, "Reset to None", {{D, "Amount", "0"}}},
         {"com.vegascreativesoftware:wave", f, "Reset to None", {{D, "VerticalAmplitude", "0"}, {D, "HorizontalAmplitude", "0"}}},
+        {"com.vegascreativesoftware:lightrays", f, "Reset to None", {{D, "group0Strength", "0"}}},   // (VEGAS draws the input unchanged)
         {"com.vegascreativesoftware:wave", f, "Large", {{D, "VerticalWaves", "5.4"}, {D, "HorizontalWaves", "5.4"}, {D, "VerticalAmplitude", "0.05"}, {D, "HorizontalAmplitude", "0.05"}, {D, "VerticalPhase", "0"}, {D, "HorizontalPhase", "0"}}},
         {"com.vegascreativesoftware:wave", f, "Medium", {{D, "VerticalWaves", "14"}, {D, "HorizontalWaves", "14"}, {D, "VerticalAmplitude", "0.05"}, {D, "HorizontalAmplitude", "0.05"}, {D, "VerticalPhase", "0"}, {D, "HorizontalPhase", "0"}}},
         {"com.vegascreativesoftware:wave", f, "Small", {{D, "VerticalWaves", "20"}, {D, "HorizontalWaves", "20"}, {D, "VerticalAmplitude", "0.03"}, {D, "HorizontalAmplitude", "0.03"}, {D, "VerticalPhase", "0"}, {D, "HorizontalPhase", "0"}}},

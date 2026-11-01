@@ -58,6 +58,7 @@ inline const std::map<QString, QVariant>& defaults()
         // ---- Video (beside Preferences' own: RAM preview, threads, thumbnails, safe areas, grid)
         // GPU acceleration of video processing: OpenFX effects that can render with OpenGL do (as VEGAS)
         {"prefs/gpuAccel", true},
+        {"prefs/vegasGpuAccel", true},
         // GPU API for video processing: "vulkan" (built-in effects run on the card, plug-ins may use OpenGL),
         // "opengl" (plug-ins only) or "off"
         {"prefs/gpuApi", QString("vulkan")},

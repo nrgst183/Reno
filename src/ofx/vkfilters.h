@@ -86,8 +86,6 @@ struct GlintSetup { int maskMode = 0, n = 0; bool effectOnly = false, flicker = 
 namespace more { bool glintSetup(Ctx& c, int W, int H, GlintSetup& o); void shearParamsGpu(int lines, double t, std::vector<float>& tab); }   // builtins_velvet.cpp
 struct PolarGpu { int nT = 0, rN = 0; double px0 = 0, py0 = 0; std::vector<float> cs, sn; std::vector<int> rEnd; };
 bool polarGeomGpu(int W, int H, double px0, double py0, double density, PolarGpu& o);   // builtins_fast2.cpp
-struct LrSetup { double px0 = 0, py0 = 0; float sensF = 0, kk[3] = {0, 0, 0}, fb = 1; };
-namespace more { void lightRaysSetup(Ctx& c, int W, int H, LrSetup& o); }   // builtins_more_light.cpp
 struct PanoSetup { bool copy = false; int n = 1, px[2] = {0, 0}, py[2] = {0, 0}, pw = 0, ph = 0; std::vector<float> map; };
 bool panoramaSetupGpu(Ctx& c, int W, int H, PanoSetup& o);   // builtins_vegasrest.cpp (360 Stabilization)
 struct SceneSetup { int stereo = 0; bool levels = false; std::vector<float> map; };

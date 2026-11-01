@@ -75,6 +75,7 @@ struct FrameIO {
     // takes the frame from the card (the same 8-bit values the download would have given, so a chain gives the pictures one-by-one running gives).
     // Ignored (the frame is downloaded as usual) when too many frames are waiting.
     bool deferOut = false;
+    bool tiesDown = false;              // 8-bit output: a value exactly half way between two levels goes down (pack_u8)
 };
 struct RunStats {
     double gpuMs = 0;                   // the kernels (the unpack, the passes, the pack), as the card's timestamps say

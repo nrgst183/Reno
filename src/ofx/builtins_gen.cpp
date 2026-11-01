@@ -975,8 +975,12 @@ void titlesAndText(Ctx& c)
 
 
 // ------------------------------------------------------------------ Credit Roll
-// VEGAS's Credit Roll: a row is a title (line starts with a space), a two-column line (tab between columns) or a sub-item (anything else); "//" starts a comment line, an empty line is a gap.
-// The block rolls from below the frame to above over 'Roll duration' seconds (VEGAS uses the media's length, which a generator cannot see: set it to the event's length).
+// VEGAS's Credit Roll. A line is a title (it starts with a space), a two-column line (a tab between the columns; the gap between them is filled with dots, as VEGAS's
+// does) or a sub-item (anything else, centred); "//" starts a comment line and an empty line is a gap. The layout and the way it moves were read off VEGAS's own
+// pictures of it (Reno Effect Capture), not from its code: the title is 1.5x the size and bold, a sub-item is bold, the columns run from 10% to 90% of the width
+// ("left side" only to 60%), and the block scrolls at one frame height in 6 seconds (VEGAS Pro 18's "Plain Scrolling"). The timed styles (fade, zoom, wipe, scroll
+// right) show the block still, in the middle of the frame, with the effect running over the first 'Timed in/out time' seconds (and the last ones when a
+// duration is given).
 struct CreditRow {
     std::string left, right;
     bool title = false, gap = false;
@@ -1016,6 +1020,73 @@ std::vector<CreditRow> creditRows(const std::string& text)
     return rows;
 }
 
+// The block of text laid out at one size: every piece with its place relative to the block's top (x is in the frame already).
+struct CreditPiece {
+    TextMask m;
+    double x = 0, y = 0;
+};
+struct CreditBlock {
+    std::vector<CreditPiece> pieces;
+    double height = 0;
+};
+
+CreditBlock creditLayout(const std::vector<CreditRow>& rows, const std::string& font, bool bold, bool italic, double size, double left, double right)
+{
+    CreditBlock blk;
+    const double centre = (left + right) * 0.5;
+    auto make = [&](const std::string& text, bool b, double px, TextMask& m, double& pad) {
+        TextRequest rq;
+        rq.text = text;
+        rq.font = font;
+        rq.pixelSize = px;
+        rq.bold = b || bold;
+        rq.italic = italic;
+        rq.align = 1;
+        pad = std::ceil(std::min(4000.0, std::max(1.0, px)) * 0.15);       // (the margin the text rasteriser leaves round the line)
+        return !text.empty() && rasterizeText(rq, m) && m.w > 2 * pad && m.h > 2 * pad;
+    };
+    double dotAdv = 0;
+    {
+        TextMask m;
+        double pad = 0;
+        if (make(std::string(20, '.'), false, size, m, pad)) dotAdv = (m.w - 2 * pad) / 20.0;       // (twenty, so the whole pixels the mask is rounded up to don't count)
+    }
+    double y = 0;
+    for (const CreditRow& r : rows) {
+        if (r.gap) { y += size * 1.15; continue; }
+        const double px = r.title ? size * 1.5 : size;
+        const bool b = r.title || r.right.empty();      // titles and sub-items are bold, the two-column lines are not
+        double rowH = 0;
+        if (r.right.empty()) {
+            CreditPiece a;
+            double pad = 0;
+            if (make(r.left, b, px, a.m, pad)) {
+                a.x = centre - a.m.w * 0.5;
+                a.y = y - pad;
+                rowH = a.m.h - 2 * pad;
+                blk.pieces.push_back(std::move(a));
+            }
+        } else {
+            CreditPiece a, d, e;
+            double pa = 0, pe = 0, pd = 0;
+            const bool ha = make(r.left, false, px, a.m, pa), he = make(r.right, false, px, e.m, pe);
+            double wl = 0, wr = 0;
+            if (ha) { wl = a.m.w - 2 * pa; a.x = left - pa; a.y = y - pa; rowH = std::max(rowH, a.m.h - 2 * pa); }
+            if (he) { wr = e.m.w - 2 * pe; e.x = right - wr - pe; e.y = y - pe; rowH = std::max(rowH, e.m.h - 2 * pe); }
+            if (ha && he && dotAdv > 0) {
+                const int n = (int)std::floor((right - wr - (left + wl)) / dotAdv);
+                if (n > 0 && n < 2000 && make(std::string((size_t)n, '.'), false, px, d.m, pd)) { d.x = left + wl - pd; d.y = y - pd; blk.pieces.push_back(std::move(d)); }
+            }
+            if (ha) blk.pieces.push_back(std::move(a));
+            if (he) blk.pieces.push_back(std::move(e));
+        }
+        y += rowH;
+        if (r.title) y += size * 1.6;
+    }
+    blk.height = y;
+    return blk;
+}
+
 void creditRoll(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
@@ -1028,57 +1099,62 @@ void creditRoll(Ctx& c)
     const std::vector<CreditRow> rows = creditRows(c.s("Text"));
     if (rows.empty() || W <= 0 || H <= 0) return;
     const double points = std::max(1.0, c.d("FontSize"));
-    const double px = std::max(c.px(0.5), std::min((double)H * 4, points * H / 400.0));
+    const double size = std::max(c.px(0.5), std::min((double)H * 4, points * H / 400.0));
     const std::string font = c.s("FontName").empty() ? std::string("Arial") : c.s("FontName");
-    const double gapRows = px * 0.35, colGap = px * std::max(0.0, c.d("ColumnGap"));
-
-    struct Placed { TextMask m; double x = 0, y = 0; };
-    std::vector<Placed> placed;
-    double y = 0;
-    auto make = [&](const std::string& text, bool title, double size, int align, TextMask& m) {
-        TextRequest rq;
-        rq.text = text;
-        rq.font = font;
-        rq.pixelSize = size;
-        rq.bold = title || c.b("Bold");
-        rq.italic = c.b("Italic");
-        rq.align = align;
-        return !text.empty() && rasterizeText(rq, m) && m.w > 0 && m.h > 0;
-    };
-    for (const CreditRow& r : rows) {
-        if (r.gap) { y += px * 1.2; continue; }
-        const double size = r.title ? px * 1.3 : px;
-        if (r.title) y += gapRows * 1.5;
-        double rowH = 0;
-        if (r.right.empty()) {
-            Placed pl;
-            if (make(r.left, r.title, size, 1, pl.m)) {
-                pl.x = (W - pl.m.w) * 0.5;      // centred
-                pl.y = y;
-                rowH = pl.m.h;
-                placed.push_back(std::move(pl));
-            }
-        } else {
-            Placed a, b;
-            const bool ha = make(r.left, false, size, 2, a.m), hb = make(r.right, false, size, 0, b.m);
-            if (ha) { a.x = W * 0.5 - colGap * 0.5 - a.m.w; a.y = y; rowH = std::max(rowH, (double)a.m.h); placed.push_back(std::move(a)); }
-            if (hb) { b.x = W * 0.5 + colGap * 0.5; b.y = y; rowH = std::max(rowH, (double)b.m.h); placed.push_back(std::move(b)); }
-        }
-        y += rowH + gapRows;
-    }
-    const double block = y;
     const double secs = c.fps > 0 ? c.time / c.fps : c.time / 30.0;
-    const double f = clampd(secs / std::max(0.1, c.d("RollDuration")), 0, 1);
-    const double top = H - f * (H + block);
+    const double dur = c.d("RollDuration");                 // 0: VEGAS's own speed (the frame's height in 6 seconds); else the roll takes this long (and timed styles end then)
+    const int anim = c.i("Animation");                      // 0 scroll up, 1 scroll down, 2 fade, 3 zoom, 4 wipe, 5 scroll right
+    const double l0 = W * 0.1, r0 = c.b("LeftSide") ? W * 0.6 : W * 0.9;
+    const bool timed = anim >= 2;
+
+    // how far into the timed effect: 0 hidden, 1 complete (in over the first seconds, out over the last ones)
+    double u = 1;
+    if (timed) {
+        const double tin = std::max(0.01, c.d("InTime"));
+        u = clampd(secs / tin, 0, 1);
+        if (dur > 0) u = std::min(u, clampd((dur - secs) / tin, 0, 1));
+        if (u <= 0) return;
+    }
+    const bool zoom = anim == 3;
+    const double z = zoom ? std::max(0.02, u * u) : 1.0;
+    const double centreX = (l0 + r0) * 0.5;
+    CreditBlock blk = creditLayout(rows, font, c.b("Bold"), c.b("Italic"), size * z, centreX + (l0 - centreX) * z, centreX + (r0 - centreX) * z);
+    if (blk.pieces.empty()) return;
+
+    double top, dx = 0;
+    if (timed) {
+        top = c.d("TimedY") * H - blk.height * 0.5;
+        if (anim == 5) {
+            const double a = dur > 0 ? clampd((dur - secs) / std::max(0.01, c.d("InTime")), 0, 1) : 1.0;
+            dx = -(1 - clampd(secs / std::max(0.01, c.d("InTime")), 0, 1)) * 1.6 * W + (1 - a) * 1.6 * W;
+        }
+    } else {
+        if (dur > 0) {
+            // over 'duration' seconds from just off one edge to just off the other (the ink of the pieces, margins included)
+            double ink0 = 1e30, ink1 = -1e30;
+            for (const CreditPiece& pl : blk.pieces) { ink0 = std::min(ink0, pl.y); ink1 = std::max(ink1, pl.y + pl.m.h); }
+            const double f = clampd(secs / dur, 0, 1), ext = H + ink1 - ink0;
+            top = anim == 1 ? -ink1 + f * ext : (H - ink0) - f * ext;
+        } else {
+            const double travel = secs / 6.0 * H;           // one frame height in 6 seconds
+            top = anim == 1 ? travel - blk.height : H - travel;
+        }
+    }
+    const double band = W * 0.1, edge = (W + band) * std::pow(u, 1.85);
     std::vector<float> cover((size_t)W * H, 0.f);
-    for (const Placed& pl : placed) {
-        const int X0 = (int)std::lround(pl.x), Y0 = (int)std::lround(top + pl.y);
+    for (const CreditPiece& pl : blk.pieces) {
+        const int X0 = (int)std::lround(pl.x + dx), Y0 = (int)std::lround(top + pl.y);
         for (int yy = 0; yy < pl.m.h; ++yy) {
             const int fy = Y0 + yy;
             if (fy < 0 || fy >= H) continue;
             for (int xx = 0; xx < pl.m.w; ++xx) {
                 const int fx = X0 + xx;
-                if (fx >= 0 && fx < W) cover[(size_t)fy * W + fx] = std::max(cover[(size_t)fy * W + fx], pl.m.a[(size_t)yy * pl.m.w + xx] / 255.f);
+                if (fx < 0 || fx >= W) continue;
+                float v = pl.m.a[(size_t)yy * pl.m.w + xx] / 255.f;
+                if (anim == 2) v *= (float)u;
+                else if (anim == 4) v *= (float)clampd((edge - fx) / band, 0, 1);
+                float& dst = cover[(size_t)fy * W + fx];
+                dst = std::max(dst, v);
             }
         }
     }
@@ -1181,12 +1257,14 @@ void addGenerators(std::vector<Def>& out)
         d.label = "Credit Roll";
         d.group = kGroup;
         d.generator = true;
-        d.description = "Credits rolling up the frame. A line starting with a space is a title, a tab splits two columns, // starts a comment.";
-        PDef t = text("Text", "Credits text", " Cast\nFirst Actor\tThe Hero\nSecond Actor\tThe Villain\n\n Crew\nDirector\tA. Person\nEditor\tB. Person", true);
+        d.description = "Credits for a title roll, scrolling up from the bottom or timed (fade, zoom, wipe). A line starting with a space is a title, a tab splits two columns, // starts a comment.";
+        PDef t = text("Text", "Credits text", " Title Text\nSubitem Text\nItem Left\tItem Right\nLonger Item Left\tLonger Item Right", true);
         t.hint = "A line starting with a space is a title; a tab splits two columns; // starts a comment; an empty line is a gap";
-        d.params = {t, text("FontName", "Font", "Arial", false), dbl("FontSize", "Size (points)", 32, 1, 1000), boolean("Bold", "Bold", false),
-                    boolean("Italic", "Italic", false), rgba("TextColor", "Text color", 1, 1, 1, 1), rgba("Background", "Background color", 0, 0, 0, 1),
-                    dbl("ColumnGap", "Column gap (ems)", 1.0, 0, 20), dbl("RollDuration", "Roll duration (seconds)", 10, 0.1, 3600)};
+        d.params = {t, choice("Animation", "Style", 0, {"Scroll up", "Scroll down (backward)", "Timed, fade", "Timed, zoom in/out", "Timed, wipe in/out", "Timed, scroll right"}),
+                    boolean("LeftSide", "Left side only", false), text("FontName", "Font", "Arial", false), dbl("FontSize", "Size (points)", 16, 1, 1000),
+                    boolean("Bold", "Bold", false), boolean("Italic", "Italic", false), rgba("TextColor", "Text color", 1, 1, 1, 1),
+                    rgba("Background", "Background color", 0, 0, 0, 1), dbl("RollDuration", "Duration (seconds, 0: VEGAS's speed)", 0, 0, 3600),
+                    dbl("InTime", "Timed in/out time (seconds)", 0.8333, 0.01, 60), dbl("TimedY", "Timed: height of the text (0 top, 1 bottom)", 0.5, 0, 1)};
         d.render = creditRoll;
         out.push_back(d);
     }

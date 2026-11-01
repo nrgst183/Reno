@@ -144,6 +144,7 @@ const char* kHelp =
     "                           dxva2, cuda, vaapi, vdpau, videotoolbox). Default: auto on Windows, off elsewhere.\n"
     "  --gpu on|off             render OpenFX effects with OpenGL where they support it (default on); off uses the\n"
     "                           processor only. Effects that fail with OpenGL fall back to the processor.\n"
+    "  --vegas-gpu on|off       draw VEGAS's effects like VEGAS with its GPU acceleration on (OpenCL kernels, default) or off (CPU code)\n"
     "  --vegas-fx real|builtin  VEGAS's own effects (Gaussian Blur, Cookie Cutter ...): Reno's built-in versions,\n"
     "                           ignoring the installed ones (builtin; default, or the Preferences > Video setting),\n"
     "                           or VEGAS's OpenFX plug-ins if installed and working (real)\n"
@@ -573,6 +574,7 @@ struct Options {
     bool hashFrames = false;                // --hash [FILE]
     std::string hashFile;
     int efx = -1;                           // --efx real|builtin (-1: use the preference)
+    int vegasGpu = -1;                      // --vegas-gpu on|off (-1: use the preference)
     int vegasFx = -1;                       // --vegas-fx real|builtin (-1: use the preference)
     int dxFx = -1;                          // --dx-fx real|builtin (-1: use the preference)
     std::string gpuApi;                     // --gpu-api vulkan|opengl|off (empty: use the preference)
@@ -757,6 +759,12 @@ bool parseArgs(const std::vector<std::string>& args, Options& o, std::string* pr
             for (char& c : v) c = (char)std::tolower((unsigned char)c);
             if (v != "on" && v != "off") { *problem = "--gpu wants on or off"; return false; }
             o.gpu = v == "on" ? 1 : 0;
+        }
+        else if (a == "--vegas-gpu") {
+            if (!need(k, a, &v)) return false;
+            for (char& c : v) c = (char)std::tolower((unsigned char)c);
+            if (v != "on" && v != "off") { *problem = "--vegas-gpu wants on or off"; return false; }
+            o.vegasGpu = v == "on" ? 1 : 0;
         }
         else if (a == "--gpu-api") {
             if (!need(k, a, &v)) return false;
@@ -1484,6 +1492,10 @@ void setUpHost(const Options& o, AppState& app)
         ofx::Host::get().applyConfig();
     }
     if (!o.gpuApi.empty()) app::prefsapply::applyGpuApi(o.gpuApi, o.gpu != 0 && ofx::Host::get().config.gpu);
+    if (o.vegasGpu >= 0 && ofx::Host::get().config.vegasGpu != (o.vegasGpu == 1)) {
+        ofx::Host::get().config.vegasGpu = o.vegasGpu == 1;
+        ofx::Host::get().applyConfig();
+    }
     if (o.vegasFx >= 0) ofx::Host::get().config.preferBuiltinVegasFx = o.vegasFx == 1;
     if (o.efx >= 0) setEfxPreferBuiltin(o.efx == 1);
     if (o.dxFx >= 0) setDxPreferBuiltin(o.dxFx == 1);

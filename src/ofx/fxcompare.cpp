@@ -558,6 +558,28 @@ void hookClips(Instance& inst, const RunSpec& rs, const std::shared_ptr<Feed>& f
     }
 }
 
+// Every property a property set holds, as { name: [values] } (strings, numbers; a pointer as "<pointer>"): what a plug-in set while it described itself, the
+// names Reno does not know included. Written for the real VEGAS plug-ins into the vegasfx report ("descriptor") to see what depths and flags VEGAS gives each effect.
+Json propsJson(const PropertySet& set)
+{
+    Json o = Json::object();
+    std::vector<std::string> names = set.names();
+    std::sort(names.begin(), names.end());
+    for (const std::string& n : names) {
+        const Property* pr = set.find(n);
+        if (!pr) continue;
+        Json v = Json::array();
+        for (int k = 0, d = pr->dim(); k < d; ++k) {
+            if (pr->type == PType::Int) v.push((int)pr->i[(size_t)k]);
+            else if (pr->type == PType::Double) v.push(pr->d[(size_t)k]);
+            else if (pr->type == PType::String) v.push(pr->s[(size_t)k]);
+            else v.push(std::string("<pointer>"));
+        }
+        o[n] = v;
+    }
+    return o;
+}
+
 // Renders a scenario's frames. Fills 'rec' (the scenario's entry in the result); the pictures go to files.
 void runScenario(Plugin* pl, const RunSpec& rs, const Json& scen, int index, Json& rec)
 {
@@ -720,6 +742,23 @@ int childRun(const RunSpec& rs)
         return 0;
     }
     res["instanceOk"] = true;
+    {
+        // what the plug-in set while describing itself (the depths it supports, whether it takes different depths on its clips, VEGAS's own flags) and, for this
+        // context, what it set on the effect and on each clip
+        Json dj = Json::object();
+        dj["supportedPixelDepths"] = Json::array();
+        for (const std::string& d : pl->info.depths) { Json l = dj.get("supportedPixelDepths"); l.push(d); dj["supportedPixelDepths"] = l; }
+        if (pl->desc) dj["plugin"] = propsJson(pl->desc->props);
+        auto cit = pl->contextDescs.find(rs.context);
+        if (cit != pl->contextDescs.end() && cit->second) {
+            dj["context"] = propsJson(cit->second->props);
+            Json clips = Json::object();
+            for (const auto& c : cit->second->clips)
+                if (c) clips[c->name] = propsJson(c->props);
+            dj["clips"] = clips;
+        }
+        res["descriptor"] = dj;
+    }
     int params = 0;
     Json names = Json::array();
     for (const auto& p : probe->params.params)
@@ -1343,7 +1382,7 @@ Json sideJson(const Side& s)
         for (const auto& x : s.failures) f.push(x);
         j["failures"] = f;
     }
-    for (const char* k : {"label", "version", "params", "multiResolution", "overlay", "ownWindow", "problem", "crashedAt"})
+    for (const char* k : {"label", "version", "params", "multiResolution", "overlay", "ownWindow", "descriptor", "problem", "crashedAt"})
         if (s.merged.has(k)) j[k] = s.merged.get(k);
     if (s.merged.has("scenarios")) {
         Json list = Json::array();

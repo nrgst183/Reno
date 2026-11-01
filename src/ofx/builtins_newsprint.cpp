@@ -5,6 +5,8 @@
 //     offset print (Offset color: yellow up and left, magenta up and right, cyan down, a quarter of a radius out);
 //   - the ellipse's edge is a pixel wide, its coverage from a table (area of a circle's segment), laid on the paper by removing (255 - colour) * coverage / 256 from each channel;
 //   - Dot sizes under 0.15 are faded in from the picture (Monochrome: from its grey); at 0 it is the picture itself.
+// On float frames (what VEGAS hands it in a project) VEGAS's pictures differ in three ways: the dots are a half pixel over (right and up, pixel-index centres), a dot's colour is the
+// average of the P x P block around it (not a bilinear look into the shrunk picture), and the three offset inks keep their places by colour (yellow up left) although the channels lie red first.
 #include "builtins_impl.h"
 #include "vkfilters.h"
 #include <algorithm>
@@ -147,11 +149,50 @@ void sampleS(const Pic& S, i64 sx, i64 sy, int* out)
     }
 }
 
+// Float frames: a dot's colour is the plain average of the P x P block around the dot (areas of the pixels it covers), not a bilinear look into the shrunk picture.
+// 'pre' holds the running sums of the picture (W + 1 by H + 1 entries of 4 channels); the sum over a box with fractional edges is the bilinear read of them.
+void buildPrefix(const Pic& M, std::vector<double>& pre)
+{
+    const int W = M.w, H = M.h;
+    pre.assign((size_t)(W + 1) * (H + 1) * 4, 0.0);
+    for (int y = 0; y < H; ++y) {
+        double row[4] = {0, 0, 0, 0};
+        for (int x = 0; x < W; ++x) {
+            const int* q = M.at(x, y);
+            for (int k = 0; k < 4; ++k) {
+                row[k] += q[k];
+                pre[((size_t)(y + 1) * (W + 1) + x + 1) * 4 + k] = pre[((size_t)y * (W + 1) + x + 1) * 4 + k] + row[k];
+            }
+        }
+    }
+}
+double prefixAt(const std::vector<double>& pre, int W, int H, double u, double v, int k)
+{
+    u = std::min(std::max(u, 0.0), (double)W);
+    v = std::min(std::max(v, 0.0), (double)H);
+    const int x = std::min((int)u, W - 1), y = std::min((int)v, H - 1);
+    const double fx = u - x, fy = v - y;
+    auto at = [&](int xx, int yy) { return pre[((size_t)yy * (W + 1) + xx) * 4 + k]; };
+    return at(x, y) * (1 - fx) * (1 - fy) + at(x + 1, y) * fx * (1 - fy) + at(x, y + 1) * (1 - fx) * fy + at(x + 1, y + 1) * fx * fy;
+}
+void boxAverage(const std::vector<double>& pre, int W, int H, double x0, double y0, double x1, double y1, int* out)
+{
+    const double cx0 = std::min(std::max(x0, 0.0), (double)W), cx1 = std::min(std::max(x1, 0.0), (double)W);
+    const double cy0 = std::min(std::max(y0, 0.0), (double)H), cy1 = std::min(std::max(y1, 0.0), (double)H);
+    const double area = (cx1 - cx0) * (cy1 - cy0);
+    for (int k = 0; k < 4; ++k) {
+        if (area <= 0.0) { out[k] = 0; continue; }
+        const double sum = prefixAt(pre, W, H, cx1, cy1, k) - prefixAt(pre, W, H, cx0, cy1, k) - prefixAt(pre, W, H, cx1, cy0, k) + prefixAt(pre, W, H, cx0, cy0, k);
+        out[k] = rnd(sum / area);
+    }
+}
+
 // One dot: the ellipse at (X, Y) with the radii rx, ry takes (255 - col) * cover / 256 off each of the three colour channels.
-void ellipse(Pic& D, const CoverTable& tab, double X, double Y, double rx, double ry, const int* col)
+void ellipse(Pic& D, const CoverTable& tab, double X, double Y, double rx, double ry, const int* col, bool half = false)
 {
     const int W = D.w, H = D.h;
     int y0 = rnd(Y - ry - 0.499999985), x0 = rnd(X - rx - 0.499999985), y1 = rnd(Y + ry + 0.499999985), x1 = rnd(X + rx + 0.499999985);
+    if (half) { --y0; --x0; ++y1; ++x1; }
     y0 = std::min(std::max(y0, 0), H - 1);
     y1 = std::min(std::max(y1, 0), H);
     x0 = std::min(std::max(x0, 0), W - 1);
@@ -160,9 +201,9 @@ void ellipse(Pic& D, const CoverTable& tab, double X, double Y, double rx, doubl
     const double k = ry / rx;
     const double in0 = std::max(ry - 0.7, 0.0), inn = in0 * in0;
     for (int y = y0; y < y1; ++y) {
-        const double ddy = (double)y + 0.0 - Y + 0.5, dy = ddy * ddy;
+        const double ddy = (double)y + 0.0 - Y + (half ? 1.0 : 0.5), dy = ddy * ddy;
         for (int x = x0; x < x1; ++x) {
-            const double dx = ((double)x + 0.5 - X) * k, d2 = dx * dx + dy;
+            const double dx = ((double)x + (half ? 0.0 : 0.5) - X) * k, d2 = dx * dx + dy;
             int* d = D.at(x, y);
             if (inn > d2) {
                 for (int ch = 0; ch < 3; ++ch) {
@@ -234,9 +275,20 @@ void vegasNewsprint(Ctx& c)
     const int type = c.i("Type");
     if (!g.ok) {
         c.out.px = c.src.px;
+        if (type == 1 && g.dot <= 0.0) {
+            // Monochrome with no dots: the picture's grey (VEGAS's capture of Type = Monochrome at the default Dot size; the same weights as the fade below)
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x) {
+                    float* o = c.out.at(x, y);
+                    const int r = rnd(clamp01(o[0]) * 255.f), gg = rnd(clamp01(o[1]) * 255.f), b = rnd(clamp01(o[2]) * 255.f), a = rnd(clamp01(o[3]) * 255.f);
+                    const double grey = std::min((double)b * 0.114 + (double)gg * 0.587 + (double)r * 0.299, (double)a);
+                    o[0] = o[1] = o[2] = (float)(int)grey / 255.f;
+                }
+        }
         return;
     }
-    // the picture in 8 bits, B G R A (premultiplied, as it lies)
+    const bool fl = !c.levels;
+    // the picture in 8 bits, in memory order: B G R A (premultiplied, as it lies); red first on float frames
     Pic M;
     M.w = W;
     M.h = H;
@@ -245,9 +297,9 @@ void vegasNewsprint(Ctx& c)
         for (int x = 0; x < W; ++x) {
             const float* p = c.src.at(x, y);
             int* q = M.at(x, y);
-            q[0] = rnd(clamp01(p[2]) * 255.f);
+            q[0] = rnd(clamp01(p[fl ? 0 : 2]) * 255.f);       // (float frames lie red first in memory, 8-bit ones blue first; VEGAS numbers in memory order)
             q[1] = rnd(clamp01(p[1]) * 255.f);
-            q[2] = rnd(clamp01(p[0]) * 255.f);
+            q[2] = rnd(clamp01(p[fl ? 2 : 0]) * 255.f);
             q[3] = rnd(clamp01(p[3]) * 255.f);
         }
     const double P = g.P;
@@ -265,6 +317,9 @@ void vegasNewsprint(Ctx& c)
     const i64 maxX = g.maxX, maxY = g.maxY;
     const double fxo = g.fxo, fyo = g.fyo;
     const int par = g.par;
+    const double boxOX = 0.0, boxOY = 0.5;      // where the colour block sits against the dot's grid position (best of the captured pictures; flat optimum)
+    std::vector<double> pre;
+    if (fl) buildPrefix(M, pre);
     (void)type;
     for (int j = -1; j < nby + 3; ++j) {
         const double yy = (double)j + 0.0 + fyo;
@@ -276,21 +331,29 @@ void vegasNewsprint(Ctx& c)
             i64 sx = (i64)(xx * 16384);
             sx = sx < 0 ? 0 : std::min(sx, maxX);
             int cc[4];
-            sampleS(S, sx, sy, cc);
+            if (fl) {
+                const double cx = xx * P + boxOX, cy = yy * P + boxOY;
+                boxAverage(pre, W, H, cx - P * 0.5, cy - P * 0.5, cx + P * 0.5, cy + P * 0.5, cc);
+            } else {
+                sampleS(S, sx, sy, cc);
+            }
             const double lum = 1.0 - (cc[0] * 0.0004470588235294118 + cc[1] * 0.0023019607843137255 + cc[2] * 0.001172549019607843);
             const double rx = P * 0.5 * lum * 1.25, ry = P * 0.5 * lum * 1.25;
             if (!(rx > 0.00392156862745098 && ry > 0.00392156862745098)) continue;
             const double X = xx * P, Y = yy * P;
             if (mode == 0) {
                 const int col[3] = {0, 0, 0};
-                ellipse(D, tab, X, Y, rx, ry, col);
+                ellipse(D, tab, X, Y, rx, ry, col, fl);
             } else if (mode == 1) {
-                ellipse(D, tab, X, Y, rx, ry, cc);
+                ellipse(D, tab, X, Y, rx, ry, cc, fl);
             } else {
                 const int c0[3] = {cc[0], 255, 255}, c1[3] = {255, cc[1], 255}, c2[3] = {255, 255, cc[2]};
-                ellipse(D, tab, X - rx * 0.25, Y - ry * 0.25, rx, ry, c0);
-                ellipse(D, tab, X + rx * 0.25, Y - ry * 0.25, rx, ry, c1);
-                ellipse(D, tab, X, Y + ry * 0.25, rx, ry, c2);
+                // the inks keep their places by colour (yellow up and left, magenta up and right, cyan down): on float frames, which lie red first, yellow is the third channel
+                const int* ca = fl ? c2 : c0;
+                const int* cd = fl ? c0 : c2;
+                ellipse(D, tab, X - rx * 0.25, Y - ry * 0.25, rx, ry, ca, fl);
+                ellipse(D, tab, X + rx * 0.25, Y - ry * 0.25, rx, ry, c1, fl);
+                ellipse(D, tab, X, Y + ry * 0.25, rx, ry, cd, fl);
             }
         }
     }
@@ -307,7 +370,7 @@ void vegasNewsprint(Ctx& c)
                 const int* s = M.at(x, y);
                 int src[4] = {s[0], s[1], s[2], s[3]};
                 if (mode == 0) {
-                    const double g = std::min((double)s[0] * 0.114 + (double)s[1] * 0.587 + (double)s[2] * 0.299, (double)s[3]);
+                    const double g = std::min(fl ? (double)s[2] * 0.114 + (double)s[1] * 0.587 + (double)s[0] * 0.299 : (double)s[0] * 0.114 + (double)s[1] * 0.587 + (double)s[2] * 0.299, (double)s[3]);
                     src[0] = src[1] = src[2] = (int)g;
                 }
                 const int a = mix(d[3], src[3]);
@@ -319,9 +382,9 @@ void vegasNewsprint(Ctx& c)
         for (int x = 0; x < W; ++x) {
             const int* q = D.at(x, y);
             float* o = c.out.at(x, y);
-            o[0] = (float)q[2] / 255.f;
+            o[0] = (float)q[fl ? 0 : 2] / 255.f;
             o[1] = (float)q[1] / 255.f;
-            o[2] = (float)q[0] / 255.f;
+            o[2] = (float)q[fl ? 2 : 0] / 255.f;
             o[3] = (float)q[3] / 255.f;
         }
 }

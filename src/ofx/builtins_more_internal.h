@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 
 namespace reno {
 namespace ofx {
@@ -24,6 +25,62 @@ inline void perPixel(Ctx& c, F fn)
             premul(c.out.at(x, y), r, g, b, a);
         }
     });
+}
+
+// The reads and writes of VEGAS's OpenCL kernels, shared by the ported kernels (one rule, as the GPU does it). img: rows bottom first, RGBA floats, size W x H.
+// A CLK_FILTER_LINEAR read at pixel coordinates (px, py) (the kernels add no half pixel): the card's texture unit weights the four neighbours (edges repeated) with the fractions rounded to
+// 1/256 (NVIDIA hardware filtering, 8-bit fractional weights), blended as a + (b - a) * f along x, then along y.
+inline void oclLinear4(const std::vector<float>& img, int W, int H, float px, float py, float* o)
+{
+    const float flx = std::floor(px), fly = std::floor(py);
+    float fx = px - flx, fy = py - fly;
+    fx = std::floor(fx * 256.f + 0.5f) / 256.f;
+    fy = std::floor(fy * 256.f + 0.5f) / 256.f;
+    const int x0 = (int)std::max(-2.0, std::min((double)W + 1, (double)flx)), y0 = (int)std::max(-2.0, std::min((double)H + 1, (double)fly));
+    const int xa = std::max(0, std::min(W - 1, x0)), xb = std::max(0, std::min(W - 1, x0 + 1));
+    const int ya = std::max(0, std::min(H - 1, y0)), yb = std::max(0, std::min(H - 1, y0 + 1));
+    const float* a = &img[((size_t)ya * W + xa) * 4];
+    const float* b = &img[((size_t)ya * W + xb) * 4];
+    const float* cc = &img[((size_t)yb * W + xa) * 4];
+    const float* d = &img[((size_t)yb * W + xb) * 4];
+    for (int k = 0; k < 4; ++k) {
+        const float t0 = a[k] + (b[k] - a[k]) * fx, t1 = cc[k] + (d[k] - cc[k]) * fx;
+        o[k] = t0 + (t1 - t0) * fy;
+    }
+}
+// write_imagef to an 8-bit UNORM picture kept in the kernel (the middle pictures): v kept in 0..1 and rounded to the nearest level.
+inline float oclUnormLevel(float v, float add) { return std::floor(std::min(std::max(v, 0.f), 1.f) * 255.f + add) / 255.f; }
+// The 8-bit store of a kernel's float result (write_imagef): round to nearest with the ties and a little above them going down. Fitted to VEGAS's pictures (Radial Blur, Median, Pixelate: an offset of
+// 0.5 is wrong in 4% of the pixels, 0.3 and 0.4 are worse again, 0.45 .. 0.48 are as good as it gets); no GPU rule found that explains it.
+inline float oclWriteLevel(float v) { return std::floor(std::min(std::max(v, 0.f), 1.f) * 255.f + 0.46f) / 255.f; }
+
+// The bicubic read of the OpenCL kernels (Catmull-Rom, a = -0.5, nearest reads with the edges repeated) at float pixel coordinates (px, py) of an RGBA picture W x H, rows bottom first.
+inline void oclBicubic4(const std::vector<float>& img, int W, int H, float px, float py, float* o)
+{
+    const float fl_x = std::floor(px), fl_y = std::floor(py);
+    const float tx = px - fl_x, ty = py - fl_y;
+    const int ix = (int)std::max(-4.0, std::min((double)W + 4, (double)fl_x)), iy = (int)std::max(-4.0, std::min((double)H + 4, (double)fl_y));
+    auto cubic = [](float t, float* w) {
+        const float a = -0.5f;
+        const float u = t + 1.f, v = 2.f - t, s = 1.f - t;
+        w[0] = ((a * u - 5.f * a) * u + 8.f * a) * u - 4.f * a;
+        w[1] = ((a + 2.f) * t - (a + 3.f)) * t * t + 1.f;
+        w[2] = ((a + 2.f) * s - (a + 3.f)) * s * s + 1.f;
+        w[3] = ((a * v - 5.f * a) * v + 8.f * a) * v - 4.f * a;
+    };
+    float wx[4], wy[4];
+    cubic(tx, wx);
+    cubic(ty, wy);
+    for (int k = 0; k < 4; ++k) o[k] = 0.f;
+    for (int j = 0; j < 4; ++j) {
+        const int yy = std::max(0, std::min(H - 1, iy - 1 + j));
+        for (int i = 0; i < 4; ++i) {
+            const int xx = std::max(0, std::min(W - 1, ix - 1 + i));
+            const float* p = &img[((size_t)yy * W + xx) * 4];
+            const float w = wy[j] * wx[i];
+            for (int k = 0; k < 4; ++k) o[k] += w * p[k];
+        }
+    }
 }
 
 inline void copyThrough(Ctx& c) { c.out.px = c.src.px; }

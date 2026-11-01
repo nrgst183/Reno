@@ -8,6 +8,7 @@
 #include "vkeffects.h"
 #include "ofxProperty.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdarg>
 #include <cstring>
 #include <map>
@@ -334,6 +335,7 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
 {
     if (!d.render) return kOfxStatFailed;
     Ctx c;
+    bool tiesDown = false;     // an effect VEGAS draws in float into an 8-bit frame: a result exactly half way between two levels goes to the lower one (Levels' captured pictures)
     c.src.px = std::move(gScratch.src);
     c.src2.px = std::move(gScratch.src2);
     c.out.px = std::move(gScratch.out);
@@ -348,6 +350,7 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
         }
     } giveBack{c};
     c.time = propDouble(inArgs, kOfxPropTime);
+    c.timelineTime = propDouble(inArgs, kVegasPropTimeCode, 0, -1);
     {
         // a host that does not say, or says nonsense: the project's size
         const double rs = propDouble(inArgs, kOfxImageEffectPropRenderScale, 0, 1.0);
@@ -429,7 +432,11 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
         if (gEff->clipGetHandle(effect, kOfxImageEffectSimpleSourceClipName, &srcClip, nullptr) == kOfxStatOK && srcClip)
             gEff->clipGetImage(srcClip, c.time, nullptr, &srcImg);
         const View sv = viewOf(srcImg);
-        c.levels = !sv.isFloat;
+        const bool vegasFloat = !sv.isFloat && vegasDrawsFloat(d.id);
+        c.openCl = vegasUsesOpenCl(d.id);
+        c.levels = !sv.isFloat && !vegasFloat;
+        c.host8 = !sv.isFloat;
+        tiesDown = vegasFloat;
         // On the GPU (Vulkan) when the effect has kernels and the frames fit the plan: the same picture, or within a level of it; on any failure
         // it returns false and the CPU path below runs
         if (d.gpu && sv.ok() && ov.ok() && sv.isFloat == ov.isFloat && sv.bgra == ov.bgra && sv.x1 <= fx1 && sv.x2 >= fx1 + c.frameW && sv.y1 <= fy1 &&
@@ -445,6 +452,7 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
             gf.inSerial = (uint64_t)propDouble(srcImg, "RenoImageSerial");
             gf.outSerial = (uint64_t)propDouble(outImg, "RenoImageSerial");
             gf.deferOut = gpu::deferOutputRequested();
+            gf.tiesDown = vegasFloat;
             if (sv.rowBytes > 0 && ov.rowBytes > 0 && gpuRender(d, c, gf)) {
                 if (srcImg) gEff->clipReleaseImage(srcImg);
                 gEff->clipReleaseImage(outImg);
@@ -456,7 +464,7 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
             const uint64_t ser = (uint64_t)propDouble(srcImg, "RenoImageSerial");
             if (ser != 0 && gpu::isPending(ser)) gpu::materialize(ser, const_cast<uint8_t*>(sv.data), (size_t)sv.rowBytes);
         }
-        if (d.rows && sv.ok() && !sv.isFloat && !ov.isFloat && sv.x1 <= fx1 && sv.x2 >= fx1 + c.frameW && sv.y1 <= fy1 && sv.y2 >= fy1 + c.frameH) {
+        if (d.rows && !vegasFloat && sv.ok() && !sv.isFloat && !ov.isFloat && sv.x1 <= fx1 && sv.x2 >= fx1 + c.frameW && sv.y1 <= fy1 && sv.y2 >= fy1 + c.frameH) {
             RowFn rowFn;
             bool have = false;
             try { have = d.rows(c, rowFn) && rowFn; } catch (...) { have = false; }
@@ -522,6 +530,7 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
     } catch (...) {
         st = kOfxStatFailed;
     }
+    if (st == kOfxStatOK && tiesDown && !ov.isFloat) vegasTiesDown(c.out);
     if (st == kOfxStatOK) store(c.out, ov, fx1, fy1, d.colourAboveAlpha);
     gEff->clipReleaseImage(outImg);
     return st;
@@ -604,6 +613,61 @@ std::vector<OfxPlugin>& plugins()
 }
 
 }  // namespace
+
+// Float results exactly half way between two levels go to the lower level, as VEGAS stores float-drawn effects into 8-bit frames.
+void vegasTiesDown(Buf& b)
+{
+    for (float& f : b.px)
+        if (std::isfinite(f) && f > 0.f && f < 1.f) f = (float)std::ceil((double)f * 255.0 - 0.5) * (1.f / 255.f);      // (exact in a double)
+}
+
+// VEGAS's GPU acceleration (Preferences > Video, "GPU acceleration of video processing"; ofx::HostConfig::gpu). On, VEGAS renders every one of its own effects that has an OpenCL
+// processor on the card, in floating point, whatever the project's depth; off, those effects run VEGAS's CPU code (the 8-bit routines of older VEGAS, which Reno's decoded models
+// follow). The default is on, as in the user's VEGAS ("Optimal - NVIDIA").
+static std::atomic<bool> gVegasGpu{true};
+void setVegasGpuAcceleration(bool on) { gVegasGpu = on; }
+bool vegasGpuAcceleration() { return gVegasGpu; }
+
+// The effects that have an OpenCL processor class (xxxOpenCLProcessor next to their CPU processors, with kernels stored in the DLL) in VEGAS's own plug-ins: Vfx1.ofx (VEGAS Pro 18),
+// from the RTTI class names of the bundle. Sorted for the binary search. (Transitions and generators are in the list too; Ctx::openCl only matters to the effects that read it.)
+static const char* const kOpenClEffects[] = {
+    "addnoise", "barndoor", "blackandwhite", "blackrestore", "border", "brightnessandcontrast", "broadcastcolors", "bumpmap", "bumpmapfilter", "channelblend",
+    "checkerboard", "chromablur", "chromakeyer", "clockwipe", "colorbalance", "colorcorrector", "colorcorrectorsecondary", "colorcurves", "colormatch", "convolutionkernel",
+    "cookiecutter", "crop", "crosseffect", "defocusvelvetmatter", "deportraitize", "dissolve", "filllightvelvetmatter", "flash", "gaussianblur", "glow",
+    "hsladjust", "invert", "iris", "labadjust", "layerdimensionality", "lensflare", "levels", "linearblur", "linearwipe", "maskgenerator",
+    "median", "minandmax", "mirror", "newsprint", "noisetexture", "pageloop", "pagepeel", "pageroll", "pictureinpicture", "pixelate",
+    "push", "quickblur", "radialblur", "radialpixelate", "saturationadjust", "sepia", "sharpen", "slide", "solidcolor", "spherize",
+    "spiral", "split", "squeeze", "starburstvelvetmatter", "starwipe", "swap", "testpattern", "timecode", "unsharpmask", "vignette",
+    "whitebalance", "zoom"};
+
+// VEGAS renders this effect with its OpenCL kernels (GPU acceleration on and the effect has an OpenCL processor).
+bool vegasUsesOpenCl(const std::string& id)
+{
+    if (!gVegasGpu) return false;
+    const std::string pre = "com.vegascreativesoftware:";
+    if (id.compare(0, pre.size(), pre) != 0) return false;
+    const std::string rest = id.substr(pre.size());
+    for (const char* n : kOpenClEffects)
+        if (rest == n) return true;
+    return false;
+}
+
+// Effects that VEGAS draws in floating point even in an 8-bit project. Black Bar Fill and Lens Correction have float CPU code (their pictures match float arithmetic and not the 8-bit routine
+// whatever the GPU setting); the others are OpenCL effects (above) whose kernels are float. Checked against the captures (tools/scripts/"Reno Effect Capture.cs", tools/effect_capture_compare.py):
+// "has an OpenCL processor" alone does not reproduce the pictures, because Reno only follows the kernel exactly for the effects whose kernel was ported (they set Ctx::openCl and read from the
+// decoded code); the remaining OpenCL effects draw better with the older fitted models, so this list is those, per effect, and shrinks as kernels are ported. With GPU acceleration off none of them is float.
+bool vegasDrawsFloat(const std::string& id)
+{
+    static const char* const ids[] = {"hsladjust", "labadjust", "sharpen", "glow", "colorbalance", "pixelate", "maskgenerator", "quickblur", "radialblur", "channelblend", "saturationadjust", "spherize", "mirror", "invert", "border", "newsprint", "levels"};
+    if (id == "de.magix:LensCorrection" || id == "com.vegascreativesoftware:blackbarfill") return true;
+    if (!gVegasGpu) return false;
+    const std::string pre = "com.vegascreativesoftware:";
+    if (id.compare(0, pre.size(), pre) != 0) return false;
+    const std::string rest = id.substr(pre.size());
+    for (const char* n : ids)
+        if (rest == n) return true;
+    return false;
+}
 
 // ------------------------------------------------------------------ shorthands
 PDef dbl(const std::string& name, const std::string& label, double def, double min, double max, const std::string& parent)
@@ -1230,28 +1294,31 @@ void firBlurDoubles(std::vector<float>& v, int W, int H, int planes, const std::
 
 // VEGAS's Gaussian Blur: sigma 96 * Range + 0.45 pixels in a 320 wide frame (fitted; same across and down), never under 0.6 (even at Range 0 the picture
 // softens a little: a 3 tap kernel 1/6 2/3 1/6).
-// Pixelate's cells along one axis of n pixels (vertical counted from the bottom row): 'starts' holds each cell's first pixel and n at the end, K the
-// averaging window. p = the setting, scale = the render scale. Arithmetic is in floats like VEGAS: where j * n / N is a whole number, the cell
-// starts one pixel earlier or not by float noise.
-void pixelateAxis(int n, double p, double scale, std::vector<int>& starts, int& K)
+// Pixelate's cells along one axis of n pixels, as VEGAS draws them (its pictures): size = 2 / (1 - p) pixels, N = min(n, n / size + 1) cells, S = n / N; counted from
+// the bottom row (vertical) or the right column (horizontal), cell j starts at ceil(j S) - 1 (so one pixel earlier where j S is a whole number), the last one at n - floor(S).
+// Arithmetic is in floats like VEGAS. 'starts' holds each cell's first pixel and n at the end, in the picture's own direction: bottom row first when !fromEnd; with
+// fromEnd the horizontal cells counted from the right, as first columns from the left. p = the setting, scale = the render scale.
+void pixelateAxis(int n, double p, double scale, bool fromEnd, std::vector<int>& starts)
 {
     starts.clear();
-    if (n <= 0) { starts.push_back(0); K = 1; return; }
+    if (n <= 0) { starts.push_back(0); return; }
+    std::vector<int> s;
     if (!(p > 0)) {
-        for (int i = 0; i <= n; ++i) starts.push_back(i);
-        K = 1;
-        return;
+        for (int i = 0; i <= n; ++i) s.push_back(i);
+    } else {
+        int N = 1;
+        float S = (float)n;
+        if (p < 1) {
+            const float size = (float)(scale * 2.0) / (1.f - (float)p);
+            N = std::min(n, (int)std::floor((float)n / size) + 1);
+            S = 1.f / ((float)N / (float)n);
+        }
+        for (int j = 0; j < N; ++j) s.push_back(j == 0 ? 0 : std::min(n - 1, std::max(s.back() + 1, (int)std::ceil((float)j * S) - 1)));
+        if (N > 1) s.back() = std::max(s.back(), n - (int)std::floor(S));
+        s.push_back(n);
     }
-    int N = 1;
-    float S = (float)n;
-    if (p < 1) {
-        const float size = (float)(scale * 2.0) / (1.f - (float)p);
-        N = std::min(n, (int)std::floor((float)n / size) + 1);
-        S = 1.f / ((float)N / (float)n);
-    }
-    for (int j = 0; j < N; ++j) starts.push_back(std::min(n - 1, std::max(j ? starts.back() + 1 : 0, (int)std::floor((float)j * S))));
-    starts.push_back(n);
-    K = p < 1 ? std::max(1, (int)std::floor(S)) : n;
+    if (!fromEnd) { starts = s; return; }
+    for (size_t i = s.size(); i-- > 0;) starts.push_back(n - s[i]);
 }
 
 double gaussianBlurSigma(double range, int frameW)

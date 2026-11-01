@@ -76,6 +76,7 @@ bool planDissolve(Ctx& c, Plan& p)
             const int r = (M - q) & 255;
             for (int k = 0; k < 4; ++k) { w.i(k, clampThr(q * m[k])); w.i(4 + k, clampThr(r * m[k])); }
         }
+        if (type == 5 || type == 6) { w.f(0, (float)((double)pf * 1530.0)); w.f(1, (float)((1.0 - (double)pf) * 1530.0)); }
         if (type == 8) {
             const Color col = c.color("FadeThroughColor");
             const double cv[3] = {col.r, col.g, col.b};
@@ -406,7 +407,7 @@ bool planIris(Ctx& c, Plan& p)
     std::memset(&mp, 0, sizeof(mp));
     mp.w = W; mp.h = H; mp.nx = nx; mp.ny = ny; mp.cw = cw; mp.ch = ch; mp.shape = shape; mp.window = transrec::irisWindow(shape); mp.cxf = cxf; mp.cyf = cyf; mp.a = A;
     p.add("iris_map", 0, M, W, H).setPush(mp);
-    P::IrisMax mx = {(uint32_t)W, (uint32_t)H};
+    P::IrisMax mx = {(uint32_t)W, (uint32_t)H, transrec::irisReflectedMax(W, H, nx, ny, cxn, cyn, cxf, cyf, shape, A, sx, sy)};
     p.add("iris_max", M, M, 1, 1).setPush(mx);
     Pass& ps = p.add("iris_final", 0, 1, W, H);
     ps.in1 = M;
@@ -1135,6 +1136,9 @@ const std::vector<CaseSet>& caseSets()
                 s.cases.push_back(GpuCheckCase("soft shape" + std::to_string(sh), PM{{"Shape", {(double)sh}}, {"Transition", {0.7}}, {"Feather", {0.5}}, {"Border", {0.0}}, {"Center", {0.3, 0.6}}}));
                 s.cases.push_back(GpuCheckCase("repeat shape" + std::to_string(sh), PM{{"Shape", {(double)sh}}, {"Transition", {0.5}}, {"Feather", {0.2}}, {"Border", {0.1}}, {"RepeatX", {3}}, {"RepeatY", {2}}, {"Center", {0.7, 0.2}}}));
             }
+            for (int sh : {0, 6, 9, 11})                      // (the centre on the frame's edge: the largest distance also counts at the reflected edge rows / columns)
+                for (const double* cc : {(const double[]){0.5, 1.0}, (const double[]){0.0, 0.5}, (const double[]){1.0, 0.0}})
+                    s.cases.push_back(GpuCheckCase("edge centre shape" + std::to_string(sh) + " " + std::to_string(cc[0]) + "," + std::to_string(cc[1]), PM{{"Shape", {(double)sh}}, {"Transition", {0.5}}, {"Feather", {0.1}}, {"Border", {0.1}}, {"Center", {cc[0], cc[1]}}}));
             s.cases.push_back(GpuCheckCase("one column", PM{{"Shape", {11}}, {"Transition", {0.5}}, {"RepeatX", {1}}, {"RepeatY", {4}}, {"Center", {0.0, 0.0}}}));
             s.cases.push_back(GpuCheckCase("many", PM{{"Shape", {1}}, {"Transition", {0.5}}, {"RepeatX", {10}}, {"RepeatY", {10}}, {"Feather", {0.1}}, {"Border", {0.1}}}));
             v.push_back(s);

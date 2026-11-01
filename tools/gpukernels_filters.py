@@ -591,37 +591,37 @@ def mirror8(S):
                                                S.to_f(S.to_i((px >> 24) & 255)) * k255))
 
 # ---------------------------------------------------------------------------------------------------------- Pixelate
-@kernel("pixelate_blocks", WH + [('nbx', 'u'), ('nby', 'u'), ('kx', 'u'), ('ky', 'u'), ('lv', 'u'), ('copy_only', 'u')], [PIC_IN, PIC_OUT, TABLE])
+@kernel("pixelate_blocks", WH + [('nbx', 'u'), ('nby', 'u'), ('lv', 'u'), ('pad', 'u')], [PIC_IN, PIC_OUT, TABLE])
 def pixelate_blocks(S):
-    # one invocation per cell: pixelate() in builtins_filters.cpp - the average of the cell's window, summed in order (bytes as whole numbers in 8 bits,
-    # doubles otherwise). The table holds the cells' first pixels across (nbx + 1 of them, the last one W) and then those down counted from the bottom row (nby + 1)
+    # one invocation per cell: pixelate() in builtins_filters.cpp - the average of the cell's own pixels. 8-bit frame (lv): every row of the cell is averaged across
+    # and cut to a level, a half going down, (2 sum + n - 1) / (2 n), and the levels are averaged down and cut the same way (whole numbers throughout); otherwise
+    # the sum in doubles, in order, over the cell's area. The table holds the cells' first pixels across (nbx + 1 of them, the last one W) and then those down
+    # counted from the bottom row (nby + 1, the last one H)
     P = S.p
     with S.in_range(P.nbx, P.nby):
         W, H = S.to_i(P.w), S.to_i(P.h)
         x0 = S.to_i(S.to_u(S.buf('table').load(S.gx)))
+        x1 = S.to_i(S.to_u(S.buf('table').load(S.gx + S.u(1))))
         y0 = S.to_i(S.to_u(S.buf('table').load(P.nbx + 1 + S.gy)))
-        x1 = S.min(x0 + S.to_i(P.kx), W)
-        y1 = S.min(y0 + S.to_i(P.ky), H)
+        y1 = S.to_i(S.to_u(S.buf('table').load(P.nbx + 2 + S.gy)))
         inb = S.buf('in0')
-        n = SF.from_i32(S, x1 - x0) * SF.from_i32(S, y1 - y0)
         res = S.var('v4', S.splat4(0.0))
         with S.if_(S.ne(P.lv, 0)):
+            nw = S.to_u(x1 - x0)
+            nh = S.to_u(y1 - y0)
             tot = [S.var('u', S.u(0)) for _ in range(4)]
             with S.for_(y0, y1, 1, True) as yb:
+                rs = [S.var('u', S.u(0)) for _ in range(4)]
                 with S.for_(x0, x1, 1, True) as x:
                     q = inb.load(S.to_u(H - 1 - yb) * P.w + S.to_u(x))
                     for k in range(4):
-                        tot[k].set(tot[k].get() + S.to_u(to_level(S, q[k])))
-            inv = SF.const(S, 1.0) / n
-            out = []
-            for k in range(4):
-                b = (SF.from_u32(S, tot[k].get()) * inv).trunc_i32()
-                x2 = (SF.from_i32(S, b) * 0.00392156862745098) * 255.0
-                m = SF.sel(S, SF.const(S, 255.0) < x2, SF.const(S, 255.0), x2)
-                b2 = S.select(S.ne(P.copy_only, 0), b, m.trunc_i32())
-                out.append(from_level(S, b2))
+                        rs[k].set(rs[k].get() + S.to_u(to_level(S, q[k])))
+                for k in range(4):
+                    tot[k].set(tot[k].get() + (rs[k].get() * S.u(2) + nw - S.u(1)) / (nw * S.u(2)))
+            out = [from_level(S, S.to_i((tot[k].get() * S.u(2) + nh - S.u(1)) / (nh * S.u(2)))) for k in range(4)]
             res.set(S.vec4(out[0], out[1], out[2], out[3]))
         with S.else_():
+            n = SF.from_i32(S, x1 - x0) * SF.from_i32(S, y1 - y0)
             tot = [SFVar(S, sf_zero(S)) for _ in range(4)]
             with S.for_(y0, y1, 1, True) as yb:
                 with S.for_(x0, x1, 1, True) as x:
@@ -1961,10 +1961,10 @@ def border_bevel(S):
             face = S.to_i(tab.load(base + 10 + k_ * 3 + kb))
             vv = v8([s.x, s.y, s.z][ch])
             vq = S.to_f((S.to_i(vv) * face) / 256)
-            vf = fdiv(S, vv * S.to_f(face), S.f(256.0))
+            vf = S.to_f(S.to_i(fdiv(S, vv * S.to_f(face), S.f(256.0))))      # (float frames: whole levels, as the CPU's border())
             v = S.select(q8, vq, vf)
             outc.append(fdiv(S, S.min(v, al), S.f(255.0)))
-        res = S.vec4(outc[0], outc[1], outc[2], S.f(0.0))
+        res = S.vec4(outc[0], outc[1], outc[2], S.select(q8, S.f(0.0), s.w))
         S.buf('out').store(i, S.select(S.eq(cov, 0), s, res))
 
 # ---------------------------------------------------------------------------------------------------------- Broadcast Colors, 8-bit
@@ -2269,8 +2269,85 @@ def news_shrink(S):
                 outs[k].set(S.to_f(sf_nearbyint(S, acc[k].get() * norm + 1.5e-8) & 255))
         S.buf('out').store(S.gy * P.w + S.gx, S.vec4(outs[0].get(), outs[1].get(), outs[2].get(), outs[3].get()))
 
-def _news_dots(mode):
-    @kernel("news_dots%d" % mode, WH + [('shw', 'u'), ('shh', 'u'), ('nbx', 'i'), ('nby', 'i'), ('par', 'i'), ('maxx', 'i'), ('maxy', 'i'), ('fade', 'i')], [PIC_IN, PIC_IN1, PIC_OUT, TABLE])
+@kernel("news_prex", WH, [PIC_IN, PIC_OUT])
+def news_prex(S):
+    """float frames, buildPrefix() in builtins_newsprint.cpp, first half: one invocation per row (gx < h) - the running sums across the row of the bytes (exact in floats),
+    W + 1 entries a row, the first 0"""
+    P = S.p
+    with S.if_(S.gx < P.h):
+        w1 = P.w + S.u(1)
+        acc = [S.var('f', S.f(0.0)) for _ in range(4)]
+        S.buf('out').store(S.gx * w1, S.splat4(0.0))
+        with S.for_(S.i(0), S.to_i(P.w), 1, True) as x:
+            q = S.buf('in0').load(S.gx * P.w + S.to_u(x))
+            for k in range(4):
+                acc[k].set(acc[k].get() + q[k])
+            S.buf('out').store(S.gx * w1 + S.to_u(x) + S.u(1), S.vec4(acc[0].get(), acc[1].get(), acc[2].get(), acc[3].get()))
+
+@kernel("news_prey", WH, [PIC_IN, PIC_OUT])
+def news_prey(S):
+    """second half: one invocation per column of the W + 1 (gx <= w) - the running sums down it of the row sums, whole numbers below 2^32 kept as two floats (high, low 12 bits):
+    entry (x, y) of the H + 1 rows is at (y * (W + 1) + x) * 2 (high) and + 1 (low)"""
+    P = S.p
+    with S.if_(S.gx < P.w + S.u(1)):
+        w1 = P.w + S.u(1)
+        tot = [S.var('u', S.u(0)) for _ in range(4)]
+        S.buf('out').store(S.gx * S.u(2), S.splat4(0.0))
+        S.buf('out').store(S.gx * S.u(2) + S.u(1), S.splat4(0.0))
+        with S.for_(S.i(0), S.to_i(P.h), 1, True) as y:
+            q = S.buf('in0').load(S.to_u(y) * w1 + S.gx)
+            for k in range(4):
+                tot[k].set(tot[k].get() + S.to_u(q[k]))
+            base = (S.to_u(y) + S.u(1)) * w1 * S.u(2) + S.gx * S.u(2)
+            S.buf('out').store(base, S.vec4(*[S.to_f(S.to_i(tot[k].get() >> 12)) for k in range(4)]))
+            S.buf('out').store(base + S.u(1), S.vec4(*[S.to_f(S.to_i(tot[k].get() & S.u(0xfff))) for k in range(4)]))
+
+@kernel("news_boxes", WH + [('nbx', 'i'), ('nby', 'i'), ('par', 'i')], [PIC_IN, PIC_OUT, TABLE])
+def news_boxes(S):
+    """float frames: the colour of every dot (i = gx - 1, j = gy - 1; nbx + 4 by nby + 4 of them) - boxAverage() of builtins_newsprint.cpp: the P x P block around the dot's
+    place by bilinear reads of the running sums, in doubles; the table holds P, the offsets fxo, fyo"""
+    P = S.p
+    with S.in_range(S.to_u(P.nbx + 4), S.to_u(P.nby + 4)):
+        tab, pre = S.buf('table'), S.buf('in0')
+        Pd, fxo, fyo = ld_sf(S, tab, S.u(0)), ld_sf(S, tab, S.u(2)), ld_sf(S, tab, S.u(4))
+        W, H = S.to_i(P.w), S.to_i(P.h)
+        i, j = S.to_i(S.gx) - 1, S.to_i(S.gy) - 1
+        yy = SF.from_i32(S, j) + 0.0 + fyo
+        odd = S.ne((j + P.par) & 1, 0)
+        xx = SF.sel(S, odd, SF.from_i32(S, i) + 0.0 + 0.5, SF.from_i32(S, i) + 0.0 + 0.0) + fxo
+        cx, cy = xx * Pd + 0.0, yy * Pd + 0.5
+        half = Pd * 0.5
+        Wd, Hd = SF.from_i32(S, W), SF.from_i32(S, H)
+        zero = SF.const(S, 0.0)
+        def cl(v, hi): return v.max(zero).min(hi)
+        cx0, cx1 = cl(cx - half, Wd), cl(cx + half, Wd)
+        cy0, cy1 = cl(cy - half, Hd), cl(cy + half, Hd)
+        area = (cx1 - cx0) * (cy1 - cy0)
+        one = SF.const(S, 1.0)
+        def at(xi, yi, k):
+            idx = (S.to_u(yi) * S.to_u(W + 1) + S.to_u(xi)) * S.u(2)
+            hi, lo = pre.load(idx)[k], pre.load(idx + S.u(1))[k]
+            return SF.from_u32(S, S.to_u(hi) * S.u(4096) + S.to_u(lo))
+        def pa(u, v):
+            x = S.min(u.trunc_i32(), W - 1)
+            y = S.min(v.trunc_i32(), H - 1)
+            fx, fy = u - SF.from_i32(S, x), v - SF.from_i32(S, y)
+            ofx, ofy = one - fx, one - fy
+            out = []
+            for k in range(4):
+                out.append(at(x, y, k) * ofx * ofy + at(x + 1, y, k) * fx * ofy + at(x, y + 1, k) * ofx * fy + at(x + 1, y + 1, k) * fx * fy)
+            return out
+        a11, a01, a10, a00 = pa(cx1, cy1), pa(cx0, cy1), pa(cx1, cy0), pa(cx0, cy0)
+        valid = area > zero
+        res = []
+        for k in range(4):
+            sm = a11[k] - a01[k] - a10[k] + a00[k]
+            v = S.select(valid, sf_nearbyint(S, sm / area), S.i(0))
+            res.append(S.to_f(v))
+        S.buf('out').store(S.gy * S.to_u(P.nbx + 4) + S.gx, S.vec4(res[0], res[1], res[2], res[3]))
+
+def _news_dots(mode, fl=False):
+    @kernel("news_dots%s%d" % ("f" if fl else "", mode), WH + [('shw', 'u'), ('shh', 'u'), ('nbx', 'i'), ('nby', 'i'), ('par', 'i'), ('maxx', 'i'), ('maxy', 'i'), ('fade', 'i')], [PIC_IN, PIC_IN1, PIC_OUT, TABLE])
     def news_dots(S):
         P = S.p
         with S.in_range(P.w, P.h):
@@ -2307,19 +2384,20 @@ def _news_dots(mode):
                     out.append(S.to_i(S.select(inner, vi, S.select(bothEdge, pk, S.select(rowEdge, vh, vv)))))
                 return out
             def ellipse(X, Y, rx, ry, cols):
-                y0 = S.min(S.max(sf_nearbyint(S, Y - ry - 0.499999985), 0), hi - 1)
-                x0 = S.min(S.max(sf_nearbyint(S, X - rx - 0.499999985), 0), wi - 1)
-                y1 = S.min(S.max(sf_nearbyint(S, Y + ry + 0.499999985), 0), hi)
-                x1 = S.min(S.max(sf_nearbyint(S, X + rx + 0.499999985), 0), wi)
+                ex = 1 if fl else 0        # (float frames: the dots lie a half pixel over, the box is a pixel wider all round)
+                y0 = S.min(S.max(sf_nearbyint(S, Y - ry - 0.499999985) - ex, 0), hi - 1)
+                x0 = S.min(S.max(sf_nearbyint(S, X - rx - 0.499999985) - ex, 0), wi - 1)
+                y1 = S.min(S.max(sf_nearbyint(S, Y + ry + 0.499999985) + ex, 0), hi)
+                x1 = S.min(S.max(sf_nearbyint(S, X + rx + 0.499999985) + ex, 0), wi)
                 gx_, gy_ = S.to_i(S.gx), S.to_i(S.gy)
                 ok = (y1 - y0 >= 1) & (x1 - x0 >= 1) & (gy_ >= y0) & (gy_ < y1) & (gx_ >= x0) & (gx_ < x1)
                 with S.if_(ok):
                     k = ry / rx
                     in0 = SF.sel(S, SF.const(S, 0.0) < ry - 0.7, ry - 0.7, SF.const(S, 0.0))
                     inn = in0 * in0
-                    ddy = ((yd + 0.0) - Y) + 0.5
+                    ddy = ((yd + 0.0) - Y) + (1.0 if fl else 0.5)
                     dy = ddy * ddy
-                    dx = ((xd + 0.5) - X) * k
+                    dx = ((xd + (0.0 if fl else 0.5)) - X) * k
                     d2 = dx * dx + dy
                     insd = inn > d2
                     dd = d2.sqrt()
@@ -2346,7 +2424,11 @@ def _news_dots(mode):
                     xx = SF.sel(S, odd, SF.from_i32(S, i) + 0.0 + 0.5, SF.from_i32(S, i) + 0.0 + 0.0) + fxo
                     sx = (xx * 16384.0).trunc_i32()
                     sx = S.select(sx < 0, S.i(0), S.min(sx, P.maxx))
-                    cc = sampleS(sx, sy)
+                    if fl:
+                        bq = sb.load(S.to_u(j + 1) * S.to_u(P.nbx + 4) + S.to_u(i + 1))
+                        cc = [S.to_i(bq[k]) for k in range(4)]
+                    else:
+                        cc = sampleS(sx, sy)
                     lum = SF.const(S, 1.0) - (SF.from_i32(S, cc[0]) * 0.0004470588235294118 + SF.from_i32(S, cc[1]) * 0.0023019607843137255 + SF.from_i32(S, cc[2]) * 0.001172549019607843)
                     rx = ((Pd * 0.5) * lum) * 1.25
                     ry = rx
@@ -2357,9 +2439,10 @@ def _news_dots(mode):
                         elif mode == 1:
                             ellipse(X, Y, rx, ry, [cc[0], cc[1], cc[2]])
                         else:
-                            ellipse(X - rx * 0.25, Y - ry * 0.25, rx, ry, [cc[0], None, None])
+                            # (float frames: the inks keep their places by colour, yellow up and left)
+                            ellipse(X - rx * 0.25, Y - ry * 0.25, rx, ry, [None, None, cc[2]] if fl else [cc[0], None, None])
                             ellipse(X + rx * 0.25, Y - ry * 0.25, rx, ry, [None, cc[1], None])
-                            ellipse(X, Y + ry * 0.25, rx, ry, [None, None, cc[2]])
+                            ellipse(X, Y + ry * 0.25, rx, ry, [cc[0], None, None] if fl else [None, None, cc[2]])
             d = [S.max(S.i(255) - sub[ch].get(), 0) for ch in range(3)] + [S.i(255)]
             if True:
                 src = S.buf('in0').load(S.gy * P.w + S.gx)
@@ -2384,6 +2467,7 @@ def _news_dots(mode):
             S.buf('out').store(S.gy * P.w + S.gx, S.vec4(f[2], f[1], f[0], f[3]))
     return news_dots
 for _m in range(3): _news_dots(_m)
+for _m in range(3): _news_dots(_m, True)
 
 # ---------------------------------------------------------------------------------------------------------- Min and Max / Median in 8 bits (rankFilter8), Median (vegasMedian)
 @kernel("rank8", WH + [('nx', 'u'), ('ny', 'u'), ('rank', 'f'), ('pad', 'u')], [PIC_IN, PIC_OUT, TABLE])

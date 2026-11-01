@@ -297,6 +297,7 @@ bool planSharpen(Ctx& c, Plan& p)
 
 bool planMirror(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernels are ported on the CPU only: mirrorOpenCl)
     double cx, cy;
     c.xy("Center", cx, cy);
     const double a = c.d("Angle") * kPi / 180.0;
@@ -404,10 +405,13 @@ bool planBlackRestore(Ctx& c, Plan& p)
 bool planChannelBlend(Ctx& c, Plan& p)
 {
     float w[4][5];
-    const char* names[4] = {"BLUE", "GREEN", "RED", "ALPHA"};      // VEGAS numbers the channels blue first (see channelBlend)
+    // 8-bit frames lie in memory blue first, float ones red first, and VEGAS's plug-in numbers the channels in memory order
+    const char* names[4] = {"BLUE", "GREEN", "RED", "ALPHA"};
+    const char* namesF[4] = {"RED", "GREEN", "BLUE", "ALPHA"};      // VEGAS numbers the channels blue first (see channelBlend)
     const char* parts[5] = {" weight B", " weight G", " weight R", " weight A", " weight Offset"};
+    const char* partsF[5] = {" weight R", " weight G", " weight B", " weight A", " weight Offset"};
     for (int o = 0; o < 4; ++o)
-        for (int i = 0; i < 5; ++i) w[o][i] = (float)c.d((std::string(names[o]) + parts[i]).c_str());
+        for (int i = 0; i < 5; ++i) w[o][i] = (float)c.d((std::string(c.levels ? names[o] : namesF[o]) + (c.levels ? parts[i] : partsF[i])).c_str());
     P::Channelblend pc;
     pc.w = p.w; pc.h = p.h;
     pc.flags = (c.b("Normalize") ? 1u : 0u) | (c.levels ? 2u : 0u);
@@ -459,11 +463,11 @@ bool planQuickBlur(Ctx& c, Plan& p)
 
 bool planPixelate(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernels are ported on the CPU only: pixelateOpenCl)
     const int W = (int)p.w, H = (int)p.h;
     std::vector<int> sx, sy;
-    int kx = 1, ky = 1;
-    pixelateAxis(W, clampd(c.d("HorizontalPixelization"), 0, 1), c.scale, sx, kx);
-    pixelateAxis(H, clampd(c.d("VerticalPixelization"), 0, 1), c.scale, sy, ky);
+    pixelateAxis(W, clampd(c.d("HorizontalPixelization"), 0, 1), c.scale, true, sx);
+    pixelateAxis(H, clampd(c.d("VerticalPixelization"), 0, 1), c.scale, false, sy);
     const int nbx = (int)sx.size() - 1, nby = (int)sy.size() - 1;
     std::vector<float> starts, cells;
     for (int v : sx) starts.push_back((float)v);
@@ -477,8 +481,7 @@ bool planPixelate(Ctx& c, Plan& p)
     }
     const int blocks = p.addBuf((uint32_t)nbx, (uint32_t)nby, 4);
     {
-        const bool copyOnly = std::fabs((float)c.d("HorizontalPixelization")) <= 1e-6f && std::fabs((float)c.d("VerticalPixelization")) <= 1e-6f;
-        P::PixelateBlocks pc = {p.w, p.h, (uint32_t)nbx, (uint32_t)nby, (uint32_t)kx, (uint32_t)ky, c.levels ? 1u : 0u, copyOnly ? 1u : 0u};
+        P::PixelateBlocks pc = {p.w, p.h, (uint32_t)nbx, (uint32_t)nby, (c.levels || c.host8) ? 1u : 0u, 0u};
         Pass& pass = p.add("pixelate_blocks", 0, blocks, (uint32_t)nbx, (uint32_t)nby);
         pass.table = p.addTable(starts);
         pass.setPush(pc);
@@ -539,6 +542,7 @@ bool planWave(Ctx& c, Plan& p)
 // Min and Max (neighbourhood() in builtins_more_blur.cpp, halfWidths() in builtins_fast.cpp)
 bool planMinMax(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: medianOpenCl)
     if (c.levels) return gpuPlanMinMax8(c, p);          // the 8-bit path is VEGAS's weighted histogram rank (builtins_more_blur.cpp)
     const double hr = clampd(c.d("HorizontalRange"), 0, 1), vr = clampd(c.d("VerticalRange"), 0, 1);
     const double rxf = c.px(hr * 16), ryf = c.px(vr * 16);
@@ -780,21 +784,6 @@ bool planCrop(Ctx& c, Plan& p)
     return true;
 }
 
-bool planFilmGrain(Ctx& c, Plan& p)
-{
-    const double amount0 = clampd(c.d("Amount"), 0, 1), gran = clampd(c.d("Granularity"), 0, 1), chroma = clampd(c.d("Chormaticity"), 0, 1);
-    const double fs = std::max(1.0, (double)p.h) / 1080.0, fsFull = std::max(1.0, (double)p.h) / c.scale / 1080.0;
-    const double cellFull = (double)std::max(1, (int)std::lround(1 + gran * 3 * std::max(1.0, fsFull * 2)));
-    const double cellHere = cellFull * c.scale;
-    const int cell = c.scale >= 0.999 ? std::max(1, (int)std::lround(1 + gran * 3 * std::max(1.0, fs * 2))) : std::max(1, (int)std::lround(cellHere));
-    const double weaken = c.scale >= 0.999 ? 1.0 : std::min(1.0, cellHere);
-    const double amount = amount0 * weaken;
-    const uint32_t seed = (uint32_t)std::lround(c.time) * 2654435761u;
-    P::Filmgrain pc = {p.w, p.h, (uint32_t)cell, seed, (float)amount, (float)(amount * chroma)};
-    p.add("filmgrain", 0, 1, p.w, p.h).setPush(pc);
-    return true;
-}
-
 bool planFilmEffects(Ctx& c, Plan& p)
 {
     const double grain = clampd(c.d("Grain"), 0, 1), tint = clampd(c.d("Tint"), 0, 1);
@@ -1024,14 +1013,13 @@ bool planLensFlare(Ctx& c, Plan& p)
 
 
 struct Entry { const char* id; bool (*plan)(Ctx&, Plan&); };
-// (no entries, so the CPU renders them: sepia, add noise and white balance - their 8-bit steps, the shift-register generator and the frame histogram follow
+// (no entries, so the CPU renders them: film grain (its noise table comes from VEGAS's shift-register generator), sepia, add noise and white balance - their 8-bit steps, the shift-register generator and the frame histogram follow
 // VEGAS exactly in builtins_filters.cpp / builtins_more_colour.cpp)
 const Entry kEntries[] = {
     {"solidcolor", planSolidColor},
     {"checkerboard", planCheckerboard},
     {"testpattern", planTestPattern},
     {"crop", planCrop},
-    {"filmgrain", planFilmGrain},
     {"filmeffects", planFilmEffects},
     {"bumpmapfilter", planBumpMap},
     {"bumpmap", planBumpMapGeneral},
@@ -1183,7 +1171,6 @@ const std::vector<CaseSet>& caseSets()
         {"testpattern", {{"t1", PM{{"TestPatternType", {1}}}}, {"t2", PM{{"TestPatternType", {2}}}}, {"t3", PM{{"TestPatternType", {3}}}}, {"t4", PM{{"TestPatternType", {4}}}},
                          {"t5", PM{{"TestPatternType", {5}}}}, {"t6", PM{{"TestPatternType", {6}}}}, {"t7", PM{{"TestPatternType", {7}}}}, {"t8", PM{{"TestPatternType", {8}}}}}},
         {"crop", {{"turned", PM{{"XScale", {0.6}}, {"YScale", {0.7}}, {"Angle", {23}}, {"Location", {0.4, 0.55}}, {"Opacity", {0.8}}}}, {"whole", PM{{"XScale", {1.0}}, {"YScale", {1.0}}}}}},
-        {"filmgrain", {{"coarse", PM{{"Amount", {0.8}}, {"Granularity", {0.9}}, {"Chormaticity", {0.7}}}}, {"fine", PM{{"Amount", {0.3}}, {"Granularity", {0.0}}}}}},
         {"filmeffects", {{"grey", PM{{"ConvertToGreyscale", {1}}, {"Tint", {0.6}}, {"Color", {0.9, 0.7, 0.4, 1.0}}, {"Grain", {0.7}}}},
                          {"dust", PM{{"EnableEnableParticles", {1}}, {"EnableParticlesType", {0}}, {"EnableParticlesAmount", {1.0}}}},
                          {"flicker", PM{{"EnableEnableParticles", {1}}, {"EnableParticlesType", {1}}, {"EnableParticlesAmount", {0.8}}}},
@@ -1425,6 +1412,7 @@ bool gpuRender(const Def& d, Ctx& c, GpuFrame& f)
     io.outSerial = f.outSerial;
     io.noInput = f.noInput;
     io.deferOut = f.deferOut;
+    io.tiesDown = f.tiesDown;
     return gpu::run(plan, io);
 }
 
@@ -1468,7 +1456,8 @@ bool renderFrameCpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
     if (!d.render || w < 1 || h < 1) return false;
     c.frameW = w;
     c.frameH = h;
-    c.levels = !isFloat;
+    c.levels = !isFloat && !vegasDrawsFloat(d.id);
+    c.host8 = !isFloat;
     c.src.ensure(w, h);
     if (d.transition) secondPicture(c, w, h, isFloat, bgra, in, inStride);
     // the host's frame into the float picture, top row first (load() in builtins.cpp)
@@ -1481,6 +1470,7 @@ bool renderFrameCpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
     if (d.overwritesOut || d.rows) c.out.ensure(w, h);
     else c.out.resize(w, h);
     d.render(c);
+    if (!isFloat && vegasDrawsFloat(d.id)) vegasTiesDown(c.out);
     for (int y = 0; y < h; ++y) {
         uint8_t* row = out + (size_t)(h - 1 - y) * outStride;
         const float* src = c.out.at(0, y);
@@ -1531,7 +1521,8 @@ bool renderFrameGpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
             if (c.testParams && it != c.testParams->end() && !it->second.empty()) c.progress = clampd(it->second[0], 0, 1);
         }
     }
-    c.levels = !isFloat;
+    c.levels = !isFloat && !vegasDrawsFloat(d.id);
+    c.host8 = !isFloat;
     gpu::Plan plan;
     plan.begin((uint32_t)w, (uint32_t)h, d.id.c_str());
     bool ok = false;
@@ -1553,6 +1544,7 @@ bool renderFrameGpu(const Def& d, Ctx& c, int w, int h, bool isFloat, bool bgra,
     io.outSerial = outSerial;
     io.noInput = d.generator;
     io.deferOut = gpu::deferOutputRequested();
+    io.tiesDown = !isFloat && vegasDrawsFloat(d.id);
     if (gpu::run(plan, io, stats)) {
         tGpuWhy.clear();
         return true;

@@ -92,8 +92,8 @@ def dissolve8(S):
                     with S.else_():
                         with S.if_(S.eq(ty, 5) | S.eq(ty, 6)):
                             T = [S.select(S.eq(ty, 5), A[k], B[k]) for k in range(3)]
-                            avg4 = ((T[0] + T[1] + T[2]) * 4) / 3
-                            use_a = S.select(S.eq(ty, 5), avg4 > w1024, avg4 < (S.i(1024) - w1024))
+                            s2 = S.to_f((T[0] + T[1] + T[2]) * 2)          # (q0: 1530 * progress, q1: 1530 * (1 - progress), floats as the CPU works them out)
+                            use_a = S.select(S.eq(ty, 5), s2 > qf(S, P, 0), s2 < qf(S, P, 1))
                             for k in range(4):
                                 O[k].set(S.select(use_a, A[k], B[k]))
                         with S.else_():
@@ -218,18 +218,12 @@ def smooth_weight(S, u):
 
 
 def mix_wipe8(S, fa, fb, wgt, a_first):
-    """per channel: the bytes of the two pictures mixed by the weight: r = (x + ((d + (d < 0 ? 255 : 0)) >> 8)) & 255 with d = (a - b) * wgt (linear: x = b)
-    or d = (b - a) * wgt (clock: x = a); the two pictures' floats in, the mixed floats out"""
+    """per channel: the bytes of the two pictures mixed by the weight with dis::lerp8 (VEGAS's rounded mix, as captured): the outgoing picture's byte plus the
+    difference to the incoming one times the weight over 255 (a_first: clock wipe, lerp8(a, b); else linear wipe, lerp8(b, a)); the floats in, the levels out"""
     out = []
     for k in range(4):
         av, bv = to8(S, fa[k]), to8(S, fb[k])
-        if a_first:        # clock wipe: a + (d >> 8), d = (b - a) * wgt
-            d = (bv - av) * wgt
-            r = (av + ((d + S.select(d < 0, S.i(255), S.i(0))) >> 8)) & 255
-        else:
-            d = (av - bv) * wgt
-            r = (bv + ((d + S.select(d < 0, S.i(255), S.i(0))) >> 8)) & 255
-        out.append(r)
+        out.append(lerp8(S, av, bv, wgt) if a_first else lerp8(S, bv, av, wgt))
     return out
 
 
@@ -375,7 +369,7 @@ def wipe_clock_f(S):
 # call's pixels changed; the last pass writes level / 255 (final). The source of a blit is in0 (a picture: levels as byte / 255). The numbers of a call come
 # in the table as the bits of ints, in the order the planner (vktrans.cpp) and transrec.h's blit record put them.
 BLIT_FIELDS = ['px0', 'px1', 'py0', 'py1', 'frc', 'lrc', 'fcc', 'lcc', 'sx0', 'sy0', 'sx', 'sy', 'fs', 'last', 'srow', 'xfirst', 'xlast', 'ylast', 'box', 'scx', 'scy',
-               'wsF', 'wsL', 'hsF', 'hsL'] + ['a2_%d' % k for k in range(9)] + ['boxarea', 'invh', 'invl', 'srcw', 'srch']
+               'wsF', 'wsL', 'hsF', 'hsL'] + ['a2_%d' % k for k in range(9)] + ['boxarea', 'invh', 'invl', 'srcw', 'srch', 'phx', 'phy', 'bias']
 
 
 class TI:
@@ -409,8 +403,8 @@ def mix8(S, p, q, t):
     return S.max(S.min(d, S.i(255)), S.i(0))
 
 
-def bil4(S, rows, i0, i1, fx, fy, W):
-    """sf::bil: rows = (r0, r1) row numbers; 14-bit weights, four ints"""
+def bil4(S, rows, i0, i1, fx, fy, W, bias=None):
+    """sf::bil: rows = (r0, r1) row numbers; 14-bit weights, four ints; bias: the rounding added before the shift (gBilBias: 0x800000, 0x400000 with the moved frame of Slide / Spiral)"""
     u = lambda v: S.to_u(v)
     a = S.i(0x4000)
     w00 = u((a - fy) * (a - fx)) >> 4
@@ -424,7 +418,7 @@ def bil4(S, rows, i0, i1, fx, fy, W):
         ps[key] = S.buf('in0').load(r * W + i)
     L = {k: [u(x) for x in lvl4(S, v)] for k, v in ps.items()}
     for k in range(4):
-        s = L['a'][k] * w00 + L['b'][k] * w10 + L['c'][k] * w01 + L['d'][k] * w11 + S.u(0x800000)
+        s = L['a'][k] * w00 + L['b'][k] * w10 + L['c'][k] * w01 + L['d'][k] * w11 + (S.u(0x800000) if bias is None else bias)
         out.append(S.to_i(s >> 24))
     return out
 
@@ -477,7 +471,11 @@ def blit8(S):
         ri = row - t.py0
         inside = (c >= t.px0) & (c < t.px1) & (row >= t.py0) & (row < t.py1)
         W_ = S.u(0)
+        phased = S.ne(t.phx | t.phy, 0)
+        bias = S.to_u(t.bias)
+        sx0 = t.sx0 + t.phx                  # (the sampling phase of Slide / Spiral: gPhaseX / gPhaseY of builtins_trans.cpp; 0 for every other draw)
         def src_rows(y):
+            y = S.max(y + t.phy, S.i(0))
             r = y / 16384
             fy = y % 16384
             r1 = r + S.select(S.ne(r, t.srow - 1), S.i(1), S.i(0))
@@ -575,12 +573,12 @@ def blit8(S):
                 with S.if_(is_edge):
                     # edgeRow: every pixel is mixed in by its coverage
                     with S.if_(ncols > 1):
-                        x_first = t.sx0
-                        x_mid = t.sx0 + t.xfirst + (cj - 1) * t.sx
-                        x_last = t.sx0 + t.xfirst + (ncols - 2) * t.sx + t.xlast
+                        x_first = sx0
+                        x_mid = sx0 + t.xfirst + (cj - 1) * t.sx
+                        x_last = sx0 + t.xfirst + (ncols - 2) * t.sx + t.xlast
                         x = S.select(S.eq(cj, 0), x_first, S.select(S.eq(cj, ncols - 1), x_last, x_mid))
                         i0, i1, fx = col_of(x)
-                        p = bil4(S, rows, S.to_u(i0), S.to_u(i1), fx, fy, W)
+                        p = bil4(S, rows, S.to_u(i0), S.to_u(i1), fx, fy, W, bias)
                         a_first = ((rcov * t.fcc) >> 14) * 255 >> 14
                         a_mid = (rcov * 255) >> 14
                         a_last = (((t.lcc * rcov) >> 14) * 255) >> 14
@@ -589,13 +587,13 @@ def blit8(S):
                 with S.else_():
                     # midRow
                     nm = ncols - 2
-                    x_first = t.sx0
+                    x_first = sx0
                     k = cj - 1
-                    x_mid = t.sx0 + t.xfirst + k * t.sx
-                    x_last = t.sx0 + t.xfirst + nm * t.sx + t.xlast
+                    x_mid = sx0 + t.xfirst + k * t.sx
+                    x_last = sx0 + t.xfirst + nm * t.sx + t.xlast
                     with S.if_(S.eq(cj, 0)):
                         i0, i1, fx = col_of(x_first)
-                        p = bil4(S, rows, S.to_u(i0), S.to_u(i1), fx, fy, W)
+                        p = bil4(S, rows, S.to_u(i0), S.to_u(i1), fx, fy, W, bias)
                         mix_into(p, (t.fcc * 255) >> 14)
                     with S.else_():
                         with S.if_(cj < ncols - 1):
@@ -605,9 +603,9 @@ def blit8(S):
                             j1 = j0 + S.select(S.ne(j0, t.last), S.i(1), S.i(0))
                             ps = bil_sse(S, rows, S.to_u(j0), S.to_u(j1), f, fy, W)
                             i0, i1, fx = col_of(x_mid)
-                            pb = bil4(S, rows, S.to_u(i0), S.to_u(i1), fx, fy, W)
+                            pb = bil4(S, rows, S.to_u(i0), S.to_u(i1), fx, fy, W, bias)
                             for q in range(4):
-                                res[q].set(S.select(odd_tail, pb[q], ps[q]))
+                                res[q].set(S.select(odd_tail | phased, pb[q], ps[q]))
                         with S.else_():
                             xx = x_last
                             i0 = xx / 16384
@@ -618,7 +616,7 @@ def blit8(S):
                             a1 = lvl4(S, S.buf('in0').load(r1 * W + S.to_u(i0)))
                             p_same = [S.to_i((S.to_u(a0[q]) * S.to_u(0x4000 - fy) + S.to_u(a1[q]) * S.to_u(fy) + S.u(0x2000)) >> 14) for q in range(4)]
                             i1 = i0 + 1
-                            p_bil = bil4(S, rows, S.to_u(i0), S.to_u(i1), fx, fy, W)
+                            p_bil = bil4(S, rows, S.to_u(i0), S.to_u(i1), fx, fy, W, bias)
                             p = [S.select(same, p_same[q], p_bil[q]) for q in range(4)]
                             mix_into(p, (t.lcc * 255) >> 14)
         fin = S.ne(P.final, 0)
@@ -1177,7 +1175,7 @@ def iris_map(S):
         S.buf('out').store(S.to_u(j) * P.w + S.gx, S.vec4(best.get(), S.f(0.0), S.f(0.0), S.f(0.0)))
 
 
-@kernel("iris_max", WH, [PIC_IN, PIC_OUT, TABLE])
+@kernel("iris_max", WH + [('extra', 'f')], [PIC_IN, PIC_OUT, TABLE])
 def iris_max(S):
     # the largest distance on the frame's four edges (at least 1), written after the map (in0 and out are the map); one invocation
     P = S.p
@@ -1196,6 +1194,7 @@ def iris_max(S):
                 mx.set(S.select(mx.get() < v0, v0, mx.get()))
                 v1 = src.load(j * P.w + P.w - 1).x
                 mx.set(S.select(mx.get() < v1, v1, mx.get()))
+        mx.set(S.select(mx.get() < P.extra, P.extra, mx.get()))      # (the reflected edges' largest distance worked out on the CPU: irisReflectedMax in builtins_trans.cpp)
         S.buf('out').store(P.w * P.h, S.vec4(mx.get(), S.f(0.0), S.f(0.0), S.f(0.0)))
 
 

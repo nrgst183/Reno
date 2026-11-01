@@ -131,6 +131,11 @@ inline void apply()
     // with Vulkan kernels (GPU API)
     applyGpuApi(vprefs::text("prefs/gpuApi").toStdString(), vprefs::on("prefs/gpuAccel"));
     applyGpuPick(vprefs::text("prefs/gpuPick"));
+    // the built-in copies of VEGAS's effects draw as VEGAS does with its GPU acceleration on (OpenCL kernels) or off (CPU code)
+    if (ofx::Host::get().config.vegasGpu != vprefs::on("prefs/vegasGpuAccel")) {
+        ofx::Host::get().config.vegasGpu = vprefs::on("prefs/vegasGpuAccel");
+        ofx::Host::get().applyConfig();
+    }
     // VEGAS's effects: its own plug-ins when installed, or always Reno's built-in versions (FxRuntime recreates the
     // instances)
     ofx::Host::get().config.preferBuiltinVegasFx = vprefs::text("prefs/vegasFxSource") != "real";

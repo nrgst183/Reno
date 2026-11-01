@@ -1172,7 +1172,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         for (int j = 0; j < kBindings; ++j) dummyInfo(k, j);
         k.buf[0] = frameBufs[1].buf; k.range[0] = plan.bufs[1].bytes();
         k.buf[2] = rawOut.buf; k.range[2] = rawBytes;
-        UnpackPush up = {io.w, io.h, io.bgra ? 1u : 0u, 0};
+        UnpackPush up = {io.w, io.h, io.bgra ? 1u : 0u, io.tiesDown ? 1u : 0u};
         std::memcpy(k.push, &up, sizeof up);
         k.pushSize = sizeof up;
         k.tx = io.w; k.ty = io.h;

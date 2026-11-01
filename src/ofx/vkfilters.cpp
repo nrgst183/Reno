@@ -348,7 +348,9 @@ bool planBorder(Ctx& c, Plan& p)
     borderGeometry(c, (int)p.w, (int)p.h, g);
     if (g.W <= 0 || g.H <= 0) return false;
     if (g.type == 2) {
-        P::BorderSolid pc = {p.w, p.h, g.xi, g.xr, g.yb, g.yt, g.cc[0], g.cc[1], g.cc[2], g.cc[3]};
+        // (the kernel numbers the colour bytes blue first; float frames lie red first, see border() in builtins_filters.cpp)
+        const bool fl = !c.levels;
+        P::BorderSolid pc = {p.w, p.h, g.xi, g.xr, g.yb, g.yt, g.cc[fl ? 2 : 0], g.cc[1], g.cc[fl ? 0 : 2], g.cc[3]};
         p.add("border_solid", 0, 1, p.w, p.h).setPush(pc);
         return true;
     }
@@ -379,7 +381,7 @@ bool planBorder(Ctx& c, Plan& p)
         borderBevelRow(g, y, xs);
         for (int k = 0; k < 5; ++k) tab.push_back((float)xs.end[k]);
         for (int k = 0; k < 5; ++k) tab.push_back((float)xs.cov[k]);
-        for (int k = 0; k < 5; ++k) for (int ch = 0; ch < 3; ++ch) tab.push_back((float)xs.face[k][ch]);
+        for (int k = 0; k < 5; ++k) for (int ch = 0; ch < 3; ++ch) tab.push_back((float)xs.face[k][c.levels ? ch : 2 - ch]);
     }
     P::BorderBevel pc = {p.w, p.h, c.levels ? 1u : 0u, 0u};
     Pass& ps = p.add("border_bevel", 0, 1, p.w, p.h);
@@ -571,6 +573,7 @@ bool planRadialBlur(Ctx& c, Plan& p)
 {
     RbSetup g;
     more::radialBlurSetup(c, (int)p.w, (int)p.h, g);
+    if (!g.pass && c.openCl && g.type != 2) return false;       // (VEGAS's OpenCL kernels are ported on the CPU only: radialBlurOpenCl)
     if (g.pass) {
         p.add("copy_px", 0, 1, p.w, p.h).setPush(P::CopyPx{p.w, p.h});
         return true;
@@ -1018,57 +1021,6 @@ bool planMotionTracker(Ctx& c, Plan& p)
     return true;
 }
 
-// Light Rays (lightRays() in builtins_more_light.cpp, marchTowardsCentre() in builtins_fast2.cpp): rays of samples and running sums in doubles, a chunk of rays a pass
-bool planLightRays(Ctx& c, Plan& p)
-{
-    const int W = (int)p.w, H = (int)p.h;
-    LrSetup su;
-    more::lightRaysSetup(c, W, H, su);
-    PolarGpu g;
-    if (!polarGeomGpu(W, H, su.px0, su.py0, 0.35, g)) return false;
-    if ((size_t)g.nT * (size_t)g.rN > (size_t)24 * 1024 * 1024) return false;
-    const uint32_t nT = (uint32_t)g.nT, rN = (uint32_t)g.rN;
-    // as many rays a pass as the scratch buffer (96 MB, under the 128 MB every device allows) holds: a pass of a few rays leaves the card idle
-    const size_t wordsPerRay = ((size_t)rN + 8) * 4 + ((size_t)rN + 9) * 12;
-    const uint32_t chunk = (uint32_t)std::max<size_t>(1, std::min<size_t>(nT, ((size_t)24 << 20) / wordsPerRay));
-    std::vector<float> tab;
-    tab.insert(tab.end(), g.cs.begin(), g.cs.end());
-    tab.insert(tab.end(), g.sn.begin(), g.sn.end());
-    for (int v : g.rEnd) tab.push_back((float)v);
-    const int tb = p.addTable(std::move(tab));
-    const size_t words = (size_t)chunk * (((size_t)rN + 8) * 4 + ((size_t)rN + 9) * 12);
-    const int st = p.addBuf(1024, (uint32_t)((words + 4095) / 4096), 4);
-    const int res = p.addBuf(rN, nT, 4);
-    const double span = 0.6, fmin = 1.0 - span;
-    const D2 sp = d2(span), fm = d2(fmin);
-    const float cx = (float)g.px0 - 0.5f, cy = (float)g.py0 - 0.5f;
-    for (uint32_t t0 = 0; t0 < nT; t0 += chunk) {
-        const P::LrRay pc{p.w, p.h, nT, rN, t0, chunk, cx, cy, su.sensF, 0u, sp.h, sp.l, fm.h, fm.l};
-        Pass& ps = p.add("lr_ray", 0, res, chunk, 1);
-        ps.in1 = st;
-        ps.table = tb;
-        ps.setPush(pc);
-        // the sums (a thread to each ray, channel and sum), then every radius' value (a thread each)
-        Pass& pz = p.add("lr_sum", 0, res, chunk * 6, 1);
-        pz.in1 = st;
-        pz.table = tb;
-        P::LrSum pcs;
-        std::memcpy(&pcs, &pc, sizeof pc);
-        pz.setPush(pcs);
-        Pass& pv = p.add("lr_val", 0, res, rN, chunk);
-        pv.in1 = st;
-        pv.table = tb;
-        P::LrVal pcv;
-        std::memcpy(&pcv, &pc, sizeof pc);
-        pv.setPush(pcv);
-    }
-    const D2 px = d2(g.px0), py = d2(g.py0);
-    Pass& ps = p.add("lr_read", 0, 1, p.w, p.h);
-    ps.in1 = res;
-    ps.setPush(P::LrRead{p.w, p.h, nT, rN, (float)g.nT / 6.28318531f, su.kk[0], su.kk[1], su.kk[2], su.fb, 0u, px.h, px.l, py.h, py.l});
-    return true;
-}
-
 // Black Bar Fill on 8-bit pictures (blackBarFill8() in builtins_more_creative.cpp): bottom row first, byte values
 bool planBlackBarFill8(Ctx& c, Plan& p)
 {
@@ -1181,15 +1133,42 @@ bool planNewsprint(Ctx& c, Plan& p)
 {
     NewsGeo g;
     newsprintGeometry(c, (int)p.w, (int)p.h, g);
+    if (!g.ok && c.i("Type") == 1 && g.dot <= 0.0) return false;      // (Monochrome without dots: the picture's grey, on the CPU)
     if (!g.ok) {            // the CPU hands the picture back (no dots, a frame too small for cells)
         p.add("copy_px", 0, 1, p.w, p.h).setPush(P::CopyPx{p.w, p.h});
         return true;
     }
     if (g.dRx <= 0 || g.dRy <= 0 || g.nrm <= 0) return false;
+    // float frames (what VEGAS draws in a project): the dots are a half pixel over and take the average of the block around them (running sums of the bytes, whole numbers below 2^32)
+    if (!c.levels && (double)p.w * (double)p.h * 255.0 >= 4294967296.0) return false;
+    // on float frames (red first in memory) VEGAS's plug-in, which numbers the channels in memory order, sees red and blue the other way round: exchange them
+    // before and after (the CPU's vegasNewsprint() does the same)
+    const bool fl = !c.levels;
+    int in0 = 0, out0 = 1;
+    if (fl) {
+        in0 = p.addBuf(p.w, p.h, 4);
+        out0 = p.addBuf(p.w, p.h, 4);
+        p.add("swap_rb", 0, in0, p.w, p.h).setPush(P::SwapRb{p.w, p.h});
+    }
     const int bytes = p.addBuf(p.w, p.h, 4);
-    p.add("news_bytes", 0, bytes, p.w, p.h).setPush(P::NewsBytes{p.w, p.h});
-    const int smallBuf = p.addBuf((uint32_t)g.sw, (uint32_t)g.sh, 4);
-    {
+    p.add("news_bytes", in0, bytes, p.w, p.h).setPush(P::NewsBytes{p.w, p.h});
+    int smallBuf = 0;
+    std::vector<float> boxTab;
+    if (fl) {
+        const int rowSums = p.addBuf(p.w + 1, p.h, 4);
+        p.add("news_prex", bytes, rowSums, p.h, 1).setPush(P::NewsPrex{p.w, p.h});
+        const int sums = p.addBuf(2 * (p.w + 1), p.h + 1, 4);
+        p.add("news_prey", rowSums, sums, p.w + 1, 1).setPush(P::NewsPrey{p.w, p.h});
+        smallBuf = p.addBuf((uint32_t)(g.nbx + 4), (uint32_t)(g.nby + 4), 4);
+        pushDouble(boxTab, g.P);
+        pushDouble(boxTab, g.fxo);
+        pushDouble(boxTab, g.fyo);
+        P::NewsBoxes pb = {p.w, p.h, g.nbx, g.nby, g.par};
+        Pass& pbx = p.add("news_boxes", sums, smallBuf, (uint32_t)(g.nbx + 4), (uint32_t)(g.nby + 4));
+        pbx.table = p.addTable(std::move(boxTab));
+        pbx.setPush(pb);
+    } else {
+        smallBuf = p.addBuf((uint32_t)g.sw, (uint32_t)g.sh, 4);
         std::vector<float> tab;
         pushDouble(tab, 1.0 / (double)g.nrm);
         std::vector<NewsAxisCell> ax, ay;
@@ -1212,11 +1191,13 @@ bool planNewsprint(Ctx& c, Plan& p)
     newsprintCoverTable(cov);
     for (int k = 0; k < 256; ++k) tab.push_back((float)cov[k]);
     P::NewsDots0 pc = {p.w, p.h, (uint32_t)g.sw, (uint32_t)g.sh, g.nbx, g.nby, g.par, (int)g.maxX, (int)g.maxY, g.fadeT};
-    const char* names[3] = {"news_dots0", "news_dots1", "news_dots2"};
-    Pass& ps = p.add(names[g.mode], 0, 1, p.w, p.h);
+    const char* names[3] = {fl ? "news_dotsf0" : "news_dots0", fl ? "news_dotsf1" : "news_dots1", fl ? "news_dotsf2" : "news_dots2"};
+    // (Monochrome's dots are one grey, and its faded-in grey is the picture's true luma: it reads the picture as it is, not red and blue exchanged)
+    Pass& ps = p.add(names[g.mode], g.mode == 0 ? 0 : in0, out0, p.w, p.h);
     ps.in1 = smallBuf;
     ps.table = p.addTable(std::move(tab));
     ps.setPush(pc);
+    if (fl) p.add("swap_rb", out0, 1, p.w, p.h).setPush(P::SwapRb{p.w, p.h});
     return true;
 }
 
@@ -1236,6 +1217,7 @@ bool planRank8(Ctx& c, Plan& p, float rank)
 // Median (neighbourhood() in builtins_more_blur.cpp, vegasMedian() in builtins_vegasmedian.cpp)
 bool planMedian(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: medianOpenCl)
     const int W = (int)p.w, H = (int)p.h;
     const double hr = clampd(c.d("HorizontalRange"), 0, 1), vr = clampd(c.d("VerticalRange"), 0, 1);
     const float big = (float)std::max(W, H);
@@ -1395,10 +1377,6 @@ const std::vector<FilterGpuEntry>& filterGpuEntries()
         {"de.magix:MotionTracker", planMotionTracker, 0.0,
          {GpuCheckCase("plain", PM{}), GpuCheckCase("shown without region", PM{{"ShowMotionVectors", {1}}}),
           GpuCheckCase("region drawn (float on the CPU)", PM{{"ShowMotionVectors", {1}}, {"CornerTL", {0.2, 0.2}}, {"CornerTR", {0.8, 0.2}}, {"CornerBR", {0.8, 0.8}}, {"CornerBL", {0.2, 0.8}}})}},
-        {"lightrays", planLightRays, 0.0,
-         {GpuCheckCase("default", PM{}), GpuCheckCase("inside", PM{{"LightSource", {0.4, 0.7}}, {"group0Sensitivity", {0.8}}, {"group0Strength", {1.0}}}),
-          GpuCheckCase("outside", PM{{"LightSource", {1.4, -0.3}}, {"group0Sensitivity", {0.7}}, {"group0Strength", {0.8}}, {"group2Blend", {0.5}}}),
-          GpuCheckCase("corner", PM{{"LightSource", {0.0, 1.0}}, {"group0Sensitivity", {0.6}}, {"group0Strength", {1.5}}}), GpuCheckCase("tinted", PM{{"LightSource", {0.5, 0.5}}, {"TintColor", {1.0, 0.6, 0.2}}, {"group0Sensitivity", {0.5}}})}},
         {"border", planBorder, 0.0,
          {GpuCheckCase("blurred", PM{{"Type", {0}}, {"Size", {0.2}}}), GpuCheckCase("blurred wide", PM{{"Type", {0}}, {"Size", {0.5}}}), GpuCheckCase("blurred thin", PM{{"Type", {0}}, {"Size", {0.06}}}),
           GpuCheckCase("bevel", PM{{"Type", {1}}, {"Size", {0.15}}, {"Angle", {40}}, {"color", {0.9, 0.5, 0.2, 1.0}}}), GpuCheckCase("bevel thin", PM{{"Type", {1}}, {"Size", {0.04}}, {"Angle", {200}}}),

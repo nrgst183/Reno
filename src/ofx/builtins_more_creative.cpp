@@ -5,6 +5,7 @@
 #include "builtins_fast.h"
 #include "builtins_deriche.h"
 #include "vegas8.h"
+#include "vfxrand.h"
 #include "builtins_vec.h"
 #include "../core/base.h"
 #include <cstdio>
@@ -339,12 +340,12 @@ void cropFx(Ctx& c)
 void pipSetup(Ctx& c, int W, int H, PipSetup& o)
 {
     // VEGAS places the picture by pixel INDICES (like Black Bar Fill); it exists only where the index lies inside the frame. Fixed Shape keeps
-    // Scale in X and Y equal (whichever moved from its default wins); Free Form puts the corners on the four corner points.
+    // Scale in X and Y equal (Y is ignored); Free Form puts the corners on the four corner points.
     double lx, ly;
     c.xy("Location", lx, ly);
     const int mode = c.i("KeepProportions");
     double sx = std::max(0.01, c.d("Scale")), sy = std::max(0.01, c.d("DistortionScaleY"));
-    if (mode == 0) { if (std::fabs(sx - 0.5) < 1e-9 && std::fabs(sy - 0.5) > 1e-9) sx = sy; else sy = sx; }
+    if (mode == 0) sy = sx;      // (VEGAS's captured pictures: in Fixed Shape the Distortion Scale Y setting changes nothing)
     const double ang = c.d("Angle") * kPi / 180.0, op = clampd(c.d("Opacity"), 0, 1);
     const int anchor = c.i("Anchor");
     const double ax = (anchor % 3) * 0.5, ay = 1.0 - (anchor / 3) * 0.5;          // the anchor inside the picture, from the bottom left
@@ -488,27 +489,86 @@ void pictureInPicture(Ctx& c)
     });
 }
 
+// Film Grain, as VEGAS's own code does it (vfx1.dll, read, not fitted): a 64 x 64 table of three planes of noise is made from the shift-register generator
+// (VegasShiftRandom) seeded with (int)(grain size x 1000) + the event time stamp (Ctx::legacySeedTime): each value is a Gaussian number from the polar method
+// (v x sqrt(-2 ln(s) / s) of a point u, v inside the unit circle, u and v the low 16 bits of two words) put into 0..1 as (g + 5.28) / 10.56. The grain size is
+// max(1, (2 x Granularity + 1) x frame height / 240) pixels. Down each row the table is read bilinearly, one table cell per grain size, wrapping at 64, and the
+// same down the rows; every row starts again at cell 0. With Chormaticity above 0 the colours take planes 0 (first colour; in memory order blue), 1 and 2 as
+// c x plane + (1 - c) x plane 0; without it all three take plane 0. The picture is multiplied by 1.3 x noise and mixed in by Amount: 8-bit with the weight
+// (int)(Amount x 255) and the noisy value cut to 0..alpha and the integer mix ((d x w + 128) + that >> 8) >> 8; float with the float arithmetic as it comes.
 void filmGrain(Ctx& c)
 {
-    const double amount0 = clampd(c.d("Amount"), 0, 1), gran = clampd(c.d("Granularity"), 0, 1), chroma = clampd(c.d("Chormaticity"), 0, 1);
-    const double cellFull = (double)std::max(1, (int)std::lround(1 + gran * 3 * std::max(1.0, frameScaleFull(c) * 2)));
-    const double cellHere = cellFull * c.scale;
-    const int cell = c.scale >= 0.999 ? std::max(1, (int)std::lround(1 + gran * 3 * std::max(1.0, frameScale(c) * 2))) : std::max(1, (int)std::lround(cellHere));
-    const double weaken = c.scale >= 0.999 ? 1.0 : std::min(1.0, cellHere);
-    const double amount = amount0 * weaken;
-    const uint32_t seed = (uint32_t)std::lround(c.time) * 2654435761u;
-    auto rnd = [&](uint32_t x, uint32_t y, uint32_t k) {
-        uint32_t h = x * 374761393u + y * 668265263u + k * 2246822519u + seed;
-        h = (h ^ (h >> 13)) * 1274126177u;
-        return ((h ^ (h >> 16)) & 0xFFFF) / 32767.5f - 1.f;
-    };
-    perPixel(c, [&](float& r, float& g, float& b, int x, int y) {
-        const uint32_t gx = (uint32_t)(x / cell), gy = (uint32_t)(y / cell);
-        const float n0 = rnd(gx, gy, 0) * (float)amount * 0.35f;
-        r += n0 + rnd(gx, gy, 1) * (float)(amount * chroma) * 0.2f;
-        g += n0 + rnd(gx, gy, 2) * (float)(amount * chroma) * 0.2f;
-        b += n0 + rnd(gx, gy, 3) * (float)(amount * chroma) * 0.2f;
-        r = clamp01(r); g = clamp01(g); b = clamp01(b);
+    const double amount = clampd(c.d("Amount"), 0, 1), gran = clampd(c.d("Granularity"), 0, 1), chroma = clampd(c.d("Chormaticity"), 0, 1);
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    // the grain's size is worked from the project's frame, the cells are drawn at this frame's scale
+    const double frameH = c.frameH > 0 ? (double)c.frameH : (double)H / c.scale;
+    const double grain = std::max(1.0, (gran * 2 + 1) * frameH / 240.0);
+    VegasShiftRandom rng((uint32_t)((int)(grain * 1000.0) + c.legacySeedTime()));
+    std::vector<double> table(12288);
+    for (int k = 0; k < 12288;) {
+        const double u = (double)(rng.next() & 0xffffu) / 65535.0 * 2 - 1.0;
+        const double v = (double)(rng.next() & 0xffffu) / 65535.0 * 2 - 1.0;
+        const double q = u * u + v * v;
+        if (q >= 1.0 || q == 0.0) continue;
+        table[(size_t)k++] = (std::sqrt(std::log(q) * -2.0 / q) * v + 5.28) / 10.56;
+    }
+    const double stepX = 1.0 / (grain * c.scale), stepY = 1.0 / (grain * c.scale);
+    // the table rows and the fraction between them at each picture row
+    std::vector<int> rowA((size_t)H), rowB((size_t)H);
+    std::vector<double> frac((size_t)H);
+    {
+        int r0 = 0, r1 = 1;
+        double fy = 0;
+        for (int y = 0; y < H; ++y) {
+            rowA[(size_t)y] = r0; rowB[(size_t)y] = r1; frac[(size_t)y] = fy;
+            fy += stepY;
+            if (fy >= 1.0) { r0 = r1; fy -= 1.0; r1 = (r1 + 1) & 63; }
+        }
+    }
+    const int wt = (int)(amount * 255.0) & 0xff;
+    const float amountF = (float)amount;
+    const bool colour = chroma > 0;
+    forRows(H, W, [&](int y) {
+        const int r0 = rowA[(size_t)y] * 64, r1 = rowB[(size_t)y] * 64;
+        const double fy = frac[(size_t)y];
+        int c0 = 0, c1 = 1;
+        double fx = 0;
+        for (int x = 0; x < W; ++x) {
+            double n[3] = {0, 0, 0};
+            for (int p = 0; p < (colour ? 3 : 1); ++p) {
+                const double* t = &table[(size_t)p * 4096];
+                const double a = (1 - fx) * t[r0 + c0] + fx * t[r0 + c1];
+                const double b = (1 - fx) * t[r1 + c0] + fx * t[r1 + c1];
+                n[p] = a * (1 - fy) + b * fy;
+            }
+            double m[3];
+            if (colour) { m[0] = n[0]; m[1] = chroma * n[1] + (1 - chroma) * n[0]; m[2] = chroma * n[2] + (1 - chroma) * n[0]; }
+            else m[0] = m[1] = m[2] = n[0];
+            fx += stepX;
+            if (fx >= 1.0) { c0 = c1; fx -= 1.0; c1 = (c1 + 1) & 63; }
+            const float* s = c.src.at(x, y);
+            float* o = c.out.at(x, y);
+            if (c.levels) {
+                const int al = v8::toLevel(s[3]);
+                for (int k = 0; k < 3; ++k) {           // (Reno's red is the last of VEGAS's three: blue first)
+                    const int sv = v8::toLevel(s[k]);
+                    const int t = (int)std::lrint(m[2 - k] * 1.3 * (double)sv);
+                    const int nv = (t < 0 ? 0 : (t > al ? al : t)) & 255;
+                    const int e = (nv - sv) * wt + 128;
+                    const int r = sv + (((e >> 8) + e) >> 8);
+                    o[k] = v8::fromLevel(r < 0 ? 0 : (r > 255 ? 255 : r));
+                }
+                o[3] = v8::fromLevel(al);
+            } else {
+                for (int k = 0; k < 3; ++k) {
+                    const float nm = (float)m[2 - k] * 1.3f;
+                    const float noisy = s[k] * nm;
+                    o[k] = (noisy - s[k]) * amountF + s[k];
+                }
+                o[3] = s[3];
+            }
+        }
     });
 }
 

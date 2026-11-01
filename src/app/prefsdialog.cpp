@@ -1176,6 +1176,15 @@ private:
                           [gpu] { vprefs::set("prefs/gpuAccel", gpu->currentData().toBool()); },
                           [gpu] { gpu->setCurrentIndex(vprefs::defaultOf("prefs/gpuAccel").toBool() ? 1 : 0); }});
         p.beside(gpu, "&GPU acceleration of video processing:");
+        // how Reno's copies of VEGAS's effects draw: like VEGAS with GPU acceleration on (its OpenCL kernels) or off (its CPU code)
+        QComboBox* vgpu = new QComboBox(b);
+        vgpu->setObjectName("vegasGpuAccel");
+        vgpu->addItem("Off (VEGAS CPU code)", false);
+        vgpu->addItem("On (VEGAS OpenCL kernels)", true);
+        binds_.push_back({tab_, [vgpu] { vgpu->setCurrentIndex(vprefs::on("prefs/vegasGpuAccel") ? 1 : 0); },
+                          [vgpu] { vprefs::set("prefs/vegasGpuAccel", vgpu->currentData().toBool()); },
+                          [vgpu] { vgpu->setCurrentIndex(vprefs::defaultOf("prefs/vegasGpuAccel").toBool() ? 1 : 0); }});
+        p.beside(vgpu, "Draw VEGAS &effects like VEGAS with GPU acceleration:");
         QComboBox* numbers = new QComboBox(b);
         numbers->setObjectName("thumbnailNumbers");
         for (auto it : std::vector<std::pair<QString, QString>>{{"None", "none"}, {"Frame Numbers", "frames"}, {"Time", "time"}, {"Timecode", "timecode"}})
