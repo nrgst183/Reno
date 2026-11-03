@@ -13,6 +13,8 @@
 // database, motion analysis, auto-align) are declared with the same name and kept in the project, and do nothing.
 #include "vkfilters.h"
 #include "builtins_mask_internal.h"
+#include "builtins_more_internal.h"
+#include "vfxlens.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -26,80 +28,30 @@ namespace {
 const char* const kGroup = "Reno Built-in";
 
 // ------------------------------------------------------------------ Lens Correction
-// VEGAS's MagixCVFx "Remap" processor, single-precision, on the frame as it lies in memory (bottom row first). Distortion centre: pixel ((int)(W * x), (int)(H * y)) (the middle when negative);
-// a point at distance r comes from f = (k1 R^3 + k2 R^2 + k3 R + 1 - k1 - k2 - k3) / Scale times as far, R = r / (half the shorter side). The map holds those places / (W, H), read back at * (W - 1, H - 1);
-// a place beyond -0.4 .. W - 0.6 (H) is transparent, else a bilinear mix with 10-bit weights, truncated (255 can come out 254); the pixel right of the last column is the next row's first.
-// All k 0 and Scale 1, or Show Distortion: unchanged.
-// The settings the lens correction works from, in the CPU's float steps (shared with the GPU plan)
-bool lensSetup(Ctx& c, int W, int H, LensSetup& o)
-{
-    if (W <= 0 || H <= 0) return false;
-    double pcx = 0.5, pcy = 0.5;
-    c.xy("DistCenter", pcx, pcy);
-    double p1 = clampd(c.d("RadialDistParam1"), -2, 2), p2 = clampd(c.d("RadialDistParam2"), -2, 2), p3 = clampd(c.d("RadialDistParam3"), -2, 2);
-    // Choosing a lens from the found list copies its three coefficients into k1..k3 (entry n of the list is the n-th lens by name, case-sensitive; 0 is "Nothing found");
-    // only the last one of VEGAS's list is known here.
-    if (c.i("QueryResult") == 668) { p1 = 0.00266415; p2 = -0.0099024; p3 = 0.0120246; }
-    const double scale = clampd(c.d("Scale"), 0.05, 20);
-    o.plain = (std::fabs(p1) < 1e-12 && std::fabs(p2) < 1e-12 && std::fabs(p3) < 1e-12 && std::fabs(scale - 1) < 1e-12) || c.b("ShowMesh");
-    if (o.plain) return true;
-    const int cix = (int)((float)W * (float)pcx), ciy = (int)((float)H * (float)pcy);
-    float ncx = 0.5f, ncy = 0.5f;
-    if (cix >= 0) { ncx = (float)cix / (float)W; ncy = (float)ciy / (float)H; }
-    const float q = 2.0f / (float)std::min(W, H);
-    const float a0 = (float)p3, a1 = (float)p2, a2 = (float)p1;
-    o.d = 1.0f - a0 - a1 - a2;
-    o.x14 = a0 * q;
-    const float q2 = q * q;
-    o.x3 = q2 * a1; o.x13 = q2 * q * a2;
-    o.cxp = (float)W * ncx; o.cyp = (float)H * ncy;
-    o.s = (float)(1.0 / scale); o.iw = 1.0f / (float)W; o.ih = 1.0f / (float)H;
-    return true;
-}
-
+// VEGAS's MagixCV Lens Correction, in single precision on the frame as it lies in memory (bottom row first; the maths is in vfxlens.h): a point at distance r from the centre
+// (the index W * x, H * y) comes from f = (k3 u^3 + k2 u^2 + k1 u + 1 - k1 - k2 - k3) / Scale times as far, u = r / (half the shorter side), k1..k3 = RadialDistParam3..1; the picture is
+// read bilinearly (the card's 1/256 weights) with transparent black outside the frame. VEGAS's lens database is not there when it ran, so any QueryResult but 0 shows the picture unchanged
+// (as do Show Distortion and all-zero settings with Scale 1 do by the same maths). The 8-bit store is the OpenCL one (12-bit step, more::oclStore12).
 void lensCorrection(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
-    LensSetup su;
-    if (!lensSetup(c, W, H, su)) return;
-    if (su.plain) { c.out.px = c.src.px; return; }
-    const float cxp = su.cxp, cyp = su.cyp, d = su.d, x14 = su.x14, x3 = su.x3, x13 = su.x13, s = su.s, iw = su.iw, ih = su.ih;
-    const bool lv = c.levels;
-    const size_t N = (size_t)W * H;
-    auto px = [&](size_t i, float* v) {
-        const int x = (int)(i % (size_t)W), m = (int)(i / (size_t)W);
-        const float* p = c.src.at(x, H - 1 - m);
-        for (int k = 0; k < 4; ++k) v[k] = lv ? (float)(int)std::nearbyint(std::min(1.f, std::max(0.f, p[k])) * 255.f) : p[k] * 255.f;
-    };
+    if (W <= 0 || H <= 0) return;
+    double pcx = 0.5, pcy = 0.5;
+    c.xy("DistCenter", pcx, pcy);
+    if (c.i("QueryResult") != 0 || c.b("ShowMesh")) { c.out.px = c.src.px; return; }
+    const double p1 = clampd(c.d("RadialDistParam1"), -2, 2), p2 = clampd(c.d("RadialDistParam2"), -2, 2), p3 = clampd(c.d("RadialDistParam3"), -2, 2);
+    const double scale = clampd(c.d("Scale"), 0.05, 20);
+    const LensMapSetup su = lensMapMake(W, H, pcx, pcy, p1, p2, p3, scale);
+    const bool store8 = c.host8;
     forRows(H, W, [&](int m) {
-        const float dy = (float)m - cyp;
         float* orow = c.out.at(0, H - 1 - m);
+        auto get = [&](int xx, int yb, float* v) { std::memcpy(v, c.src.at(xx, H - 1 - yb), sizeof(float) * 4); };
         for (int x = 0; x < W; ++x) {
             float* o = orow + (size_t)x * 4;
-            const float dx = (float)x - cxp;
-            const float r = std::sqrt(dx * dx + dy * dy);
-            float f = ((r * x13 + x3) * r + x14) * r + d;
-            f = f * s;
-            const float mx = (f * dx + cxp) * iw, my = (f * dy + cyp) * ih;
-            const float sx = (float)(W - 1) * mx, sy = (float)(H - 1) * my;
-            if (!(sx > -0.4f && sx < (float)W - 0.6f && sy > -0.4f && sy < (float)H - 0.6f)) { o[0] = o[1] = o[2] = o[3] = 0.f; continue; }
-            const int x0 = (int)sx, y0 = (int)sy;
-            const float fx = std::max(sx - (float)x0, 0.f), fy = std::max(sy - (float)y0, 0.f);
-            const size_t i = (size_t)y0 * W + x0;
-            float b[4], s10[4], s01[4], s11[4];
-            px(i, b);
-            if (i + 1 < N) px(i + 1, s10); else std::memcpy(s10, b, sizeof b);
-            if (i + W < N) px(i + W, s01); else std::memcpy(s01, b, sizeof b);
-            if (i + W + 1 < N) px(i + W + 1, s11); else std::memcpy(s11, s01, sizeof s01);
-            if (lv) {
-                const int w00 = (int)((1.f - fx) * (1.f - fy) * 1024.f), w01 = (int)((1.f - fx) * fy * 1024.f);
-                const int w11 = (int)(fy * fx * 1024.f), w10 = (int)((1.f - fy) * fx * 1024.f);
-                for (int k = 0; k < 4; ++k)
-                    o[k] = (float)((((int)s11[k] * w11 + (int)s01[k] * w01 + (int)s10[k] * w10 + (int)b[k] * w00) >> 10)) / 255.f;
-            } else {
-                const float w00 = (1.f - fx) * (1.f - fy), w01 = (1.f - fx) * fy, w11 = fy * fx, w10 = (1.f - fy) * fx;
-                for (int k = 0; k < 4; ++k) o[k] = (s11[k] * w11 + s01[k] * w01 + s10[k] * w10 + b[k] * w00) / 255.f;
-            }
+            float mx, my;
+            if (!lensMapPlace(su, W, H, x, m, mx, my)) { o[0] = o[1] = o[2] = o[3] = 0.f; continue; }
+            lensMapRead(W, H, mx, my, get, o);
+            if (store8) for (int k = 0; k < 4; ++k) o[k] = more::oclStore12(o[k]);
         }
     });
 }
@@ -216,8 +168,6 @@ void timeWarp(Ctx& c) { c.out.px = c.src.px; }
 void bumpMapGeneral(Ctx& c) { more::bumpMapRender(c, "DualLocation3DAnd2DSrc", "DualLocation3DAnd2DDst"); }
 
 }  // namespace
-
-bool lensSetupGpu(Ctx& c, int W, int H, LensSetup& o) { return lensSetup(c, W, H, o); }
 
 void addFiltersMask(std::vector<Def>& out)
 {

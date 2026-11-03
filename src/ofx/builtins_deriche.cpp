@@ -3,6 +3,8 @@
 // to continue forever; values below 1e-17 count as 0. Every step is in doubles in VEGAS's order, so 8-bit results match to the level.
 #include "builtins_deriche.h"
 #include "builtins_vec.h"
+#include "builtins_more_internal.h"
+#include "vfxlinblur.h"
 #include "../core/cpufeat.h"
 #include <algorithm>
 #include <cstring>
@@ -459,6 +461,26 @@ void vegasLinearBlur(const Buf& src, Buf& out, double angleDeg, double amount, b
     for (int y = 0; y < H; ++y)
         for (int x = 0; x < W; ++x)
             for (int k = 0; k < 4; ++k) out.at(x, y)[k] = (float)(o.at(x, y)[k] / 255.0);
+}
+
+bool vegasLinearBlurOpenCl(const Buf& src, Buf& out, double angleDeg, double amount, bool q)
+{
+    const int W = src.w, H = src.h;
+    if (W < 1 || H < 1) return false;
+    if (!(amount == amount) || !(angleDeg == angleDeg)) { angleDeg = 0.0; amount = 0.0; }
+    // Angle runs 0..360 in VEGAS; anything else is folded into that
+    double a = std::fmod(angleDeg, 360.0);
+    if (a < 0) a += 360.0;
+    if (angleDeg >= 360.0 && a == 0.0) a = 360.0;
+    // the kernels' frames lie bottom row first
+    std::vector<float> mem((size_t)W * H * 4), res;
+    for (int y = 0; y < H; ++y) std::memcpy(&mem[(size_t)y * W * 4], src.at(0, H - 1 - y), (size_t)W * 4 * sizeof(float));
+    auto samp = [](const std::vector<float>& img, int w, int h, float px, float py, float* o) { more::oclLinear4(img, w, h, px, py, o); };
+    auto store = [q](float v) { return q ? more::oclStore12(v) : std::min(std::max(v, 0.f), 1.f); };
+    if (!vfxlinblur::run(mem, W, H, a, amount, q, samp, store, res)) return false;
+    out.ensure(W, H);
+    for (int y = 0; y < H; ++y) std::memcpy(out.at(0, H - 1 - y), &res[(size_t)y * W * 4], (size_t)W * 4 * sizeof(float));
+    return true;
 }
 
 }  // namespace builtin

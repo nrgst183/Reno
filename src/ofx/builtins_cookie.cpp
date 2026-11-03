@@ -1,7 +1,8 @@
 // Built-in stand-in for VEGAS Pro 18's Cookie Cutter (see builtins.h): VEGAS's identifier, parameters (names, types, ranges, the 14 shapes and 2 methods)
 // and presets (Vfx1.ofx.bundle's PresetPackage.xml).
 //
-// The picture is VEGAS's own, step by step (cookiecutterProcessor in Vfx1.ofx; builtins_cookie_vegas.h has the shape arithmetic):
+// With GPU acceleration on (Ctx::openCl, the default) VEGAS draws it with its OpenCL kernels: cookieOpenCl below (vfxcookie.h: float, the 3rd order recursive Gaussian for the feather, fused mixes).
+// With it off, the picture is VEGAS's CPU code, step by step (cookiecutterProcessor in Vfx1.ofx; builtins_cookie_vegas.h has the shape arithmetic):
 //   - the frame is cut into RepeatX x RepeatY cells of (int)(size / count + 0.5) pixels; each cell holds the shape at Center (a fraction of the cell from its bottom left);
 //   - Size is a fraction of the cell's diagonal, scaled by a constant per shape (1.4182 oval ... 0.8943 arrowheads); Border adds a band Border x the cell's longer side / 4
 //     (also scaled by Size) on the shape's outside; the band's width is capped by the shape;
@@ -14,6 +15,8 @@
 #include "builtins_vec.h"
 #include "builtins_deriche.h"
 #include "builtins_cookie_vegas.h"
+#include "vfxcookie.h"
+#include "builtins_more_internal.h"
 #include "vkfilters.h"
 #include "vegas8.h"
 #include "../core/base.h"
@@ -44,69 +47,40 @@ inline void mix8(const int a[4], const int b[4], float t, int out[4])
 // The set-up of the processor (shared with the Vulkan plan, vkfilters.cpp)
 void cookieSetup(Ctx& c, int W, int H, CookieSetup& o)
 {
-    using namespace cookiev;
-    const int shape = std::max(0, std::min(13, c.i("Shape")));
-    o.cutSection = c.i("Method") == 1;
-    const double featherP = c.d("Feather"), borderP = c.d("Border"), sizeP = c.d("Size");
-    const int repX = std::max(1, std::min(100, c.i("RepeatX"))), repY = std::max(1, std::min(100, c.i("RepeatY")));
     double cxp = 0.5, cyp = 0.5;
     c.xy("Center", cxp, cyp);
     const Color col = c.color("Color");
-
-    // ---- the numbers of the processor's set-up, in single precision as VEGAS has them
-    const float sx = 1.0f, sy = 1.0f;                                  // (the pixel aspect ratio: square)
-    static const uint32_t kMul[14] = {0x3f800000u, 0x3fb58794u, 0x3feddcc6u, 0x400057d1u, 0x3faeb55fu, 0x3f60efddu, 0x3f93f045u,
-                                      0x3f93f045u, 0x3f93f045u, 0x3f93f045u, 0x3f64f0d8u, 0x3f64f0d8u, 0x3f64f0d8u, 0x3f64f0d8u};
-    float sizeF = (float)sizeP;
-    if (shape > 0) sizeF = sizeF * K(kMul[shape]);
-    const int cw = std::max(1, (int)((float)W / (float)repX + 0.5f)), ch = std::max(1, (int)((float)H / (float)repY + 0.5f));
-    float cwp = (float)cw * sx, chp = (float)ch * sy;
-    const float ratio = chp / cwp;
-    const float diag = std::sqrt(chp * chp + cwp * cwp);
-    const float mx = cwp > chp ? cwp : chp;
-    const float bw = (float)borderP * mx * 0.25f;
-    const float fw = (float)featherP * mx * 0.25f;
-    const float rOut = (bw + diag) * sizeF;
-    const float m1 = rOut < bw ? rOut : bw;
-    float fw2;
-    if (m1 > 1.0f) fw2 = fw < m1 ? fw : m1;
-    else fw2 = rOut < fw ? rOut : fw;
-    const float rIn = std::max(0.0f, rOut - m1);
-    float tIn = std::max(0.0f, rIn - m1);
-    float tOut = rIn + m1;
-    float ovalW = cwp, ovalH = chp;
-    if (shape == 1 || shape == 2) {
-        const float den = m1 + diag;
-        tIn = tIn / den;
-        tOut = tOut / den;
-        tIn = tIn * tIn;
-        tOut = tOut * tOut;
-        if (shape == 2) { ovalW = chp; ovalH = cwp; }
-    }
-    o.shape = shape; o.repX = repX; o.repY = repY; o.cw = cw; o.ch = ch;
-    o.noBorder = 1.0f > m1;
-    o.noFeather = 1.0f > fw2;
-    o.fw2 = fw2;
-    o.cxCell = (float)((double)cw * cxp);
-    o.cyCell = (float)((double)ch * cyp);
-    o.ratio = ratio; o.tIn = tIn; o.tOut = tOut; o.rIn = rIn; o.m1 = m1; o.ovalW = ovalW; o.ovalH = ovalH;
-    o.hwF = (cwp * 0.5f) * sizeF;
-    o.hhF = (chp * 0.5f) * sizeF;
-    o.boxHi = (o.noBorder ? tOut : tIn) * K(0x3f3504f3u);
-    o.boxLo = -o.boxHi;
-    o.nTout = -tOut;
-    o.hx = std::max(o.hwF + m1, 0.0f);
-    o.hy = std::max(o.hhF + m1, 0.0f);
-    o.ix0 = std::max(o.hwF - m1, 0.0f);
-    o.iy0 = std::max(o.hhF - m1, 0.0f);
-    o.br = (float)col.r; o.bg = (float)col.g; o.bb = (float)col.b;
-    o.colour[0] = (int)(o.br * 255.0f + 0.5f);
-    o.colour[1] = (int)((double)col.g * 255.0 + 0.5);
-    o.colour[2] = (int)(o.bb * 255.0f + 0.5f);
-    o.colour[3] = 255;
+    // (the numbers of the processor's set-up, in single precision as VEGAS has them: vfxcookie.h)
+    vfxcookie::setupCore(o, W, H, c.i("Shape"), c.i("Method"), c.d("Feather"), c.d("Border"), c.d("Size"), c.i("RepeatX"), c.i("RepeatY"), cxp, cyp, col.r, col.g, col.b);
 }
 
 namespace {
+
+// VEGAS's OpenCL Cookie Cutter (vfxcookie.h): the same shape masks, the mask (0 .. 2) feathered by the card's recursive Gaussian in floats, and a fused mix of the picture, the border colour and
+// nothing; an 8-bit project's pictures get the card's 12-bit store. Captured pictures (53 cases of the test picture and photo): 48 bit exact, the other five (the feathered ones) within one level.
+void cookieOpenCl(Ctx& c, const CookieSetup& su, int W, int H)
+{
+    vfxcookie::MaskGeo geo;
+    vfxcookie::maskPrepare(su, W, H, geo);
+    std::vector<float> mask((size_t)W * H);
+    forRows(H, W, [&](int y) { vfxcookie::maskRow(su, geo, W, y, &mask[(size_t)y * W], true); });
+    if (!su.noFeather) {
+        float sigx, sigy;
+        vfxcookie::featherSigmas(su.fw2, 1.0f, 1.0f, sigx, sigy);
+        vfxcookie::feather(mask, W, H, sigx, sigy);
+    }
+    const float col[4] = {su.br, su.bg, su.bb, 1.0f};
+    const bool q8 = c.host8;
+    forRows(H, W, [&](int y) {
+        const float* mrow = &mask[(size_t)(H - 1 - y) * W];
+        for (int x = 0; x < W; ++x) {
+            float r[4];
+            vfxcookie::composite(c.src.at(x, y), mrow[x], su.cutSection, su.noBorder, col, r);
+            float* op = c.out.at(x, y);
+            for (int k = 0; k < 4; ++k) op[k] = q8 ? more::oclStore12(r[k]) : r[k];
+        }
+    });
+}
 
 void cookieCutter(Ctx& c)
 {
@@ -115,6 +89,10 @@ void cookieCutter(Ctx& c)
     if (W <= 0 || H <= 0) return;
     CookieSetup su;
     cookieSetup(c, W, H, su);
+    if (c.openCl) {
+        cookieOpenCl(c, su, W, H);
+        return;
+    }
     const int shape = su.shape, repX = su.repX, repY = su.repY, cw = su.cw, ch = su.ch;
     const bool cutSection = su.cutSection, noBorder = su.noBorder, noFeather = su.noFeather;
     const float sx = 1.0f, sy = 1.0f, cxCell = su.cxCell, cyCell = su.cyCell, ratio = su.ratio, tIn = su.tIn, tOut = su.tOut, rIn = su.rIn, m1 = su.m1, fw2 = su.fw2;

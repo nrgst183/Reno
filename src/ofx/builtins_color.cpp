@@ -15,6 +15,8 @@
 //
 // All four work per pixel, so they are correct at any render scale; they are thread safe and row-parallel, with no allocation per pixel.
 #include "builtins_impl.h"
+#include "ofxhost.h"
+#include "builtins_more_internal.h"
 #include "vkeffects.h"
 #include "../core/base.h"
 #include <algorithm>
@@ -342,6 +344,8 @@ std::string autolooksFolder(const std::string& hint)
     std::vector<std::string> dirs;
     if (!hint.empty()) dirs.push_back(hint);
     if (const char* e = std::getenv("RENO_AUTOLOOKS_DIR")) dirs.push_back(e);
+    for (const auto& v : Host::vegasProgramDirs())          // (wherever VEGAS is installed: the same search as Gradient Wipe's pictures)
+        dirs.push_back(v + "/OFX Video Plug-Ins/Vfx1.ofx.bundle/Contents/Resources/AutoLooks");
     dirs.push_back("C:/Program Files/VEGAS/VEGAS Pro 18.0/OFX Video Plug-Ins/Vfx1.ofx.bundle/Contents/Resources/AutoLooks");
     dirs.push_back("C:/Program Files/VEGAS/VEGAS Pro 18.0/OFX Video Plug-Ins/Vfx1.ofx.bundle/Contents/Win64/Resources/AutoLooks");
     dirs.push_back("C:/Program Files/VEGAS/VEGAS Pro 18.0/OFX Video Plug-Ins/Vfx1.ofx.bundle/Contents/Win64/AutoLooks");
@@ -352,18 +356,83 @@ std::string autolooksFolder(const std::string& hint)
     return std::string();
 }
 
-// The table for look 1..21: VEGAS's own file when found, else Reno's baked grade.
-LutPtr autolooksTable(int look, const std::string& hint)
+// VEGAS draws AutoLooks through OpenColorIO (Vfx1.ofx: a FileTransform of the look's .cube file) and, on the card, from a legacy GPU shader description with an edge length of 32
+// (GpuShaderDesc::CreateLegacyShaderDesc(32)): the whole transform is first baked into a 32 x 32 x 32 table (the file's table looked up, trilinear, at the 32 nodes of the unit cube)
+// and the shader then looks that table up with the card's trilinear filter. The 16-point files therefore come out smoothed between their own nodes the way the pictures show
+// (33-point files are resampled too). The baked table keeps the file's values uncut (the card's float textures).
+LutPtr bakeForCard(const Lut& L)
+{
+    const int m = 32;
+    auto B = std::make_shared<Lut>();
+    B->n = m;
+    B->rgb.resize((size_t)m * m * m * 3);
+    size_t o = 0;
+    for (int b = 0; b < m; ++b)
+        for (int g = 0; g < m; ++g)
+            for (int r = 0; r < m; ++r) {
+                float c[3] = {(float)r / (m - 1), (float)g / (m - 1), (float)b / (m - 1)};
+                lutApply(L, c, false);
+                B->rgb[o++] = c[0]; B->rgb[o++] = c[1]; B->rgb[o++] = c[2];
+            }
+    return B;
+}
+
+// The table for look 1..21 as the card holds it: VEGAS's own file when found (else Reno's grade), baked to 32 points (kept while the source table is the same one).
+LutPtr autolooksTable(int look, const std::string& hint, bool* fromFile = nullptr)
 {
     static std::mutex mu;
     static LutPtr baked[21];
+    static LutPtr source[21], card[21];
     std::lock_guard<std::mutex> lk(mu);
+    LutPtr L;
     const std::string dir = autolooksFolder(hint);
-    if (!dir.empty()) {
-        if (LutPtr L = cachedLut(dir + "/" + std::to_string(look) + ".cube")) return L;
+    if (!dir.empty()) L = cachedLut(dir + "/" + std::to_string(look) + ".cube");
+    if (!L) {
+        if (!baked[look - 1]) baked[look - 1] = bakeLook(kLooks[look - 1]);
+        L = baked[look - 1];
     }
-    if (!baked[look - 1]) baked[look - 1] = bakeLook(kLooks[look - 1]);
-    return baked[look - 1];
+    if (fromFile) *fromFile = L != baked[look - 1];
+    if (L == baked[look - 1]) return L;          // (Reno's own grade is not VEGAS's table: it is looked up as it is, and mixed in as it always was)
+    if (source[look - 1] != L) {
+        source[look - 1] = L;
+        card[look - 1] = bakeForCard(*L);
+    }
+    return card[look - 1];
+}
+
+// One pixel: the picture is premultiplied (as the shader reads it); the straight colour goes through the table (held to the table's edge), is multiplied by alpha again and
+// mixed with the picture in float at Strength (the "Gain" setting), then cut to 0..1 and, in an 8-bit frame, stored as the cards do (more::oclStore12). The table's result is NOT
+// cut before the mix. Alpha is the picture's.
+void autoLooksPixel(const Lut& L, const float* sp, float g, bool q8, float* o)
+{
+    const float a = sp[3];
+    if (!(a > 0.f)) { o[0] = o[1] = o[2] = o[3] = 0.f; return; }
+    float v[3] = {sp[0] / a, sp[1] / a, sp[2] / a};
+    lutApply(L, v, false);
+    for (int k = 0; k < 3; ++k) {
+        const float r = sp[k] + (v[k] * a - sp[k]) * g;
+        o[k] = q8 ? more::oclStore12(r) : (r < 0.f ? 0.f : (r > 1.f ? 1.f : r));
+    }
+    o[3] = a;
+}
+
+// Reno's own grades (no VEGAS folder found) keep the older mixing: the table's result cut to 0..1 and mixed with the picture in whole levels, (picture x (255 - s) + table x s) / 255
+// rounded, s = round(Strength x 255).
+void autoLooksPixelGrade(const Lut& L, const float* sp, float g8, float* o)
+{
+    float r, gg, b, a;
+    unpremul(sp, r, gg, b, a);
+    if (a <= 0.f) { o[0] = o[1] = o[2] = o[3] = 0.f; return; }
+    float v[3] = {r, gg, b};
+    lutApply(L, v, false);
+    for (float& t : v) t = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);
+    const float in[3] = {r, gg, b};
+    float res[3];
+    for (int k = 0; k < 3; ++k) {
+        const float s8 = std::floor(clamp01(in[k]) * 255.f + 0.5f), l8 = std::floor(v[k] * 255.f + 0.5f);
+        res[k] = std::floor((s8 * (255.f - g8) + l8 * g8) / 255.f + 0.5f) / 255.f;
+    }
+    premul(o, res[0], res[1], res[2], a);
 }
 
 void autoLooks(Ctx& c)
@@ -371,28 +440,16 @@ void autoLooks(Ctx& c)
     const int W = c.out.w, H = c.out.h;
     const int look = c.i("autolooksLook");
     if (look < 1 || look > 21 || W <= 0 || H <= 0) { copyFrame(c); return; }
-    const LutPtr L = autolooksTable(look, c.s("autolooksFilename"));
+    bool fromFile = false;
+    const LutPtr L = autolooksTable(look, c.s("autolooksFilename"), &fromFile);
     if (!L) { copyFrame(c); return; }
     const float gain = (float)clampd(c.d("Gain"), 0, 1);          // VEGAS's "Strength"
+    const bool q8 = c.host8;
     const float g8 = std::floor(gain * 255.f + 0.5f);
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
-            float r, g, b, a;
-            unpremul(c.src.at(x, y), r, g, b, a);
-            float* o = c.out.at(x, y);
-            if (a <= 0.f) { o[0] = o[1] = o[2] = o[3] = 0.f; continue; }
-            float v[3] = {r, g, b};
-            lutApply(*L, v, false);
-            for (float& t : v) t = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);   // the table's result is cut to 0..1 before it is mixed in at Strength                       // VEGAS interpolates its tables trilinearly (checked on all 21 against its pictures)
-            // VEGAS mixes in bytes: the table's colour and the picture's are rounded to 0..255, Strength becomes round(Strength x 255) and
-            // the result is (picture x (255 - s) + table x s) / 255 rounded
-            const float in[3] = {r, g, b};
-            float res[3];
-            for (int k = 0; k < 3; ++k) {
-                const float s8 = std::floor(clamp01(in[k]) * 255.f + 0.5f), l8 = std::floor(v[k] * 255.f + 0.5f);
-                res[k] = std::floor((s8 * (255.f - g8) + l8 * g8) / 255.f + 0.5f) / 255.f;
-            }
-            premul(o, res[0], res[1], res[2], a);
+            if (fromFile) autoLooksPixel(*L, c.src.at(x, y), gain, q8, c.out.at(x, y));
+            else autoLooksPixelGrade(*L, c.src.at(x, y), g8, c.out.at(x, y));
         }
     });
 }
@@ -794,13 +851,15 @@ void addFiltersColor(std::vector<Def>& out)
 // ---- for the GPU (vkeffects.cpp): what lutFilter() and colorGrading() read from the settings, for the kernels in tools/gpukernels.py
 // LUT Filter: false when the CPU copies the frame (no strength or no table); else the table's size and domain, the strength, and the table's numbers.
 // For the GPU (vkfilters.cpp): the look's table and strength (false where the CPU copies the frame)
-bool autoLooksGpu(Ctx& c, int& n, float dmin[3], float dmax[3], float& g8, std::vector<float>& tab)
+bool autoLooksGpu(Ctx& c, int& n, float dmin[3], float dmax[3], float& gain, unsigned& mode, std::vector<float>& tab)
 {
     const int look = c.i("autolooksLook");
     if (look < 1 || look > 21) return false;      // (the planner has no output size: the plan checks the frame)
-    const LutPtr L = autolooksTable(look, c.s("autolooksFilename"));
+    bool fromFile = false;
+    const LutPtr L = autolooksTable(look, c.s("autolooksFilename"), &fromFile);
     if (!L || L->n < 2) return false;
-    g8 = std::floor((float)clampd(c.d("Gain"), 0, 1) * 255.f + 0.5f);
+    gain = (float)clampd(c.d("Gain"), 0, 1);
+    mode = (c.host8 ? 1u : 0u) | (fromFile ? 0u : 2u);          // bit 0: 8-bit frame; bit 1: Reno's own grade (the older whole-level mix)
     n = L->n;
     for (int k = 0; k < 3; ++k) { dmin[k] = L->dmin[k]; dmax[k] = L->dmax[k]; }
     tab = L->rgb;

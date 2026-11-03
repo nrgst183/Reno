@@ -22,6 +22,12 @@ struct OclBlurCoefs {
 OclBlurCoefs oclBlurCoefs(double sigma);
 double oclBlurSigma(double deviation);
 void cgOclBlur(float* px, int w, int h, double sigmaX, double sigmaY);
+// The same for a single plane of floats (0..255), one channel instead of four (alpha-only blurs).
+void cgGaussianBlurPlane(float* px, int w, int h, double sigmaX, double sigmaY);
+// The deviation VEGAS's GaussianBlur takes from a pixel diameter (its spline's reverse lookup of diameter / 2); 0 for no blur. In builtin::more.
+namespace more {
+double cgSigmaForDiameter(double px);
+}
 // The native byte conversion: nearest (ties to even) of v + 1.5e-8, held to 0..255.
 int cgBlurByte(float v);
 

@@ -89,7 +89,7 @@ void defocus(Ctx& c)
     const double radius = std::max(0.0, c.d("Radius")) / 100.0 * (double)std::max(W, H);
     if (radius < 0.5) { copyThrough(c); return; }
     const int shape = c.i("IrisShape");
-    const double turn = c.d("Orientation") * 2 * kPi;
+    const double turn = c.d("Orientation") * kPi / 180.0;
     const double curvature = clampd(c.d("DiscCurvature") / 100.0, -2.01, 1.0);
     const double thr = clampd(c.d("BloomThreshold") / 100.0, 0, 2), str = std::max(0.0, c.d("BloomStrength"));
     const DefocusIris iris = defocusIris(radius, shape == 0 ? 0 : shape + 4, turn, curvature);

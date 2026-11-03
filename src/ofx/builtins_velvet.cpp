@@ -14,6 +14,8 @@
 #include "builtins_vec.h"
 #include "builtins_cgblur.h"
 #include "vkfilters.h"
+#include "vfxstarburst.h"
+#include "vfxfilllight.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -84,7 +86,7 @@ struct Gradient {
         // XmlColorFloat arithmetic: c0 + (c1 - c0) * frac, every operator stores a float
         for (int k = 0; k < 4; ++k) {
             const float diff = w[(size_t)k] - v[(size_t)k];
-            const float prod = (float)((double)diff * frac);
+            const float prod = diff * (float)frac;  // op_Multiply(XmlColorFloat, double) narrows the number to a float first
             v[(size_t)k] = v[(size_t)k] + prod;
         }
         return v;
@@ -173,7 +175,11 @@ struct SigmaSpline {
     double search(double lo, double hi, double target, int depth) const
     {
         const double mid = (lo + hi) / 2, flo = eval(lo), fmid = eval(mid), fhi = eval(hi);
-        if (std::fabs(fmid - target) <= 0.001 || depth > 60) return mid;
+        // Stops where the spline is within [-0.001, +0.004] of the target. VEGAS's own stopping test (CorePrimitives.IsWithinEpsilon, not in the install) is not readable; this window is
+        // what the bisection's mid points that reproduce VEGAS's pictures bit for bit say (Glint 198.528 and Soft Contrast 24.4 pixels stop where the spline is 0.0011 and 0.0038 above the target,
+        // never 0.0015 or 0.003 below it). GUESS for the exact bounds.
+        const double d = fmid - target;
+        if ((d >= -0.001 && d <= 0.004) || depth > 60) return mid;
         if (target > flo && target <= fmid) return search(lo, mid, target, depth + 1);
         if (target > fmid && target <= fhi) return search(mid, hi, target, depth + 1);
         return lo;
@@ -261,6 +267,7 @@ void blur3x3(std::vector<int>& g, int W, int H)
 // corners rounded by corner x height / 3. Native drawing puts pixel centres on whole coordinates (half a pixel right and down of the plain
 // mapping). With a blur the shape is drawn on a canvas 1.25 times the frame, blurred there (diameter blur x canvas width), and cropped.
 } // namespace
+double cgSigmaForDiameter(double px) { return sigmaForDiameter(px); }
 static void shapeMaskImpl(bool cgBytes, int W, int H, double xpos, double ypos, double w, double h, double corner, double blur, bool ellipse, std::vector<float>& m)
 {
     m.assign((size_t)W * H, 0.f);
@@ -342,7 +349,8 @@ void maskCoverage(const Ctx& c, int typeIndex, const char* const* typeNames, std
     const bool ellipse = std::strcmp(type, "Ellipse") == 0, rect = std::strcmp(type, "Rectangle") == 0, bar = std::strcmp(type, "Bar") == 0;
     if (ellipse || rect) {
         if (rect && (mw <= 1e-5 || mh <= 1e-5)) return;
-        shapeMaskVelvet(W, H, px, 1 - py, mw, mh, rect ? std::max(0.0, c.d("MaskCornerRadius")) : 0.0, blur, ellipse, m);
+        // RectangleMask / EllipseMask draw the shape on a byte canvas and blur it with CoreGraphics.Native's own byte blur (the Glint "Center Mask" picture is within 3 levels only this way)
+        shapeMaskCgBytes(W, H, px, 1 - py, mw, mh, rect ? std::max(0.0, c.d("MaskCornerRadius")) : 0.0, blur, ellipse, m);
         return;
     }
     const double cx = px * W, cy = (1 - py) * H;
@@ -878,6 +886,7 @@ bool raysSetup(Ctx& c, int W, int H, RaysSetup& o)
     o.maskMode = c.i("MaskMaskMode");
     o.mask.clear();
     if (o.maskMode >= 1 && o.maskMode <= 3) maskCoverage(c, c.i("MaskMaskType"), kRaysMasks, o.mask, W, H);
+    if (o.maskMode == 1) for (float& v : o.mask) v = std::floor(v * 255.f + 0.5f) * (1.f / 255.f);     // (the mask multiplies the luma byte as a byte, so the Vulkan plan sees the same bytes)
     if (o.maskMode == 3) return false;
     o.alpha = c.b("EffectKeyAlphaChannel");
     o.effectOnly = c.b("EffectEffectOnly");
@@ -978,7 +987,7 @@ void raysVelvet(Ctx& c)
         for (int x = 0; x < W; ++x) {
             const float* p = src->at(x, y);
             int v = alpha ? alphaByte(p) : lumaByte(p);
-            if (maskMode == 1) v = (int)std::floor(v * mask[(size_t)y * W + x] + 0.5);
+            if (maskMode == 1) v = (v * (int)std::floor(mask[(size_t)y * W + x] * 255.0 + 0.5) + 127) / 255;      // MaskMultiplyNative: byte x byte, rounded
             g[(size_t)y * W + x] = v;
         }
     if (su.flicker) blur3x3(g, W, H);
@@ -1058,6 +1067,7 @@ bool glintSetup(Ctx& c, int W, int H, GlintSetup& o)
     o.maskMode = c.i("MaskMaskMode");
     o.mask.clear();
     if (o.maskMode >= 1 && o.maskMode <= 3) maskCoverage(c, c.i("MaskMaskType"), kGlintMasks, o.mask, W, H);
+    if (o.maskMode == 1) for (float& v : o.mask) v = std::floor(v * 255.f + 0.5f) * (1.f / 255.f);     // (the mask multiplies the luma byte as a byte, so the Vulkan plan sees the same bytes)
     if (o.maskMode == 3) return false;
     o.effectOnly = c.b("EffectEffectOnly");
     const double threshold = c.d("EffectThreshold") / 100.0, boost = c.d("EffectBoost") / 100.0;
@@ -1118,7 +1128,7 @@ void glintVelvet(Ctx& c)
     for (int y = 0; y < H; ++y)
         for (int x = 0; x < W; ++x) {
             int v = lumaByte(src->at(x, y));
-            if (maskMode == 1) v = (int)std::floor(v * mask[(size_t)y * W + x] + 0.5);
+            if (maskMode == 1) v = (v * (int)std::floor(mask[(size_t)y * W + x] * 255.0 + 0.5) + 127) / 255;      // MaskMultiplyNative: byte x byte, rounded
             g[(size_t)y * W + x] = v;
         }
     if (su.flicker) blur3x3(g, W, H);
@@ -1202,11 +1212,30 @@ bool fillLightSetup(Ctx& c, int W, FillLightSetup& o)
     return true;
 }
 
+// Fill Light as VEGAS's OpenCL kernels draw it (vfxfilllight.h): the luma's colour from a 256 entry table, blurred, scaled by Strength and added; float pictures, the blur's pictures and the result cut
+// with the card's 12-bit store in an 8-bit frame. The kernels count rows from the bottom, a Buf from the top.
+static void fillLightOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    filllightk::Settings s;
+    s.hue = c.d("Hue");
+    s.strength = c.d("Strength");
+    s.bias = c.d("Bias");
+    s.tint = c.d("Tint");
+    s.softness = c.d("Softness");
+    s.store8 = c.host8 ? more::oclStore12 : nullptr;
+    std::vector<float> a((size_t)W * H * 4), o;
+    for (int y = 0; y < H; ++y) std::copy(c.src.at(0, y), c.src.at(0, y) + (size_t)W * 4, a.begin() + (size_t)(H - 1 - y) * W * 4);
+    filllightk::render(a, o, W, H, s);
+    for (int y = 0; y < H; ++y) std::copy(o.begin() + (size_t)(H - 1 - y) * W * 4, o.begin() + (size_t)(H - y) * W * 4, c.out.at(0, y));
+}
+
 void fillLightVelvet(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     if (W <= 0 || H <= 0) return;
     c.out.px = c.src.px;
+    if (c.openCl && c.src.w == W && c.src.h == H) { fillLightOpenCl(c); return; }
     FillLightSetup su;
     fillLightSetup(c, W, su);
     if (su.copy) return;
@@ -1390,12 +1419,23 @@ void softContrast(Ctx& c)
 // tile) with a star of radius Radius x the larger side: Points thin spikes of grey 128 narrowing to nothing from 0.75 pixels at the middle, turned by Orientation (turns), squeezed by Aspect; Center burst adds two denser
 // bursts (8 and 27 uneven spikes at 0.2 and 0.4 of the size, System.Random lengths) with Add. The result, cut to 0..1, is screened over the picture at Strength. The native half (threshold, FFT scaling, star drawing) is
 // written from VEGAS's pictures, which are not repeatable (its tiles read uncleared memory; two runs differ by 16 levels on average), so tiles here are padded with nothing.
+// (the OpenCL kernels boost and clear only the colour channels; the alpha plane goes through the convolution as it is)
+static inline bool v8alphaKept(const Ctx& c, size_t i) { return c.openCl && (i & 3) == 3; }
+
+// With GPU acceleration on (Ctx::openCl) VEGAS draws Starburst with its OpenCL kernels (Vfx1.ofx; vfxstarburst.h): the same steps (soften mask, flicker blur, threshold, boost, FFT convolution with the
+// star normalised to a sum of 1) but the star (and, with Center burst, the two bursts mixed into it) is what the host draws with GDI+ (its path gradient fills, made by Windows' GDI+ on Windows and by a
+// model of it elsewhere), convolved in planes of the next power of two of the longer side with the picture at their origin, the result added to the picture at Strength (no screen) and stored with the
+// card's 12-bit store. The host never reads Aspect (VEGAS's pictures are the same for 0.5 and 2), so it does nothing there.
 void starburstVelvet(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     if (W <= 0 || H <= 0) return;
     const double threshold = c.d("Threshold") / 100.0, brilliance = c.d("Brilliance") / 100.0, strength = c.d("Strength") / 100.0;
-    const double radius = c.d("Radius") / 100.0, centerburst = c.d("CenterBurst") / 100.0, aspect = std::max(0.01, c.d("Aspect"));
+    // From the top of the Threshold range the OpenCL host does something that is not known (VEGAS's picture at Threshold 100 is the picture shrunk and blurred, not a threshold), so there the
+    // older model draws.
+    struct OclGuard { Ctx& c; bool was; ~OclGuard() { c.openCl = was; } } guard{c, c.openCl};
+    if (threshold >= 254.0 / 255.0) c.openCl = false;
+    const double radius = clampd(c.d("Radius") / 100.0, 0.0, 1.0), centerburst = c.d("CenterBurst") / 100.0, aspect = clampd(c.d("Aspect"), 0.01, 100.0);
     const double orientation = c.d("Orientation") / 360.0, softedges = c.d("SoftenEdges") / 100.0;
     const int points = std::max(2, c.i("Points"));
     const bool effectOnly = c.b("EffectOnly");
@@ -1451,14 +1491,72 @@ void starburstVelvet(Ctx& c)
     // becomes v + (v - T) x S with S = (Brilliance x 255 - T) / (255 - T) (no curve at all from a threshold of 254/255 on).
     if (threshold > 0) {
         const float ti = std::floor((float)threshold * 255.f + 0.5f);
-        for (float& v : img) if (v < ti) v = 0.f;
+        for (size_t i = 0; i < img.size(); ++i) if (v8alphaKept(c, i) == false && img[i] < ti) img[i] = 0.f;
     }
     if (threshold < 254.0 / 255.0) {
         const float T = (float)(threshold * 255.0);
         const float S = (float)((brilliance * 255.0 - (double)T) / (double)(255.0f - T));
-        for (float& v : img) if (v > T) v = v + (v - T) * S;
+        for (size_t i = 0; i < img.size(); ++i) { float& v = img[i]; if (!v8alphaKept(c, i) && v > T) v = v + (v - T) * S; }
     }
     const double rpx = radius * std::max((double)W, (double)H);
+    if (c.openCl) {
+        // VEGAS's layout (Vfx1.ofx, host 0x180573d80): planes N x N with N the next power of two of the longer side, the picture at the plane's origin (rows from the bottom) with its edge pixels
+        // repeated out to N, the star's bytes (times 1 / sum) placed by the kernels and everything convolved circularly; so a pixel near the left or bottom edge also sees what lies past the
+        // far edges. A tap of the star bitmap (tx, ty) with S its half size acts as the offset (S - tx, ty - S + 1) (x, rows from the bottom).
+        int N = 1;
+        while (N < std::max(W, H)) N <<= 1;
+        if ((size_t)N * N > (size_t)64 * 1024 * 1024) return;
+        std::vector<std::complex<double>> K((size_t)N * N), A((size_t)N * N), B((size_t)N * N);
+        vfxstar::Kernel sk;
+        if (vfxstar::makeKernel(sk, points, orientation * 360.0, rpx, centerburst)) {
+            const int sn = sk.n, S = sn / 2;
+            const double scale = (double)(sk.scale * 0.00392156862745f);
+            for (int ty = 0; ty < sn; ++ty)
+                for (int tx = 0; tx < sn; ++tx) {
+                    const uint8_t b = sk.bytes[(size_t)ty * sn + tx];
+                    if (!b) continue;
+                    const int a = (((S - tx) % N) + N) % N, r = (((ty - S + 1) % N) + N) % N;
+                    K[(size_t)r * N + (size_t)a] += (double)(float)((float)b * (float)scale);
+                }
+        }
+        for (int r = 0; r < N; ++r) {
+            const int y = H - 1 - std::min(H - 1, r);
+            for (int x = 0; x < N; ++x) {
+                const float* v = &img[((size_t)y * W + (size_t)std::min(W - 1, x)) * 4];
+                A[(size_t)r * N + (size_t)x] = std::complex<double>(v[0], v[1]);
+                B[(size_t)r * N + (size_t)x] = std::complex<double>(v[2], v[3]);
+            }
+        }
+        fft2(K, N, N, false, nullptr, N);
+        fft2(A, N, N, false, nullptr, N);
+        fft2(B, N, N, false, nullptr, N);
+        forRows(N, N, [&](int y) {
+            for (size_t i = (size_t)y * N, e = i + (size_t)N; i < e; ++i) {
+                const double kr = K[i].real(), ki = K[i].imag();
+                const double ar = A[i].real(), ai = A[i].imag(), br = B[i].real(), bi = B[i].imag();
+                A[i] = std::complex<double>(ar * kr - ai * ki, ar * ki + ai * kr);
+                B[i] = std::complex<double>(br * kr - bi * ki, br * ki + bi * kr);
+            }
+        });
+        fft2(A, N, N, true, nullptr, N);
+        fft2(B, N, N, true, nullptr, N);
+        const double norm = 1.0 / ((double)N * N), op = clampd(strength, 0.0, 1.0);
+        forRows(H, W, [&](int y) {
+            const size_t r = (size_t)(H - 1 - y);
+            for (int x = 0; x < W; ++x) {
+                const std::complex<double> a = A[r * N + (size_t)x] * norm, b = B[r * N + (size_t)x] * norm;
+                const double cv[4] = {a.real(), a.imag(), b.real(), b.imag()};
+                float* o = c.out.at(x, y);
+                // the kernels: the star image cut to 0..1, times Strength, added to the picture (or alone), stored as a level of an 8-bit frame (the alpha plane is convolved like the colours but not boosted)
+                for (int k = 0; k < 4; ++k) {
+                    const float sv = (float)(clampd(cv[k] / 255.0, 0.0, 1.0) * op);
+                    const float rr = effectOnly ? sv : o[k] + sv;
+                    o[k] = c.host8 ? oclStore12(rr) : rr;
+                }
+            }
+        });
+        return;
+    }
     const int R = (int)std::ceil(rpx * std::max(1.0, std::max(1.0 / aspect, aspect))) + 2;
     int P = 8, Q = 8;
     while (P < W + 2 * R + 2) P <<= 1;

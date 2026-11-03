@@ -1,6 +1,12 @@
 // Built-in media generators with VEGAS Pro 18's identifiers, parameters and choices (Solid Color, Color Gradient, Checkerboard,
 // Noise Texture, Test Pattern, Titles & Text). See builtins.h.
 #include "builtins_impl.h"
+#include "builtins_more_internal.h"
+#include "vfxgen.h"
+#include "vfxtitles.h"
+#include "vfxtitlerich.h"
+#include "creditgdi.h"
+#include "vfxcredit.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -17,6 +23,13 @@ namespace {
 
 const char* const kGroup = "Reno Built-in";
 
+// The generators' OpenCL kernels (vfxgen.h) give a float per channel; into an 8-bit frame it is cut to a level by the card's store (more::oclStore12), a float frame keeps it.
+inline float genStore(const Ctx& c, float v) { return c.host8 ? more::oclStore12(v) : v; }
+inline void genPut(const Ctx& c, float* o, const float* v)
+{
+    for (int k = 0; k < 4; ++k) o[k] = genStore(c, v[k]);
+}
+
 // VEGAS's generators write 8-bit pictures by truncating (0.25 -> 63, 0.5 -> 127), not by rounding.
 inline float truncLevel(double v) { return (float)(std::floor(v * 255.0 + 1e-4) / 255.0); }
 inline void putGen(float* p, const Color& c)
@@ -30,6 +43,14 @@ void solidColor(Ctx& c)
 {
     const Color col = c.color("Color");
     float p[4];
+    if (c.openCl) {
+        const double rgba[4] = {col.r, col.g, col.b, col.a};
+        float v[4];
+        vfxgen::solidColor(rgba, v);
+        genPut(c, p, v);
+        for (int k = 0; k < c.out.w * c.out.h; ++k) std::memcpy(&c.out.px[(size_t)k * 4], p, sizeof p);
+        return;
+    }
     putGen(p, col);
     for (int k = 0; k < c.out.w * c.out.h; ++k) std::memcpy(&c.out.px[(size_t)k * 4], p, sizeof p);
 }
@@ -201,8 +222,29 @@ static bool checkerboardFx8(Ctx& c)
     return true;
 }
 
+// VEGAS with GPU acceleration on draws the checkerboard with its OpenCL kernel (vfxgen.h): float tile maths, edges mixed in float. The kernel only reads the vertical blending
+// setting; the plug-in's Proportional switch copies the horizontal one into it, so here it is the horizontal setting when Proportional is on.
+static void checkerboardOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    const Color a = c.color("Color1"), b = c.color("Color2");
+    const double col1[4] = {a.r, a.g, a.b, a.a}, col2[4] = {b.r, b.g, b.b, b.a};
+    const double eh = c.d("EdgeBlendingHorizontal");
+    const double ev = c.b("EdgeBlendingProportional") ? eh : c.d("EdgeBlendingVertical");
+    const vfxgen::Checker k = vfxgen::checkerHost(W, H, c.d("TileDimensionsWidth"), c.d("TileDimensionsHeight"), c.b("TileDimensionsSquare"), eh, ev, c.d("GridOffsetX"),
+                                                  c.d("GridOffsetY"), col1, col2, 1.0f);
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float v[4];
+            vfxgen::checker(k, x, H - 1 - y, v);
+            genPut(c, c.out.at(x, y), v);
+        }
+    });
+}
+
 void checkerboard(Ctx& c)
 {
+    if (c.openCl && c.out.w > 0 && c.out.h > 0) { checkerboardOpenCl(c); return; }
     if (c.levels && checkerboardFx8(c)) return;
     const int W = c.out.w, H = c.out.h;
     // tiles are never smaller than a pixel
@@ -579,9 +621,32 @@ void ntLayer(double x, double y, double z, double dx, int count, bool fold, doub
     }
 }
 
+// With GPU acceleration on VEGAS draws the texture with two OpenCL kernels (vfxgen.h): float noise layers, then the style's wave and the mix of the two colours.
+static void noiseTextureOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    const Color c1 = c.color("Color1"), c2 = c.color("Color2");
+    const double col1[4] = {c1.r, c1.g, c1.b, c1.a}, col2[4] = {c2.r, c2.g, c2.b, c2.a};
+    const vfxgen::Noise k = vfxgen::noiseHost(W, H, c.i("NoiseStyle"), c.b("Swapcolors"), c.d("FrequencyX"), c.d("FrequencyY"), c.d("NumberOfLayers"), c.d("OffsetX"),
+                                              c.d("OffsetY"), c.d("OffsetprogressinDegrees"), c.d("NoiseParametersGrainAmplitudeFalloff"), c.d("NoiseParametersMin"),
+                                              c.d("NoiseParametersMax"), c.d("NoiseParametersBias"), c.d("NoiseParametersAmplitude"), col1, col2);
+    const vfxgen::NoiseLayers L = vfxgen::noiseLayers(k);
+    forRows(H, W * 16, [&](int y) {
+        std::vector<float> row;
+        const int yk = H - 1 - y;
+        vfxgen::noiseRow(k, kNtPerm, kNtGrad, yk, row);
+        for (int x = 0; x < W; ++x) {
+            float v[4];
+            vfxgen::noiseColour(k, vfxgen::noiseMixOf(k, L, row, x, yk), v);
+            genPut(c, c.out.at(x, y), v);
+        }
+    });
+}
+
 void noiseTexture(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
+    if (c.openCl && W > 0 && H > 0) { noiseTextureOpenCl(c); return; }
     const int style = (int)clampd((double)c.i("NoiseStyle"), 0, 6);
     const double layers = c.d("NumberOfLayers");
     const Color c1 = c.color("Color1"), c2 = c.color("Color2");
@@ -699,6 +764,17 @@ void testPattern(Ctx& c)
     Buf& o = c.out;
     const int type = c.i("TestPatternType");
     const int W = o.w, H = o.h;
+    if (c.openCl && W > 0 && H > 0) {
+        // VEGAS with GPU acceleration on: the OpenCL kernel (vfxgen.h), levels over 255 in float, then the card's 8-bit store
+        forRows(H, W, [&](int y) {
+            for (int x = 0; x < W; ++x) {
+                float v[4];
+                vfxgen::testPattern(type, W, H, x, H - 1 - y, v);
+                genPut(c, o.at(x, y), v);
+            }
+        });
+        return;
+    }
     struct Rgb { int r, g, b; };
     const Rgb bars[7] = {{180, 180, 180}, {16, 180, 180}, {180, 180, 16}, {16, 180, 16}, {180, 16, 180}, {16, 16, 180}, {180, 16, 16}};
     const Rgb castle[7] = {{235, 7, 7}, {16, 16, 16}, {180, 7, 180}, {16, 16, 16}, {180, 180, 7}, {16, 16, 16}, {180, 180, 180}};
@@ -859,7 +935,13 @@ TextMotion textMotion(const std::string& anim, double t, int W, int H, double bx
     return m;
 }
 
-void titlesAndText(Ctx& c)
+// The text itself is laid out and drawn as VEGAS's TextGen does (vfxtitles.h); this only gathers the settings, plays Reno's own animation over the block and puts the
+// premultiplied layer (shadow under it) over the background.
+inline uint8_t cutByte(double v) { return (uint8_t)std::max(0.0, std::min(255.0, std::floor(v * 255.0))); }   // VEGAS's ConvertColor: (int)(c * 255)
+
+// The earlier bitmap version, kept for the moving frames: VEGAS moves its text letter by letter (a cascade of delays inside each animation), which Reno does not
+// follow, and its guessed whole-block motion was closer to those pictures when drawn this way.
+void titlesAndTextMoving(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     const Color bg = c.color("Background");
@@ -974,191 +1056,504 @@ void titlesAndText(Ctx& c)
 }
 
 
-// ------------------------------------------------------------------ Credit Roll
-// VEGAS's Credit Roll. A line is a title (it starts with a space), a two-column line (a tab between the columns; the gap between them is filled with dots, as VEGAS's
-// does) or a sub-item (anything else, centred); "//" starts a comment line and an empty line is a gap. The layout and the way it moves were read off VEGAS's own
-// pictures of it (Reno Effect Capture), not from its code: the title is 1.5x the size and bold, a sub-item is bold, the columns run from 10% to 90% of the width
-// ("left side" only to 60%), and the block scrolls at one frame height in 6 seconds (VEGAS Pro 18's "Plain Scrolling"). The timed styles (fade, zoom, wipe, scroll
-// right) show the block still, in the middle of the frame, with the effect running over the first 'Timed in/out time' seconds (and the last ones when a
-// duration is given).
-struct CreditRow {
-    std::string left, right;
-    bool title = false, gap = false;
-};
-
-std::vector<CreditRow> creditRows(const std::string& text)
-{
-    std::vector<CreditRow> rows;
-    size_t pos = 0;
-    while (pos <= text.size()) {
-        size_t end = text.find('\n', pos);
-        if (end == std::string::npos) end = text.size();
-        std::string line = text.substr(pos, end - pos);
-        pos = end + 1;
-        while (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.compare(0, 2, "//") == 0) continue;
-        CreditRow r;
-        if (line.empty()) r.gap = true;
-        else if (line[0] == ' ') {
-            r.title = true;
-            size_t k = 0;
-            while (k < line.size() && line[k] == ' ') ++k;
-            r.left = line.substr(k);
-        } else if (line.size() >= 2 && line.front() == '"' && line.back() == '"') {
-            r.left = line.substr(1, line.size() - 2);
-        } else {
-            const size_t tab = line.find('\t');
-            if (tab == std::string::npos) r.left = line;
-            else {
-                r.left = line.substr(0, tab);
-                r.right = line.substr(tab + 1);
-            }
-        }
-        rows.push_back(r);
-        if (end >= text.size()) break;
-    }
-    return rows;
-}
-
-// The block of text laid out at one size: every piece with its place relative to the block's top (x is in the frame already).
-struct CreditPiece {
-    TextMask m;
-    double x = 0, y = 0;
-};
-struct CreditBlock {
-    std::vector<CreditPiece> pieces;
-    double height = 0;
-};
-
-CreditBlock creditLayout(const std::vector<CreditRow>& rows, const std::string& font, bool bold, bool italic, double size, double left, double right)
-{
-    CreditBlock blk;
-    const double centre = (left + right) * 0.5;
-    auto make = [&](const std::string& text, bool b, double px, TextMask& m, double& pad) {
-        TextRequest rq;
-        rq.text = text;
-        rq.font = font;
-        rq.pixelSize = px;
-        rq.bold = b || bold;
-        rq.italic = italic;
-        rq.align = 1;
-        pad = std::ceil(std::min(4000.0, std::max(1.0, px)) * 0.15);       // (the margin the text rasteriser leaves round the line)
-        return !text.empty() && rasterizeText(rq, m) && m.w > 2 * pad && m.h > 2 * pad;
-    };
-    double dotAdv = 0;
-    {
-        TextMask m;
-        double pad = 0;
-        if (make(std::string(20, '.'), false, size, m, pad)) dotAdv = (m.w - 2 * pad) / 20.0;       // (twenty, so the whole pixels the mask is rounded up to don't count)
-    }
-    double y = 0;
-    for (const CreditRow& r : rows) {
-        if (r.gap) { y += size * 1.15; continue; }
-        const double px = r.title ? size * 1.5 : size;
-        const bool b = r.title || r.right.empty();      // titles and sub-items are bold, the two-column lines are not
-        double rowH = 0;
-        if (r.right.empty()) {
-            CreditPiece a;
-            double pad = 0;
-            if (make(r.left, b, px, a.m, pad)) {
-                a.x = centre - a.m.w * 0.5;
-                a.y = y - pad;
-                rowH = a.m.h - 2 * pad;
-                blk.pieces.push_back(std::move(a));
-            }
-        } else {
-            CreditPiece a, d, e;
-            double pa = 0, pe = 0, pd = 0;
-            const bool ha = make(r.left, false, px, a.m, pa), he = make(r.right, false, px, e.m, pe);
-            double wl = 0, wr = 0;
-            if (ha) { wl = a.m.w - 2 * pa; a.x = left - pa; a.y = y - pa; rowH = std::max(rowH, a.m.h - 2 * pa); }
-            if (he) { wr = e.m.w - 2 * pe; e.x = right - wr - pe; e.y = y - pe; rowH = std::max(rowH, e.m.h - 2 * pe); }
-            if (ha && he && dotAdv > 0) {
-                const int n = (int)std::floor((right - wr - (left + wl)) / dotAdv);
-                if (n > 0 && n < 2000 && make(std::string((size_t)n, '.'), false, px, d.m, pd)) { d.x = left + wl - pd; d.y = y - pd; blk.pieces.push_back(std::move(d)); }
-            }
-            if (ha) blk.pieces.push_back(std::move(a));
-            if (he) blk.pieces.push_back(std::move(e));
-        }
-        y += rowH;
-        if (r.title) y += size * 1.6;
-    }
-    blk.height = y;
-    return blk;
-}
-
-void creditRoll(Ctx& c)
+void titlesAndText(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     const Color bg = c.color("Background");
     if (bg.a > 0) {
         float p[4];
-        put(p, bg);
+        putGen(p, bg);
         for (int k = 0; k < W * H; ++k) std::memcpy(&c.out.px[(size_t)k * 4], p, sizeof p);
     }
-    const std::vector<CreditRow> rows = creditRows(c.s("Text"));
-    if (rows.empty() || W <= 0 || H <= 0) return;
-    const double points = std::max(1.0, c.d("FontSize"));
-    const double size = std::max(c.px(0.5), std::min((double)H * 4, points * H / 400.0));
-    const std::string font = c.s("FontName").empty() ? std::string("Arial") : c.s("FontName");
+    const RichText rt = parseRichText(c.s("Text"));
+    if (rt.text.empty() || W <= 0 || H <= 0) return;
+    vfxtt::Style S;
+    S.text = rt.text;
+    S.font = !rt.font.empty() ? rt.font : c.s("FontName");
+    if (S.font.empty()) S.font = "Verdana";
+    S.points = rt.points > 0 ? rt.points : std::max(1.0, c.d("FontSize"));
+    S.bold = rt.bold || c.b("Bold");
+    S.italic = rt.italic || c.b("Italic");
+    S.lineAlign = rt.align;
+    S.scale = std::max(0.0, c.d("Scale"));
+    S.tracking = clampd(c.d("Tracking"), -20, 20);   // canvas units per character, grown by Scale with everything else
+    S.lineSpacing = c.d("LineSpacing");
+    S.anchor = (int)clampd(c.i("Alignment"), 0, 8);
+    c.xy("Location", S.locX, S.locY);
+    S.outline = std::max(0.0, c.d("OutlineWidth"));
+    const Color tc = c.color("TextColor"), oc = c.color("OutlineColor");
+    S.fill[0] = cutByte(tc.r); S.fill[1] = cutByte(tc.g); S.fill[2] = cutByte(tc.b); S.fill[3] = cutByte(tc.a);
+    S.stroke[0] = cutByte(oc.r); S.stroke[1] = cutByte(oc.g); S.stroke[2] = cutByte(oc.b); S.stroke[3] = cutByte(oc.a);
+    std::shared_ptr<TextFace> face = vfxtt::face(S.font, S.bold, S.italic);
+    if (!face) { titlesAndTextMoving(c); return; }           // (no glyph source installed: the older bitmap path, through the plain text rasteriser)
+
+    // The characters' own formatting (sizes, bold, italic, font changes inside the text) and the animation engine (the animation's data is read from VEGAS's assembly).
+    {
+        std::vector<vfxtt::CpFmt> fmt;
+        bool mixed = false;
+        if (!rt.spans.empty()) {
+            std::vector<size_t> cpAt(rt.text.size() + 1, 0);
+            size_t n = 0;
+            for (size_t i = 0; i < rt.text.size(); ++i) {
+                if ((((unsigned char)rt.text[i]) & 0xC0) != 0x80) ++n;
+                cpAt[i + 1] = n;
+            }
+            fmt.assign(n, vfxtt::CpFmt());
+            for (const RichText::Span& sp : rt.spans) {
+                const size_t a = std::min(sp.start, rt.text.size()), b = std::min(sp.start + sp.len, rt.text.size());
+                for (size_t k = cpAt[a]; k < cpAt[b] && k < fmt.size(); ++k) {
+                    vfxtt::CpFmt& f = fmt[k];
+                    f.points = sp.points > 0 ? sp.points : S.points;
+                    f.bold = sp.bold;
+                    f.italic = sp.italic;
+                    f.font = sp.font;
+                    if (f.points != S.points || sp.bold != rt.bold || sp.italic != rt.italic || (!sp.font.empty() && sp.font != S.font)) mixed = true;
+                }
+            }
+        }
+        const std::string akey = animationKey(c.s("AnimationName"));
+        std::shared_ptr<const vfxta::Item> item;
+        if (!akey.empty() && akey != "none") item = vfxta::findItem(c.s("AnimationName"));
+        if (item && item->usesPath) item.reset();      // (text along a path is not played: the older motion stands in)
+        vfxtt::Rich R;
+        if (item) S.anchor = 3 + S.anchor % 3;     // (an animation keeps its text in the middle of its row: the picture of the capture; the column is the setting's)
+        if ((item || mixed) && vfxtt::placeRich(S, fmt, W, H, R) && R.glyphs.size() <= 3000) {
+            vfxta::State st;
+            if (item) {
+                // the progress over the event (what the animations' own 0..1 range is laid over)
+                const double p = c.duration > 0 ? c.time / c.duration : 0.0;
+                vfxta::evaluate(*item, R.shape, clampd(p, 0, 1), st, 0);
+                std::vector<char> hid = vfxtt::hiddenChars(R, st);
+                {
+                    bool any = false;
+                    for (char h : hid) any = any || h;
+                    if (any) {                                        // (a block with undrawn characters sits by the ink of the others)
+                        vfxtt::Rich R2;
+                        if (vfxtt::placeRich(S, fmt, W, H, R2, &hid) && R2.shape.lines.size() == R.shape.lines.size()) R = R2;
+                    }
+                }
+                if (st.node.trackSet && std::fabs(st.node.track) < 100) {        // an animated tracking changes the layout: lay the text out again with it
+                    vfxtt::Style S2 = S;
+                    S2.tracking = clampd(S.tracking + st.node.track, -20, 20);
+                    vfxtt::Rich R2;
+                    if (vfxtt::placeRich(S2, fmt, W, H, R2, &hid) && R2.shape.lines.size() == R.shape.lines.size()) R = R2;
+                }
+            } else vfxtt::identityState(R.shape, st);
+            vfxtt::Layer L;
+            const vfxtt::AnimOut ao = vfxtt::drawRich(S, R, st, W, H, L);
+            const vfxta::Sub& ns = st.node;
+            if (ns.blurOn && (ns.hblur > 0 || ns.vblur > 0))
+                vfxtt::blurLayer(L, ns.hblur > 0 ? builtin::more::cgSigmaForDiameter(clampd(ns.hblur, 0, 10) * vfxtt::kBlurRef * W) : 0.0, ns.vblur > 0 ? builtin::more::cgSigmaForDiameter(clampd(ns.vblur, 0, 10) * vfxtt::kBlurRef * H) : 0.0);
+            if (ns.glowOn && ns.glow > 0) vfxtt::glowLayer(L, ns.glow, ns.glowColor, ns.glowInner > 0);
+            if (c.b("ShadowEnable")) {
+                const Color sc = c.color("ShadowColor");
+                const double col[4] = {sc.r, sc.g, sc.b, sc.a};
+                vfxtt::dropShadow(L, col, c.d("ShadowBlur") / 10.0, c.d("ShadowOffsetX") / 10.0, c.d("ShadowOffsetY") / 10.0);
+            }
+            const float op = (float)clampd(ao.opacity, 0, 1);
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x) {
+                    const uint8_t* s = &L.px[((size_t)y * W + x) * 4];
+                    if (!s[3]) continue;
+                    float* d = c.out.at(x, y);
+                    const float a = s[3] / 255.f * op, ia = 1.f - a;
+                    d[0] = s[2] / 255.f * op + d[0] * ia;
+                    d[1] = s[1] / 255.f * op + d[1] * ia;
+                    d[2] = s[0] / 255.f * op + d[2] * ia;
+                    d[3] = a + d[3] * ia;
+                }
+            return;
+        }
+    }
+
+    std::string anim;
+    const int pick = c.i("collection");
+    // (VEGAS's own pictures with the Animation list set to any entry are the plain still text, so the list picks nothing here; only the hidden AnimationName plays.)
+    (void)pick;
+    anim = c.s("AnimationName");
     const double secs = c.fps > 0 ? c.time / c.fps : c.time / 30.0;
-    const double dur = c.d("RollDuration");                 // 0: VEGAS's own speed (the frame's height in 6 seconds); else the roll takes this long (and timed styles end then)
-    const int anim = c.i("Animation");                      // 0 scroll up, 1 scroll down, 2 fade, 3 zoom, 4 wipe, 5 scroll right
-    const double l0 = W * 0.1, r0 = c.b("LeftSide") ? W * 0.6 : W * 0.9;
-    const bool timed = anim >= 2;
-
-    // how far into the timed effect: 0 hidden, 1 complete (in over the first seconds, out over the last ones)
-    double u = 1;
-    if (timed) {
-        const double tin = std::max(0.01, c.d("InTime"));
-        u = clampd(secs / tin, 0, 1);
-        if (dur > 0) u = std::min(u, clampd((dur - secs) / tin, 0, 1));
-        if (u <= 0) return;
-    }
-    const bool zoom = anim == 3;
-    const double z = zoom ? std::max(0.02, u * u) : 1.0;
-    const double centreX = (l0 + r0) * 0.5;
-    CreditBlock blk = creditLayout(rows, font, c.b("Bold"), c.b("Italic"), size * z, centreX + (l0 - centreX) * z, centreX + (r0 - centreX) * z);
-    if (blk.pieces.empty()) return;
-
-    double top, dx = 0;
-    if (timed) {
-        top = c.d("TimedY") * H - blk.height * 0.5;
-        if (anim == 5) {
-            const double a = dur > 0 ? clampd((dur - secs) / std::max(0.01, c.d("InTime")), 0, 1) : 1.0;
-            dx = -(1 - clampd(secs / std::max(0.01, c.d("InTime")), 0, 1)) * 1.6 * W + (1 - a) * 1.6 * W;
-        }
-    } else {
-        if (dur > 0) {
-            // over 'duration' seconds from just off one edge to just off the other (the ink of the pieces, margins included)
-            double ink0 = 1e30, ink1 = -1e30;
-            for (const CreditPiece& pl : blk.pieces) { ink0 = std::min(ink0, pl.y); ink1 = std::max(ink1, pl.y + pl.m.h); }
-            const double f = clampd(secs / dur, 0, 1), ext = H + ink1 - ink0;
-            top = anim == 1 ? -ink1 + f * ext : (H - ink0) - f * ext;
-        } else {
-            const double travel = secs / 6.0 * H;           // one frame height in 6 seconds
-            top = anim == 1 ? travel - blk.height : H - travel;
-        }
-    }
-    const double band = W * 0.1, edge = (W + band) * std::pow(u, 1.85);
-    std::vector<float> cover((size_t)W * H, 0.f);
-    for (const CreditPiece& pl : blk.pieces) {
-        const int X0 = (int)std::lround(pl.x + dx), Y0 = (int)std::lround(top + pl.y);
-        for (int yy = 0; yy < pl.m.h; ++yy) {
-            const int fy = Y0 + yy;
-            if (fy < 0 || fy >= H) continue;
-            for (int xx = 0; xx < pl.m.w; ++xx) {
-                const int fx = X0 + xx;
-                if (fx < 0 || fx >= W) continue;
-                float v = pl.m.a[(size_t)yy * pl.m.w + xx] / 255.f;
-                if (anim == 2) v *= (float)u;
-                else if (anim == 4) v *= (float)clampd((edge - fx) / band, 0, 1);
-                float& dst = cover[(size_t)fy * W + fx];
-                dst = std::max(dst, v);
+    vfxtt::Move mv;
+    TextMotion mo;
+    {
+        const std::string key = animationKey(anim);
+        if (!key.empty() && key != "none") {
+            vfxtt::Placed rest;
+            if (!vfxtt::place(*face, S, W, H, vfxtt::Move(), rest)) return;
+            mo = textMotion(anim, secs, W, H, rest.bx, rest.by, rest.bw, rest.bh);
+            mv.dx = mo.dx; mv.dy = mo.dy; mv.sx = mo.sx; mv.sy = mo.sy;
+            if (mo.dx != 0 || mo.dy != 0 || mo.sx != 1 || mo.sy != 1 || mo.opacity != 1) {
+                titlesAndTextMoving(c);
+                return;
             }
         }
     }
-    fillThrough(c.out, cover, c.color("TextColor"));
+    vfxtt::Layer L;
+    if (!vfxtt::draw(*face, S, W, H, mv, L)) return;
+    if (c.b("ShadowEnable")) {
+        const Color sc = c.color("ShadowColor");
+        const double col[4] = {sc.r, sc.g, sc.b, sc.a};
+        vfxtt::dropShadow(L, col, c.d("ShadowBlur") / 10.0, c.d("ShadowOffsetX") / 10.0, c.d("ShadowOffsetY") / 10.0);
+    }
+    const float op = (float)clampd(mo.opacity, 0, 1);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            const uint8_t* s = &L.px[((size_t)y * W + x) * 4];
+            if (!s[3]) continue;
+            float* d = c.out.at(x, y);
+            const float a = s[3] / 255.f * op, ia = 1.f - a;
+            d[0] = s[2] / 255.f * op + d[0] * ia;
+            d[1] = s[1] / 255.f * op + d[1] * ia;
+            d[2] = s[0] / 255.f * op + d[2] * ia;
+            d[3] = a + d[3] * ia;
+        }
+}
+
+
+// ------------------------------------------------------------------ Credit Roll
+// VEGAS's Credit Roll, ported from its code (sftrans1.dll, notes/vegas_code/Credit_Roll.md; the arithmetic is in vfxcredit.h). Five text styles (title, sub-item, the
+// two columns and the leader between them) each with a font, size, colour, alignment and the space before / after a line in frame heights; the lines are laid
+// out under one another (a line is as high as its style's font, GDI's ascent + descent times the frame height / 480), and
+//  - scrolling: the block starts just below the frame and moves up by (frame height + block height) x progress (backwards: down) - progress is the time over
+//    the roll's duration (VEGAS's 10 seconds of generated media);
+//  - timed: the lines are split into pages, the page the progress is at is shown at 'TimedY' with the in effect over the first part of its time and the out effect
+//    over the last (fade, scroll in from a side, zoom, wipe).
+// Only the glyphs differ from VEGAS where it is not Windows: its text engine draws with GDI (done as VEGAS does on Windows, creditgdi.h), Reno's text rasteriser
+// stands in elsewhere. The leader between two columns is laid out as VEGAS does (its string repeated enough times to reach across the gap from the middle of
+// the gap, clipped to the gap), the zoom resamples with VEGAS's own cubic and smoothing (vfxcredit.h, bit for bit), and the zoom / wipe box is made of the rectangles
+// of the text VEGAS's engine reports (the text's cell with 2 pixels round it). A last line without a line end is not a line, as in VEGAS.
+struct CreditStyle {
+    std::string face = "Arial";
+    int size = 20;
+    bool bold = false, italic = false;
+    float col[4] = {1.f, 1.f, 1.f, 1.f};
+    int align = 2;
+    double before = 0, after = 0.05;
+};
+struct CreditCfg {
+    std::string text, leader;
+    bool timed = false, back = false;
+    double dur = 10, left = 0.1, right = 0.9, timedY = 0.3, gap = 0.05;
+    int page = 0, inFx = 0, outFx = 0;
+    CreditStyle st[5];
+    Color bg;
+};
+
+CreditCfg creditConfig(const Ctx& c)
+{
+    CreditCfg g;
+    g.text = c.s("Text");
+    g.leader = c.s("Leader");
+    g.timed = c.i("Mode") != 0;
+    g.back = c.b("Backward");
+    auto num = [&](const char* name, double lo, double hi, double def) {
+        const double v = c.d(name);
+        return v == v ? clampd(v, lo, hi) : def;       // (a NaN gets the default)
+    };
+    g.dur = num("Duration", 0.01, 1e6, 10);
+    g.left = num("Left", 0, 1, 0.1);
+    g.right = num("Right", 0, 1, 0.9);
+    g.gap = num("ColumnGap", 0, 1, 0.05);
+    g.timedY = num("TimedY", 0, 1, 0.3);
+    g.page = std::max(0, std::min(3, c.i("PageMode")));
+    g.inFx = std::max(0, std::min(15, c.i("InEffect")));
+    g.outFx = std::max(0, std::min(15, c.i("OutEffect")));
+    g.bg = c.color("Background");
+    for (int s = 0; s < 5; ++s) {
+        const std::string p = std::string("S") + (char)('0' + s);
+        CreditStyle& t = g.st[s];
+        t.face = c.s((p + "Font").c_str());
+        if (t.face.empty()) t.face = "Arial";
+        t.size = (int)num((p + "Size").c_str(), 1, 1000, 20);
+        t.bold = c.b((p + "Bold").c_str());
+        t.italic = c.b((p + "Italic").c_str());
+        const Color k = c.color((p + "Color").c_str());
+        t.col[0] = (float)k.r; t.col[1] = (float)k.g; t.col[2] = (float)k.b; t.col[3] = (float)k.a;
+        t.align = std::max(0, std::min(2, c.i((p + "Align").c_str())));
+        t.before = num((p + "Before").c_str(), 0, 4, 0);
+        t.after = num((p + "After").c_str(), 0, 4, 0.05);
+    }
+    return g;
+}
+
+// one piece of text as a coverage mask; (ox, oy) is where its cell starts in it
+struct CreditRun {
+    int w = 0, h = 0, ox = 0, oy = 0;
+    std::vector<uint8_t> a;
+    double adv = 0;
+};
+
+bool creditRun(const std::string& txt, const CreditStyle& s, double H, CreditRun& r)
+{
+    r = CreditRun();
+    if (txt.empty()) return false;
+    const double scale = H / 480.0;
+    CreditGdiRun g;
+    if (creditGdiRun(txt, s.face, s.size, s.bold, s.italic, scale, g)) {
+        r.w = g.w; r.h = g.h; r.ox = g.ox; r.oy = g.oy; r.a.swap(g.a); r.adv = g.adv;
+        return r.w > 0 && r.h > 0;
+    }
+    // elsewhere: Reno's text rasteriser at the size GDI would be given (lfHeight -MulDiv(points, 96, 72)) times the frame height / 480
+    const int design = std::max(1, (s.size * 96 + 36) / 72);
+    TextRequest rq;
+    rq.text = txt;
+    rq.font = s.face;
+    rq.pixelSize = std::min(4000.0, std::max(1.0, design * scale));
+    rq.bold = s.bold;
+    rq.italic = s.italic;
+    rq.align = 1;
+    const int pad = (int)std::ceil(std::min(4000.0, std::max(1.0, rq.pixelSize)) * 0.15);       // (the margin the text rasteriser leaves round the line)
+    TextMask m;
+    if (!rasterizeText(rq, m) || m.w <= 2 * pad || m.h <= 2 * pad) return false;
+    r.w = m.w; r.h = m.h; r.ox = r.oy = pad; r.a.swap(m.a);
+    r.adv = m.w - 2 * pad;
+    return true;
+}
+
+// the height of a line of this style (it does not depend on the text)
+double creditHeight(const CreditStyle& s, double H)
+{
+    double h = 0;
+    if (creditGdiHeight(s.face, s.size, s.bold, s.italic, H / 480.0, h)) return h;
+    CreditRun r;
+    if (creditRun("Hg", s, H, r)) return (double)(r.h - 2 * r.oy);
+    return std::max(1, (s.size * 96 + 36) / 72) * (H / 480.0) * 1.15;
+}
+
+// A pixel rectangle (right and bottom excluded) and Windows' IntersectRect on it: nothing in common gives an empty (all zero) rectangle.
+struct CRect {
+    int l = 0, t = 0, r = 0, b = 0;
+    bool empty() const { return r <= l || b <= t; }
+};
+CRect cIntersect(const CRect& a, const CRect& c)
+{
+    CRect o;
+    o.l = std::max(a.l, c.l); o.t = std::max(a.t, c.t); o.r = std::min(a.r, c.r); o.b = std::min(a.b, c.b);
+    return o.empty() ? CRect() : o;
+}
+
+// text colour over what is in the frame (straight colour; coverage 0..255 times the colour's alpha); only inside 'clip' (VEGAS copies the text's picture to the
+// frame only where its clip rectangle and the frame overlap)
+void creditBlit(Buf& out, const CreditRun& r, double x, double y, const float col[4], const CRect& clip)
+{
+    const int X0 = (int)std::lround(x) - r.ox, Y0 = (int)std::lround(y) - r.oy;
+    for (int yy = 0; yy < r.h; ++yy) {
+        const int fy = Y0 + yy;
+        if (fy < 0 || fy >= out.h || fy < clip.t || fy >= clip.b) continue;
+        for (int xx = 0; xx < r.w; ++xx) {
+            const int fx = X0 + xx;
+            if (fx < 0 || fx >= out.w || fx < clip.l || fx >= clip.r) continue;
+            const float v = r.a[(size_t)yy * r.w + xx] * (1.f / 255.f) * col[3];
+            if (v <= 0.f) continue;
+            float* d = out.at(fx, fy);
+            const float k = 1.f - v;
+            d[0] = col[0] * v + d[0] * k;
+            d[1] = col[1] * v + d[1] * k;
+            d[2] = col[2] * v + d[2] * k;
+            d[3] = v + d[3] * k;
+        }
+    }
+}
+
+// The rectangle VEGAS's text engine gives a line of text (0x18024cc30): the text's cell with 2 pixels round it, left at the placed position
+CRect creditCell(const CreditRun& r, double x, double top, double cellH)
+{
+    CRect c;
+    c.l = (int)std::lround(x) - 2;
+    c.r = c.l + (int)std::lround(r.adv) + 4;
+    c.t = (int)std::lround(top) - 2;
+    c.b = c.t + (int)std::lround(cellH) + 4;
+    return c;
+}
+
+// Draws 'r' inside the overlap of its cell, the clip and the frame; 'drawn' is what the text engine reports back (see below). False if nothing is drawn.
+bool creditDraw(Buf& out, const CreditRun& r, double x, double top, const CRect& cell, const CRect& clip, const float col[4], CRect& drawn)
+{
+    const CRect frame = {0, 0, out.w, out.h};
+    const CRect dr = cIntersect(cIntersect(cell, clip), frame);
+    if (dr.empty()) return false;
+    drawn = cIntersect(cell, frame);                    // (what the engine reports is the cell on the frame: the zoom and wipe boxes in the captures start 2 pixels above the text)
+    creditBlit(out, r, x, top, col, dr);
+    return true;
+}
+
+// One piece of text as VEGAS's line functions draw it (0x1801f6850 and the two columns of 0x1801f6af0): the clip is the margins' width and the line's height
+// (top cut to a whole number, bottom rounded up); for left-aligned text it starts at the text, for right-aligned text it ends at the text; the text is drawn
+// where its cell and the clip overlap; the rectangle the effect gets back (the zoom and wipe boxes are made of them) is the cell on the frame. Returns false if nothing is drawn.
+bool creditPiece(Buf& out, const CreditRun& r, double x, double top, double cellH, int align, int clipL, int clipR, const float col[4], CRect& drawn)
+{
+    const CRect cell = creditCell(r, x, top, cellH);
+    CRect clip;
+    clip.l = clipL; clip.r = clipR; clip.t = (int)top; clip.b = (int)std::ceil(top + cellH - 1e-8);
+    if (align == 0) clip.l = cell.l;
+    else if (align == 1) clip.r = cell.r;
+    return creditDraw(out, r, x, top, cell, clip, col, drawn);
+}
+
+// One line with its cell's top at 'top' (dx: the whole line moved sideways by the scroll-in / out effects, clipL / clipR: the margins as moved by them); the
+// rectangles of the text drawn are added to 'box'. h: the height of each of the five styles.
+void creditLine(Buf& out, const vfxcredit::Line& ln, const CreditCfg& cfg, float cols[5][4], const double hs[5], double top, double dx, int Lpx, int Rpx, int clipL,
+                int clipR, vfxcredit::Box* box)
+{
+    const double H = out.h;
+    const int cen = (Lpx + Rpx) / 2;
+    auto xOf = [](const CreditRun& r, int align, double ref) { return align == 0 ? ref : align == 1 ? ref - r.adv : ref - r.adv * 0.5; };
+    auto add = [&](const CRect& d) { if (box) box->add(d.l, d.t, d.r, d.b); };
+    if (ln.type != 2) {
+        const int s = ln.type == 0 ? 0 : 1;
+        CreditRun r;
+        if (!creditRun(ln.a, cfg.st[s], H, r)) return;
+        const int al = cfg.st[s].align;
+        const double x = xOf(r, al, al == 0 ? Lpx : al == 1 ? Rpx : cen) + dx;
+        CRect d;
+        if (creditPiece(out, r, x, top, hs[s], al, clipL, clipR, cols[s], d)) add(d);
+        return;
+    }
+    // two columns: the left one against the left margin / the middle (less half the gap) / the middle of its half, the right one the same way; a leader between them
+    const double cellH = std::max(hs[2], std::max(hs[3], hs[4]));
+    const double halfGap = cfg.gap * out.w * 0.5;
+    const int gapPx = (int)(cfg.gap * 0.5 * out.w);                      // (the clip uses it as a whole number)
+    const int clipCen = (clipL + clipR) / 2;
+    CreditRun a, b;
+    const bool ha = creditRun(ln.a, cfg.st[2], H, a), hb = creditRun(ln.b, cfg.st[4], H, b);
+    double xa = 0, xb = 0;
+    CRect da, db;
+    bool okA = false, okB = false;
+    if (ha) {
+        const int al = cfg.st[2].align;
+        xa = xOf(a, al, al == 0 ? (double)Lpx : al == 1 ? cen - halfGap : (double)((Lpx + cen) / 2) - halfGap * 0.5) + dx;
+        okA = creditPiece(out, a, xa, top, cellH, al, clipL, clipR, cols[2], da);
+        if (okA) add(da);
+    }
+    if (hb) {
+        const int al = cfg.st[4].align;
+        xb = xOf(b, al, al == 0 ? cen + halfGap : al == 1 ? (double)Rpx : (double)((cen + Rpx) / 2) + halfGap * 0.5) + dx;
+        // the right column may not reach into the left one: its clip starts a gap after the left text's drawn edge (or half a gap right of the middle)
+        const int edge = okA ? da.r : clipR;
+        const int c0 = std::min(edge + 2 * gapPx, clipCen + gapPx);
+        CRect cell = creditCell(b, xb, top, cellH), clip;
+        clip.l = c0; clip.r = clipR; clip.t = (int)top; clip.b = (int)std::ceil(top + cellH - 1e-8);
+        if (al == 0) clip.l = cell.l;
+        else if (al == 1) clip.r = cell.r;
+        CRect x = cIntersect(clip, cell);
+        x.r = std::max(x.r, edge);
+        if (creditDraw(out, b, xb, top, cell, x, cols[4], db)) { okB = true; add(db); }
+    }
+    if (ha && hb && !cfg.leader.empty() && okA && okB) {
+        // the leader: its string, as many times as it takes to reach across the gap from where it is placed (the middle of the gap between the two texts), is laid
+        // out as one line and drawn inside the gap (0x18024d900 with its repeat count)
+        CreditRun u;
+        CRect gap;
+        gap.l = da.r; gap.r = db.l; gap.t = (int)top; gap.b = (int)std::ceil(top + cellH - 1e-8);
+        const CRect col = {clipL, (int)top, clipR, gap.b};
+        gap = cIntersect(gap, col);
+        if (!gap.empty() && creditRun(cfg.leader, cfg.st[3], H, u) && u.adv > 0.5) {
+            const int al = cfg.st[3].align;
+            const double mid = (gap.l + gap.r) * 0.5;
+            // the width of one repeat (on Windows GDI's own whole number of pixels; the other text rasteriser rounds a single string up, so eight are measured)
+            CreditRun u8;
+            std::string eight;
+            for (int k = 0; k < 8; ++k) eight += cfg.leader;
+            const double one = creditRun(eight, cfg.st[3], H, u8) ? u8.adv / 8.0 : u.adv;
+            const int w1 = std::max(1, (int)std::lround(one));
+            double ax = mid;                                              // where the one-string layout sits: left edge, centre or right edge at the middle
+            const double left1 = al == 0 ? ax : al == 1 ? ax - one : ax - one * 0.5;
+            const int c0 = (int)std::lround(left1), c1 = c0 + w1;        // the content of the one-string layout
+            int n;
+            if (al == 0) n = std::max(0, gap.r - c0) / w1 + 1;
+            else if (al == 1) n = std::max(0, c1 - gap.l) / w1 + 1;
+            else {
+                const double cc = c0 + w1 * 0.5;
+                const int rr = std::max(0, gap.r - (int)std::floor(cc + 1.5e-8)), ll = std::max(0, (int)std::ceil(cc - 1.5e-8) - gap.l);
+                n = 2 * std::max(rr / w1, ll / w1) + 2;
+            }
+            n = std::max(1, std::min(n, 2000));
+            std::string many;
+            for (int k = 0; k < n; ++k) many += cfg.leader;
+            CreditRun m;
+            if (creditRun(many, cfg.st[3], H, m)) {
+                const double x = xOf(m, al, mid);
+                const CRect cell = creditCell(m, x, top, cellH);
+                CRect clip = cIntersect(gap, cell), dl;
+                if (creditDraw(out, m, x, top, cell, clip, cols[3], dl)) add(dl);
+            }
+        }
+    }
+}
+
+void creditRoll(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    const CreditCfg cfg = creditConfig(c);
+    float bgp[4];
+    putGen(bgp, cfg.bg);                                // (VEGAS fills with the premultiplied 8-bit colour)
+    for (int k = 0; k < W * H; ++k) std::memcpy(&c.out.px[(size_t)k * 4], bgp, sizeof bgp);
+    const std::vector<vfxcredit::Line> lines = vfxcredit::parse(cfg.text);
+    if (lines.empty()) return;
+    double h[5], before[3], after[3];
+    for (int s = 0; s < 5; ++s) h[s] = creditHeight(cfg.st[s], H);
+    for (int s = 0; s < 3; ++s) { before[s] = cfg.st[s].before; after[s] = cfg.st[s].after; }
+    const double secs = c.fps > 0 ? c.time / c.fps : c.time / 30.0;
+    const double p = clampd(secs / std::max(0.01, cfg.dur), 0, 1);
+    const int Lpx = (int)(W * cfg.left + 0.5), Rpx = (int)(W * cfg.right + 0.5);
+    float base[5][4];
+    for (int s = 0; s < 5; ++s) std::memcpy(base[s], cfg.st[s].col, sizeof base[s]);
+    std::vector<vfxcredit::Placed> pl;
+
+    if (!cfg.timed) {
+        const double total = vfxcredit::layout(lines, nullptr, 0, h, before, after, H, (double)H, false, pl);
+        const double off = total * (cfg.back ? 1.0 - p : p);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (!(pl[i].y0 < off + H && pl[i].y1 > off)) continue;
+            creditLine(c.out, lines[i], cfg, base, h, pl[i].y0 - off, 0, Lpx, Rpx, Lpx, Rpx, nullptr);
+        }
+        return;
+    }
+
+    std::vector<int> pg;
+    const int N = vfxcredit::pagesOf(lines, cfg.page, pg);
+    const double xx = N * p;
+    const int cur = (int)xx;
+    const double frac = xx - cur;
+    if (cur >= N) return;
+    if (cfg.page == 2) vfxcredit::fixTitle(lines, pg, cur);
+    const double pageEnd = vfxcredit::layout(lines, &pg, cur, h, before, after, H, 0.0, true, pl);
+    int yOff = (int)(H * cfg.timedY + 0.5);
+    const int pageH = (int)pageEnd;
+    const int id = frac <= 0.5 ? cfg.inFx : cfg.outFx;
+    const int kind = vfxcredit::fxKind(id);
+    double t = 0;
+    bool in = true;
+    const bool act = kind != vfxcredit::FxNone && vfxcredit::phase(vfxcredit::fxDuration(id), frac, t, in);
+    const bool post = vfxcredit::fxIsPost(id);
+    double dx = 0;
+    int clipShift = 0;                                  // the margins move by a whole number of pixels with the scroll effects, the text by the exact amount
+    float cols[5][4];
+    std::memcpy(cols, base, sizeof cols);
+    if (act && !post) {
+        const double s = (kind == vfxcredit::FxFade) ? (in ? t : 1.0 - t) : (in ? 1.0 - t : t);
+        if (kind == vfxcredit::FxFade) {
+            const float bgs[4] = {(float)cfg.bg.r, (float)cfg.bg.g, (float)cfg.bg.b, (float)cfg.bg.a};
+            for (int k = 0; k < 5; ++k) vfxcredit::mixColour(bgs, base[k], s, cols[k]);
+        } else if (kind == vfxcredit::FxLeft) { dx = -(double)W * s; clipShift = -(int)(W * s); }
+        else if (kind == vfxcredit::FxRight) { dx = (double)W * s; clipShift = (int)(W * s); }
+        else if (kind == vfxcredit::FxUp) yOff -= (int)((pageH + yOff) * s);
+        else if (kind == vfxcredit::FxDown) yOff += (int)((H - yOff) * s);
+    }
+    vfxcredit::Box box;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (pg[i] != cur) continue;
+        creditLine(c.out, lines[i], cfg, cols, h, (double)yOff + pl[i].y0, dx, Lpx, Rpx, Lpx + clipShift, Rpx + clipShift, &box);
+    }
+    box.clip(W, H);                                     // (the engine only reports what it drew on the frame)
+    if (act && post && !box.empty()) {
+        float* px = c.out.px.data();
+        if (kind == vfxcredit::FxZoom) vfxcredit::zoomBox(px, W, H, box, in ? 1.0 - t : t, bgp);
+        else if (kind == vfxcredit::FxWipeHR) vfxcredit::wipe(px, W, H, box, false, in, 1.0 - t, bgp);
+        else if (kind == vfxcredit::FxWipeH) vfxcredit::wipe(px, W, H, box, false, !in, t, bgp);
+        else if (kind == vfxcredit::FxWipeVR) vfxcredit::wipe(px, W, H, box, true, in, 1.0 - t, bgp);
+        else if (kind == vfxcredit::FxWipeV) vfxcredit::wipe(px, W, H, box, true, !in, t, bgp);
+    }
 }
 
 }  // namespace
@@ -1257,14 +1652,35 @@ void addGenerators(std::vector<Def>& out)
         d.label = "Credit Roll";
         d.group = kGroup;
         d.generator = true;
-        d.description = "Credits for a title roll, scrolling up from the bottom or timed (fade, zoom, wipe). A line starting with a space is a title, a tab splits two columns, // starts a comment.";
-        PDef t = text("Text", "Credits text", " Title Text\nSubitem Text\nItem Left\tItem Right\nLonger Item Left\tLonger Item Right", true);
-        t.hint = "A line starting with a space is a title; a tab splits two columns; // starts a comment; an empty line is a gap";
-        d.params = {t, choice("Animation", "Style", 0, {"Scroll up", "Scroll down (backward)", "Timed, fade", "Timed, zoom in/out", "Timed, wipe in/out", "Timed, scroll right"}),
-                    boolean("LeftSide", "Left side only", false), text("FontName", "Font", "Arial", false), dbl("FontSize", "Size (points)", 16, 1, 1000),
-                    boolean("Bold", "Bold", false), boolean("Italic", "Italic", false), rgba("TextColor", "Text color", 1, 1, 1, 1),
-                    rgba("Background", "Background color", 0, 0, 0, 1), dbl("RollDuration", "Duration (seconds, 0: VEGAS's speed)", 0, 0, 3600),
-                    dbl("InTime", "Timed in/out time (seconds)", 0.8333, 0.01, 60), dbl("TimedY", "Timed: height of the text (0 top, 1 bottom)", 0.5, 0, 1)};
+        d.description = "Credits for a title roll (VEGAS's Credit Roll): scrolling up or down, or timed pages with in / out effects (fade, scroll, zoom, wipe). A line starting with a space is a title, a tab splits two columns, quotes keep spaces, ~ is a quote.";
+        PDef t = text("Text", "Credits text", vfxcredit::defaultText(), true);
+        t.hint = "A line starting with a space is a title; a tab splits two columns; a line in quotes keeps its spaces (a ~ inside is a quote)";
+        const std::vector<std::string> fx = {"None", "Fade", "Fade (short)", "From / to the left", "From / to the right", "From / to the top", "From / to the bottom",
+                                              "From / to the left (slow)", "From / to the right (slow)", "From / to the top (slow)", "From / to the bottom (slow)",
+                                              "Zoom", "Wipe right to left", "Wipe left to right", "Wipe bottom to top", "Wipe top to bottom"};
+        d.params = {t, choice("Mode", "Mode", 0, {"Scrolling", "Timed"}), boolean("Backward", "Scroll backward (down)", false),
+                    dbl("Duration", "Duration (seconds)", 10, 0.01, 3600), dbl("Left", "Left margin", 0.1, 0, 1), dbl("Right", "Right margin", 0.9, 0, 1),
+                    dbl("ColumnGap", "Gap between columns", 0.05, 0, 1), dbl("TimedY", "Timed: top of the text (frame heights)", 0.3, 0, 1),
+                    choice("PageMode", "Timed: pages", 0, {"A page for each title", "A page for each line", "A title with each of its items", "A page for each title or sub-item"}),
+                    choice("InEffect", "Timed: in effect", 0, fx), choice("OutEffect", "Timed: out effect", 0, fx), text("Leader", "Leader between columns", "", false),
+                    rgba("Background", "Background color", 0, 0, 0, 1)};
+        {
+            int n = 0;
+            const vfxcredit::Preset* first = vfxcredit::presets(n);
+            static const char* const names[5] = {"Title", "Sub-item", "Left column", "Leader", "Right column"};
+            for (int s = 0; s < 5; ++s) {
+                const std::string p = std::string("S") + (char)('0' + s), nm = names[s];
+                const vfxcredit::StyleRec& r = first[0].st[s];
+                d.params.push_back(text(p + "Font", nm + ": font", r.face, false));
+                d.params.push_back(dbl(p + "Size", nm + ": size (points)", r.size, 1, 1000));
+                d.params.push_back(boolean(p + "Bold", nm + ": bold", r.bold != 0));
+                d.params.push_back(boolean(p + "Italic", nm + ": italic", r.italic != 0));
+                d.params.push_back(rgba(p + "Color", nm + ": color", r.col[0], r.col[1], r.col[2], r.col[3]));
+                d.params.push_back(choice(p + "Align", nm + ": alignment", r.align, {"Left", "Right", "Center"}));
+                d.params.push_back(dbl(p + "Before", nm + ": space before (frame heights)", r.before, 0, 4));
+                d.params.push_back(dbl(p + "After", nm + ": space after (frame heights)", r.after, 0, 4));
+            }
+        }
         d.render = creditRoll;
         out.push_back(d);
     }
@@ -1282,10 +1698,10 @@ void addGenerators(std::vector<Def>& out)
                     choice("Alignment", "Anchor Point", 4, {"Top Left", "Top Center", "Top Right", "Center Left", "Center", "Center Right",
                                                             "Bottom Left", "Bottom Center", "Bottom Right"}),
                     group("FontGroup", "Font"),
-                    text("FontName", "Font", "Arial", false), dbl("FontSize", "Size (points)", 48, 1, 1000), boolean("Bold", "Bold", false),
+                    text("FontName", "Font", "Verdana", false), dbl("FontSize", "Size (points)", 48, 1, 1000), boolean("Bold", "Bold", false),
                     boolean("Italic", "Italic", false),
                     group("AdvancedGroup", "Advanced"),
-                    rgba("Background", "Background", 0, 0, 0, 0, "AdvancedGroup"), dbl("Tracking", "Tracking", 0, -1, 2, "AdvancedGroup"),
+                    rgba("Background", "Background", 0, 0, 0, 0, "AdvancedGroup"), dbl("Tracking", "Tracking", 0, -20, 20, "AdvancedGroup"),
                     dbl("LineSpacing", "Line spacing", 1, 0.1, 5, "AdvancedGroup"),
                     group("OutlineGroup", "Outline"),
                     dbl("OutlineWidth", "Outline width", 0, 0, 50, "OutlineGroup"), rgba("OutlineColor", "Outline color", 1, 1, 1, 1, "OutlineGroup"),

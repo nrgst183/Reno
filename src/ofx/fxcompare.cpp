@@ -404,8 +404,11 @@ Json makeScenarios(Instance& inst, const std::vector<PresetEntry>& presets, cons
 // Puts a scenario's settings into an instance. The names of settings it has no such setting for are added to 'missing'.
 void applySettings(Instance& inst, const Json& set, std::vector<std::string>& missing)
 {
+    ParamBatch batch(inst);             // all the values go in first, then the effect hears of each changed setting in its own order (VEGAS's script does the same)
     for (const auto& m : set.members()) {
         Param* p = inst.params.find(m.first);
+        // VEGAS's White Balance has a colour setting called SelectWhiteColor; Reno shows a button of that name and keeps the colour in WhiteColor
+        if (p && !p->hasValue() && m.first == "SelectWhiteColor") p = inst.params.find("WhiteColor");
         if (!p || !p->hasValue()) { missing.push_back(m.first); continue; }
         if (p->isText()) {
             if (m.second.isString()) inst.userSetString(p, m.second.asString(), 0.0);
@@ -592,13 +595,29 @@ void runScenario(Plugin* pl, const RunSpec& rs, const Json& scen, int index, Jso
         if (scen.get(key).isArray()) frames = std::max(frames, (int)scen.get(key).size());
     rec["frames"] = frames;
     std::string err;
-    std::unique_ptr<Instance> inst = pl->createInstance(rs.context, setupFor(rs), &err);
+    InstanceSetup setup = setupFor(rs);
+    // a clip of its own pictures (VEGAS's event had just those frames): its frame range ends with them, as the plug-ins that look at neighbouring frames (Flicker Control) see it
+    if (scen.get("seqA").isArray() && scen.get("seqA").size() > 1) setup.durationFrames = (double)scen.get("seqA").size();
+    std::unique_ptr<Instance> inst = pl->createInstance(rs.context, setup, &err);
     if (!inst) {
         rec["ok"] = false;
         rec["error"] = "no instance: " + (err.empty() ? pl->error : err);
         return;
     }
     std::vector<std::string> missing;
+    // The "(Default)" preset puts every saved setting back to its default (as the editor's list does), which is not always what a new instance holds: White Balance is made
+    // with the temperature and tint of its neutral grey, the preset sets 6000 and 0.
+    if (scen.get("kind").asString() == "preset" && scen.get("name").asString() == "(Default)") {
+        ParamBatch batch(*inst);
+        for (const auto& up : inst->params.params) {
+            Param* pr = up.get();
+            if (!pr->hasValue() || !pr->props.getInt(kOfxParamPropPersistant, 0, 1)) continue;
+            if (pr->isText()) { inst->userSetString(pr, pr->props.getString(kOfxParamPropDefault), 0.0); continue; }
+            std::vector<double> d;
+            for (int k = 0; k < pr->dim; ++k) d.push_back(pr->props.getDouble(kOfxParamPropDefault, k));
+            inst->userSetValue(pr, d, 0.0);
+        }
+    }
     applySettings(*inst, scen.get("set"), missing);
     if (!missing.empty()) {
         Json m = Json::array();

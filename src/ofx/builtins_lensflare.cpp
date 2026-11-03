@@ -9,6 +9,7 @@
 //   - the rays' lengths come from the C runtime's rand() as the plug-in finds it after its first 64 calls.
 // The frame is taken as 8 bits and the sums done in single precision in VEGAS's order, so the result is bit-exact.
 #include "builtins_more_internal.h"
+#include "vfxflare.h"
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -19,7 +20,7 @@ namespace builtin {
 namespace more {
 namespace {
 
-struct Flare { int type; float strength, size, place, c0, c1, c2; };
+using Flare = vfxflare::Row;      // (type, strength, size, place, c0, c1, c2)
 
 static const Flare kLens0[] = {
     {4, 2.f, 0.2f, 0.f, 1.f, 1.f, 1.f},
@@ -214,11 +215,37 @@ bool shape(int type, float u, float v, float d, float I, const float* col, const
 
 }  // namespace
 
+// With GPU acceleration on VEGAS draws the flares with its OpenCL kernels (vfxflare.h): one launch per element, 8-bit pictures between them, the card's 12-bit store.
+static void lensFlareOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    static const RayTable rays;
+    float ray[64];
+    for (int i = 0; i < 64; ++i) ray[i] = (float)rays.t[i];
+    static const Flare* const lists[5] = {kLens0, kLens1, kLens2, kLens3, kLens4};
+    static const int counts[5] = {(int)(sizeof(kLens0) / sizeof(Flare)), (int)(sizeof(kLens1) / sizeof(Flare)), (int)(sizeof(kLens2) / sizeof(Flare)),
+                                  (int)(sizeof(kLens3) / sizeof(Flare)), (int)(sizeof(kLens4) / sizeof(Flare))};
+    const int lens = std::min(4, std::max(0, c.i("LensType")));
+    const Color lc = c.color("LightColor");
+    double lpx, lpy;
+    c.xy("LightPosition", lpx, lpy);
+    vfxflare::Params P;
+    P.lightR = (float)lc.r; P.lightG = (float)lc.g; P.lightB = (float)lc.b;
+    P.lx = (float)lpx; P.ly = (float)lpy;
+    P.tint = (float)c.d("Tint"); P.intensity = (float)c.d("Intensity"); P.blend = (float)c.d("Blend");
+    P.size = (float)c.d("Size"); P.perspective = (float)c.d("Perspective");
+    if (!std::isfinite(P.lx) || !std::isfinite(P.ly)) return;
+    std::vector<float> img(c.src.px);
+    vfxflare::render(img, W, H, lists[lens], counts[lens], P, ray, c.host8 ? oclStore12 : nullptr);
+    c.out.px.swap(img);
+}
+
 void lensFlare(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     copyThrough(c);
     if (W < 1 || H < 1) return;
+    if (c.openCl) { lensFlareOpenCl(c); return; }
     const Color lc = c.color("LightColor");
     double lpx, lpy;
     c.xy("LightPosition", lpx, lpy);

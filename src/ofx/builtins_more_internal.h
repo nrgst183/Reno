@@ -50,9 +50,37 @@ inline void oclLinear4(const std::vector<float>& img, int W, int H, float px, fl
 }
 // write_imagef to an 8-bit UNORM picture kept in the kernel (the middle pictures): v kept in 0..1 and rounded to the nearest level.
 inline float oclUnormLevel(float v, float add) { return std::floor(std::min(std::max(v, 0.f), 1.f) * 255.f + add) / 255.f; }
-// The 8-bit store of a kernel's float result (write_imagef): round to nearest with the ties and a little above them going down. Fitted to VEGAS's pictures (Radial Blur, Median, Pixelate: an offset of
-// 0.5 is wrong in 4% of the pixels, 0.3 and 0.4 are worse again, 0.45 .. 0.48 are as good as it gets); no GPU rule found that explains it.
-inline float oclWriteLevel(float v) { return std::floor(std::min(std::max(v, 0.f), 1.f) * 255.f + 0.46f) / 255.f; }
+// The 8-bit store of a kernel's float result (write_imagef): the 12-bit step oclStore12 below, which every capture checked fits best (the older fitted floor(v * 255 + 0.46)
+// was close but off by a level on a few percent of values). Kept as a name for the ports that call it.
+inline float oclStore12(float v);
+inline float oclWriteLevel(float v) { return oclStore12(v); }
+// The 8-bit store of the kernels of Levels and Convolution Kernel (checked bit for bit on their captures; the same rule as Add Noise): the value kept in 0..1 is cut to 12 bits and
+// scaled to a byte with the half down, byte = ((int)floor(v * 4096) * 255 + 2047) >> 12 (not a number: 0). Returns the level as a float level / 255.
+inline float oclStore12(float v)
+{
+    if (!(v == v)) return 0.f;
+    const int n = (int)std::floor(std::min(std::max(v, 0.f), 1.f) * 4096.f);
+    return (float)((n * 255 + 2047) >> 12) / 255.f;
+}
+
+
+// A picture the way the OpenCL kernels hold it (rows bottom first, RGBA floats) and back (the Buf keeps the top row first).
+inline void oclRowsOf(const Buf& b, std::vector<float>& v)
+{
+    v.resize((size_t)b.w * b.h * 4);
+    for (int y = 0; y < b.h; ++y) std::memcpy(&v[(size_t)y * b.w * 4], b.at(0, b.h - 1 - y), (size_t)b.w * 4 * sizeof(float));
+}
+inline void oclRowsTo(const std::vector<float>& v, Buf& b, int W, int H)
+{
+    b.ensure(W, H);
+    for (int y = 0; y < H; ++y) std::memcpy(b.at(0, H - 1 - y), &v[(size_t)y * W * 4], (size_t)W * 4 * sizeof(float));
+}
+// A setting for a kernel argument: a number that is not a number (a hand-edited nonsense value) counts as 0, and the value is held to lo .. hi.
+inline double oclSetting(double v, double lo, double hi)
+{
+    if (!(v == v)) return 0.0;
+    return std::min(std::max(v, lo), hi);
+}
 
 // The bicubic read of the OpenCL kernels (Catmull-Rom, a = -0.5, nearest reads with the edges repeated) at float pixel coordinates (px, py) of an RGBA picture W x H, rows bottom first.
 inline void oclBicubic4(const std::vector<float>& img, int W, int H, float px, float py, float* o)
@@ -164,6 +192,7 @@ void saturationAdjust(Ctx& c);
 void softContrast(Ctx& c);
 void whiteBalance(Ctx& c);
 void whiteBalanceChanged(Change& ch);
+void whiteBalanceCreated(Change& ch);
 void labAdjust(Ctx& c);
 void blackRestore(Ctx& c);
 void broadcastColors(Ctx& c);

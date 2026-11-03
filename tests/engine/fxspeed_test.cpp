@@ -156,13 +156,9 @@ int main(int argc, char** argv)
         // (Median, Linear Blur and Radial Blur are VEGAS's own algorithms with no slower original: checked against VEGAS's pictures)
         // light
         {"defocus default", V + "defocusvelvetmatter", {}, ref::defocus, 0.02, 1},
-        {"defocus hexagon curved", V + "defocusvelvetmatter", {{"IrisShape", {2}}, {"DiscCurvature", {-60}}, {"Orientation", {0.2}}}, ref::defocus, 0.02, 1},
-        {"light rays default", V + "lightrays", {}, ref::lightRays, 0.8, 24},
-        {"light rays off centre", V + "lightrays", {{"LightSource", {0.2, 0.8}}, {"group0Sensitivity", {0.8}}, {"group0Strength", {0.6}}, {"TintColor", {1, 0.6, 0.2}}}, ref::lightRays, 0.8, 24},
+        {"defocus hexagon curved", V + "defocusvelvetmatter", {{"IrisShape", {2}}, {"DiscCurvature", {-60}}, {"Orientation", {72}}}, ref::defocus, 0.02, 1},
+        // (Light Rays and Black Bar Fill are ported from VEGAS's own code now and checked against VEGAS's pictures; the plain versions here were the older models)
         // (Rays, Glint, Starburst and Fill Light follow VEGAS's managed filters step for step and are checked against VEGAS's own pictures by tools/effectref_compare.py)
-        {"black bar fill default", V + "blackbarfill", {}, ref::blackBarFill, 0.8, 24},
-        // (the effect blurs with VEGAS's FIR sums now, the plain version with a generic gaussian: about one level apart on average)
-        {"black bar fill small foreground", V + "blackbarfill", {{"Foreground Scale", {0.5}}, {"Foreground Location", {0.3, 0.6}}, {"Foreground Shadow Blur", {0.5}}, {"Background Scale", {2}}, {"Background Blur", {0.2}}}, ref::blackBarFill, 1.5, 24},
     };
     for (const auto& pic : pictures) {
         for (const Case& cs : cases) {

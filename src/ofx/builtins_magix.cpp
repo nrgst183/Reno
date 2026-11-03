@@ -14,6 +14,8 @@
 #include "builtins_magixdata.h"
 #include "../core/base.h"
 #include "vegas8.h"
+#include "vfxtinyplanet.h"
+#include "builtins_more_internal.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -296,46 +298,31 @@ bool colorCurvesRows(Ctx& c, RowFn& fn)
 void colorCurves(Ctx& c) { runRows(c, colorCurvesRows); }
 
 // ------------------------------------------------------------------ Tiny Planet (stereographic projection)
-// VEGAS's own (its OpenCL kernel). Source: a whole 360 x 180 degree equirectangular frame, rows bottom first. Output pixel (dx, dy) = (x - W/2, y - H/2) (whole numbers, y up) is at angle t = 2 atan(r / (2 W / Z))
-// from the view's axis, tilted by p = Latitude - 90 degrees and turned by Longitude: latitude pi/2 + asin(cos t sin p + dy sin t cos p / r) gives the source row (H - 1) * it / pi, longitude
-// Longitude + atan2(dx sin t, r cos p cos t - dy sin p sin t) + pi (wrapped into 0..2 pi) the column (W - 1) * it / (2 pi), both cut to whole pixels (nearest read). With no value (centre, Z of 0) the row is 0.
-// The source pixel (as an index into the frame, rows as Buf stores them) every output pixel reads; it does not depend on the picture (also read by the GPU plan)
-void tinyPlanetMap(Ctx& c, int W, int H, int SW, int SH, std::vector<uint32_t>& idx)
-{
-    idx.assign((size_t)W * H, 0);
-    const double pi = 3.1415926535897932384626433832795;
-    const double z = c.d("Z");
-    const double v28 = (double)SW / z;
-    const double v29 = c.d("Latitude") * pi / 180 - pi / 2, v30 = c.d("Longitude") * pi / 180;
-    const double sp = std::sin(v29), cp = std::cos(v29);
-    forRows(H, W, [&](int yt) {
-        const int y = H - 1 - yt;                                   // VEGAS's row (bottom first)
-        const int v32 = y - SH / 2;
-        for (int x = 0; x < W; ++x) {
-            const int v31 = x - SW / 2;
-            const double v33 = std::sqrt((double)(v31 * v31 + v32 * v32));
-            const double v34 = 2 * std::atan(v33 / (2 * v28));
-            const double v35 = pi / 2 + std::asin(std::cos(v34) * sp + v32 * std::sin(v34) * cp / v33);
-            double v36 = v30 + std::atan2(v31 * std::sin(v34), v33 * cp * std::cos(v34) - v32 * sp * std::sin(v34));
-            v36 = v36 + pi;
-            if (v36 < 0) v36 += 2 * pi;
-            else if (v36 > 2 * pi) v36 -= 2 * pi;
-            const double fy = (SH - 1) * v35 / pi, fx = std::trunc((SW - 1) * v36 / (pi * 2));
-            const int sy = std::isfinite(fy) ? std::max(0, std::min(SH - 1, (int)std::floor(fy))) : 0;
-            const int sx = std::isfinite(fx) ? std::max(0, std::min(SW - 1, (int)fx)) : 0;
-            idx[(size_t)yt * W + x] = (uint32_t)((SH - 1 - sy) * SW + sx);
-        }
-    });
-}
-
+// VEGAS's own, from its OpenCL kernel (vfxtinyplanet.h, float like the kernel): the source is a whole 360 x 180 degree equirectangular frame. Output pixel (x, y) (rows counted from the
+// bottom) is at angle 2 atan(r / (2 W / Z)) from the view's axis, tilted by Latitude - 90 degrees and turned by Longitude; that gives the source row (a fraction) and column (cut to a
+// whole number). The kernel reads the row with the card's linear filter (the bilinear mode VEGAS's pictures show), so the 8-bit frame gets the float result with exact halves down
+// (vegasDrawsFloat).
 void tinyPlanet(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h, SW = c.src.w, SH = c.src.h;
     if (W <= 0 || H <= 0 || SW <= 0 || SH <= 0) return;
-    std::vector<uint32_t> idx;
-    tinyPlanetMap(c, W, H, SW, SH, idx);
-    for (int yt = 0; yt < H; ++yt)
-        for (int x = 0; x < W; ++x) std::memcpy(c.out.at(x, yt), &c.src.px[(size_t)idx[(size_t)yt * W + x] * 4], sizeof(float) * 4);
+    vftp::Params p;
+    p.w = SW; p.h = SH;
+    p.latitude = (float)std::fmod(c.d("Latitude"), 360.0);
+    p.longitude = (float)std::fmod(c.d("Longitude"), 360.0);
+    p.z = (float)c.d("Z");
+    std::vector<float> img((size_t)SW * SH * 4);        // rows bottom first, as the kernel reads them
+    for (int yb = 0; yb < SH; ++yb) std::memcpy(&img[(size_t)yb * SW * 4], c.src.at(0, SH - 1 - yb), sizeof(float) * 4 * (size_t)SW);
+    forRows(H, W, [&](int yt) {
+        const int y = H - 1 - yt;
+        for (int x = 0; x < W; ++x) {
+            float sx, sy;
+            vftp::sourcePos(p, x, y, sx, sy);
+            if (!std::isfinite(sx)) sx = 0.f;       // (the middle pixel divides 0 by 0; VEGAS's picture shows the first row there)
+            if (!std::isfinite(sy)) sy = 0.f;
+            more::oclLinear4(img, SW, SH, sx, sy, c.out.at(x, yt));
+        }
+    });
 }
 
 // ------------------------------------------------------------------ Mesh Warp
@@ -530,21 +517,30 @@ void meshChanged(Change& ch)
 }
 
 // ------------------------------------------------------------------ Smart Upscale
-// VEGAS's (Sony SPICA) makes the frame Scale times bigger with detail made up from the frame itself. Reno's frame stays the project's size, so what is left is a sharper frame: the fine
-// detail (frame minus a soft copy) added back, more for a bigger Scale, only the part above the noise level (Noise).
+// VEGAS's (Sony SPICA, spica_resizer.ofx) works on the picture as Y, U, V and alpha planes in float on the card (OpenCL kernels read from the DLL): RGB to YUV (Y = .299 R + .587 G
+// + .114 B, U and V centred on 127.5 with the matrix -.169 -.331 .5 / .5 -.419 -.081 on levels 0..255), the Lanczos resizer, the "mapping" kernel on Y (its Y arrives as a whole number:
+// the kernel casts the plane to unsigned short, which cuts it down), and back with 1.402 / .344 / .714 / 1.772 (not the exact inverse, hence the one-level changes everywhere);
+// the result is stored as the other kernels do (more::oclStore12). That whole round trip is done here and is bit for bit VEGAS's when Enable enhancement is off (checked on the
+// capture's pictures: zero levels off). The frame in a Filter effect keeps its size in VEGAS whatever Scale says (the captures with Scale 1, 2, 2.5 and 4 are the same picture),
+// so Scale only sets how strong Reno's own enhancement is. The enhancement itself is a table-driven (class adaptive) filter whose coefficient tables are in the DLL and are not read
+// yet: what follows is Reno's own stand-in, the fine detail (frame minus a soft copy) added back, only the part above the noise level (Noise).
 void smartUpscale(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
-    if (!c.b("EnableEnhancement") || W <= 0 || H <= 0) { copyFrame(c); return; }
+    if (W <= 0 || H <= 0) { copyFrame(c); return; }
+    const bool enhance = c.b("EnableEnhancement");
     double sx, sy, sz;
     c.xyz("Scale", sx, sy, sz);
     const double scale = clampd((sx + sy) * 0.5, 1, 16);
-    const double amount = 0.6 * std::min(1.0, (scale - 1) / 3.0);
-    if (amount <= 0) { copyFrame(c); return; }
-    Buf soft = c.src;
-    gaussianBlur(soft, c.px(0.9), c.px(0.9));
+    const double amount = enhance ? 0.6 * std::min(1.0, (scale - 1) / 3.0) : 0.0;
+    Buf soft;
+    if (amount > 0) {
+        soft = c.src;
+        gaussianBlur(soft, c.px(0.9), c.px(0.9));
+    }
     const float t0 = (float)(0.004 * clampd(c.d("Noise"), 0, 20000) / 2000.0), t1 = t0 * 3.f + 0.004f;
     const bool lumaOnly = c.b("LumaOnly");
+    const bool q8 = c.host8;
     const float amt = (float)amount;
     auto gate = [&](float d) {
         const float m = std::fabs(d);
@@ -553,15 +549,31 @@ void smartUpscale(Ctx& c)
     };
     forRows(H, W, [&](int y) {
         const float* s = c.src.at(0, y);
-        const float* b = soft.at(0, y);
+        const float* b = amount > 0 ? soft.at(0, y) : s;
         float* o = c.out.at(0, y);
         for (int x = 0; x < W; ++x, s += 4, b += 4, o += 4) {
             const float a = s[3];
-            if (lumaOnly) {
-                const float d = gate(luma(s[0], s[1], s[2]) - luma(b[0], b[1], b[2])) * amt;
-                for (int k = 0; k < 3; ++k) o[k] = std::min(std::max(s[k] + d, 0.f), std::max(a, 0.f));
-            } else {
-                for (int k = 0; k < 3; ++k) o[k] = std::min(std::max(s[k] + gate(s[k] - b[k]) * amt, 0.f), std::max(a, 0.f));
+            // Reno's stand-in enhancement goes in before VEGAS's own conversion (the enhancement is VEGAS's mapping stage, between the planes and the way back)
+            float in[3] = {s[0], s[1], s[2]};
+            if (amount > 0) {
+                if (lumaOnly) {
+                    const float d = gate(luma(s[0], s[1], s[2]) - luma(b[0], b[1], b[2])) * amt;
+                    for (int k = 0; k < 3; ++k) in[k] += d;
+                } else {
+                    for (int k = 0; k < 3; ++k) in[k] += gate(s[k] - b[k]) * amt;
+                }
+                for (int k = 0; k < 3; ++k) in[k] = std::min(std::max(in[k], 0.f), std::max(a, 0.f));
+            }
+            const float r = in[0] * 255.f, g = in[1] * 255.f, bl = in[2] * 255.f;
+            float Y = 0.299f * r + 0.587f * g + 0.114f * bl;
+            const float U = -0.169f * r - 0.331f * g + 0.500f * bl + 127.5f;
+            const float V = 0.500f * r - 0.419f * g - 0.081f * bl + 127.5f;
+            Y = std::floor(std::min(std::max(Y, 0.f), 255.f));
+            const float y1 = Y / 255.f, u1 = U / 255.f - 0.5f, v1 = V / 255.f - 0.5f;
+            const float rgb[3] = {y1 + 1.402f * v1, y1 - 0.344f * u1 - 0.714f * v1, y1 + 1.772f * u1};
+            for (int k = 0; k < 3; ++k) {
+                const float v = std::min(std::max(rgb[k], 0.f), 1.f);
+                o[k] = q8 ? more::oclStore12(v) : v;
             }
             o[3] = a;
         }
@@ -569,8 +581,6 @@ void smartUpscale(Ctx& c)
 }
 
 }  // namespace
-
-void tinyPlanetMapGpu(Ctx& c, int W, int H, std::vector<uint32_t>& idx) { tinyPlanetMap(c, W, H, W, H, idx); }
 
 // For the GPU (vkeffects.cpp): the red, green and blue tables of the effect's curves (the master curve folded in) one after the other, 1024
 // values each, the very tables colorCurvesRows looks up. False when the effect has no curves (it then leaves the frame as it is).

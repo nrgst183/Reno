@@ -157,6 +157,19 @@ void addFiltersMore(std::vector<Def>& out)
             vfxTune(d, "ColorTemperature", 6000, 1700, 15000); vfxTune(d, "ColorTint", 0, -100, 100); vfxTune(d, "Brightness", 1, 0.1, 2);
             // VEGAS's three buttons (its resource file lists them with the settings): the order of its file
             insertParam(d, "AmountOfCorrection", button("SelectWhiteColor", "Select neutral color"));
+            // VEGAS's SelectWhiteColor is a colour setting (the dialog's dropper sets it); Reno shows the button and keeps the colour here, with the hidden Angle and the
+            // effect's memory of its state (whiteBalanceChanged in builtins_more_colour.cpp explains them)
+            {
+                PDef w = rgb("WhiteColor", "Neutral color", 0.5, 0.5, 0.5);
+                w.secret = true;
+                insertParam(d, "AmountOfCorrection", w);
+                PDef a = dbl("Angle", "Angle", 90.0, 0.0, 360.0);
+                a.secret = true;
+                d.params.push_back(a);
+                d.params.push_back(custom("WbState", "State", ""));
+            }
+            d.created = whiteBalanceCreated;
+            d.colourAboveAlpha = true;          // (HasData: alpha is the stretched blue, the colour bytes stay as they are)
             d.params.push_back(button("EnhanceHistogram", "Equalize Histogram"));
             d.params.push_back(button("ClearData", "Undo Equalization"));
             d.params.push_back(custom("EqualizeData", "Equalize data", ""));
@@ -207,6 +220,11 @@ void addFiltersMore(std::vector<Def>& out)
             for (PDef& p : d.params)
                 if (p.name == "LightPosition") { p.normalised = false; p.min = -1; p.max = 1; p.dmin = -1; p.dmax = 1; }
         }
+        if (std::string(r.id) == "gradientmap") {
+            // VEGAS's own start: Amount 1 and the gradient of its first preset, Reset to None (no stops: the picture as it is); the stops are VEGAS's gradient editor's list
+            vfxTune(d, "Amount", 1, 0, 1);
+            d.params.push_back(text("GradientStops", "Gradient stops (position r g b a; ...)", "", false));
+        }
         if (std::string(r.id) == "radialblur") vfxTune(d, "Type", 0, NAN, NAN);            // (VEGAS's own default: Proportional)
         if (std::string(r.id) == "saturationadjust") vfxTune(d, "Amount", 0, -1, 1);
         if (std::string(r.id) == "saturationadjust") { vfxTune(d, "Center", 0.5, 0, 1); vfxTune(d, "Spread", 0.5, 0.01, 1); }
@@ -219,9 +237,10 @@ void addFiltersMore(std::vector<Def>& out)
             vfxTune(d, "Rotation", 0, 0, 180); vfxTune(d, "Outer", 1, 0, 3); vfxTune(d, "Aspect", 1, 0.25, 4); vfxTune(d, "Feather", 5, 0, 10);
         }
         // VEGAS's Defocus really starts at the middle of each range (its pictures show that), not at the XML defaults
-        if (std::string(r.id) == "defocusvelvetmatter") { vfxTune(d, "Radius", 5.6, 0, 11.2); vfxTune(d, "BloomThreshold", 94.97, 0, 189.94); vfxTune(d, "BloomStrength", 10.51, 0, 21.02); }
+        if (std::string(r.id) == "defocusvelvetmatter") { vfxTune(d, "Radius", 5.6, 0, 11.2); vfxTune(d, "BloomThreshold", 94.97, 0, 189.94); vfxTune(d, "BloomStrength", 10.51, 0, 21.02); vfxTune(d, "Orientation", 0, 0, 360); vfxTune(d, "DiscCurvature", 0, -100, 100); }
         // (VEGAS's Film Effects starts with nothing on: its default picture is the input, as after "Reset to None")
         if (std::string(r.id) == "filmeffects") {
+            d.temporal = true;      // (the particles carry on from picture to picture: the state is kept per effect)
             vfxTune(d, "Grain", 0, NAN, NAN); vfxTune(d, "Tint", 0, NAN, NAN); vfxTune(d, "ConvertToGreyscale", 0, NAN, NAN);
             vfxTune(d, "EnableEnableParticles", 0, NAN, NAN); vfxTune(d, "EnableParticlesAmount", 0, NAN, NAN);
         }

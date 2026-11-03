@@ -1,11 +1,23 @@
 // Built-in creative effects (Black Bar Fill, Crop, Picture in Picture, film looks, Vignette, TV Simulator, Timecode, Deform...); see builtins_more.cpp.
+#include "vfxpipcrop.h"
+#include "vfxlayerdim.h"
 #include "vkfilters.h"
 #include <cstring>
 #include "builtins_more_internal.h"
 #include "builtins_fast.h"
 #include "builtins_deriche.h"
+#include "builtins_cgblur.h"
 #include "vegas8.h"
 #include "vfxrand.h"
+#include "vfxdeform.h"
+#include "vfxfilm.h"
+#include <map>
+#include <memory>
+#include <mutex>
+#include "vfxtv.h"
+#include "vfxtimecode.h"
+#include "vfxpolar.h"
+#include "vfxvignette.h"
 #include "builtins_vec.h"
 #include "../core/base.h"
 #include <cstdio>
@@ -211,104 +223,90 @@ static void blackBarFill8(Ctx& c)
     });
 }
 
+// A float sample through a Black Bar Fill matrix: the place (xp, yp) is an index into the frame (rows from the bottom); a pixel counts when xp > lo and xp < size + hi, and the neighbour past the last column
+// or row is transparent black (it is not repeated), so the picture's outer pixel fades over the one step before the bound. o: premultiplied RGBA.
+static bool bbfReadF(const Buf& src, int W, int H, const float* m, int i, int j, float* o)
+{
+    const float xf = (float)i, yf = (float)j;
+    const float x9 = yf * m[1] + m[2], x7 = yf * m[4] + m[5], x5 = yf * m[7] + m[8];
+    const float inv = 1.0f / (xf * m[6] + x5);
+    const float xp = (xf * m[0] + x9) * inv, yp = (xf * m[3] + x7) * inv;
+    o[0] = o[1] = o[2] = o[3] = 0.f;
+    if (!(xp > -0.4f) || !(xp < (float)W) || !(yp > -0.4f) || !(yp < (float)H)) return false;
+    const float flx = std::floor(xp), fly = std::floor(yp);
+    const int x0 = (int)flx, y0 = (int)fly;
+    const float fx = xp - flx, fy = yp - fly;
+    float v[4][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
+    for (int q = 0; q < 4; ++q) {
+        const int xx = x0 + (q & 1), yy = y0 + (q >> 1);
+        if (xx >= 0 && xx < W && yy >= 0 && yy < H) std::memcpy(v[q], src.at(xx, H - 1 - yy), sizeof(float) * 4);
+    }
+    for (int k = 0; k < 4; ++k) {
+        const float t0 = v[0][k] + (v[1][k] - v[0][k]) * fx, t1 = v[2][k] + (v[3][k] - v[2][k]) * fx;
+        o[k] = t0 + (t1 - t0) * fy;
+    }
+    return true;
+}
+
 void blackBarFill(Ctx& c)
 {
     if (c.levels) { blackBarFill8(c); return; }
     const int W = c.out.w, H = c.out.h;
-    BbfSetup su;
-    bbfSetup(c, W, H, su);
-    const double fx = su.fx, fy = su.fy, bx = su.bx, by = su.by, fs = su.fs, bs = su.bs;
-    auto srcPos = [&](int x, int y, double cx, double cy, double z, double& sx, double& sy) {
-        sx = (x - cx * W) / z + W * 0.5;
-        const double sj = ((H - 1 - y) - cy * H) / z + H * 0.5;
-        sy = (H - 1) - sj;
-    };
-    const double eps = 0.397;
-    auto inside = [&](double sx, double sy) { return sx >= -eps && sx <= W - 1 + eps && sy >= -eps && sy <= H - 1 + eps; };
-
-    // bilinear on the index grid; nothing outside the frame
-    auto fetch = [&](double sx, double sy, float* o) {
-        sx = clampd(sx, 0, W - 1);
-        sy = clampd(sy, 0, H - 1);
-        const int x0 = std::min((int)sx, W - 1), y0 = std::min((int)sy, H - 1), x1 = std::min(x0 + 1, W - 1), y1 = std::min(y0 + 1, H - 1);
-        const float u = (float)(sx - x0), v = (float)(sy - y0);
-        const float *a = c.src.at(x0, y0), *b = c.src.at(x1, y0), *cc = c.src.at(x0, y1), *d = c.src.at(x1, y1);
-        for (int i = 0; i < 4; ++i) o[i] = (a[i] * (1 - u) + b[i] * u) * (1 - v) + (cc[i] * (1 - u) + d[i] * u) * v;
-    };
-    Buf bg;
-    bg.resize(W, H);
-    const double blur = su.blur;
-    const bool bgWhole = su.bgWhole;
-    forRows(H, W, [&](int y) {
+    if (W <= 0 || H <= 0) return;
+    double fx, fy, bx, by;
+    c.xy("Foreground Location", fx, fy);
+    c.xy("Background Location", bx, by);
+    const double fs = c.d("Foreground Scale"), bs = c.d("Background Scale");
+    const double sb = c.d("Foreground Shadow Blur"), bb = c.d("Background Blur");
+    float mFg[9], mBg[9];
+    bbfMatrix(mBg, W, H, bx, by, bs);
+    bbfMatrix(mFg, W, H, fx, fy, fs);
+    // VEGAS reads the straight (not premultiplied) pictures channel by channel, so a faded edge pixel is (w * colour, w) and the 'over' below weighs the colour by w once more
+    Buf st;
+    st.ensure(W, H);
+    forRows(H, W * 4, [&](int y) {
         for (int x = 0; x < W; ++x) {
-            double sx, sy;
-            srcPos(x, y, bx, by, bs, sx, sy);
-            float* o = bg.at(x, y);
-            if (inside(sx, sy)) fetch(sx, sy, o); else std::memset(o, 0, sizeof(float) * 4);
+            const float* p = c.src.at(x, y);
+            float* o = st.at(x, y);
+            const float inv = p[3] > 0.f ? 1.f / p[3] : 0.f;
+            o[0] = p[0] * inv; o[1] = p[1] * inv; o[2] = p[2] * inv; o[3] = p[3];
         }
     });
-    const bool bgBlurred = su.bgBlurred;
-    if (bgBlurred) {
-        const int bf = su.bf;
-        if (bf > 1) {
-            const int lw = (W + bf - 1) / bf, lh = (H + bf - 1) / bf;
-            Buf low;
-            low.ensure(lw, lh);
-            for (int j = 0; j < lh; ++j)
-                for (int i = 0; i < lw; ++i) std::memcpy(low.at(i, j), bg.at(std::min(W - 1, i * bf + bf / 2), std::min(H - 1, j * bf + bf / 2)), sizeof(float) * 4);
-            gaussianBlur(low, blur / bf, blur / bf);
-            upsampleBilinear(low.px, lw, lh, 4, bf, bg.px, W, H);
-        } else gaussianBlur(bg, blur, blur);
-    }
-    if (c.levels && (bgBlurred || !bgWhole)) {          // what VEGAS's resampling/blur does to 8-bit levels
-        forRows(H, W, [&](int y) {
-            for (int x = 0; x < W; ++x) {
-                float* o = bg.at(x, y);
-                for (int i = 0; i < 3; ++i) {
-                    const double v = o[i] * 255.0;
-                    o[i] = (float)(bgBlurred ? std::max(0.0, std::floor(v * (254.0 / 255.0) - 0.5 + 1e-4)) : std::floor(std::ceil(v - 1e-3) * (127.0 / 128.0) + 1e-6)) / 255.f;
-                }
-                o[3] = (float)std::max(0.0, std::ceil(o[3] * 255.0 - 1e-3) - (o[3] > 0 ? 1 : 0)) / 255.f;
-            }
-        });
-    }
-    const bool fgWhole = su.fgWhole;
-    std::vector<unsigned char> fm((size_t)W * H);
-    for (int y = 0; y < H; ++y)
+    Buf bg, pl;
+    bg.resize(W, H);
+    pl.resize(W, H);
+    std::vector<float> fg((size_t)W * H * 4);
+    forRows(H, W * 16, [&](int y) {
         for (int x = 0; x < W; ++x) {
-            double sx, sy;
-            srcPos(x, y, fx, fy, fs, sx, sy);
-            fm[(size_t)y * W + x] = inside(sx, sy) ? 1 : 0;
+            float* o = bg.at(x, y);
+            bbfReadF(st, W, H, mBg, x, H - 1 - y, o);
+            for (int k = 0; k < 3; ++k) o[k] *= o[3];                  // (premultiplied from here)
+            float* f = &fg[((size_t)y * W + x) * 4];
+            bbfReadF(st, W, H, mFg, x, H - 1 - y, f);
+            float* s = pl.at(x, y);
+            s[0] = s[1] = s[2] = 0.f;
+            s[3] = f[3];
         }
-    const double shadow = su.shadow;
-    std::vector<float> sh;
-    if (shadow > 0.001) {
-        const double sigma = su.sigma;
-        const int sf = su.sf;
-        const int lw = (W + sf - 1) / sf, lh = (H + sf - 1) / sf;
-        std::vector<float> low((size_t)lw * lh);
-        for (int j = 0; j < lh; ++j)
-            for (int i = 0; i < lw; ++i) low[(size_t)j * lw + i] = (float)fm[(size_t)std::min(H - 1, j * sf + sf / 2) * W + std::min(W - 1, i * sf + sf / 2)];
-        gaussianBlurPlane(low, lw, lh, sigma / sf, sigma / sf);
-        if (sf > 1) upsampleBilinear(low, lw, lh, 1, sf, sh, W, H); else sh.swap(low);
-    }
-    forRows(H, W, [&](int y) {
+    });
+    // both blurs are the OpenCL recursive Gaussian: a size in pixels (larger side * Background Blur; Shadow Blur * 0.6 * larger side / 8) is a deviation of size / 6 for it,
+    // which gives the Gaussian of the 8-bit code ((size + 1.5) / sqrt(2 ln 255)); the shadow is blurred even when Shadow Blur is 0 (a spread of a pixel)
+    const double bsize = (double)std::max(W, H) * bb;
+    cgOclBlur(bg.px.data(), W, H, bsize / 6.0, bsize / 6.0);
+    const float s8 = (float)sb * 0.6f;
+    const double shadowSize = (double)((s8 * 1.0f) * (float)std::max(W, H)) * 0.125;
+    cgOclBlur(pl.px.data(), W, H, shadowSize / 6.0, shadowSize / 6.0);
+    const bool store8 = c.host8;
+    forRows(H, W * 8, [&](int y) {
         for (int x = 0; x < W; ++x) {
+            const float* f = &fg[((size_t)y * W + x) * 4];
+            const float sa = std::min(1.f, std::max(0.f, pl.at(x, y)[3]));
+            const float* b = bg.at(x, y);
             float* o = c.out.at(x, y);
-            std::memcpy(o, bg.at(x, y), sizeof(float) * 4);
-            if (!sh.empty()) {
-                const float k = clamp01(sh[(size_t)y * W + x]);
-                float v[3] = {o[0] * (1 - k), o[1] * (1 - k), o[2] * (1 - k)};
-                for (int i = 0; i < 3; ++i) o[i] = c.levels ? std::floor(v[i] * 255.f + 1e-3f) / 255.f : v[i];
-            }
-            if (!fm[(size_t)y * W + x]) continue;
-            float p[4];
-            double sx, sy;
-            srcPos(x, y, fx, fy, fs, sx, sy);
-            fetch(sx, sy, p);
-            if (c.levels && !fgWhole)
-                for (int i = 0; i < 3; ++i) p[i] = (float)std::floor(std::ceil(p[i] * 255.0 - 1e-3) * (127.0 / 128.0) + 1e-6) / 255.f;
-            for (int i = 0; i < 4; ++i) o[i] = p[i] + o[i] * (1 - p[3]);
+            // the foreground over its black shadow, that over the background (the layer's colour is the foreground's weighed by its alpha)
+            const float la = f[3] + (1.f - f[3]) * sa;
+            for (int k = 0; k < 3; ++k) o[k] = f[k] * f[3] + (1.f - la) * b[k];
+            o[3] = la + (1.f - la) * b[3];
+            if (store8) for (int k = 0; k < 4; ++k) o[k] = oclStore12(o[k]);
         }
     });
 }
@@ -318,6 +316,22 @@ void blackBarFill(Ctx& c)
 void cropFx(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
+    if (c.openCl && W > 0 && H > 0) {
+        // VEGAS's OpenCL Crop (vfxpipcrop.h): integer pixel positions through the float matrix, inclusive bounds, the opacity in floats, the 8-bit store rounding (ties down)
+        double lx, ly;
+        c.xy("Location", lx, ly);
+        const vfxpc::CropSetup su = vfxpc::cropSetup(W, H, lx, ly, c.d("XScale"), c.d("YScale"), c.d("Angle"), c.d("Opacity"));
+        forRows(H, W, [&](int y) {
+            const int j = H - 1 - y;                                      // the kernel's row, from the bottom
+            for (int x = 0; x < W; ++x) {
+                float* o = c.out.at(x, y);
+                if (!vfxpc::cropInside(su, x, j)) { std::memset(o, 0, sizeof(float) * 4); continue; }
+                const float* s = c.src.at(x, y);
+                for (int k = 0; k < 4; ++k) { const float v = s[k] * su.opacity; o[k] = c.host8 ? oclWriteLevel(v) : v; }
+            }
+        });
+        return;
+    }
     double lx, ly;
     c.xy("Location", lx, ly);
     const double xs = clampd(c.d("XScale"), 0, 1), ys = clampd(c.d("YScale"), 0, 1), ang = c.d("Angle") * kPi / 180.0;
@@ -401,9 +415,48 @@ void pipSetup(Ctx& c, int W, int H, PipSetup& o)
     }
 }
 
+// Picture in Picture as VEGAS's OpenCL kernel draws it (vfxpipcrop.h): the matrix from the builder (Free Form: the 4-point solver, and when that cannot be solved the
+// parametric matrix), the position tested 0 <= u < W, 0 <= v < H, the card's bilinear read (1/256 weights, transparent beyond the picture), times the opacity.
+static void pictureInPictureOpenCl(Ctx& c, int W, int H)
+{
+    double lx, ly;
+    c.xy("Location", lx, ly);
+    const int mode = std::max(0, std::min(2, c.i("KeepProportions")));
+    const double scale = std::max(0.01, c.d("Scale")), scaleY = std::max(0.01, c.d("DistortionScaleY"));
+    vfxpc::PipSetup8 su;
+    bool done = false;
+    if (mode == 2) {
+        double cr[4][2];
+        c.xy("CornerTL", cr[0][0], cr[0][1]);
+        c.xy("CornerTR", cr[1][0], cr[1][1]);
+        c.xy("CornerBL", cr[2][0], cr[2][1]);
+        c.xy("CornerBR", cr[3][0], cr[3][1]);
+        done = vfxpc::pipSetupFreeForm(W, H, cr, clampd(c.d("Opacity"), 0, 1), su);
+    }
+    if (!done) su = vfxpc::pipSetupAffine(W, H, mode, lx, ly, scale, scaleY, c.d("DistortionShear"), c.d("Angle"), clampd(c.d("Opacity"), 0, 1));
+    std::vector<float> src((size_t)W * H * 4);                           // rows from the bottom
+    for (int y = 0; y < H; ++y) std::memcpy(&src[(size_t)y * W * 4], c.src.at(0, H - 1 - y), (size_t)W * 4 * sizeof(float));
+    const float* M = su.M;
+    forRows(H, W * 4, [&](int y) {
+        const int j = H - 1 - y;
+        const float fy = (float)j;
+        for (int x = 0; x < W; ++x) {
+            float* o = c.out.at(x, y);
+            const float fx = (float)x;
+            const float w = vfxpc::dot3(M[6], M[7], M[8], fx, fy);
+            const float u = vfxpc::dot3(M[0], M[1], M[2], fx, fy) / w, v = vfxpc::dot3(M[3], M[4], M[5], fx, fy) / w;
+            if (!(u >= 0.f && u < (float)W && v >= 0.f && v < (float)H)) { std::memset(o, 0, sizeof(float) * 4); continue; }
+            float p[4];
+            vfxpc::linearRead(src, W, H, u, v, false, p);
+            for (int k = 0; k < 4; ++k) { const float val = p[k] * su.opacity; o[k] = c.host8 ? oclWriteLevel(val) : val; }
+        }
+    });
+}
+
 void pictureInPicture(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
+    if (c.openCl && W > 0 && H > 0) { pictureInPictureOpenCl(c, W, H); return; }
     PipSetup su;
     pipSetup(c, W, H, su);
     const int mode = su.mode;
@@ -572,38 +625,123 @@ void filmGrain(Ctx& c)
     });
 }
 
-// Film Effects: old film - grey (or tinted), grain, dust and scratches.
+// Film Effects (VEGAS's DirectX film transform): grey, grain, tint, then the particles. Pieces in vfxfilm.h, each checked against the DLL. The particle simulation keeps
+// its random generator (seeded 123456 for each effect) and its particles from call to call, as the DLL's effect object does, so a picture depends on the pictures drawn before
+// it: Reno keeps the state of each effect (FilmCache). VEGAS's captures show that when the effect is asked for a picture that does not follow the last one (the first, or a jump)
+// it draws one more picture first, unseen, and then the one asked for (bit for bit on all 22 captures with something on); a picture that follows the last one is just the next
+// call, and the same picture again is drawn again from the state it started from.
+namespace {
+struct FilmKey {
+    vfxfilm::Params p;
+    int W = 0, H = 0;
+    double dt = 0;
+    bool same(const FilmKey& o) const
+    {
+        if (W != o.W || H != o.H || dt != o.dt || p.grain != o.p.grain || p.grey != o.p.grey || p.tint != o.p.tint) return false;
+        for (int k = 0; k < 3; ++k)
+            if (p.tintBgr[k] != o.p.tintBgr[k]) return false;
+        for (int k = 0; k < 7; ++k)
+            if (p.g[k].a != o.p.g[k].a || p.g[k].b != o.p.g[k].b || p.g[k].c != o.p.g[k].c || p.g[k].enable != o.p.g[k].enable) return false;
+        return true;
+    }
+};
+struct FilmCache {
+    std::mutex mu;
+    FilmKey key;
+    bool valid = false;
+    long last = -1000000;                   // the picture the state 'cur' has just drawn
+    bool lastJumped = false;                // (and whether that one had the unseen picture first)
+    vfxfilm::Sim cur;
+    vfxfilm::Sim before;                    // the state that picture started from
+};
+std::mutex gFilmMutex;
+std::map<const void*, std::shared_ptr<FilmCache>>& filmCaches()
+{
+    static std::map<const void*, std::shared_ptr<FilmCache>> m;
+    return m;
+}
+std::shared_ptr<FilmCache> filmCacheFor(const void* inst)
+{
+    std::lock_guard<std::mutex> lk(gFilmMutex);
+    auto& m = filmCaches();
+    auto it = m.find(inst);
+    if (it != m.end()) return it->second;
+    if (m.size() > 32) m.erase(m.begin());
+    auto s = std::make_shared<FilmCache>();
+    m[inst] = s;
+    return s;
+}
+}  // namespace
+
 void filmEffects(Ctx& c)
 {
-    const double grain = clampd(c.d("Grain"), 0, 1), tint = clampd(c.d("Tint"), 0, 1);
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
     const Color col = c.color("Color");
-    const bool grey = c.b("ConvertToGreyscale"), particles = c.b("EnableEnableParticles");
-    const int type = c.i("EnableParticlesType");
-    const double amount = clampd(c.d("EnableParticlesAmount"), 0, 1);
-    const uint32_t frame = (uint32_t)std::lround(c.time);
-    auto rnd = [&](uint32_t a, uint32_t b, uint32_t k) {
-        uint32_t h = a * 374761393u + b * 668265263u + k * 2246822519u + frame * 3266489917u;
-        h = (h ^ (h >> 13)) * 1274126177u;
-        return ((h ^ (h >> 16)) & 0xFFFF) / 65535.f;
-    };
-    const float grainK = (float)c.scale;
-    auto cellOf = [&](int full) { return (uint32_t)std::max(1, (int)std::lround(full * c.scale)); };
-    const uint32_t c2 = cellOf(2), c3 = cellOf(3), c4 = cellOf(4), c40 = cellOf(40);
-    perPixel(c, [&](float& r, float& g, float& b, int x, int y) {
-        if (grey) {
-            const float l = luma(r, g, b);
-            r = l + ((float)col.r - 0.5f) * (float)tint; g = l + ((float)col.g - 0.5f) * (float)tint; b = l + ((float)col.b - 0.5f) * (float)tint;
+    FilmKey key;
+    key.W = W; key.H = H;
+    key.dt = 1.0 / (c.fps > 1e-6 && c.fps < 1e6 ? c.fps : 30.0);
+    key.p = vfxfilm::paramsFor(c.d("Grain"), c.d("Tint"), col.r, col.g, col.b, c.b("ConvertToGreyscale"), c.b("EnableEnableParticles"), c.i("EnableParticlesType"),
+                               c.d("EnableParticlesAmount"));
+    // the frame number since the event's start (nonsense times count as the first frame)
+    long n = std::isfinite(c.time) ? std::lround(c.time) : 0;
+    n = std::max(0L, std::min(n, 100000000L));
+    // the picture as VEGAS's bytes (blue first); a float picture is the same bytes' worth of values, premultiplied
+    const bool bytes = c.levels;
+    std::vector<uint8_t> b8;
+    std::vector<float> bf;
+    const size_t npx = (size_t)W * (size_t)H;
+    if (bytes) {
+        b8.resize(npx * 4);
+        for (size_t i = 0; i < npx; ++i) {
+            const float* s = &c.src.px[i * 4];
+            uint8_t* d = &b8[i * 4];
+            d[0] = (uint8_t)v8::toLevel(s[2]); d[1] = (uint8_t)v8::toLevel(s[1]); d[2] = (uint8_t)v8::toLevel(s[0]); d[3] = (uint8_t)v8::toLevel(s[3]);
         }
-        const float n = (rnd((uint32_t)x, (uint32_t)y, 7) - 0.5f) * (float)grain * 0.5f * grainK;
-        r += n; g += n; b += n;
-        if (particles) {
-            if (type == 4 && rnd((uint32_t)x / c3, 0, 11) < amount * 0.01) { r += 0.35f; g += 0.35f; b += 0.35f; }            // Scratches
-            else if (type == 0 && rnd((uint32_t)x / c2, (uint32_t)y / c2, 13) > 1.0 - amount * 0.0015) { r *= 0.2f; g *= 0.2f; b *= 0.2f; }   // Dust
-            else if (type == 1) { const float f = 1.f + (rnd(0, 0, 17) - 0.5f) * (float)amount * 0.3f; r *= f; g *= f; b *= f; }      // Flicker
-            else if (type == 2 && rnd((uint32_t)x / c4, (uint32_t)y / c40, 19) > 1.0 - amount * 0.0006) { r *= 0.1f; g *= 0.1f; b *= 0.1f; }  // Hair
+    } else {
+        bf.resize(npx * 4);
+        for (size_t i = 0; i < npx; ++i) {
+            const float* s = &c.src.px[i * 4];
+            float* d = &bf[i * 4];
+            d[0] = s[2]; d[1] = s[1]; d[2] = s[0]; d[3] = s[3];
         }
-        r = clamp01(r); g = clamp01(g); b = clamp01(b);
-    });
+    }
+    vfxfilm::Surf live;
+    live.W = W; live.H = H; live.bytes = bytes;
+    live.b = bytes ? b8.data() : nullptr;
+    live.f = bytes ? nullptr : bf.data();
+    vfxfilm::Surf dry;
+    dry.W = W; dry.H = H; dry.bytes = true;
+    {
+        std::shared_ptr<FilmCache> cp = filmCacheFor(c.instance);
+        FilmCache& fc = *cp;
+        std::lock_guard<std::mutex> lk(fc.mu);
+        if (!fc.valid || !fc.key.same(key)) {
+            fc.key = key; fc.valid = true; fc.last = -1000000; fc.lastJumped = false; fc.cur = vfxfilm::Sim(); fc.before = vfxfilm::Sim();
+        }
+        bool jumped;
+        if (n == fc.last) {                 // the same picture again: from the state it started from
+            fc.cur = fc.before;
+            jumped = fc.lastJumped;
+        } else {
+            fc.before = fc.cur;
+            jumped = n != fc.last + 1;
+        }
+        if (jumped) vfxfilm::frame(fc.cur, key.p, dry, key.dt);
+        vfxfilm::frame(fc.cur, key.p, live, key.dt);
+        fc.last = n;
+        fc.lastJumped = jumped;
+    }
+    for (size_t i = 0; i < npx; ++i) {
+        float* o = &c.out.px[i * 4];
+        if (bytes) {
+            const uint8_t* d = &b8[i * 4];
+            o[0] = v8::fromLevel(d[2]); o[1] = v8::fromLevel(d[1]); o[2] = v8::fromLevel(d[0]); o[3] = v8::fromLevel(d[3]);
+        } else {
+            const float* d = &bf[i * 4];
+            o[0] = d[2]; o[1] = d[1]; o[2] = d[0]; o[3] = d[3];
+        }
+    }
 }
 
 // Vignette, VEGAS's CPU processor (floats in VEGAS's order). With W, H the frame (pixel aspect 1), R = sqrt(W^2 + H^2) x Outer / 2 and Ri = R x Inner, a pixel at (u, v) from the
@@ -635,8 +773,41 @@ void vignetteSetup(Ctx& c, int W, int H, VignetteSetup& o)
     o.cf[0] = (float)col.r; o.cf[1] = (float)col.g; o.cf[2] = (float)col.b;
 }
 
+// With GPU acceleration on VEGAS draws the Vignette with its OpenCL kernel (vfxvignette.h, ported from the decoded kernel): float, the centre and radius measured from the
+// (W - 1) x (H - 1) frame, the rows counted from the bottom, the colour mixed into the premultiplied pixel and the alpha kept. The 8-bit frame gets the float result rounded to
+// the nearest level with exact halves down (vegasTiesDown, vegasDrawsFloat lists the effect).
+static void vignetteOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    double cx, cy;
+    c.xy("Center", cx, cy);
+    const Color col = c.color("Color");
+    vfxvig::Params p;
+    p.w = W; p.h = H;
+    p.outer = (float)c.d("Outer"); p.inner = (float)c.d("Inner"); p.aspect = (float)c.d("Aspect");
+    p.cx = (float)cx; p.cy = (float)cy;
+    p.rotation = (float)c.d("Rotation");
+    const float fe = (float)c.d("Feather") + 0.001f;
+    p.exponent = 100.f / (fe * fe);
+    p.invert = c.b("Invert");
+    const float cc[3] = {(float)col.r, (float)col.g, (float)col.b};
+    const float ca = (float)col.a;
+    const vfxvig::Setup u = vfxvig::setup(p);
+    forRows(H, W, [&](int yt) {
+        const int y = H - 1 - yt;
+        for (int x = 0; x < W; ++x) {
+            const float t = vfxvig::amount(p, u, x, y) * ca;
+            const float* s = c.src.at(x, yt);
+            float* o = c.out.at(x, yt);
+            for (int k = 0; k < 3; ++k) o[k] = s[k] + (cc[k] - s[k]) * t;
+            o[3] = s[3];
+        }
+    });
+}
+
 void vignette(Ctx& c)
 {
+    if (c.openCl && c.out.w > 0 && c.out.h > 0) { vignetteOpenCl(c); return; }
     const int W = c.out.w, H = c.out.h;
     VignetteSetup su;
     vignetteSetup(c, W, H, su);
@@ -681,52 +852,45 @@ void vignette(Ctx& c)
     });
 }
 
-// TV Simulator: scan lines, an aperture grill, line and vertical sync trouble, phosphor glow and static.
+// TV Simulator, from VEGAS's own code (vfx1.dll, read and checked bit for bit against its render function and parts; see vfxtv.h). The settings go to the render
+// function as the property page keeps them: Detail zoom 0..1 is the page's 1..4 magnification, the others are used as they are. The picture is VEGAS's 8-bit one
+// (blue, green, red, alpha bytes, premultiplied, rows from the top) and the time stamp the event's 100 ns ticks. A float picture (the project is 32-bit) goes through the
+// same function on the 8-bit levels and comes back as such (the float render function of vfx1.dll is not ported).
 void tvSimulator(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
-    const double zoom = 1.0 + clampd(c.d("DetailZoom"), 0, 1) * 1.5, grill = clampd(c.d("ApertureGrill"), 0, 1), inter = clampd(c.d("Interlacing"), 0, 1);
-    const double lineSync = clampd(c.d("LineSync"), 0, 1), vSync = clampd(c.d("VerticalSync"), 0, 1), scan = clampd(c.d("ScanPhasing"), 0, 1);
-    const double phos = clampd(c.d("Phosphorescence"), 0, 1), stat = clampd(c.d("Static"), 0, 1);
-    const double t = c.time;
-    auto rnd = [&](uint32_t a, uint32_t b) {
-        uint32_t h = a * 374761393u + b * 668265263u;
-        h = (h ^ (h >> 13)) * 1274126177u;
-        return ((h ^ (h >> 16)) & 0xFFFF) / 65535.f;
-    };
-    Buf glow = c.src;
-    if (phos > 0.01) gaussianBlur(glow, 2.0 * frameScale(c) + c.px(1), 2.0 * frameScale(c) + c.px(1));
-    forRows(H, W, [&](int y) {
-        const double yFull = y / c.scale;
-        const double wob = (1.0 - lineSync) * 0.03 * W * std::sin(yFull * 0.07 + t * 0.9) * (rnd((uint32_t)yFull, (uint32_t)t) > 0.8 ? 3 : 1);
-        for (int x = 0; x < W; ++x) {
-            const double roll = (1.0 - vSync) * H * std::fmod(t * 0.07, 1.0);
-            double sy = std::fmod(y + roll, (double)H);
-            const double zx = (x + 0.5 - W * 0.5) / zoom + W * 0.5 + wob, zy = (sy + 0.5 - H * 0.5) / zoom + H * 0.5;
-            float p[4], g[4];
-            c.src.sampleClamped(zx, zy, p);
-            glow.sampleClamped(zx, zy, g);
-            float* o = c.out.at(x, y);
-            const float k = (float)phos * 0.5f;
-            for (int i = 0; i < 3; ++i) o[i] = p[i] + (g[i] * 1.1f - p[i]) * k;
-            o[2] += (float)phos * 0.04f * g[3];
-            const int col = x % 3;
-            if (c.scale >= 0.999) {
-                for (int i = 0; i < 3; ++i) o[i] *= 1.f - (float)grill * 0.5f * (col == i ? 0.f : 1.f);
-                if (grill > 0) for (int i = 0; i < 3; ++i) o[i] *= 1.f + (float)grill * 0.6f * (col == i ? 1.f : 0.f);
-            } else {
-                const float own = 1.f + (float)grill * 0.6f, other = 1.f - (float)grill * 0.5f;
-                const float mean = grill > 0 ? (own + 2.f * other) / 3.f : 1.f;
-                for (int i = 0; i < 3; ++i) o[i] *= mean;
-            }
-            const float line = c.scale >= 0.999 ? 1.f - (float)inter * 0.5f * (y % 2 ? 1.f : 0.f) : 1.f - (float)inter * 0.25f;
-            const float band = 1.f - (float)scan * 0.25f * (0.5f + 0.5f * (float)std::sin(yFull * 0.02 - t * 0.4));
-            for (int i = 0; i < 3; ++i) o[i] *= line * band;
-            if (stat > 0) { const float n = (rnd((uint32_t)x, (uint32_t)(y + t * 7)) - 0.5f) * (float)stat * 0.8f * (float)c.scale; for (int i = 0; i < 3; ++i) o[i] += n * g[3]; }
-            o[3] = p[3];
-            for (int i = 0; i < 3; ++i) o[i] = std::min(std::max(o[i], 0.f), o[3]);
+    if (W <= 0 || H <= 0) return;
+    double P[8];
+    P[0] = 1.0 + clampd(c.d("DetailZoom"), 0, 1) * 3.0;
+    P[1] = clampd(c.d("ApertureGrill"), 0, 1);
+    P[2] = clampd(c.d("Interlacing"), 0, 1);
+    P[3] = clampd(c.d("LineSync"), 0, 1);
+    P[4] = clampd(c.d("VerticalSync"), 0, 1);
+    P[5] = clampd(c.d("ScanPhasing"), 0, 1);
+    P[6] = clampd(c.d("Phosphorescence"), 0, 1);
+    P[7] = clampd(c.d("Static"), 0, 1);
+    std::vector<uint8_t> in((size_t)W * H * 4), out((size_t)W * H * 4, 0);
+    for (int y = 0; y < H; ++y) {
+        const float* s = c.src.at(0, y);
+        uint8_t* d = &in[(size_t)y * W * 4];
+        for (int x = 0; x < W; ++x, s += 4, d += 4) {
+            d[0] = (uint8_t)v8::toLevel(s[2]);
+            d[1] = (uint8_t)v8::toLevel(s[1]);
+            d[2] = (uint8_t)v8::toLevel(s[0]);
+            d[3] = (uint8_t)v8::toLevel(s[3]);
         }
-    });
+    }
+    vftv::render8(out.data(), W * 4, W, H, in.data(), W * 4, P, c.legacySeedTime64(), 1.0, vftv::defaultNoiseTable());
+    for (int y = 0; y < H; ++y) {
+        float* o = c.out.at(0, y);
+        const uint8_t* s = &out[(size_t)y * W * 4];
+        for (int x = 0; x < W; ++x, o += 4, s += 4) {
+            o[0] = v8::fromLevel(s[2]);
+            o[1] = v8::fromLevel(s[1]);
+            o[2] = v8::fromLevel(s[0]);
+            o[3] = v8::fromLevel(s[3]);
+        }
+    }
 }
 
 // Radial Pixelate: VEGAS's CPU processor (rows bottom first, 8-bit). The picture is unrolled about the centre into a polar picture of the same size
@@ -757,6 +921,21 @@ void rpixSetup(Ctx& c, int W, int H, RpixSetup& o)
 void radialPixelate(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
+    if (c.openCl) {
+        // VEGAS's OpenCL kernels (vfxpolar.h): unroll, average in 1-D groups, roll up; Strength 0 (or less) copies the picture
+        double pcx, pcy;
+        c.xy("Center", pcx, pcy);
+        const double st = c.d("Strength");
+        if (W <= 0 || H <= 0 || !(st > 0.0)) { copyThrough(c); return; }
+        int nx, ny;
+        vfxpolar::radialPixelateGroups(W, H, st, nx, ny);
+        std::vector<float> src((size_t)W * H * 4), out;
+        for (int y = 0; y < H; ++y) std::memcpy(&src[(size_t)y * W * 4], c.src.at(0, H - 1 - y), (size_t)W * 4 * sizeof(float));
+        vfxpolar::radialPixelate(src, W, H, (float)(pcx * 2.0 - 1.0), (float)(pcy * 2.0 - 1.0), c.i("Type"), nx, ny, c.host8, out);
+        c.out.ensure(W, H);
+        for (int y = 0; y < H; ++y) std::memcpy(c.out.at(0, H - 1 - y), &out[(size_t)y * W * 4], (size_t)W * 4 * sizeof(float));
+        return;
+    }
     RpixSetup su;
     rpixSetup(c, W, H, su);
     if (su.pass) { copyThrough(c); return; }
@@ -856,113 +1035,60 @@ void maskGenerator(Ctx& c)
     });
 }
 
-// Timecode: the frame's time burnt in, white digits in a black box. VEGAS uses a Windows font; here the digits are a small bold shape (3 x 5
-// cells smoothed up). Box, place and size follow VEGAS (measured at 320 x 180, scaled with the frame): text 9 px high at Height 1, digit advance 7,
-// colon or point 3.5, box adds 3.5 each side and sits 29 / 28 px from the sides, 16 from top and bottom.
-const char* const kDigits[12] = {
-    "111101101101111", "010110010010111", "111001111100111", "111001111001111", "101101111001001",
-    "111100111001111", "111100111101111", "111001001001001", "111101111101111", "111101111001111", "000010000010000", "000000000000010"};
-
-// the text of a format; the time is in frames of the clip (c.time) at c.fps
-std::string timecodeText(const Ctx& c, int fmt)
-{
-    const double fps = c.fps > 0 ? c.fps : 30.0;
-    const double secs = c.time / fps;
-    const long long total = (long long)std::floor(secs + 1e-9);
-    const double frac = secs - (double)total;
-    char buf[64];
-    auto hms = [&](const char* tail, int v) {
-        std::snprintf(buf, sizeof buf, tail, total / 3600, total / 60 % 60, total % 60, v);
-    };
-    switch (fmt) {
-    case 0: hms("%02lld:%02lld:%02lld.%03d", (int)std::floor(frac * 1000 + 1e-6)); break;
-    case 1: std::snprintf(buf, sizeof buf, "%.3f", secs); break;
-    case 2: hms("%02lld:%02lld:%02lld.%02d", (int)std::floor(frac * fps + 1e-6)); break;
-    case 3: std::snprintf(buf, sizeof buf, "%.3f", c.time); break;
-    default: {
-        const double rate = fmt == 6 ? 23.976 : fmt == 7 ? 24.0 : fmt == 8 ? 25.0 : fmt == 9 || fmt == 10 ? 29.97 : fmt == 11 ? 30.0 : fps;
-        const long long fr = (long long)std::floor(secs * rate + 1e-6);
-        const long long ri = (long long)std::lround(rate);
-        const long long ss = fr / ri;
-        std::snprintf(buf, sizeof buf, fmt == 10 ? "%02lld:%02lld:%02lld;%02lld" : "%02lld:%02lld:%02lld:%02lld", ss / 3600, ss / 60 % 60, ss % 60, fr % ri);
-    }
-    }
-    return buf;
-}
-
-// how much wider the text gets with the Width setting (measured at Width 0.5, 1, 1.25 and 2); a wider font is only made up to a limit
-// that grows with the height (1.58 at Height 1, 1.94 at Height 2)
-double timecodeWidthRatio(double w, double h)
-{
-    static const double xs[4] = {0.0, 0.5, 1.0, 1.25}, ys[4] = {0.0, 0.49, 1.0, 1.18};
-    w = clampd(w, 0.0, 2.0);
-    double r;
-    if (w <= 1.25) {
-        r = ys[3];
-        for (int i = 0; i < 3; ++i)
-            if (w <= xs[i + 1]) { r = ys[i] + (ys[i + 1] - ys[i]) * (w - xs[i]) / (xs[i + 1] - xs[i]); break; }
-    } else {
-        r = 1.18 + (w - 1.25) * 0.9;
-    }
-    return std::min(r, 1.58 + 0.36 * (h - 1.0));
-}
-
+// Timecode: the time burnt in as grey text in an opaque box (VEGAS's OpenCL kernel writes (g, g, g, 1) where its bitmap is, the picture elsewhere). The string, the box
+// and its place are VEGAS's own arithmetic (vfxtimecode.h, read from Vfx1.ofx). The glyph bitmaps and metrics are GDI's GetGlyphOutline on Windows, as in VEGAS; elsewhere
+// Reno's own font model (vfxtc::modelFont), so the box is only exact where the model's metrics are (the plain size).
 #ifdef _WIN32
-// Windows: the digits are drawn by GDI in Arial (what VEGAS uses), anti-aliased, white on black; returns the coverage of a w x h box (rows top
-// first) or an empty vector when GDI is not available. Each character is placed at the pen position the layout gives.
-std::vector<float> timecodeGdiCoverage(const std::string& s, int w, int h, double padX, double glyphTop, double glyphH, double digitW, double sepW, double wr)
+// The 16 glyphs "0123456789;:.,+-" from GDI as VEGAS asks for them: Arial, weight 700, GRAY8 with the Width / Height settings as the glyph matrix.
+static bool timecodeGdiFont(int cell, double sx, double sy, vfxtc::Font& F)
 {
-    std::vector<float> cov;
-    if (w <= 0 || h <= 0) return cov;
     HDC dc = CreateCompatibleDC(nullptr);
-    if (!dc) return cov;
-    BITMAPINFO bi = {};
-    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h;                                 // top-down
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    void* bits = nullptr;
-    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!bmp || !bits) { DeleteDC(dc); return cov; }
-    HGDIOBJ oldBmp = SelectObject(dc, bmp);
-    std::memset(bits, 0, (size_t)w * h * 4);
-    const double em = glyphH / 0.716;                           // Arial's digits are 0.716 em high
-    LOGFONTA lf = {};
-    lf.lfHeight = -(LONG)std::lround(em);
-    lf.lfWidth = (LONG)std::lround(em * 0.556 * wr);            // Arial's digit advance is 0.556 em
-    lf.lfWeight = FW_NORMAL;
-    lf.lfCharSet = DEFAULT_CHARSET;
-    lf.lfQuality = ANTIALIASED_QUALITY;
-    std::strcpy(lf.lfFaceName, "Arial");
-    HFONT font = CreateFontIndirectA(&lf);
-    HGDIOBJ oldFont = SelectObject(dc, font);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
-    TEXTMETRICA tm = {};
-    GetTextMetricsA(dc, &tm);
-    // the baseline sits glyphH below the glyph's top; TextOut takes the top of the cell (ascent above the baseline)
-    const int top = (int)std::lround(glyphTop + glyphH) - tm.tmAscent;
-    double pen = padX;
-    for (char ch : s) {
-        const bool digit = ch >= '0' && ch <= '9';
-        const double adv = digit ? digitW : sepW;
-        SIZE sz = {};
-        GetTextExtentPoint32A(dc, &ch, 1, &sz);
-        if (ch != ' ') TextOutA(dc, (int)std::lround(pen + (adv - sz.cx) * 0.5), top, &ch, 1);
-        pen += adv;
+    if (!dc) return false;
+    LOGFONTW lf = {};
+    lf.lfHeight = cell;
+    lf.lfWeight = 700;
+    lf.lfCharSet = 1;
+    lf.lfOutPrecision = 7;
+    static const wchar_t face[] = L"Arial";
+    for (int i = 0; i < 6; ++i) lf.lfFaceName[i] = face[i];
+    HFONT font = CreateFontIndirectW(&lf);
+    HGDIOBJ old = font ? SelectObject(dc, font) : nullptr;
+    // (VEGAS keeps Width and Height as floats and splits the float, widened to double, into the whole part and the fraction x 65536, both cut: the same here)
+    auto fixedOf = [](double v, FIXED& f) {
+        double ip = 0;
+        const double fr = std::modf((double)(float)v, &ip);
+        f.value = (short)ip;
+        f.fract = (WORD)(int)(fr * 65536.0);
+    };
+    MAT2 m = {};
+    fixedOf(sx, m.eM11);
+    fixedOf(sy, m.eM22);
+    bool ok = font != nullptr;
+    static const wchar_t chars[17] = L"0123456789;:.,+-";
+    for (int i = 0; i < 16 && ok; ++i) {
+        GLYPHMETRICS gm = {};
+        const DWORD size = GetGlyphOutlineW(dc, chars[i], GGO_GRAY8_BITMAP, &gm, 0, nullptr, &m);
+        if (size == GDI_ERROR) { ok = false; break; }
+        vfxtc::Glyph& g = F.slot[i];
+        g.bw = (int)gm.gmBlackBoxX; g.bh = (int)gm.gmBlackBoxY;
+        g.ox = gm.gmptGlyphOrigin.x; g.oy = gm.gmptGlyphOrigin.y;
+        g.adv = gm.gmCellIncX;
+        g.g.assign((size_t)std::max(0, g.bw * g.bh), 0);
+        if (size == 0 || g.bw <= 0 || g.bh <= 0) continue;
+        std::vector<unsigned char> raw(size);
+        if (GetGlyphOutlineW(dc, chars[i], GGO_GRAY8_BITMAP, &gm, size, raw.data(), &m) == GDI_ERROR) { ok = false; break; }
+        const int stride = (g.bw + 3) & ~3;                    // (rows are padded to 4 bytes)
+        for (int y = 0; y < g.bh; ++y)
+            for (int x = 0; x < g.bw; ++x) {
+                const size_t at = (size_t)y * stride + x;
+                const int v = at < raw.size() ? (int)raw[at] * 4 : 0;
+                g.g[(size_t)y * g.bw + x] = (unsigned char)std::min(255, v);
+            }
     }
-    GdiFlush();
-    cov.resize((size_t)w * h);
-    const unsigned char* px = (const unsigned char*)bits;
-    for (size_t i = 0; i < cov.size(); ++i) cov[i] = px[i * 4 + 1] / 255.f;
-    SelectObject(dc, oldFont);
-    SelectObject(dc, oldBmp);
-    DeleteObject(font);
-    DeleteObject(bmp);
+    if (old) SelectObject(dc, old);
+    if (font) DeleteObject(font);
     DeleteDC(dc);
-    return cov;
+    return ok;
 }
 #endif
 
@@ -970,64 +1096,33 @@ void timecodeFx(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     copyThrough(c);
-    const std::string s = timecodeText(c, c.i("TimecodeFormat"));
-    const double u = W / 320.0;                                    // one reference pixel
-    const double hs = std::max(0.05, c.d("Height")), wr = timecodeWidthRatio(c.d("Width"), hs);
-    const double digitW = 7.0 * u * wr, sepW = 3.5 * u * wr, glyphH = 9.0 * u * hs, pad = 3.5 * u * wr;
-    double textW = 0;
-    for (char ch : s) textW += (ch >= '0' && ch <= '9') ? digitW : sepW;
-    const double boxW = textW + 2 * pad, boxH = 12.5 * u * hs;
-    const int halign = c.i("HorizontalAlignment"), valign = c.i("VerticalAlignment");
-    const double bx = halign == 0 ? 29.0 * u : halign == 1 ? (W - boxW) * 0.5 : W - 28.0 * u - boxW;
-    const double by = valign == 0 ? 16.0 * u : valign == 1 ? (H - boxH) * 0.5 : H - 16.0 * u - boxH;
-    const int X0 = std::max(0, (int)std::lround(bx)), X1 = std::min(W, (int)std::lround(bx + boxW));
-    const int Y0 = std::max(0, (int)std::lround(by)), Y1 = std::min(H, (int)std::lround(by + boxH));
-    for (int y = Y0; y < Y1; ++y)
-        for (int x = X0; x < X1; ++x) { float* o = c.out.at(x, y); o[0] = o[1] = o[2] = 0.f; o[3] = 1.f; }
-    const double gy0 = by + (boxH - glyphH) * 0.5 + 0.5 * u * hs;
+    if (W <= 0 || H <= 0) return;
+    const double fps = c.fps > 0 && c.fps < 10000 ? c.fps : 30.0;
+    // the time since the start of the clip in 100 ns ticks, snapped to the frame grid (all of that is in vfxtc::text)
+    const long long ticks = vegasTicks(c.time, fps);
+    const int fmt = std::max(0, std::min(11, c.i("TimecodeFormat")));
+    const std::string s = vfxtc::text(fmt, ticks, fps);
+    const double sx = clampd(c.d("Width"), 0.05, 8.0), sy = clampd(c.d("Height"), 0.05, 8.0);
+    const int cell = std::max(1, std::min(W, H) / 12);                // the font's cell height
+    vfxtc::Font font;
+    bool have = false;
 #ifdef _WIN32
-    {
-        const int bw = X1 - X0, bh = Y1 - Y0;
-        const std::vector<float> cov = timecodeGdiCoverage(s, bw, bh, bx + pad - X0, gy0 - Y0, glyphH, digitW, sepW, wr);
-        if (!cov.empty()) {
-            for (int y = 0; y < bh; ++y)
-                for (int x = 0; x < bw; ++x) {
-                    float* o = c.out.at(X0 + x, Y0 + y);
-                    o[0] = o[1] = o[2] = cov[(size_t)y * bw + x];
-                }
-            return;
-        }
-    }
+    have = timecodeGdiFont(cell, sx, sy, font);
 #endif
-    double pen = bx + pad;
-    for (char ch : s) {
-        const bool digit = ch >= '0' && ch <= '9';
-        const double adv = digit ? digitW : sepW;
-        const char* shape = kDigits[digit ? ch - '0' : (ch == '.' ? 11 : 10)];
-        const double gw = adv * 0.82, gx0 = pen + adv * 0.09;
-        if (ch != ' ') {
-            const int xa = std::max(0, (int)std::floor(gx0)), xb = std::min(W, (int)std::ceil(gx0 + gw));
-            const int ya = std::max(0, (int)std::floor(gy0)), yb = std::min(H, (int)std::ceil(gy0 + glyphH));
-            for (int y = ya; y < yb; ++y)
-                for (int x = xa; x < xb; ++x) {
-                    const double cx = (x + 0.5 - gx0) / gw * 3.0 - 0.5, cy = (y + 0.5 - gy0) / glyphH * 5.0 - 0.5;
-                    if (cx < -0.5 || cx > 2.5 || cy < -0.5 || cy > 4.5) continue;
-                    double cov = 0;
-                    const int ix = (int)std::floor(cx), iy = (int)std::floor(cy);
-                    const double fx = cx - ix, fy = cy - iy;
-                    for (int dy = 0; dy < 2; ++dy)
-                        for (int dx = 0; dx < 2; ++dx) {
-                            const int gx = std::min(2, std::max(0, ix + dx)), gy = std::min(4, std::max(0, iy + dy));
-                            const double wgt = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy);
-                            cov += wgt * (shape[gy * 3 + gx] == '1' ? 1.0 : 0.0);
-                        }
-                    cov = std::min(1.0, cov * 1.15);
-                    float* o = c.out.at(x, y);
-                    for (int k = 0; k < 3; ++k) o[k] = std::max(o[k], (float)cov);
-                }
+    if (!have) font = vfxtc::modelFont(cell, sx, sy);
+    const vfxtc::Layout L = vfxtc::layout(font, s, W, H, c.i("HorizontalAlignment"), c.i("VerticalAlignment"));
+    if (!L.ok) return;
+    // the kernel: inside the bitmap's rectangle (one row and column in from its origin) the output is (g, g, g, 1) with g the bitmap's byte / 255
+    const int yTop = std::max(0, H - L.oy - L.hb), yBot = std::min(H - 1, H - L.oy - 2);
+    const int xLeft = std::max(0, L.ox + 1), xRight = std::min(W - 1, L.ox + L.wb - 1);
+    for (int y = yTop; y <= yBot; ++y)
+        for (int x = xLeft; x <= xRight; ++x) {
+            const int v = vfxtc::boxValue(L, H, x, y);
+            if (v < 0) continue;
+            float* o = c.out.at(x, y);
+            o[0] = o[1] = o[2] = (float)v / 255.f;
+            o[3] = 1.f;
         }
-        pen += adv;
-    }
 }
 
 // The settings Layer Dimensionality works from (shared with the GPU plan, so the host-side maths is the same)
@@ -1075,10 +1170,40 @@ void ldSetup(Ctx& c, int W, int H, LdSetup& o)
     }
 }
 
+// Layer Dimensionality as VEGAS's OpenCL path draws it (vfxlayerdim.h): float maths on the frame, rows bottom first, then the 8-bit store of the host.
+void layerDimensionalityOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    auto fin = [](double v, double lo, double hi, double dflt) { return (v == v && v >= lo && v <= hi) ? v : (v == v ? (v < lo ? lo : hi) : dflt); };
+    const int shadowType = c.i("ShadowType"), glowType = c.i("GlowType");
+    const Color g1 = c.color("GlowColor"), g2 = c.color("GlowColor2");
+    const double gc1[3] = {fin(g1.r, -1e6, 1e6, 0), fin(g1.g, -1e6, 1e6, 0), fin(g1.b, -1e6, 1e6, 0)};
+    const double gc2[3] = {fin(g2.r, -1e6, 1e6, 0), fin(g2.g, -1e6, 1e6, 0), fin(g2.b, -1e6, 1e6, 0)};
+    double Lx = 0, Ly = 0, Lz = 1;
+    c.xyz("LightLocation", Lx, Ly, Lz);
+    const double ll[3] = {fin(Lx, -1e6, 1e6, 0), fin(Ly, -1e6, 1e6, 0), fin(Lz, -1e6, 1e6, 1)};
+    const vfxld::Settings st = vfxld::makeSettings(
+        (shadowType == 1 || shadowType == 2) ? shadowType : 0, (glowType >= 1 && glowType <= 4) ? glowType : 0,
+        fin(c.d("ShadowHeight"), -1e6, 1e6, 0), fin(c.d("ShadowBlur"), -1e6, 1e6, 0), fin(c.d("ShadowAmount"), -1e6, 1e6, 0), gc1, gc2,
+        fin(c.d("GlowAmount"), -1e6, 1e6, 0), fin(c.d("ForegroundAmount"), -1e6, 1e6, 0), fin(c.d("BackgroundAmount"), -1e6, 1e6, 0),
+        fin(c.d("EmbossRoundness"), -1e6, 1e6, 0), ll, fin(c.d("LightIntensity"), -1e6, 1e6, 0), fin(c.d("LightAmbience"), -1e6, 1e6, 0),
+        fin(c.d("Shininess"), -1e6, 1e6, 0), fin(c.d("ForegroundOpacity"), -1e6, 1e6, 1), 1.0);
+    const size_t row = (size_t)W * 4;
+    std::vector<float> in((size_t)W * H * 4), res((size_t)W * H * 4);
+    for (int y = 0; y < H; ++y) std::memcpy(&in[(size_t)(H - 1 - y) * row], &c.src.px[(size_t)y * row], row * sizeof(float));
+    vfxld::render(in.data(), W, H, st, res.data());
+    for (int y = 0; y < H; ++y) {
+        const float* r = &res[(size_t)(H - 1 - y) * row];
+        float* o = c.out.at(0, y);
+        for (size_t k = 0; k < row; ++k) o[k] = c.host8 ? oclStore12(r[k]) : r[k];
+    }
+}
+
 // Layer Dimensionality: a shadow, glow and emboss on frames with transparency.
 void layerDimensionality(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
+    if (c.openCl && W > 0 && H > 0) { layerDimensionalityOpenCl(c); return; }
     LdSetup su;
     ldSetup(c, W, H, su);
     const int shadowType = su.shadowType, glowType = su.glowType;
@@ -1181,47 +1306,59 @@ void layerDimensionality(Ctx& c)
     }
 }
 
-// Deform: squeeze, shear and curve the frame's edges.
+// Deform: squeeze, shear and curve the frame's edges. VEGAS's own code (sftrans1.dll, CDeform; see vfxdeform.h): the picture's eight edge points are mapped (curves, squeezes,
+// shear), the result is the box around them (Center image puts the middle of the frame back in the middle), every pixel of the box asks the approximate inverse where it comes
+// from, and takes the average of samples along the two diagonals of its footprint. An 8-bit frame goes through the 8-bit sampler, a float frame through the float one; what is
+// outside the picture is the Background.
 void deform(Ctx& c)
 {
-    // VEGAS's legacy Deform, measured on its own pictures (not read from its code). Everything is scaled by Amount, positions are continuous
-    // (pixel index + 0.5) and the centre is the pixel-index centre (W/2 + 0.5, H/2 + 0.5).
-    //  Squeeze: the row's (column's) scale runs linearly 1 -> 1 - Squeeze from the far edge to the named one (Top: 0 at the top row at 1).
-    //  Shear: a full frame width (height) across the frame at 1: source x = X - ShearHorizontal * W / H * (Y - cy), source y = Y - ShearVertical * H / W * (X - cx).
-    //  Curve: the named edge is displaced along the axis by Curve * half the frame times q = 4 u (1 - u) (u across the frame); Top and Bottom edges move
-    //  up, Left and Right edges move right; the rest of the picture is stretched linearly between the two edges. With both edges of a pair curved, each
-    //  gets half a frame back (the pair bends as one: a 1/1 pair keeps the centre where it was).
     const int W = c.out.w, H = c.out.h;
-    const double amount = c.d("Amount"), sl = c.d("SqueezeLeft") * amount, sr = c.d("SqueezeRight") * amount, st = c.d("SqueezeTop") * amount, sb = c.d("SqueezeBottom") * amount;
-    const double shh = c.d("ShearHorizontal") * amount, shv = c.d("ShearVertical") * amount;
-    const double cl = c.d("CurveLeft") * amount, cr = c.d("CurveRight") * amount, ct = c.d("CurveTop") * amount, cb = c.d("CurveBottom") * amount;
+    if (W <= 0 || H <= 0) return;
+    if (W < 2 || H < 2) { c.out = c.src; return; }      // (the original divides by W - 1 and H - 1)
+    auto setting = [&](const char* name) { const double v = c.d(name); return std::isfinite(v) ? clampd(v, 0.0, 1.0) : 0.0; };
+    // the order of VEGAS's list: shear (horizontal, vertical), squeeze (top, bottom, left, right), curve (top, bottom, left, right)
+    const double P[10] = {setting("ShearHorizontal"), setting("ShearVertical"), setting("SqueezeTop"), setting("SqueezeBottom"), setting("SqueezeLeft"), setting("SqueezeRight"),
+                          setting("CurveTop"), setting("CurveBottom"), setting("CurveLeft"), setting("CurveRight")};
+    const double amount = setting("Amount");
+    const double quality = 0.85;        // (the host's best render quality: the footprint average; its lower ones are a bilinear and a nearest pixel)
+    const bool centre = c.b("CenterImage");
     const Color bgc = c.color("Background");
-    const double cx = W * 0.5 + 0.5, cy = H * 0.5 + 0.5, kx = shh * W / H, ky = shv * H / W;
-    forRows(H, W, [&](int y) {
-        for (int x = 0; x < W; ++x) {
-            const double X = x + 0.5, Y = y + 0.5;
-            float* o = c.out.at(x, y);
-            // curves (on the output position)
-            double u = X / W, v = Y / H;
-            const double qx = 4 * u * (1 - u), qy = 4 * v * (1 - v);
-            const double hh = 0.5 * H, wh = 0.5 * W;
-            const double yt = (-hh * ct) * qx + (hh * ct) * cb, yb = H - (hh * cb) * qx + (hh * cb) * ct;
-            const double xl = (wh * cl) * qy - (wh * cl) * cr, xr = W + (wh * cr) * qy - (wh * cr) * cl;
-            const double dyc = yb - yt, dxc = xr - xl;
-            if (dyc < 1e-6 * H || dxc < 1e-6 * W) { put(o, bgc); continue; }
-            const double X1 = W * (X - xl) / dxc, Y1 = H * (Y - yt) / dyc;
-            // squeeze and shear
-            const double sH = 1 - (st * (1 - Y1 / H) + sb * (Y1 / H)), sV = 1 - (sl * (1 - X1 / W) + sr * (X1 / W));
-            if (sH < 1e-4 || sV < 1e-4) { put(o, bgc); continue; }
-            const double xs = cx + (X1 - cx) / sH - kx * (Y1 - cy);
-            const double ys = cy + (Y1 - cy) / sV - ky * (X1 - cx);
-            if (xs < 0 || xs > W || ys < 0 || ys > H) { put(o, bgc); continue; }
-            c.src.sample(xs, ys, o);
+    const auto fix = [](double v) { return std::isfinite(v) ? clampd(v, 0.0, 1.0) : 0.0; };
+    const double ba = fix(bgc.a), br = fix(bgc.r) * ba, bg = fix(bgc.g) * ba, bb = fix(bgc.b) * ba;
+    if (!(c.host8 || c.levels)) {
+        const float bgf[4] = {(float)br, (float)bg, (float)bb, (float)ba};
+        if (!vfdeform::run<float>(c.src.px.data(), W, H, (ptrdiff_t)W * 4, P, amount, quality, centre, bgf, c.out.px.data(), (ptrdiff_t)W * 4))
+            for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) std::memcpy(c.out.at(x, y), bgf, sizeof bgf);
+        return;
+    }
+    // the 8-bit frame as VEGAS holds it: bytes blue, green, red, alpha
+    std::vector<uint8_t> in((size_t)W * H * 4), out((size_t)W * H * 4, 0);
+    for (int y = 0; y < H; ++y) {
+        const float* s = c.src.at(0, y);
+        uint8_t* d = &in[(size_t)y * W * 4];
+        for (int x = 0; x < W; ++x, s += 4, d += 4) {
+            d[0] = (uint8_t)v8::toLevel(s[2]);
+            d[1] = (uint8_t)v8::toLevel(s[1]);
+            d[2] = (uint8_t)v8::toLevel(s[0]);
+            d[3] = (uint8_t)v8::toLevel(s[3]);
         }
-    });
+    }
+    const uint8_t bg8[4] = {(uint8_t)v8::toLevel((float)bb), (uint8_t)v8::toLevel((float)bg), (uint8_t)v8::toLevel((float)br), (uint8_t)v8::toLevel((float)ba)};
+    if (!vfdeform::run<uint8_t>(in.data(), W, H, (ptrdiff_t)W * 4, P, amount, quality, centre, bg8, out.data(), (ptrdiff_t)W * 4))
+        for (size_t i = 0; i < out.size(); i += 4) std::memcpy(&out[i], bg8, 4);
+    for (int y = 0; y < H; ++y) {
+        float* o = c.out.at(0, y);
+        const uint8_t* s = &out[(size_t)y * W * 4];
+        for (int x = 0; x < W; ++x, o += 4, s += 4) {
+            o[0] = v8::fromLevel(s[2]);
+            o[1] = v8::fromLevel(s[1]);
+            o[2] = v8::fromLevel(s[0]);
+            o[3] = v8::fromLevel(s[3]);
+        }
+    }
 }
 
-// Bump Map: VEGAS's plug-in step for step (its OpenCL kernel and host code). The normal is a 3x3 Prewitt gradient of the chosen channel (premultiplied 0..1) times 255 * BumpHeight^2 / 16 * max(W, H) / 640
+// Bump Map: VEGAS's plug-in step for step (its OpenCL kernel and host code; the light's pixel position is measured from the bottom row, as the kernel's rows are). The normal is a 3x3 Prewitt gradient of the chosen channel (premultiplied 0..1) times 255 * BumpHeight^2 / 16 * max(W, H) / 640
 // (negative when black is high). Positions: the larger side spans -1..1, y down; the light's place is Source with y flipped. Directional: from the direction of Source; Omnidirectional: a point at Source,
 // falling off as 2 / distance; Spotlight: that point aimed along Source - Destination, cone cos(Focus * pi / 4) with a soft edge. Phong (viewer straight on): k = Intensity * 8 * ((0.6 - 0.2 Shininess) N.L +
 // 0.5 Shininess max(R.V, 0.01)^(4 + 8 Shininess)) * attenuation + 2 Ambience, floored at 0, multiplies the colour (diffuse not clamped: slopes facing away darken below ambient). Alpha is kept.
@@ -1253,6 +1390,7 @@ void bumpMapRender(Ctx& c, const char* srcName, const char* dstName)
     const float invCut = 1.f / std::max(1.f - cosCut, 1e-5f);
     const float unit = 2.f / mx, cx = W * 0.5f, cy = H * 0.5f;
     auto hAt = [&](int x, int y) { return c.src.at(x, y)[chan]; };
+    const bool store8 = c.host8;     // an 8-bit frame gets the kernel's write_imagef store
     forRows(H, W, [&](int y) {
         // VEGAS's rows go bottom first: its "y + 1" is the row above
         const int up = std::max(0, y - 1), dn = std::min(H - 1, y + 1);
@@ -1274,7 +1412,7 @@ void bumpMapRender(Ctx& c, const char* srcName, const char* dstName)
             nx /= nl; ny /= nl; nz /= nl;
             float lx = ax, ly = ay, lz = az, att = 1.f;
             if (type != 0) {
-                const float px = (x - cx) * unit, py = (y - cy) * unit;
+                const float px = ((float)x - cx) * unit, py = (cy - (float)(H - 1 - y)) * unit;   // (the kernel's row index counts from the bottom: y_kernel = H - 1 - y)
                 lx = sx - px; ly = sy - py; lz = sz;
                 float d = std::sqrt(lx * lx + ly * ly + lz * lz), inv;
                 if (d > 0.f) { inv = 1.f / d; lx *= inv; ly *= inv; lz *= inv; }
@@ -1294,6 +1432,7 @@ void bumpMapRender(Ctx& c, const char* srcName, const char* dstName)
             const float* s = c.src.at(x, y);
             float* o = c.out.at(x, y);
             o[0] = s[0] * k; o[1] = s[1] * k; o[2] = s[2] * k; o[3] = s[3];
+            if (store8) for (int q = 0; q < 4; ++q) o[q] = oclStore12(o[q]);
         }
     });
 }

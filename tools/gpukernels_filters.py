@@ -2917,21 +2917,37 @@ def rpix_out(S):
 # ---------------------------------------------------------------------------------------------------------- AutoLooks (autoLooks() in builtins_color.cpp)
 from gpukernels import lut_apply, pixel_row
 
-@kernel("autolooks", WH + [('n', 'u'), ('g8', 'f'), ('d0', 'f'), ('d1', 'f'), ('d2', 'f'), ('e0', 'f'), ('e1', 'f'), ('e2', 'f')], [PIC_IN, PIC_OUT, TABLE])
+@kernel("autolooks", WH + [('n', 'u'), ('g', 'f'), ('d0', 'f'), ('d1', 'f'), ('d2', 'f'), ('e0', 'f'), ('e1', 'f'), ('e2', 'f'), ('mode', 'u')], [PIC_IN, PIC_OUT, TABLE])
 def autolooks(S):
-    # the look's table (trilinear), cut to 0..1, then mixed with the picture in bytes: (picture x (255 - s) + table x s) / 255 rounded
+    # VEGAS's own table (mode bit 1 clear): the look's table as the card holds it (baked to 32 points on the host, trilinear here), the result NOT cut, mixed with the premultiplied
+    # picture in float at Strength, then cut to 0..1 and, in an 8-bit frame (mode bit 0), stored in 12 bits (autoLooksPixel() in builtins_color.cpp).
+    # Reno's own grade (mode bit 1): the table's result cut to 0..1 and mixed in whole levels, (picture x (255 - s) + table x s) / 255 rounded (autoLooksPixelGrade())
     P = S.p
-    def body(S, r, g, b):
-        v = lut_apply(S, S.buf('table'), S.u(0), P.n, [P.d0, P.d1, P.d2], [P.e0, P.e1, P.e2], S.u(0), [r, g, b])
+    with S.in_range(P.w, P.h):
+        i = S.gy * P.w + S.gx
+        p = S.buf('in0').load(i)
+        a = p.w
+        valid = a > 0.0
+        asafe = S.select(valid, a, S.f(1.0))
+        grade = S.ne(P.mode & 2, 0)
+        has = a > 1e-6          # (the older grade path's straight colour is 0 where alpha is tiny, as unpremul() has it)
+        rgb = [S.select(grade & ~has, S.f(0.0), fdiv(S, c, asafe)) for c in (p.x, p.y, p.z)]
+        v = lut_apply(S, S.buf('table'), S.u(0), P.n, [P.d0, P.d1, P.d2], [P.e0, P.e1, P.e2], S.u(0), rgb)
+        g8 = S.floor(P.g * 255.0 + 0.5)
         res = []
-        for cin, t in zip((r, g, b), v):
-            t = S.select(t < 0.0, S.f(0.0), S.select(t > 1.0, S.f(1.0), t))
-            s8 = S.floor(S.min(S.max(cin, 0.0), 1.0) * 255.0 + 0.5)
-            l8 = S.floor(t * 255.0 + 0.5)
-            m = fdiv(S, s8 * (255.0 - P.g8) + l8 * P.g8, S.f(255.0))
-            res.append(fdiv(S, S.floor(m + 0.5), S.f(255.0)))
-        return res[0], res[1], res[2]
-    pixel_row(S, body)
+        for cin, cs, t in zip((p.x, p.y, p.z), rgb, v):
+            r = cin + (t * a - cin) * P.g
+            r = S.min(S.max(r, 0.0), 1.0)
+            r12 = S.to_i(S.floor(r * 4096.0))
+            rl = fdiv(S, S.to_f((r12 * S.i(255) + S.i(2047)) / 4096), S.f(255.0))
+            new = S.select(S.ne(P.mode & 1, 0), rl, r)
+            tc = S.select(t < 0.0, S.f(0.0), S.select(t > 1.0, S.f(1.0), t))
+            s8 = S.floor(S.min(S.max(cs, 0.0), 1.0) * 255.0 + 0.5)
+            l8 = S.floor(tc * 255.0 + 0.5)
+            m = fdiv(S, s8 * (255.0 - g8) + l8 * g8, S.f(255.0))
+            old = fdiv(S, S.floor(m + 0.5), S.f(255.0)) * a
+            res.append(S.select(valid, S.select(grade, old, new), S.f(0.0)))
+        S.buf('out').store(i, S.vec4(res[0], res[1], res[2], S.select(valid, a, S.f(0.0))))
 
 # ---------------------------------------------------------------------------------------------------------- Tiny Planet (both versions)
 def sf_asin_ok(S, x):

@@ -3,21 +3,22 @@
 // Histogram smoothing), TimeWindow (frames), Sensitivity, Threshold, Type (Highlights, Midtones, Shadow, All), UseMotion and ShowMask; the corners and histogram settings
 // are what VEGAS keeps of its own analysis ("Calculate") and are kept as they are.
 //
-// What VEGAS's plug-in does (read from its code, checked against its output for every setting of the reference captures):
-//  - Temporal blend: the output is a weighted mean of the TimeWindow + 1 frames from time - TimeWindow / 2 to time + (TimeWindow - TimeWindow / 2). The weights are made as
-//    its code makes them (windowWeights()): binomial-like numbers (from whole-number divisions, in float) blended with a flat mean by Sensitivity - and in float, that blend
-//    cancels to nothing for the middle frames of a long window, which is why a window of 60 frames shows only 4 frames at each end. A frame outside the clip is left out and
-//    its weight is lost (the picture darkens). Type 'All' takes the weights as they are; the other Types weight every other frame at each pixel by how much that pixel is of
-//    the tone (highlights 1 - (1 - v)^2, midtones 1 - 4 (v - .5)^2, shadows 1 - v^2, v the largest channel) and divide by the sum, so only the matching tones are blended.
-//    UseMotion samples the other frames at a position from the Motion Tracking corners (without them: the corner pixel of each frame).
-//  - Addition: every channel gets sin(2 pi Frequency time / fps) * Sensitivity * 0.1 * 255 levels added (more where the tone is the chosen one; a frequency of 1 or less is
-//    VEGAS's random 'celluloid' flicker). Pixels with no alpha are left empty.
-//  - Show mask: 5 x the largest channel difference between the result and the source, as grey.
+// What VEGAS's plug-in does (read from its code and its OpenCL kernels, vfxflicker.h; checked bit for bit against VEGAS's pictures of 12-frame clips, see below):
+//  - Temporal blend: the output is a weighted mean of the frames from time - TimeWindow / 2 to time + (TimeWindow - TimeWindow / 2) that the clip has (at most 6), with the plug-in's
+//    window weights (vfxfl::windowWeights: all equal at Sensitivity 1), divided by the sum of the weights that are left (so a clip's ends do not darken). Type 'All' takes
+//    the weights as they are; Highlights and Midtones weight every frame but the middle one at each pixel by how much that pixel is of the tone (highlights 1 - (1 - v)^2,
+//    midtones 1 - 4 (v - .5)^2, v the largest channel); Shadow is the kernel's plain weighted sum. UseMotion samples the other frames at a position from the Motion Tracking
+//    corners (a position outside the frame: the frame has no weight there).
+//  - Addition: every channel gets sin(2 pi Frequency floor(time) / fps) * Sensitivity * 0.1 * alpha (times the tone, for Highlights, Midtones and Shadow) added (a frequency of 1
+//    or less is VEGAS's random 'celluloid' flicker, which cannot be reproduced).
+//  - Show mask: 5 x the largest channel difference between the result and the frame itself, as grey.
 //  - Nothing is done (the source comes through) when Sensitivity is 0, in Reduction when TimeWindow is 0, and for Histogram smoothing until Calculate has been pressed.
 //  - Histogram smoothing (after Calculate): Reno's own method (VEGAS's analysis is stored in the project, which is not read): the frame's brightness histogram is matched
 //    to the average of the histograms round it.
 // Neighbouring frames' brightness (for the histogram model) is cached per instance (one more frame each time while playing).
 #include "builtins_analysis_internal.h"
+#include "builtins_more_internal.h"
+#include "vfxflicker.h"
 #include "../core/base.h"
 #include <algorithm>
 #include <cmath>
@@ -104,82 +105,18 @@ std::shared_ptr<FrameStat> makeStat(const Buf& b)
     return s;
 }
 
-// ------------------------------------------------------------------------------------------------ VEGAS's weights over the frames of the window
-// What the plug-in's window function does, in float and in the same order: 'tw' + 1 weights for the frames time - tw / 2 ... time + (tw - tw / 2); the frame itself is
-// index 'before'. The first loop makes numbers like binomial coefficients (each factor a whole-number division, as the plug-in does it), the second blends them with the flat
-// mean by the sensitivity (below one half: pulls them toward the middle frame), then they are divided by their sum.
-void windowWeights(int tw, float sens, int& before, int& after, std::vector<float>& w)
-{
-    before = tw / 2;
-    after = tw - before;
-    const int n = tw + 1;
-    w.assign((size_t)n, 0.f);
-    const float flat = 1.0f / ((float)tw + 1.0f);
-    if (n == 2) {
-        w[0] = 0.666f;
-        w[1] = 0.333f;
-    } else {
-        for (int i = 0; i < n; ++i) {
-            const int e = (2 * i <= tw) ? i : tw - i;
-            float v = 1.0f;
-            for (int k = 1; k <= e; ++k) v *= (float)((tw - e + k) / k);
-            w[(size_t)i] = v;
-        }
-    }
-    float sum = 0.f;
-    for (int i = 0; i < n; ++i) {
-        float a, b;
-        const float x = w[(size_t)i];
-        if (0.5f <= sens) {
-            const float d = flat - (x + x);
-            a = d;
-            b = flat - d;
-        } else {
-            a = (i == before) ? x - 2.0f : x - 0.0f;
-            b = x - a * 0.5f;
-        }
-        const float r = a * sens + b;
-        w[(size_t)i] = r;
-        sum += r;
-    }
-    if (sum != 0.f)
-        for (int i = 0; i < n; ++i) w[(size_t)i] = w[(size_t)i] / sum;
-}
-
-// A level (0 .. 255 as a float) made a whole one as the plug-in does: below 0 is 0, above 254.5 is 255, else rounded (halves up); not a number is 0.
-inline float toLevel(float x)
-{
-    if (!(x == x)) return 0.f;
-    if (0.f > x) return 0.f;
-    const float v = std::min(254.5f, x);
-    return (float)(int)(v + 0.5f);
-}
-
-// How much a pixel of the tone takes part (the plug-in's tone curves); m is the largest channel, 0 .. 1; 'type' 0 highlights, 1 midtones, 2 shadows (3: all, 1).
-inline float toneFactor(int type, float m)
-{
-    if (type == 2) return 1.0f - m * m;
-    if (type == 1) { const float d = m - 0.5f; return 1.0f - (d * d) * 4.0f; }
-    if (type == 0) { const float t = 1.0f - m; return 1.0f - t * t; }
-    return 1.0f;
-}
-
-// What the frame of a window is kept as while the pixels are worked out: whole levels (8-bit pictures) or floats.
-struct WFrame {
-    std::vector<uint8_t> b;
-    std::vector<float> f;
-    float w = 0.f;
-};
-
+// ------------------------------------------------------------------------------------------------ the OpenCL kernels' temporal blend and Addition (vfxflicker.h)
 // Whether a frame time is one the clip has (the plug-in's own test against the clip's frame range; no range stated: all are).
 inline bool inClip(const Ctx& c, double t)
 {
     if (!(c.clipLast > c.clipFirst)) return true;
-    return t > c.clipFirst - 0.5 && c.clipLast + 0.5 > t;
+    return t > c.clipFirst - 0.5 && c.clipLast - 0.5 > t;       // (the host's frame range is [first, first + duration): the last frame is clipLast - 1)
 }
 
-// The 3 x 3 map the plug-in makes from the Motion Tracking corners of the frame itself to those of another frame (here all frames have the corners of this one, the only ones the
-// settings give): the identity for a proper quadrangle; for one that cannot be solved (the corners' default is -1, -1 for all four) the plug-in's solver leaves 0 0 0 0 0 0 0 0 1.
+// The map the plug-in makes from the Motion Tracking corners of the frame itself to those of another frame (here all frames have the corners of this one, the only ones the
+// settings give): the identity for a proper quadrangle. For corners that cannot be solved (their default is -1, -1 for all four) the plug-in's solver (not decoded) gives a map under
+// which, in VEGAS's pictures, only the left column of the frame finds a position in the frame (the bottom left pixel, for every row of it) and the rest has none: a
+// huge x factor with everything else 0 reproduces that (GUESS about the numbers, measured on one picture).
 void cornerMap(const Ctx& c, float m[9])
 {
     double px[4], py[4];
@@ -198,125 +135,99 @@ void cornerMap(const Ctx& c, float m[9])
                 if (std::fabs(cr) < 1e-9) { bad = true; break; }
             }
     for (int k = 0; k < 9; ++k) m[k] = 0.f;
-    if (bad) m[8] = 1.f;
+    if (bad) { m[0] = 1e30f; m[8] = 1.f; }
     else m[0] = m[4] = m[8] = 1.f;
 }
 
-// Temporal blend: the output as the plug-in makes it ('out' gets whole levels as floats / 255 on an 8-bit picture).
-void temporalBlend(Ctx& c, int tw, float sens, int type, bool useMotion)
+// The picture as the kernels read it: an 8-bit frame is bytes / 255.
+inline float inLevel(float v, bool q)
 {
-    const int W = c.src.w, H = c.src.h;
-    const bool lv = c.levels;
-    const float scale = lv ? 255.f : 1.f;
-    int before = 0, after = 0;
-    std::vector<float> wts;
-    windowWeights(tw, sens, before, after, wts);
-    // the frames that are in the clip, with their weights (a frame that is not has its weight lost); frames with no weight need not be read at all
-    std::vector<WFrame> fr;
-    const size_t npx = (size_t)W * H;
-    int listIdx = 0;
-    int centerKept = -1;
-    for (int i = 0; i <= tw; ++i) {
-        const double t = c.time - before + i;
-        if (!inClip(c, t)) continue;
-        const bool isCenter = listIdx == before;
-        ++listIdx;
-        const float wt = wts[(size_t)i];
-        if (wt == 0.f && !isCenter) continue;
-        Buf tmp;
-        const Buf* b = nullptr;
-        if (std::fabs(t - c.time) < 1e-9) b = &c.src;
-        else if (c.fetch && c.fetch(t, tmp) && tmp.w == W && tmp.h == H) b = &tmp;
-        else continue;                          // (the clip has no such frame: as if it were outside)
-        WFrame f;
-        f.w = wt;
-        if (lv) {
-            f.b.resize(npx * 4);
-            for (size_t k = 0; k < npx * 4; ++k) {
-                const float v = b->px[k] * 255.f + 0.5f;
-                f.b[k] = (uint8_t)(v <= 0.f ? 0.f : (v >= 255.f ? 255.f : v));
-            }
-        } else {
-            f.f = b->px;
-        }
-        if (isCenter) centerKept = (int)fr.size();
-        fr.push_back(std::move(f));
-    }
-    const int nf = (int)fr.size();
-    float map[9];
-    cornerMap(c, map);
-    const bool mapIdentity = map[0] == 1.f && map[4] == 1.f && map[8] == 1.f;
-    const int cap = std::min(nf, 64);
-    // (the effect's coordinates: row 0 at the bottom)
-    forRows(H, W, [&](int y) {
-        float* o = c.out.at(0, y);
-        const int prow = H - 1 - y;
-        for (int x = 0; x < W; ++x, o += 4) {
-            float c0[64], c1[64], c2[64], wt[64];
-            float a0 = 0.f, a1 = 0.f, a2 = 0.f, al = 0.f;
-            float sum = 0.f;
-            const size_t pix = (size_t)y * W + x;
-            for (int k = 0; k < cap; ++k) {
-                size_t src = pix;
-                if (useMotion && k != centerKept && !mapIdentity) {
-                    const float fx = (float)x, fy = (float)prow;
-                    const float den = map[6] * fx + map[7] * fy + map[8];
-                    const float inv = (float)(1.0 / (double)den);
-                    const float xp = ((map[0] * fx + map[1] * fy) + map[2]) * inv;
-                    const float yp = ((map[3] * fx + map[4] * fy) + map[5]) * inv;
-                    if (xp > -0.4f && (float)W - 0.6f > xp && yp > -0.4f && (float)H - 0.6f > yp) {
-                        const int cx = (int)std::floor(xp + 0.5f), cy = (int)std::floor(yp + 0.5f);
-                        src = (size_t)(H - 1 - std::max(0, std::min(H - 1, cy))) * W + (size_t)std::max(0, std::min(W - 1, cx));
-                    }
-                }
-                float p0, p1, p2, pa;
-                if (lv) {
-                    const uint8_t* q = &fr[(size_t)k].b[src * 4];
-                    p0 = (float)q[0]; p1 = (float)q[1]; p2 = (float)q[2]; pa = (float)q[3];
-                } else {
-                    const float* q = &fr[(size_t)k].f[src * 4];
-                    p0 = q[0]; p1 = q[1]; p2 = q[2]; pa = q[3];
-                }
-                if (k == centerKept) al = pa;
-                const float w = fr[(size_t)k].w;
-                if (type == 3) {
-                    a0 += w * p0; a1 += w * p1; a2 += w * p2;
-                } else {
-                    float m = std::max(p0, std::max(p1, p2));
-                    m = m / scale;
-                    const float tf = (k == centerKept) ? 1.0f : toneFactor(type, m);
-                    const float ww = tf * w;
-                    wt[k] = ww;
-                    sum += ww;
-                    c0[k] = p0; c1[k] = p1; c2[k] = p2;
-                }
-            }
-            if (type != 3)
-                for (int k = 0; k < cap; ++k) {
-                    const float q = wt[k] / sum;
-                    a0 += q * c0[k]; a1 += q * c1[k]; a2 += q * c2[k];
-                }
-            if (lv) {
-                o[0] = toLevel(a0) / 255.f; o[1] = toLevel(a1) / 255.f; o[2] = toLevel(a2) / 255.f;
-                o[3] = al / 255.f;
-            } else {
-                o[0] = a0; o[1] = a1; o[2] = a2; o[3] = al;
-            }
-        }
-    });
+    if (!q) return v;
+    return (float)(int)(std::min(1.f, std::max(0.f, v)) * 255.f + 0.5f) / 255.f;
 }
 
-// Addition: the plug-in's flicker added to the levels.
-void additionRender(Ctx& c, int type, double sens)
+// Temporal blend as the kernel does it: the frames time - tw / 2 ... time + (tw - tw / 2) that the clip has (the first 6 of them), each with its window weight; the weights of
+// frames left out are not renormalised by the host but by the kernel's division (not for Shadow, which is a plain weighted sum). The frame itself is taken to be the slot with
+// the number tw / 2 whichever frames were left out before it (so at the start of a clip another frame is the one that takes no tone weight - as in VEGAS's pictures).
+// A time window of 1 works as one of 2 (VEGAS's picture of the Flicker Reduction preset shows 3 frames; the reason is not found).
+void temporalBlend(Ctx& c, int tw, float sens, int type, bool useMotion, bool showMask)
 {
     const int W = c.src.w, H = c.src.h;
-    const bool lv = c.levels;
+    const bool q = c.host8;
+    if (tw == 1) tw = 2;
+    int before = 0, after = 0;
+    std::vector<float> wts;
+    vfxfl::windowWeights(tw, sens, before, after, wts);
+    const size_t npx = (size_t)W * H;
+    std::vector<Buf> fr;
+    std::vector<float> fw;
+    fr.reserve(6);
+    for (int i = 0; i <= tw && fr.size() < 6; ++i) {
+        const double t = c.time - before + i;
+        if (!inClip(c, t)) continue;
+        Buf b;
+        if (std::fabs(t - c.time) < 1e-9) b = c.src;
+        else if (!(c.fetch && c.fetch(t, b) && b.w == W && b.h == H)) continue;     // (the clip has no such frame: as if it were outside)
+        if (q) for (float& v : b.px) v = inLevel(v, true);
+        fr.push_back(std::move(b));
+        fw.push_back(wts[(size_t)i]);
+    }
+    const int nf = (int)fr.size();
+    if (nf == 0) { c.out.px = c.src.px; return; }
+    int cen = before;
+    if (useMotion && nf <= cen) cen = nf - 1;
+    float map[9];
+    cornerMap(c, map);
+    // (the kernels' coordinates have row 0 at the bottom; Buf row 0 is the top)
+    forRows(H, W, [&](int y) {
+        float* o = c.out.at(0, y);
+        const int ky = H - 1 - y;
+        const float* self = c.src.at(0, y);
+        for (int x = 0; x < W; ++x, o += 4) {
+            vfxfl::Slot sl[6];
+            float own[4];
+            for (int k = 0; k < 4; ++k) own[k] = inLevel(self[x * 4 + k], q);
+            for (int k = 0; k < 6; ++k) { sl[k].px = own; sl[k].w = 0.f; }
+            for (int k = 0; k < nf; ++k) {
+                const float* px = &fr[(size_t)k].px[((size_t)y * W + x) * 4];
+                float w = fw[(size_t)k];
+                if (useMotion && k != before) {
+                    float xp, yp;
+                    vfxfl::mapPoint(map, (float)x, (float)ky, xp, yp);
+                    if (xp < 0 || xp > (float)(W - 1) || yp < 0 || yp > (float)(H - 1)) w = 0.f;      // (this pixel's own position, with no weight)
+                    else {
+                        const int cx = std::max(0, std::min(W - 1, (int)std::floor(xp))), cy = std::max(0, std::min(H - 1, (int)std::floor(yp)));
+                        px = &fr[(size_t)k].px[((size_t)(H - 1 - cy) * W + cx) * 4];
+                    }
+                }
+                sl[k].px = px;
+                sl[k].w = w;
+            }
+            float r[4];
+            vfxfl::blendPixel(sl, type, cen, r);
+            if (showMask) {
+                float m[4];
+                vfxfl::maskPixel(sl[cen >= 0 && cen < 6 ? cen : 0].px, r, m);
+                for (int k = 0; k < 4; ++k) r[k] = m[k];
+            }
+            for (int k = 0; k < 4; ++k) o[k] = q ? more::oclStore12(r[k]) : r[k];
+        }
+    });
+    (void)npx;
+}
+
+// Addition: the plug-in's flicker added (the Addition kernel).
+void additionRender(Ctx& c, int type, double sens, bool showMask)
+{
+    const int W = c.src.w, H = c.src.h;
+    const bool q = c.host8;
     const double fps = c.fps > 0 ? c.fps : 30.0;
     const double freq = c.d("Frequency");
     const double t = std::floor(c.time);
     double amount = 0;
+    const double sensF = (double)(float)sens;
     if (freq > 1.0) {
-        amount = std::sin(freq * 6.283185307179586 * t / fps) * (sens * 0.1);
+        amount = std::sin(freq * 6.283185307179586 * t / fps) * (sensF * 0.1);
     } else {
         // 'Celluloid': the plug-in draws a random number of 1000 trials with chance 'sensitivity' (times 1e-4) and puts it in only when the whole second is a multiple of another
         // random number (about fps / sens trials, chance 1 - 0.9 sens) plus one - for most of a clip, never. The draws here are from a hash of the frame number.
@@ -334,28 +245,16 @@ void additionRender(Ctx& c, int type, double sens)
         const long secs = (long)(t / fps);
         if (secs % ((long)std::max(0.0, nB) + 1) == 0) amount = std::max(0.0, nA) * 0.0001;
     }
-    const float scale = lv ? 255.f : 1.f;
+    const float amt = (float)amount;
     forRows(H, W, [&](int y) {
         const float* s = c.src.at(0, y);
         float* o = c.out.at(0, y);
         for (int x = 0; x < W; ++x, s += 4, o += 4) {
-            float p0 = s[0] * scale, p1 = s[1] * scale, p2 = s[2] * scale, pa = s[3] * scale;
-            if (lv) { p0 = std::floor(p0 + 0.5f); p1 = std::floor(p1 + 0.5f); p2 = std::floor(p2 + 0.5f); pa = std::floor(pa + 0.5f); }
-            if (pa == 0.f) { o[0] = o[1] = o[2] = o[3] = 0.f; continue; }
-            const float m = std::max(p0, std::max(p1, p2)) / scale;
-            float f = 1.0f;
-            if (type == 2) f = 1.0f - m * m;
-            else if (type == 1) { const double d = (double)m - 0.5; f = (float)(1.0 - (d * 4.0) * d); }
-            else if (type == 0) { const float u = 1.0f - m; f = 1.0f - u * u; }
-            const double add = ((double)f * amount) * (double)pa;         // (levels; a float picture: alpha 0 .. 1 stands for 0 .. 255)
-            const double mx = lv ? 255.0 : 1.0;
-            auto one = [&](float v) {
-                double x2 = (double)v + add;
-                x2 = x2 < 0.0 ? 0.0 : std::min(mx, x2);
-                if (lv) return (float)(int)((float)x2 + 0.5f) / 255.f;
-                return (float)x2;
-            };
-            o[0] = one(p0); o[1] = one(p1); o[2] = one(p2); o[3] = s[3];
+            float p[4], r[4];
+            for (int k = 0; k < 4; ++k) p[k] = inLevel(s[k], q);
+            vfxfl::additionPixel(p, type, amt, r);
+            if (showMask) { float m[4]; vfxfl::maskPixel(p, r, m); for (int k = 0; k < 4; ++k) r[k] = m[k]; }
+            for (int k = 0; k < 4; ++k) o[k] = q ? more::oclStore12(r[k]) : r[k];
         }
     });
 }
@@ -379,40 +278,20 @@ void flickerRender(Ctx& c)
         calculated = stp->calculated;
     }
     // (the plug-in does nothing in these cases: the source comes through, with no mask)
-    const bool identity = sens < 2.220446049250313e-16 || (mode != 1 && (tw == 0 || (model == 1 && !calculated)));
+    const bool identity = sens < 2.220446049250313e-16 || (mode < 1 && (tw == 0 || (model == 1 && !calculated)));
     if (identity) {
         c.out.px = c.src.px;
         return;
     }
     bool done = false;
-    if (mode == 1) {
-        additionRender(c, type, sens);
+    if (mode >= 1) {
+        additionRender(c, type, sens, showMask);
         done = true;
     } else if (model == 0) {
-        temporalBlend(c, tw, (float)sens, type, useMotion);
+        temporalBlend(c, tw, (float)sens, type, useMotion, showMask);
         done = true;
     }
     if (done) {
-        if (showMask) {
-            const float scale = c.levels ? 255.f : 1.f;
-            forRows(H, W, [&](int y) {
-                const float* s = c.src.at(0, y);
-                float* o = c.out.at(0, y);
-                for (int x = 0; x < W; ++x, s += 4, o += 4) {
-                    float d = 0.f;
-                    for (int k = 0; k < 3; ++k) {
-                        float a = o[k] * scale, b = s[k] * scale;
-                        if (c.levels) { a = std::floor(a + 0.5f); b = std::floor(b + 0.5f); }
-                        d = std::max(d, std::fabs(a - b));
-                    }
-                    float v = d * 5.f;
-                    v = v < 0.f ? 0.f : std::min(scale, v);
-                    if (c.levels) v = (float)(int)(v + 0.5f);
-                    o[0] = o[1] = o[2] = v / scale;
-                    o[3] = s[3];
-                }
-            });
-        }
         return;
     }
     if (!stp) return;

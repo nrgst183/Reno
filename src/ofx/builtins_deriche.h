@@ -26,6 +26,9 @@ void vegasDericheBlurSigma(Buf& b, double sigmaX, double sigmaY, bool levels, bo
 struct LinearBlurParams { int branch = 1, shear = 0; double sx = 0, sy = 0; };
 bool vegasLinearBlurParams(int W, int H, double angleDeg, double amount, LinearBlurParams& r);   // false: the picture is left as it is
 void vegasLinearBlur(const Buf& src, Buf& out, double angleDeg, double amount, bool levels);
+// The same as VEGAS's OpenCL kernels draw it (GPU acceleration on; vfxlinblur.h): the frame turned into a larger canvas, the recursive Gaussian down its columns, turned back. q: the 8-bit
+// pictures the kernels keep between their passes (with the card's 12-bit store). false: nothing was drawn (a canvas too small to blur), the caller draws the CPU version.
+bool vegasLinearBlurOpenCl(const Buf& src, Buf& out, double angleDeg, double amount, bool q);
 // VEGAS's Median (builtins_vegasmedian.cpp): every channel (alpha too) of the 8-bit frame; the window reaches rx / ry pixels each way (rx = HorizontalRange * the larger side * 0.05),
 // edge pixels weighted by the fraction inside (round: the share inside the ellipse (rx + 0.5, ry + 0.5)), in 14-bit weights; pixels outside the frame are left out. The result is
 // the average of the values over one pixel's weight of the weighted histogram centred on the rank Offset of the way through it.

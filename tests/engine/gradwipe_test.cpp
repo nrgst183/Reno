@@ -80,6 +80,23 @@ int main()
         vgw::stretchMean(m, 4, 2, 0, 0, 4, 2, 2, 1, o);
         check(o.size() == 2 && o[0] == 64 && o[1] == 191, "a mask is stretched by the mean of the pixels it covers, rounded", std::to_string(o[0]) + " " + std::to_string(o[1]));
     }
+    // ties of a stretched mask go down (a mean of exactly x.5 is x), and rings go on as rings outside their picture
+    {
+        std::vector<uint8_t> m = {0, 1, 0, 0, 0, 0}, o;      // 3 x 2: the one cell covers 3 x 2 pixels, mean 1/6; a second test below for 0.5
+        vgw::stretchMean(m, 3, 2, 0.5, 0, 2, 2, 1, 1, o);    // covers 0.5 of column 0, all of column 1 and 0.5 of column 2 (rows 0..1): (0 + 1 + 0) / 2 rows... mean 0.25 -> 0
+        check(o.size() == 1 && o[0] == 0, "a mean below one half rounds to 0", std::to_string(o[0]));
+        const int n = 64;
+        std::vector<uint8_t> g((size_t)n * n);
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x) g[(size_t)y * n + x] = (uint8_t)std::min(255.0, std::floor(4.0 * std::hypot((double)(x - n / 2), (double)(y - n / 2)) + 0.5));
+        std::vector<double> prof;
+        check(vgw::radialProfile(g, n, n, prof) && prof.size() == (size_t)n / 2 + 1 && prof[8] == 32, "a picture of rings about its middle is recognised");
+        g[(size_t)14 * n + 14] = 0;
+        g[(size_t)21 * n + 42] = 255;
+        check(!vgw::radialProfile(g, n, n, prof), "  and a picture with something else in it is not");
+        check(vgw::blurSigma(0, 1280) == 0.0 && std::fabs(vgw::blurSigma(1.0, 1280) - 1280 * 0.0011536774 * std::pow(846.8063024, 0.8)) < 1e-9 && vgw::blurSigma(0.5, 1280) < vgw::blurSigma(1.0, 1280),
+              "the Gradient blur sigma grows with the setting");
+    }
     // VEGAS's pictures
     {
         const std::string dll = vgw::findDll({});

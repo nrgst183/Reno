@@ -217,7 +217,8 @@ const char* const kRotStereo = "mx.ofx.plugin.rotate.stereo";
 //    (r12 * 255 + 2047) / 4096 levels (measured on VEGAS's pictures: 99.8 to 100 % of the pixels equal, the rest one level off);
 //  - the output is opaque.
 // The GPU's native sin / cos are not exact where the kernel looks at them hardest (the poles, where cos(pi / 2) comes out as +0, and the picture's
-// seam, where sin(pi) comes out as +3.8e-7 and sin(-pi) as -0); those values were found from VEGAS's pole rows and seam columns and are used as they are.
+// seam, where sin(pi) comes out as +0 and sin(-pi) as -0: a turn by 180 degrees on all three axes, whose matrix holds 8.7e-8s, flips the seam column of the
+// lower half of the picture exactly where those sums cancel, and VEGAS's capture of it fixes the seam sine below 5e-9); those values were found from VEGAS's pole rows and seam columns and are used as they are.
 // Where the kernel reads for one output pixel: the texel (x0, y0) of the sampler (rows from the bottom) and the weights of the next ones
 struct SceneTap { int x0, y0; float fx, fy; };
 struct SceneGeom {
@@ -243,7 +244,7 @@ struct SceneGeom {
             const float lon = nx * kPiF;
             cosL[(size_t)ix] = (float)std::cos((double)lon);
             float sl = (float)std::sin((double)lon);
-            if (lon >= kPiF) sl = 3.8e-7f;
+            if (lon >= kPiF) sl = 0.0f;
             else if (lon <= -kPiF) sl = -0.0f;
             sinL[(size_t)ix] = sl;
         }
@@ -503,10 +504,17 @@ MotionPath analyseMotion(const std::vector<std::vector<float>>& lumas, int w, in
     return m;
 }
 
+// Any report of a changed setting (also one that puts a value back to what it was, as applying the "(Default)" preset does for every saved setting) leaves a mark in the
+// hidden motion data while there is no analysed motion; stabilizationTouched() reads it.
+const char* const kStTouchedMark = "touched";
+
 void stabilizationChanged(Change& ch)
 {
     if (ch.param == kStClear) { ch.setS(kStData, ""); return; }
-    if (ch.param != kStAnalyze) return;
+    if (ch.param != kStAnalyze) {
+        if (ch.param != kStData && ch.s(kStData).empty()) ch.setS(kStData, kStTouchedMark);
+        return;
+    }
     double first, last;
     ch.clipRange(first, last);
     if (!(last > first + 1)) return;
@@ -552,11 +560,30 @@ int stabilizationSetup(Ctx& c, int W, int H, Rot& rot, int& n, int px[2], int py
     return 1;
 }
 
+// A 360 Stabilization with no analysed motion hands the picture back untouched only while none of its settings was changed; once one was (VEGAS's
+// captures: any stereo, exclude or smoothing value other than the default, or a preset applied), the plug-in draws the frame through its rotateEquirect
+// kernel with no turn, which resamples it by 1 / (W - 1) like an unturned Scene Rotation (exact to the level on every such capture).
+bool stabilizationTouched(Ctx& c)
+{
+    MotionPath m;
+    if (readMotion(c.s(kStData), m)) return false;       // (analysed motion that needs no turn: the picture is left alone)
+    if (c.s(kStData) == kStTouchedMark) return true;     // a setting was reported changed (a preset applied, even the default one)
+    return c.i(kStStereo) != 0 || c.i(kStExclude) != 0 || c.i(kStSmooth) != 30;
+}
+
 void stabilization(Ctx& c)
 {
     Rot rot;
     int n, px[2], py[2], pw, ph;
-    if (!stabilizationSetup(c, c.out.w, c.out.h, rot, n, px, py, pw, ph)) { copyFrame(c); return; }
+    if (!stabilizationSetup(c, c.out.w, c.out.h, rot, n, px, py, pw, ph)) {
+        if (stabilizationTouched(c) && c.out.w >= 2 && c.out.h >= 2) {
+            const float I[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            sceneRotateKernel(c.src, c.out, I, false, std::max(0, std::min(2, c.i(kStStereo))), c.levels);
+            return;
+        }
+        copyFrame(c);
+        return;
+    }
     for (int k = 0; k < n; ++k) rotatePanorama(c.src, c.out, rot, px[k], py[k], pw, ph);
 }
 
@@ -775,11 +802,14 @@ void gradientWipe(Ctx& c)
         st.autoContrast = stretch;
         st.keepAspect = vgw::desc(vi).keepAspect != keepAspect;
         std::vector<uint8_t> m8;
-        vgw::frameMask(*pic, st, W, H, m8);
+        double visW = W, visH = H;
+        vgw::frameMask(*pic, st, W, H, m8, &visW, &visH);
         std::vector<float> mf;
         if (blur > 0.001) {
+            // VEGAS's blur sigma is a share of the picture part shown; in frame pixels it is that share of what the stretch makes of it
+            const double sp = vgw::blurSigma(blur, std::max(visW, visH));
             mf.assign(m8.begin(), m8.end());
-            gaussianBlurPlane(mf, W, H, blur * 0.1 * W, blur * 0.1 * W);
+            gaussianBlurPlane(mf, W, H, sp * W / std::max(1.0, visW), sp * H / std::max(1.0, visH));
         }
         const bool lv = c.levels;
         forRows(H, W, [&](int y) {
@@ -847,6 +877,7 @@ bool panoramaSetupGpu(Ctx& c, int W, int H, PanoSetup& o)
     const int r = stabilizationSetup(c, W, H, rot, o.n, o.px, o.py, o.pw, o.ph);
     if (r == 0) {
         if (W < 2 || H < 2) return false;
+        if (stabilizationTouched(c)) return false;          // (the unturned kernel: stabilizationSceneGpu)
         o.copy = true;
         return true;
     }
@@ -870,13 +901,10 @@ bool panoramaSetupGpu(Ctx& c, int W, int H, PanoSetup& o)
 }
 
 // The GPU plan's view of Scene Rotation (sceneRotateKernel()): the taps of every pixel (x0, y0, fx, fy) from the CPU's own code, kept while the settings stay
-bool sceneRotationSetupGpu(Ctx& c, int W, int H, SceneSetup& o)
+static bool sceneSetupGpu(Ctx& c, int W, int H, const float M[9], bool rotate, int stereo, SceneSetup& o)
 {
     if (W < 2 || H < 2) return false;
-    float M[9];
-    bool rotate;
-    sceneRotationMatrix(c, M, rotate);
-    o.stereo = std::max(0, std::min(2, c.i(kRotStereo)));
+    o.stereo = stereo;
     o.levels = c.levels;
     SceneGeom G;
     G.init(W, H, M, rotate, o.stereo, o.levels);
@@ -903,6 +931,24 @@ bool sceneRotationSetupGpu(Ctx& c, int W, int H, SceneSetup& o)
     }
     o.map = lastMap;
     return true;
+}
+
+bool sceneRotationSetupGpu(Ctx& c, int W, int H, SceneSetup& o)
+{
+    float M[9];
+    bool rotate;
+    sceneRotationMatrix(c, M, rotate);
+    return sceneSetupGpu(c, W, H, M, rotate, std::max(0, std::min(2, c.i(kRotStereo))), o);
+}
+
+// 360 Stabilization with no motion data and a setting changed: the unturned kernel; false when the plain copy or the other plan applies
+bool stabilizationSceneGpu(Ctx& c, int W, int H, SceneSetup& o)
+{
+    Rot rot;
+    int n, px[2], py[2], pw, ph;
+    if (stabilizationSetup(c, W, H, rot, n, px, py, pw, ph) || !stabilizationTouched(c)) return false;
+    const float I[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    return sceneSetupGpu(c, W, H, I, false, std::max(0, std::min(2, c.i(kStStereo))), o);
 }
 
 void applyVegasGroups(std::vector<Def>& all)

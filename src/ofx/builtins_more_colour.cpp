@@ -1,6 +1,8 @@
 // Built-in colour effects (Saturation, Soft Contrast, White Balance, Lab Adjust, Black Restore, Broadcast Colors, Channel Blend); see builtins_more.cpp.
 #include "builtins_more_internal.h"
 #include "vegas8.h"
+#include "vfxhslwb.h"
+#include "vfxcolour.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -99,8 +101,34 @@ void saturationAdjust8Gpu(Ctx& c, std::vector<float>& t)
     putDouble(t, std::sqrt(55902.447675));
 }
 
+// VEGAS with GPU acceleration on draws Saturation Adjust, LAB Adjust and Broadcast Colors with its OpenCL kernels (vfxcolour.h, notes: Colour_Kernels.md): float32 on the premultiplied
+// values one pixel at a time, then the kernels' 12-bit store into an 8-bit frame. fn(in, out) works on one pixel's four floats.
+template <class F>
+static void oclPixels(Ctx& c, F fn)
+{
+    const int W = c.out.w, H = c.out.h;
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float o[4], in[4];
+            const float* sp = c.src.at(x, y);
+            if (q) { vcol::readLevels(sp, in); sp = in; }
+            fn(sp, o);
+            float* d = c.out.at(x, y);
+            for (int k = 0; k < 4; ++k) d[k] = q ? oclStore12(o[k]) : o[k];
+        }
+    });
+}
+static bool oclUsable(const Ctx& c) { return c.openCl && c.out.w > 0 && c.out.h > 0 && c.src.w == c.out.w && c.src.h == c.out.h; }
+
 void saturationAdjust(Ctx& c)
 {
+    if (oclUsable(c)) {
+        vcol::SatSettings st;
+        st.amount = (float)c.d("Amount"); st.centre = (float)c.d("Center"); st.spread = (float)c.d("Spread"); st.low = (float)c.d("Low"); st.high = (float)c.d("High");
+        oclPixels(c, [st](const float* p, float* o) { vcol::saturationPx(st, p, o); });
+        return;
+    }
     if (c.levels) { saturationAdjust8(c); return; }
     const float amount = (float)c.d("Amount"), low = (float)c.d("Low"), high = (float)c.d("High");
     const float centre = (float)c.d("Center") * kSatScale, half = (float)std::max(0.005, c.d("Spread")) * 0.5f * kSatScale;
@@ -121,80 +149,77 @@ void saturationAdjust(Ctx& c)
 // Soft Contrast, from VEGAS's pictures (tools/effectref_compare.py): stretch x * (1 + 0.00212 * Stretch range) (clipped), then blend with a blurred copy of the 601 luma by OVERLAY (below half 2xB,
 // above 1 - 2(1-x)(1-B)) with Contrast as the amount. Diffusion blurs the luma layer (Gaussian 0.205 px per percent at 320 wide). The tint multiplies the layer per channel by 1 + 1.137 x tint x
 // (T - luma(T)) (T = the correction hue at full saturation). Low / High trim bend the layer by Softlight's spline; the vignette is a RectangleMask / EllipseMask as in shapeMaskVelvet.
-// White Balance, rebuilt from VEGAS's code. Works on 8-bit bytes in two steps:
-// White Balance, rebuilt from VEGAS's code, on 8-bit bytes. 1. A 1024-entry table indexed by luma x 4 (rounded) gives the luma (x Brightness, from 0.25 steps, not held to 255) and the shift of U, V
-// (BT.601, 0..255 scale) = cos / sin of Angle x Amount^2 x 127.5; each pixel goes to Y, U, V, is shifted and goes back (R from 1.1402509 V, G from 0.3947313 U + 0.5808092 V, B from 2.0325203 U), rounded.
+// White Balance, rebuilt from VEGAS's code (the CPU path, on 8-bit bytes; the OpenCL path VEGAS used for the captures follows). 1. A 1024-entry table indexed by luma x 4 (rounded) gives the luma
+// (x Brightness, from 0.25 steps, not held to 255) and the shift of U, V (BT.601, 0..255 scale) = cos / sin of Angle x Amount^2 x 127.5; each pixel goes to Y, U, V, is shifted and goes back (R from
+// 1.1402509 V, G from 0.3947313 U + 0.5808092 V, B from 2.0325203 U), rounded.
 // 2. With HasData ("Equalize Histogram") each channel is stretched by its own histogram: lo = level below which 0.5% of pixels lie, hi = highest level with at most 99.5% below;
 // new = (old - lo x 255/256) x 256 / (hi - lo), held to 0..255, taken from the frame being drawn.
-// VEGAS draws from a hidden Angle, Amount, Brightness and HasData (Temperature, Tint and the neutral colour are dialog settings it converts). Reno has no Angle, so wbAngle derives it from temperature
-// and tint; at the untouched temperature and tint the angle is 90 degrees (a captured picture with only Amount set), and moving the temperature or tint sets Amount too (see whiteBalanceChanged).
-// Older Reno values (-1..1) mean the default.
-static const double kWbDefaultKelvin = 6000.0;      // VEGAS's live default (Reno Effect Capture: effects.txt)
-// With the temperature moved and the tint left at 0, VEGAS's pictures fit a tint of about 10.5 (the tint of its default neutral grey; inferred from three captured
-// temperatures, all within the rounding of the pictures).
-static const double kWbNeutralTint = 10.5;
-// Robertson's isotherm table (reciprocal temperature in mired, u, v, slope), as VEGAS keeps it.
-static const double kWbRob[31][4] = {
-    {0.0, 0.18006, 0.26352, -0.24341},    {10.0, 0.18066, 0.26589, -0.25479},   {20.0, 0.18133, 0.26846, -0.26876},
-    {30.0, 0.18208, 0.27119, -0.28539},   {40.0, 0.18293, 0.27407, -0.3047},    {50.0, 0.18388, 0.27709, -0.32675},
-    {60.0, 0.18494, 0.28021, -0.35156},   {70.0, 0.18611, 0.28342, -0.37915},   {80.0, 0.1874, 0.28668, -0.40955},
-    {90.0, 0.1888, 0.28997, -0.44278},    {100.0, 0.19032, 0.29326, -0.47888},  {125.0, 0.19462, 0.30141, -0.58204},
-    {150.0, 0.19962, 0.30921, -0.70471},  {175.0, 0.20525, 0.31647, -0.84901},  {200.0, 0.21142, 0.32312, -1.0182},
-    {225.0, 0.21807, 0.32909, -1.2168},   {250.0, 0.22511, 0.33439, -1.4512},   {275.0, 0.23247, 0.33904, -1.7298},
-    {300.0, 0.2401, 0.34308, -2.0637},    {325.0, 0.24702, 0.34655, -2.4681},   {350.0, 0.25591, 0.34951, -2.9641},
-    {375.0, 0.264, 0.352, -3.5814},       {400.0, 0.27218, 0.35407, -4.3633},   {425.0, 0.28039, 0.35577, -5.3762},
-    {450.0, 0.28863, 0.35714, -6.7262},   {475.0, 0.29685, 0.35823, -8.5955},   {500.0, 0.30505, 0.35907, -11.324},
-    {525.0, 0.3132, 0.35968, -15.628},    {550.0, 0.32129, 0.36011, -23.325},   {575.0, 0.32931, 0.36038, -40.77},
-    {600.0, 0.33724, 0.36051, -116.45}};
-// Temperature and tint to the angle of the correction, the way VEGAS does it: Robertson's table gives u, v (moved along the isotherm by the tint / -3000),
-// then x, y, XYZ (Y = 1), a fixed matrix to RGB, BT.601 U and V of that colour, and the angle is atan2(-V, -U) in degrees (0..360).
-// 'mag' (when given) gets the amount-squared that moves the colour of this temperature and tint to grey (the length of its U, V, 0..1): what VEGAS puts into
-// Amount when the temperature or the tint is moved.
-static double wbAngle(double kelvin, double tint, double* mag = nullptr)
+// VEGAS keeps White Balance's state in hidden settings: Angle and AmountOfCorrection (what it draws from), and, in the effect itself, the neutral colour and the temperature and tint it
+// last worked from and a flag. Its changedParam (Vfx1.ofx 0x180588220) keeps them in step, the same on every change:
+//  - SelectWhiteColor changed (compared with the colour it knows, by more than 1/255): the colour's temperature and tint are put into ColorTemperature and ColorTint, the correction that turns
+//    the colour grey into Angle (when it differs by more than 0.1) and, if the flag is clear, into AmountOfCorrection (when it differs by more than 0.001);
+//  - ColorTemperature or ColorTint changed: the values it knows are brought up to date (when the setting differs from them by more than 0.99), the colour of that temperature and tint is worked
+//    out and, if it is not the colour it knows (1/255), put into SelectWhiteColor, with Angle and (flag clear) AmountOfCorrection from it;
+//  - HasData changed: the flag is cleared.
+// The flag is set when the effect is made; VEGAS clears it right away (it reports every setting changed once, HasData last). VEGAS puts a script's or a preset's settings in first and reports
+// the changed ones afterwards in the order SelectWhiteColor, ColorTemperature, ColorTint, ...: so a later temperature or tint overwrites an Amount set in the same go, and a new colour puts
+// the temperature and tint (and with them the correction) back to what it stands for. A made effect's temperature and tint are those of its default grey, 5998.98 K and tint 9.99
+// (SelectWhiteColor is reported changed against nothing at the start); that is where the 'tint 10' of a temperature set alone comes from (captures 006-009, 013-016 and the (Default) preset 001 are
+// exact, tools/wb_state_sim.py in the notes).
+// Reno keeps the colour in WhiteColor (SelectWhiteColor is a button here) and the rest in Angle and WbState ("r g b kelvin tint flag").
+static const double kWbDefaultKelvin = 6000.0;      // the describe default (VEGAS's preset (Default) puts it back)
+static const double kWbByte = 0.003921568859368563;  // 1/255 as a float, the colour compare's limit
+
+struct WbHidden {
+    double col[3] = {0.5, 0.5, 0.5};
+    double kelvin = 5998.9845462479225, tint = 9.991051797908726;
+    double lum = 0.5;                   // VEGAS's +0xd8: the Y (0.3439664498 R + 0.7281660966 G - 0.0721325464 B) of the last neutral colour; a temperature's colour is made this bright
+    int flag = 0;                       // VEGAS's byte at +0x120: 0 once HasData has been reported changed (Amount then follows the colour, temperature and tint)
+};
+
+static std::string wbFormat(const WbHidden& h)
 {
-    if (mag) *mag = 0.0;
-    if (!(kelvin >= 100.0)) kelvin = kWbDefaultKelvin;
-    kelvin = clampd(kelvin, 1700.0, 15000.0);
-    tint = clampd(tint, -100.0, 100.0);
-    // the untouched state: VEGAS starts with a correction angle of 90 degrees and an amount of 0
-    if (kelvin == kWbDefaultKelvin && tint == 0.0) return 90.0;
-    if (tint == 0.0) tint = kWbNeutralTint;
-    const double t13 = tint * -0.0003333333333333333;
-    const double m = 1000000.0 / kelvin;
-    int i = 0;
-    for (;; ++i) {
-        if (kWbRob[i + 1][0] > m || i == 29) break;
+    char buf[200];
+    std::snprintf(buf, sizeof buf, "%.17g %.17g %.17g %.17g %.17g %d %.17g", h.col[0], h.col[1], h.col[2], h.kelvin, h.tint, h.flag, h.lum);
+    return buf;
+}
+static bool wbParse(const std::string& t, WbHidden& h)
+{
+    WbHidden r;
+    double v[5], lum = 0.0;
+    int f = 0;
+    const int got = std::sscanf(t.c_str(), "%lf %lf %lf %lf %lf %d %lf", &v[0], &v[1], &v[2], &v[3], &v[4], &f, &lum);
+    if (got < 6) return false;
+    for (double x : v) if (!std::isfinite(x)) return false;
+    for (int k = 0; k < 3; ++k) r.col[k] = v[k];
+    // (a state saved before the luminance was kept: the colour's own)
+    r.lum = (got >= 7 && std::isfinite(lum)) ? lum : 0.3439664498 * v[0] + 0.7281660966 * v[1] - 0.0721325464 * v[2];
+    r.kelvin = v[3]; r.tint = v[4]; r.flag = f ? 1 : 0;
+    h = r;
+    return true;
+}
+
+// Angle and amount for drawing: the hidden Angle and AmountOfCorrection. A project saved before they were kept (its temperature or tint is not the one the state knows) gets the angle from them.
+static void wbDrawSettings(Ctx& c, double& angle, double& amount)
+{
+    amount = clampd(c.d("AmountOfCorrection"), 0, 1);
+    angle = c.d("Angle");
+    WbHidden h;
+    const bool known = wbParse(c.s("WbState"), h);
+    const double k = c.d("ColorTemperature"), t = c.d("ColorTint");
+    if (!known || std::fabs(k - h.kelvin) > 0.99 * 4 || std::fabs(t - h.tint) > 0.99 * 4) {
+        const double kk = clampd(k >= 100.0 ? k : kWbDefaultKelvin, 1700.0, 15000.0);
+        double tt = clampd(t, -100.0, 100.0);
+        if (kk == kWbDefaultKelvin && tt == 0.0) angle = 90.0;
+        else {
+            if (tt == 0.0) tt = vhw::kWbNeutralTint;            // (the tint of VEGAS's default grey)
+            double rgb[3], a, m;
+            vhw::tempTintToRgb(kk, tt, rgb);
+            vhw::rgbToAngleAmount(rgb, a, m);
+            angle = a;
+        }
     }
-    const int k = i + 1;
-    const double f = (kWbRob[k][0] - m) / (kWbRob[k][0] - kWbRob[i][0]);
-    const double si = kWbRob[i][3], sk = kWbRob[k][3];
-    const double qi = std::sqrt(si * si + 1.0), qk = std::sqrt(sk * sk + 1.0);
-    const double g = 1.0 - f;
-    const double dx = (1.0 / qk) * g + (1.0 / qi) * f;
-    const double dy = (sk / qk) * g + (si / qi) * f;
-    const double nrm = std::sqrt(dy * dy + dx * dx);
-    double u = g * kWbRob[k][1] + f * kWbRob[i][1];
-    double v = g * kWbRob[k][2] + f * kWbRob[i][2];
-    v += (dy / nrm) * t13;
-    u += (dx / nrm) * t13;
-    const double den = (u - v * 4.0) + 2.0;
-    const double y = v / den, x = (u * 1.5) / den;
-    const double Y = 1.0;
-    const double q = Y / y;
-    const double X = q * x, Z = ((1.0 - x) - y) * q;
-    const double r = X * 1.0498110175 - Z * 9.74845e-05;
-    const double gg = (Y * 1.3733130458 - X * 0.4959030231) + Z * 0.0982400361;
-    const double bb = Z * 0.9912520182;
-    const double yl = (gg * 0.587 + r * 0.299) + bb * 0.114;
-    const double U = ((bb - yl) * 0.492000013589859) / 127.5, V = ((r - yl) * 0.8769999742507935) / 127.5;
-    if (mag) *mag = std::sqrt(U * U + V * V) * 127.5;
-    double ang;
-    if (-U == 0.0) ang = (-V >= 0.0) ? 90.0 : 270.0;
-    else {
-        ang = std::atan2(-V, -U) * 57.29577951308232;
-        if (ang < 0.0) ang += 360.0;
-    }
-    return ang;
+    if (!std::isfinite(angle)) angle = 90.0;
 }
 // same rounding as VEGAS (a float plus 1.5e-8 to the nearest whole number)
 static inline int wbRound(float v) { return (int)std::floor((double)v + 1.5e-8 + 0.5); }
@@ -210,7 +235,9 @@ void whiteBalanceSettings(Ctx& c, std::vector<float>& tab, bool& shift, bool& ha
     if (!shift) return;
     tab.resize((size_t)1024 * 3);
     {
-        const double ang = wbAngle(c.d("ColorTemperature"), c.d("ColorTint")) * 3.141592653589793 / 180.0;
+        double angDeg, amt;
+        wbDrawSettings(c, angDeg, amt);
+        const double ang = angDeg * 3.141592653589793 / 180.0;
         const double s2 = amount * amount;
         const float su = (float)(std::cos(ang) * s2 * 127.5), sv = (float)(std::sin(ang) * s2 * 127.5);
         for (int i = 0; i < 1024; ++i) {
@@ -223,8 +250,61 @@ void whiteBalanceSettings(Ctx& c, std::vector<float>& tab, bool& shift, bool& ha
     }
 }
 
+// VEGAS with GPU acceleration on draws White Balance with its OpenCL kernels (vfxhslwb.h, prog47): the shift pass in float on the straight colour; with HasData its picture is an 8-bit
+// one, whose truncated bytes are counted into 256-bin histograms per channel, and a second pass stretches that picture. The result goes into an 8-bit frame by the 12-bit store.
+static void whiteBalanceOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    const double amount = clampd(c.d("AmountOfCorrection"), 0, 1), bright = c.d("Brightness");
+    const bool hasData = c.b("HasData");
+    vhw::WbShift sh;
+    double angDeg, amtDraw;
+    wbDrawSettings(c, angDeg, amtDraw);
+    sh.angle = (float)angDeg;
+    sh.amount = (float)amount;
+    sh.bright = (float)bright;
+    const bool q8 = c.host8;
+    vhw::WbStretch st;
+    for (int k = 0; k < 3; ++k) { st.gain[k] = 1.f; st.off[k] = 0.f; }
+    std::vector<float> mid;                         // the shift pass's picture (only kept when HasData needs a second pass)
+    if (hasData) mid.resize((size_t)W * H * 4);
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float o[4];
+            vhw::wbPixel(sh, false, st, c.src.at(x, y), o);
+            if (hasData) {
+                float* m = &mid[((size_t)y * W + x) * 4];
+                for (int k = 0; k < 4; ++k) m[k] = q8 ? more::oclStore12(o[k]) : o[k];       // (an 8-bit picture in an 8-bit frame)
+            } else {
+                float* d = c.out.at(x, y);
+                for (int k = 0; k < 4; ++k) d[k] = q8 ? more::oclStore12(o[k]) : o[k];
+            }
+        }
+    });
+    if (!hasData) return;
+    const bool shifted = amount != 0.0 || bright != 1.0;
+    const size_t n = std::min((size_t)vhw::wbHistPixels(shifted), (size_t)W * H);
+    std::vector<int> counts((size_t)3 * 256, 0);
+    for (size_t i = 0; i < n; ++i) {                // the kernel's order: rows from the bottom
+        const int j = (int)(i / (size_t)W), x = (int)(i % (size_t)W);
+        const float* m = &mid[((size_t)(H - 1 - j) * W + x) * 4];
+        for (int k = 0; k < 3; ++k) counts[(size_t)k * 256 + (size_t)vhw::wbPlaneByte(m[k])]++;
+    }
+    for (int k = 0; k < 3; ++k) vhw::wbStretchChannel(&counts[(size_t)k * 256], st.gain[k], st.off[k]);
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float o[4];
+            vhw::wbStretchPixel(st, &mid[((size_t)y * W + x) * 4], o);
+            float* d = c.out.at(x, y);
+            for (int k = 0; k < 4; ++k) d[k] = q8 ? more::oclStore12(o[k]) : o[k];
+            d[3] = d[2];                            // VEGAS's stretch pass writes the stretched blue into the alpha as well (every HasData capture has alpha == blue, colour bytes as they are)
+        }
+    });
+}
+
 void whiteBalance(Ctx& c)
 {
+    if (c.openCl && c.out.w > 0 && c.out.h > 0) { whiteBalanceOpenCl(c); return; }
     std::vector<float> tab;
     bool shift, hasData;
     whiteBalanceSettings(c, tab, shift, hasData);
@@ -287,49 +367,93 @@ void whiteBalance(Ctx& c)
     });
 }
 
-// The buttons: "Select neutral color" takes the frame's average colour as the one that should be grey; the correction is an angle (direction in U, V)
-// and an amount (size Amount^2 x 127.5), and temperature and tint are set to the pair giving that angle. "Equalize Histogram" switches equalising
-// on, "Undo Equalization" off.
+// The settings VEGAS's changedParam keeps in step (see above). 'h' is the effect's own memory of the colour, temperature and tint.
+static void wbSetAngleAmount(const Change& ch, const WbHidden& h, double angle, double amount)
+{
+    if (std::fabs(ch.d("Angle") - angle) > 0.1) ch.setD("Angle", clampd(angle, 0.0, 360.0));
+    if (h.flag == 0 && std::fabs(ch.d("AmountOfCorrection") - amount) > 0.001) ch.setD("AmountOfCorrection", clampd(amount, 0.0, 1.0));
+}
+static void wbTempTintChanged(Change& ch, WbHidden& h);
+static void wbColourChanged(Change& ch, WbHidden& h)
+{
+    double c[3];
+    {
+        const Color col = ch.color("WhiteColor");
+        c[0] = col.r; c[1] = col.g; c[2] = col.b;
+    }
+    for (int k = 0; k < 3; ++k) if (!std::isfinite(c[k])) c[k] = 0.0;
+    bool differs = false;
+    for (int k = 0; k < 3; ++k) if (std::fabs(c[k] - h.col[k]) > kWbByte) differs = true;
+    if (!differs) return;
+    for (int k = 0; k < 3; ++k) h.col[k] = c[k];
+    h.lum = 0.3439664498 * c[0] + 0.7281660966 * c[1] - 0.0721325464 * c[2];
+    double kel, tint;
+    if (vhw::rgbToTempTint(c, kel, tint)) { h.kelvin = kel; h.tint = tint; }       // (black has none: the old ones stay)
+    ch.setD("ColorTemperature", clampd(h.kelvin, 1700.0, 15000.0));
+    ch.setD("ColorTint", clampd(h.tint, -100.0, 100.0));
+    double ang, amt;
+    vhw::rgbToAngleAmount(c, ang, amt);
+    wbSetAngleAmount(ch, h, ang, amt);
+    // the temperature and tint it just put in are changed settings too: VEGAS reports them after the colour (ColorTemperature, then ColorTint)
+    wbTempTintChanged(ch, h);
+    wbTempTintChanged(ch, h);
+}
+static void wbTempTintChanged(Change& ch, WbHidden& h)
+{
+    const double k = ch.d("ColorTemperature"), t = ch.d("ColorTint");
+    if (!std::isfinite(k) || !std::isfinite(t)) return;
+    // (VEGAS keeps the value it put into a setting even when the setting's range is narrower: the colour of 1666.67 K, set as 1700 K, still works from 1666.67)
+    if (std::fabs(t - clampd(h.tint, -100.0, 100.0)) > 0.99) h.tint = t;
+    if (std::fabs(k - clampd(h.kelvin, 1700.0, 15000.0)) > 0.99) h.kelvin = k;
+    double rgb[3];
+    vhw::tempTintToRgb(clampd(h.kelvin, 100.0, 1.0e6), clampd(h.tint, -1000.0, 1000.0), rgb, h.lum);
+    bool differs = false;
+    for (int j = 0; j < 3; ++j) if (!(std::fabs(rgb[j] - h.col[j]) <= kWbByte)) differs = true;
+    if (!differs) return;
+    ch.setColor("WhiteColor", Color{clampd(rgb[0], 0, 1), clampd(rgb[1], 0, 1), clampd(rgb[2], 0, 1), 1.0});
+    double ang, amt;
+    vhw::rgbToAngleAmount(rgb, ang, amt);
+    if (h.flag == 0 && std::fabs(ch.d("AmountOfCorrection") - amt) > 0.001) ch.setD("AmountOfCorrection", clampd(amt, 0.0, 1.0));
+    if (std::fabs(ch.d("Angle") - ang) > 0.1) ch.setD("Angle", clampd(ang, 0.0, 360.0));
+}
+
+// A new effect has been through VEGAS's first reports: its neutral grey (0.5) was reported changed, which put the grey's temperature and tint into the settings, and HasData cleared the flag.
+void whiteBalanceCreated(Change& ch)
+{
+    WbHidden h;
+    ch.setS("WbState", wbFormat(h));
+    ch.setD("ColorTemperature", h.kelvin);
+    ch.setD("ColorTint", h.tint);
+    ch.setD("Angle", 90.0);
+}
+
+// Reported changes (VEGAS: changedParam). The buttons: "Select neutral color" takes the frame's average colour as the one that should be grey (what picking it with VEGAS's dropper does);
+// "Equalize Histogram" switches equalising on, "Undo Equalization" off.
 void whiteBalanceChanged(Change& ch)
 {
-    if (ch.param == "EnhanceHistogram") { ch.setI("HasData", 1); return; }
-    if (ch.param == "ClearData") { ch.setI("HasData", 0); return; }
-    if (ch.param == "ColorTemperature" || ch.param == "ColorTint") {
-        // VEGAS sets the amount from the new temperature and tint (its captured pictures with only the temperature or the tint set show the full correction at
-        // an amount of 0); a later change of Amount overrides it. The untouched pair gives 0.
-        double mag = 0.0;
-        const double k = ch.d("ColorTemperature"), t = ch.d("ColorTint");
-        if (!(k == kWbDefaultKelvin && t == 0.0)) wbAngle(k, t, &mag);
-        ch.setD("AmountOfCorrection", std::min(1.0, std::sqrt(mag)));
-        return;
-    }
-    if (ch.param != "SelectWhiteColor") return;
-    Buf f;
-    if (!ch.source(ch.time, f)) return;
-    double R = 0, G = 0, B = 0, n = 0;
-    for (size_t i = 0; i + 3 < f.px.size(); i += 4) {
-        const float a = f.px[i + 3];
-        if (!(a > 0.5f)) continue;
-        R += f.px[i] / a; G += f.px[i + 1] / a; B += f.px[i + 2] / a;
-        n += 1;
-    }
-    if (n < 1) return;
-    R = R / n * 255.0; G = G / n * 255.0; B = B / n * 255.0;
-    const double y = 0.299 * R + 0.587 * G + 0.114 * B, u = 0.492 * (B - y), v = 0.877 * (R - y);
-    const double mag = std::sqrt(u * u + v * v);
-    if (mag < 0.5) {
-        ch.setD("ColorTemperature", kWbDefaultKelvin); ch.setD("ColorTint", 0.0); ch.setD("AmountOfCorrection", 0.0);
-        return;
-    }
-    const double ca = -u / mag, sa = -v / mag;
-    const double k = std::fabs(sa + 0.26067 * ca);
-    double lam = 100.0;
-    if (k > 1e-9) lam = std::min(lam, 68.79 / k);
-    if (std::fabs(ca) > 1e-9) lam = std::min(lam, 87.0 / std::fabs(ca));
-    const double dm = lam * ca, tint = clampd((lam * sa + 0.26067 * dm) / 0.68791, -100.0, 100.0);
-    ch.setD("ColorTemperature", clampd(1e6 / (1e6 / kWbDefaultKelvin + dm), 1700.0, 15000.0));
-    ch.setD("ColorTint", tint);
-    ch.setD("AmountOfCorrection", clampd(std::sqrt(mag / 127.5), 0.0, 1.0));
+    WbHidden h;
+    if (!wbParse(ch.s("WbState"), h)) h = WbHidden();      // (nothing kept, as after a preset that reset it: the state of a made effect)
+    bool state = true;
+    if (ch.param == "EnhanceHistogram") { ch.setI("HasData", 1); h.flag = 0; }
+    else if (ch.param == "ClearData") { ch.setI("HasData", 0); h.flag = 0; }
+    else if (ch.param == "HasData") h.flag = 0;
+    else if (ch.param == "WhiteColor") wbColourChanged(ch, h);
+    else if (ch.param == "ColorTemperature" || ch.param == "ColorTint") wbTempTintChanged(ch, h);
+    else if (ch.param == "SelectWhiteColor") {
+        Buf f;
+        if (!ch.source(ch.time, f)) return;
+        double R = 0, G = 0, B = 0, n = 0;
+        for (size_t i = 0; i + 3 < f.px.size(); i += 4) {
+            const float a = f.px[i + 3];
+            if (!(a > 0.5f)) continue;
+            R += f.px[i] / a; G += f.px[i + 1] / a; B += f.px[i + 2] / a;
+            n += 1;
+        }
+        if (n < 1) return;
+        ch.setColor("WhiteColor", Color{clampd(R / n, 0, 1), clampd(G / n, 0, 1), clampd(B / n, 0, 1), 1.0});
+        wbColourChanged(ch, h);
+    } else state = false;
+    if (state) ch.setS("WbState", wbFormat(h));
 }
 
 // LAB Adjust's sRGB steps. Decoding: the 256 values of an 8-bit picture are looked up (any other value is worked out). Encoding: the result is a whole level, so the 255 values
@@ -494,6 +618,16 @@ static void labAdjust8(Ctx& c)
 
 void labAdjust(Ctx& c)
 {
+    if (oclUsable(c)) {
+        vcol::LabSettings st;
+        st.lightness = (float)c.d("Lightness");
+        st.a = (float)(c.d("Channela") * 100.0);
+        st.b = (float)(c.d("Channelb") * 100.0);
+        st.invert = c.b("InvertLuminance") ? 1 : 0;
+        st.desat = (float)(1.0 - c.d("Desaturate"));
+        oclPixels(c, [st](const float* p, float* o) { vcol::labPx(st, p, o); });
+        return;
+    }
     if (c.levels) { labAdjust8(c); return; }
     const double light = c.d("Lightness"), da = c.d("Channela"), db = c.d("Channelb"), des = clampd(c.d("Desaturate"), 0, 1);
     const bool invert = c.b("InvertLuminance");
@@ -932,6 +1066,20 @@ void broadcastColors8GpuTable(Ctx& c, std::vector<float>& t)
 }
 void broadcastColors(Ctx& c)
 {
+    if (oclUsable(c)) {
+        vcol::BroadcastSettings st;
+        st.lumaMin = (float)c.d("LumaMin"); st.lumaMinSmooth = (float)c.d("LumaMinSmoothness");
+        st.lumaMax = (float)c.d("LumaMax"); st.lumaMaxSmooth = (float)c.d("LumaMaxSmoothness");
+        st.chromaMax = (float)c.d("ChromaMax"); st.chromaSmooth = (float)c.d("ChromaSmoothness");
+        st.compMin = (float)c.d("CompositeMin"); st.compMinSmooth = (float)c.d("CompositeMinSmoothness");
+        st.compMax = (float)c.d("CompositeMax"); st.compMaxSmooth = (float)c.d("CompositeMaxSmoothness");
+        st.setup75 = c.b("75IREsetup") ? 1 : 0;
+        st.studio = c.b("StudioRGB16To135") ? 1 : 0;
+        vcol::BroadcastFrame fr;
+        vcol::broadcastPrepare(st, fr);
+        oclPixels(c, [st, fr](const float* p, float* o) { vcol::broadcastPx(st, fr, p, o); });
+        return;
+    }
     if (c.levels) { broadcastColors8(c); return; }
     const BroadcastLimits L = broadcastLimits(c);
     perPixel(c, [&](float& r, float& g, float& b, int, int) {

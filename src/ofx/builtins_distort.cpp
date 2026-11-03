@@ -1,7 +1,9 @@
 // Built-in stand-ins for VEGAS Pro 18's distortion effects (see builtins.h): Swirl, Pinch/Punch and Wave, with VEGAS's identifiers, parameter names and presets (from Vfx1Presets.xml).
-// The frames are Reno's approximation. Guessed: how far Swirl turns at Amount 1 (two turns at the centre, none at the edge of its ellipse), Pinch/Punch's curve, and Wave's units
-// (Waves: whole waves across the frame; Amplitude: a fraction of the frame; Phase: in waves, so animating it 0 to 1 moves the waves along by one).
+// Swirl, Pinch/Punch and Wave are VEGAS's own code (vfxswirl.h, vfxwave.h)
 #include "builtins_impl.h"
+#include "vegas8.h"
+#include "vfxswirl.h"
+#include "vfxwave.h"
 #include "../core/base.h"
 #include <algorithm>
 #include <cstring>
@@ -13,86 +15,101 @@ namespace {
 
 const char* const kGroup = "Reno Built-in";
 
-// The ellipse round Center that Swirl and Pinch/Punch work inside (Scaling: size as a fraction of the frame; Proportional: the vertical scaling follows the horizontal one,
-// so the ellipse keeps the frame's shape). VEGAS counts from the pixel's index, not its middle: the centre of a 320 x 180 frame is pixel (160, 90), so the area's
-// centre is half a pixel further on than the frame's middle (measured on VEGAS's own pictures, exact to 0.01 pixel).
-struct Area {
-    double px0, py0, rx, ry;
-    Area(Ctx& c, int W, int H)
-    {
-        double cx, cy;
-        c.xy("Center", cx, cy);
-        const double sh = clampd(c.d("ScalingHorizontal"), 0, 10);
-        const double sv = c.b("ScalingProportional") ? sh : clampd(c.d("ScalingVertical"), 0, 10);
-        rx = std::max(1e-3, sh * W * 0.5);
-        ry = std::max(1e-3, sv * H * 0.5);
-        px0 = cx * W + 0.5;
-        py0 = (1 - cy) * H + 0.5;
+// ------------------------------------------------------------------ Swirl and Pinch/Punch
+// Both from VEGAS's own code (sftrans1.dll, read and checked against all 32 of its pictures; see vfxswirl.h). They work inside an ellipse round Center (Scaling: its size as a
+// fraction of the frame; Proportional: the vertical scaling follows the horizontal one) and copy the rest. VEGAS counts from the pixel's index and truncates the centre to a whole
+// pixel. An 8-bit frame goes through the 8-bit mixers (bytes blue, green, red, alpha), a float frame through the float ones.
+vfswirl::Area areaOf(Ctx& c, int W, int H)
+{
+    double cx, cy;
+    c.xy("Center", cx, cy);
+    const double sh = clampd(c.d("ScalingHorizontal"), 0, 10);
+    const double sv = c.b("ScalingProportional") ? sh : clampd(c.d("ScalingVertical"), 0, 10);
+    return vfswirl::setup(W, H, clampd(c.d("Amount"), -1, 1), cx, 1 - cy, sh, sv);
+}
+
+// mode 0: Swirl, 1: Pinch/Punch
+void legacyWarp(Ctx& c, int mode)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    const vfswirl::Area a = areaOf(c, W, H);
+    if (!(c.host8 || c.levels)) {
+        float* d = reinterpret_cast<float*>(c.out.px.data());
+        const float* s = reinterpret_cast<const float*>(c.src.px.data());
+        if (mode == 0) vfswirl::swirlF(d, (ptrdiff_t)W * 16, s, (ptrdiff_t)W * 16, a);
+        else vfswirl::pinchF(d, (ptrdiff_t)W * 16, s, (ptrdiff_t)W * 16, a);
+        return;
     }
-};
-
-// ------------------------------------------------------------------ Swirl
-// Turned about Center, most at the centre and not at all at the ellipse's edge: the angle is Amount x 15 radians x (1 - r)^2 for r the distance from the centre in
-// ellipse radii (measured on VEGAS's presets: Maximum, Medium, Clockwise, Counter Clockwise, Half Scale; the error is a fraction of a level). Amount 1 turns clockwise.
-void swirl(Ctx& c)
-{
-    const int W = c.out.w, H = c.out.h;
-    const Area a(c, W, H);
-    const double turn = clampd(c.d("Amount"), -1, 1) * -15.0;
-    forRows(H, W, [&](int y) {
-        for (int x = 0; x < W; ++x) {
-            const double dx = (x + 0.5 - a.px0) / a.rx, dy = (y + 0.5 - a.py0) / a.ry;
-            const double r = std::sqrt(dx * dx + dy * dy);
-            float* o = c.out.at(x, y);
-            if (r >= 1) { std::memcpy(o, c.src.at(x, y), sizeof(float) * 4); continue; }
-            const double f = (1 - r) * (1 - r);
-            const double ang = turn * f, ca = std::cos(ang), sa = std::sin(ang);
-            // (turned in the ellipse's own units, so a frame-shaped ellipse is a circle for it: the picture is sheared, not rotated rigidly)
-            c.src.sampleClamped(a.px0 + (dx * ca - dy * sa) * a.rx, a.py0 + (dx * sa + dy * ca) * a.ry, o);
+    std::vector<uint8_t> in((size_t)W * H * 4), out((size_t)W * H * 4, 0);
+    for (int y = 0; y < H; ++y) {
+        const float* s = c.src.at(0, y);
+        uint8_t* d = &in[(size_t)y * W * 4];
+        for (int x = 0; x < W; ++x, s += 4, d += 4) {
+            d[0] = (uint8_t)v8::toLevel(s[2]);
+            d[1] = (uint8_t)v8::toLevel(s[1]);
+            d[2] = (uint8_t)v8::toLevel(s[0]);
+            d[3] = (uint8_t)v8::toLevel(s[3]);
         }
-    });
-}
-
-// ------------------------------------------------------------------ Pinch/Punch
-// Amount > 0 punches the middle of the ellipse out towards you (magnified), < 0 pinches it in; the edge stays put. The picture is taken from the point
-// (1 - 0.8 x Amount x cos^2(pi r / 2)) times as far from the centre (r in ellipse radii): measured on VEGAS's Maximum / Medium Punch and Pinch (0.1 .. 12 levels mean squared).
-void pinchPunch(Ctx& c)
-{
-    const int W = c.out.w, H = c.out.h;
-    const Area a(c, W, H);
-    const double amount = clampd(c.d("Amount"), -1, 1);
-    forRows(H, W, [&](int y) {
-        for (int x = 0; x < W; ++x) {
-            const double dx = (x + 0.5 - a.px0) / a.rx, dy = (y + 0.5 - a.py0) / a.ry;
-            const double r = std::sqrt(dx * dx + dy * dy);
-            float* o = c.out.at(x, y);
-            if (r >= 1 || r < 1e-12) { std::memcpy(o, c.src.at(x, y), sizeof(float) * 4); continue; }
-            const double cs = std::cos(kPi * 0.5 * r);
-            const double k = 1 - amount * 0.8 * cs * cs;
-            c.src.sampleClamped(a.px0 + dx * k * a.rx, a.py0 + dy * k * a.ry, o);
+    }
+    if (mode == 0) vfswirl::swirl8(out.data(), (ptrdiff_t)W * 4, in.data(), (ptrdiff_t)W * 4, a);
+    else vfswirl::pinch8(out.data(), (ptrdiff_t)W * 4, in.data(), (ptrdiff_t)W * 4, a);
+    for (int y = 0; y < H; ++y) {
+        float* o = c.out.at(0, y);
+        const uint8_t* s = &out[(size_t)y * W * 4];
+        for (int x = 0; x < W; ++x, o += 4, s += 4) {
+            o[0] = v8::fromLevel(s[2]);
+            o[1] = v8::fromLevel(s[1]);
+            o[2] = v8::fromLevel(s[0]);
+            o[3] = v8::fromLevel(s[3]);
         }
-    });
+    }
 }
+void swirl(Ctx& c) { legacyWarp(c, 0); }
+void pinchPunch(Ctx& c) { legacyWarp(c, 1); }
 
 // ------------------------------------------------------------------ Wave
-// Measured on VEGAS's pictures of its Wave presets (Large, Medium, Small, Vertical Only, Horizontal Only; the sine fits to 0.01 pixel and 0.002 waves): the vertical
-// waves move every pixel row sideways, by Amplitude x the frame's WIDTH x sin(pi x Waves x y / height + Phase); the horizontal waves move every column up and down,
-// by Amplitude x the frame's HEIGHT x sin(pi x Waves x x / width + Phase). "Waves" counts half waves (Large is 5.4 = 2.7 waves over the frame), the phase is in
-// radians, and x and y are the pixel's index (not its middle). The first picture of a pixel is taken from (x + sideways move, y + up/down move), both from the
-// pixel's own place.
+// Wave, from VEGAS's own code (vidpcore.dll, read and checked bit for bit against its render function; see vfxwave.h): the vertical waves shift every row sideways, the
+// horizontal waves move every column up and down, with VEGAS's "pi" of 3.141, 14-bit positions and no half-pixel offset. An 8-bit frame goes through its 8-bit mixer
+// (blue, green, red, alpha bytes), a float frame through its float one.
 void wave(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
-    const double vn = clampd(c.d("VerticalWaves"), 0, 1000), hn = clampd(c.d("HorizontalWaves"), 0, 1000);
-    const double va = clampd(c.d("VerticalAmplitude"), -1, 1) * W, ha = clampd(c.d("HorizontalAmplitude"), -1, 1) * H;
-    const double vp = c.d("VerticalPhase"), hp = c.d("HorizontalPhase");
-    forRows(H, W, [&](int y) {
-        const double sx = va * std::sin(kPi * vn * y / std::max(1, H) + vp);
-        for (int x = 0; x < W; ++x) {
-            const double sy = ha * std::sin(kPi * hn * x / std::max(1, W) + hp);
-            c.src.sampleClamped(x + 0.5 + sx, y + 0.5 + sy, c.out.at(x, y));
+    if (W <= 0 || H <= 0) return;
+    if (W < 2 || H < 2) { c.out = c.src; return; }     // (VEGAS's function reads past the picture here)
+    double P[6];
+    P[0] = clampd(c.d("VerticalWaves"), 0, 1000);
+    P[1] = clampd(c.d("HorizontalWaves"), 0, 1000);
+    P[2] = clampd(c.d("VerticalAmplitude"), -1, 1);
+    P[3] = clampd(c.d("HorizontalAmplitude"), -1, 1);
+    P[4] = c.d("VerticalPhase");
+    P[5] = c.d("HorizontalPhase");
+    if (!(c.host8 || c.levels)) {
+        vfwave::render(reinterpret_cast<uint8_t*>(c.out.px.data()), W * 16, W, H, reinterpret_cast<const uint8_t*>(c.src.px.data()), W * 16, P, 16);
+        return;
+    }
+    std::vector<uint8_t> in((size_t)W * H * 4), out((size_t)W * H * 4, 0);
+    for (int y = 0; y < H; ++y) {
+        const float* s = c.src.at(0, y);
+        uint8_t* d = &in[(size_t)y * W * 4];
+        for (int x = 0; x < W; ++x, s += 4, d += 4) {
+            d[0] = (uint8_t)v8::toLevel(s[2]);
+            d[1] = (uint8_t)v8::toLevel(s[1]);
+            d[2] = (uint8_t)v8::toLevel(s[0]);
+            d[3] = (uint8_t)v8::toLevel(s[3]);
         }
-    });
+    }
+    vfwave::render(out.data(), W * 4, W, H, in.data(), W * 4, P, 4);
+    for (int y = 0; y < H; ++y) {
+        float* o = c.out.at(0, y);
+        const uint8_t* s = &out[(size_t)y * W * 4];
+        for (int x = 0; x < W; ++x, o += 4, s += 4) {
+            o[0] = v8::fromLevel(s[2]);
+            o[1] = v8::fromLevel(s[1]);
+            o[2] = v8::fromLevel(s[0]);
+            o[3] = v8::fromLevel(s[3]);
+        }
+    }
 }
 
 Def filter(const char* id, const char* label, const char* what, std::vector<PDef> params, void (*fn)(Ctx&))

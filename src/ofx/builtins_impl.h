@@ -122,11 +122,14 @@ struct Ctx {
     OfxParamSetHandle params = nullptr;
     double time = 0;                    // frames
     double fps = 0;
+    double duration = 0;                // the event's length in frames (0: the host does not say)
     // The timeline time (frames) a VEGAS host gives (kVegasPropTimeCode); -1: not given (then 'time' is taken as the frames since the event's start).
     double timelineTime = -1;
     // The time stamp VEGAS's older (DirectX) effects seed their random numbers from: the 100 ns ticks since the start of the event, each end cut to whole
     // ticks first (frame 210 less frame 200 of a 30 fps timeline is 3333334, frame 310 less 300 is 3333333), as a 32-bit number.
     int32_t legacySeedTime() const;
+    // The same without cutting to 32 bits (TV Simulator's roll and noise run on the whole number).
+    int64_t legacySeedTime64() const;
     int frameW = 0, frameH = 0;
     // The render scale: pixels of this frame per pixel of the project's frame (1: project size; 0.5: half-size preview). Sizes an effect measures in
     // pixels (radius, distance, line width, text size) are multiplied by it with px(); fractions of the frame need nothing.
@@ -186,6 +189,12 @@ inline int32_t Ctx::legacySeedTime() const
     return (int32_t)(uint32_t)(vegasTicks(at, fps) - vegasTicks(start, fps));
 }
 
+inline int64_t Ctx::legacySeedTime64() const
+{
+    const double at = timelineTime >= 0 ? timelineTime : time, start = timelineTime >= 0 ? timelineTime - time : 0.0;
+    return (int64_t)(vegasTicks(at, fps) - vegasTicks(start, fps));
+}
+
 // What a Def::changed function is given when a setting changes (a button pressed or a value edited): the setting's name, the time, and ways to read and
 // write the effect's settings and fetch the source clip's frame at any time. Only effects that analyse the picture or keep two settings in step have one.
 struct Change {
@@ -225,6 +234,7 @@ struct Def {
     std::vector<PDef> params;
     void (*render)(Ctx&) = nullptr;
     void (*changed)(Change&) = nullptr;
+    void (*created)(Change&) = nullptr;     // an instance has just been made (its settings are at their defaults): the effect may put its hidden state in order (White Balance)
     bool general = false;
     bool generalOnly = false;
     bool multiRes = true;

@@ -4,7 +4,23 @@
 #include "builtins_vfxdata.h"
 #include "builtins_deriche.h"
 #include "transrec.h"
+#include "builtins_more_internal.h"
+#include "vfxcross.h"
+#include "vfxdissolve.h"
+#include "vfxflash.h"
+#include "vfxiris.h"
+#include "vfxspiral.h"
+#include "vfxswap.h"
+#include "vfxsqueeze.h"
+#include "vfxzoom.h"
+#include "vfxsplit.h"
+#include "vfxstarwipe.h"
+#include "vfxpage.h"
+#include "vfxportals.h"
 #include "vfxvenetian.h"
+#include "vfxwipes.h"
+#include "vfx3dfx.h"
+#include "builtins_more_internal.h"
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -206,8 +222,37 @@ void run(Ctx& c)
 }
 } // namespace dis
 
+// Dissolve as VEGAS's OpenCL kernel draws it (vfxdissolve.h): floats, cut with the card's 12-bit store in an 8-bit frame. The kernel reads and writes the same pixel, so the rows
+// need no flipping.
+void dissolveOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    const int type = std::min(std::max(c.i("Type"), 0), 9);
+    float col[4] = {0, 0, 0, 0};
+    if (type == 3 || type == 4) {
+        const char* nm[4] = {"ColorBleedSpeedRed", "ColorBleedSpeedGreen", "ColorBleedSpeedBlue", "ColorBleedSpeedAlpha"};
+        const char* nmM[4] = {"ColorMorphSpeedRed", "ColorMorphSpeedGreen", "ColorMorphSpeedBlue", "ColorMorphSpeedAlpha"};
+        for (int k = 0; k < 4; ++k) col[k] = (float)c.d(type == 3 ? nm[k] : nmM[k]);
+    } else if (type == 8) {
+        const Color fc = c.color("FadeThroughColor");
+        col[0] = (float)fc.r; col[1] = (float)fc.g; col[2] = (float)fc.b; col[3] = (float)fc.a;
+    }
+    const float p = (float)c.progress;
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float o[4];
+            dissolvek::pixel(type, p, col, c.src.at(x, y), c.src2.at(x, y), o);
+            float* d = c.out.at(x, y);
+            for (int k = 0; k < 4; ++k) d[k] = q ? more::oclStore12(o[k]) : o[k];
+        }
+    });
+}
+
 void dissolve(Ctx& c)
 {
+    if (c.openCl) { dissolveOpenCl(c); return; }
     if (c.levels) { dis::run(c); return; }
     const int W = c.out.w, H = c.out.h;
     const int type = c.i("Type");
@@ -296,8 +341,39 @@ void dissolve(Ctx& c)
 inline int ntTrunc8(float v) { return (int)v; }
 void crossZoom8(Ctx& c, const std::vector<uint8_t>& A, const std::vector<uint8_t>& B, std::vector<uint8_t>& O, int apply, float pf, int t8);
 
+// Cross Effect as VEGAS's OpenCL kernels draw it (GPU acceleration on; vfxcross.h has the host side and the kernels): float pictures, the zoom read with the card's bilinear filter, the pixelate and
+// blur steps as images of the frame's format (in an 8-bit frame every picture a kernel writes is cut with the card's 12-bit store, more::oclStore12). The kernels number their rows from the bottom.
+void crossEffectOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0 || c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    crossfx::Settings s;
+    s.type = std::min(std::max(c.i("EffectType"), 0), 3);
+    s.apply = std::min(std::max(c.i("ApplyTo"), 0), 2);
+    s.progress = c.progress;
+    s.fadeRange = c.d("FadeRange");
+    s.maxZoom = c.d("EffectSettingsMaxZoom");
+    s.maxX = c.d("EffectSettingsMaxX");
+    s.maxY = c.d("EffectSettingsMaxY");
+    s.maxBlur = c.d("EffectSettingsMaxBlur");
+    c.xy("EffectSettingsSource", s.srcX, s.srcY);
+    c.xy("EffectSettingsDestination", s.dstX, s.dstY);
+    s.store8 = c.host8 ? more::oclStore12 : nullptr;
+    std::vector<float> a, b, o;
+    crossfx::flipRows(c.src.px.data(), a, W, H);
+    crossfx::flipRows(c.src2.px.data(), b, W, H);
+    crossfx::render(a, b, o, W, H, s);
+    c.out.ensure(W, H);
+    for (int y = 0; y < H; ++y) {
+        const float* r = &o[(size_t)(H - 1 - y) * W * 4];
+        float* d = c.out.at(0, y);
+        for (int i = 0; i < W * 4; ++i) d[i] = c.host8 ? more::oclStore12(r[i]) : r[i];
+    }
+}
+
 void crossEffect(Ctx& c)
 {
+    if (c.openCl) { crossEffectOpenCl(c); return; }
     const int W = c.out.w, H = c.out.h;
     const int type = c.i("EffectType"), apply = c.i("ApplyTo");
     const float pf = std::min(1.0f, std::max(0.0f, (float)c.progress));
@@ -611,10 +687,226 @@ void barndoorFx8(Ctx& c);
 void starWipeFx8(Ctx& c);
 void flashFx8(Ctx& c);
 
+// Barn Door, Push and Slide as VEGAS's OpenCL kernels draw them (GPU acceleration on; vfxwipes.h has the host side and the kernels): float pictures, the moved picture read
+// with a bilinear filter, border and feather mixed with a smoothstep. In an 8-bit frame the result is cut to a level the way the card's store does (more::oclWriteLevel).
+// The kernels number their rows from the bottom; a Buf has the top row first.
+template <class K>
+void wipesOpenCl(Ctx& c, const K& k)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }     // (never: both frames are loaded at the frame's size)
+    wipes::Pic from{c.src.px.data(), W, H, true}, to{c.src2.px.data(), W, H, true};
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float* o = c.out.at(x, y);
+            k.pixel(from, to, x, H - 1 - y, o);
+            if (q)
+                for (int ch = 0; ch < 4; ++ch) o[ch] = more::oclWriteLevel(o[ch]);
+        }
+    });
+}
+
+void barndoorOpenCl(Ctx& c)
+{
+    const Px bc = colorPx(c.color("BorderColor"));
+    wipesOpenCl(c, wipes::BarnDoor(c.out.w, c.out.h, c.i("Orientation"), c.i("Direction"), c.progress, c.d("BorderSize"), c.d("BorderFeather"), bc.v));
+}
+
+void pushOpenCl(Ctx& c)
+{
+    const Px bc = colorPx(c.color("BorderColor"));
+    wipesOpenCl(c, wipes::Push(c.out.w, c.out.h, c.i("Direction"), c.progress, c.d("BorderSize"), c.d("BorderFeather"), c.b("PushOffPreviousImage"), bc.v));
+}
+
+// Spiral as VEGAS's OpenCL kernels draw it (vfxspiral.h): the moving picture is smoothed first when it is drawn at half size or less (into a float image: the host makes it
+// RGBA / float whatever the frame is, so nothing is cut), the result is cut with the card's 12-bit store in an 8-bit frame.
+void spiralOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    const Px bc = colorPx(c.color("BorderColor"));
+    const wipes::Spiral sp(W, H, c.d("Turns"), c.d("Zoom"), c.i("Orientation"), c.i("Motion"), c.i("Direction"), c.progress, c.d("BorderSize"), c.d("BorderFeather"), bc.v);
+    wipes::Pic from{c.src.px.data(), W, H, true}, to{c.src2.px.data(), W, H, true};
+    const wipes::Pic& first = sp.swapPics ? to : from;
+    wipes::Pic mover = sp.swapPics ? from : to;
+    std::vector<float> smoothed;
+    if (sp.smoothMoved) {
+        wipes::Spiral::smooth(mover, smoothed, nullptr);
+        mover = wipes::Pic{smoothed.data(), W, H, true};
+    }
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float* o = c.out.at(x, y);
+            sp.pixel(first, mover, x, H - 1 - y, o);
+            if (q)
+                for (int ch = 0; ch < 4; ++ch) o[ch] = more::oclStore12(o[ch]);
+        }
+    });
+}
+
+// Split as VEGAS's OpenCL kernels draw it (vfxsplit.h); Squeeze smooths the picture behind first (a float image, nothing cut), the result is cut with the card's 12-bit store
+// in an 8-bit frame. The kernels count rows from the bottom, the header from the top: the same order as a Buf.
+void splitOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    const Px bc = colorPx(c.color("BorderColor"));
+    double cx = 0.5, cy = 0.5;
+    c.xy("Center", cx, cy);
+    const wipes::Split sp(W, H, c.i("SplitMode"), c.i("Direction"), c.progress, cx, cy, c.d("BorderSize"), c.d("BorderFeather"), bc.v);
+    wipes::Pic from{c.src.px.data(), W, H, true}, to{c.src2.px.data(), W, H, true};
+    const wipes::Pic& first = sp.swapPics ? to : from;
+    wipes::Pic other = sp.swapPics ? from : to;
+    std::vector<float> smoothed;
+    if (sp.smoothOther && !sp.onlyFirst) {
+        wipes::smooth3x3(other, smoothed, nullptr);
+        other = wipes::Pic{smoothed.data(), W, H, true};
+    }
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float* o = c.out.at(x, y);
+            sp.pixel(first, other, x, y, o);
+            if (q)
+                for (int ch = 0; ch < 4; ++ch) o[ch] = more::oclStore12(o[ch]);
+        }
+    });
+}
+
+// Swap, Squeeze and Zoom as VEGAS's OpenCL kernels draw them (vfxswap.h, vfxsqueeze.h, vfxzoom.h): float pictures, the result cut with the card's 12-bit store in an 8-bit
+// frame. The kernels count rows from the bottom, a Buf from the top. Squeeze and Zoom smooth the shrunk picture first (into a float image, nothing cut).
+void swapOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    const Px bc = colorPx(c.color("BorderColor"));
+    const wipes::Swap sp(W, H, c.i("Direction"), c.progress, c.d("BorderSize"), c.d("BorderFeather"), bc.v);
+    wipes::Pic from{c.src.px.data(), W, H, true}, to{c.src2.px.data(), W, H, true};
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float* o = c.out.at(x, y);
+            sp.pixel(from, to, x, H - 1 - y, o);
+            if (q)
+                for (int ch = 0; ch < 4; ++ch) o[ch] = more::oclStore12(o[ch]);
+        }
+    });
+}
+
+void squeezeOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    const Px bc = colorPx(c.color("BorderColor"));
+    const wipes::Squeeze sp(W, H, c.i("Start"), c.progress, c.b("SqueezePreviousImage"), c.d("BorderSize"), c.d("BorderFeather"), bc.v);
+    wipes::Pic from{c.src.px.data(), W, H, true}, to{c.src2.px.data(), W, H, true};
+    std::vector<float> sm1, sm2;
+    if (sp.smoothFirst) {
+        wipes::Squeeze::smooth(from, sp.mode1[0], sp.mode1[1], sm1);
+        from = wipes::Pic{sm1.data(), W, H, true};
+    }
+    if (sp.smoothSecond) {
+        wipes::Squeeze::smooth(to, sp.mode2[0], sp.mode2[1], sm2);
+        to = wipes::Pic{sm2.data(), W, H, true};
+    }
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float* o = c.out.at(x, y);
+            sp.pixel(from, to, x, H - 1 - y, o);
+            if (q)
+                for (int ch = 0; ch < 4; ++ch) o[ch] = more::oclStore12(o[ch]);
+        }
+    });
+}
+
+void zoomOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    const Px bc = colorPx(c.color("BorderColor"));
+    double cx = 0.5, cy = 0.5;
+    c.xy("Center", cx, cy);
+    const wipes::Zoom sp(W, H, c.i("Direction"), c.progress, cx, cy, c.d("BorderSize"), c.d("BorderFeather"), bc.v);
+    wipes::Pic from{c.src.px.data(), W, H, true}, to{c.src2.px.data(), W, H, true};
+    const wipes::Pic& first = sp.swapPics ? to : from;
+    wipes::Pic mover = sp.swapPics ? from : to;
+    std::vector<float> smoothed;
+    if (sp.smoothMoved) {
+        wipes::smooth3x3(mover, smoothed, nullptr);
+        mover = wipes::Pic{smoothed.data(), W, H, true};
+    }
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float* o = c.out.at(x, y);
+            sp.pixel(first, mover, x, H - 1 - y, o);
+            if (q)
+                for (int ch = 0; ch < 4; ++ch) o[ch] = more::oclStore12(o[ch]);
+        }
+    });
+}
+
+// Star Wipe as VEGAS's OpenCL kernel draws it (vfxstarwipe.h): the distance along the arm worked out per pixel, border and feather mixed in floats; in an 8-bit frame the
+// result is cut with the card's 12-bit store. (The kernel turns Horizontal flip about the vertical axis, where the CPU drawing above turns it upside down: both are VEGAS's.)
+void starWipeOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    const Px bc = colorPx(c.color("BorderColor"));
+    double cx = 0.5, cy = 0.5;
+    c.xy("Center", cx, cy);
+    const wipes::StarWipe sp(W, H, c.i("Arms"), c.d("Ratio"), c.d("Angle"), c.d("Feather"), c.d("Border"), bc.v, cx, cy, c.i("Cycles"), c.i("Waveform"),
+                             c.b("HorizontalFlip"), c.b("VerticalFlip"), c.b("HorizontalMirror"), c.b("VerticalMirror"), c.i("Direction"), c.progress);
+    wipes::Pic from{c.src.px.data(), W, H, true}, to{c.src2.px.data(), W, H, true};
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float* o = c.out.at(x, y);
+            sp.pixel(from, to, x, H - 1 - y, o);
+            if (q)
+                for (int ch = 0; ch < 4; ++ch) o[ch] = more::oclStore12(o[ch]);
+        }
+    });
+}
+
+// Iris as VEGAS's OpenCL kernels draw it (vfxiris.h): float pictures, the distance map worked out per pixel by the kernel, border and feather mixed in floats; in an 8-bit
+// frame the result is cut with the card's 12-bit store. The kernels count rows from the bottom, a Buf from the top.
+void irisOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W < 2 || H < 2 || c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    double cx = 0.5, cy = 0.5;
+    c.xy("Center", cx, cy);
+    const Px bc = colorPx(c.color("Color"));
+    const wipes::Iris ir(W, H, c.i("Shape"), c.i("RepeatX"), c.i("RepeatY"), c.progress, c.i("Direction"), cx, cy, c.d("Feather"), c.d("Border"), bc.v);
+    wipes::Pic from{c.src.px.data(), W, H, true}, to{c.src2.px.data(), W, H, true};
+    const wipes::Pic& first = ir.swapPics ? to : from;
+    const wipes::Pic& second = ir.swapPics ? from : to;
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float* o = c.out.at(x, y);
+            ir.pixel(first, second, x, H - 1 - y, o);
+            if (q)
+                for (int ch = 0; ch < 4; ++ch) o[ch] = more::oclStore12(o[ch]);
+        }
+    });
+}
+
+void slideOpenCl(Ctx& c)
+{
+    const Px bc = colorPx(c.color("BorderColor"));
+    wipesOpenCl(c, wipes::Slide(c.out.w, c.out.h, c.d("Angle"), c.i("Direction"), c.progress, c.d("BorderSize"), c.d("BorderFeather"), bc.v));
+}
+
 // Barn Door: two half-picture doors slide in over the outgoing frame ("In"), or its halves slide out ("Out"). The border is a strip
 // of Size * half extent with Feather * half extent soft ramps; its centre runs from -1.5 strips to half extent + 1.5 strips.
 void barndoor(Ctx& c)
 {
+    if (c.openCl) { barndoorOpenCl(c); return; }
     if (c.levels) { barndoorFx8(c); return; }
     const int W = c.out.w, H = c.out.h;
     const bool alongX = c.i("Orientation") == 0, in = c.i("Direction") == 0;
@@ -1140,6 +1432,7 @@ float irisReflectedMax(int W, int H, int nx, int ny, double cxn, double cyn, flo
 }
 void irisFx(Ctx& c)
 {
+    if (c.openCl) { irisOpenCl(c); return; }
     const int W = c.out.w, H = c.out.h;
     if (W < 2 || H < 2) { forRows(H, W, [&](int y) { for (int x = 0; x < W; ++x) store(c, x, y, toAt(c, x + 0.5, y + 0.5)); }); return; }
     const int shape = std::min(13, std::max(0, c.i("Shape")));
@@ -1349,6 +1642,7 @@ void starField(Ctx& c, std::vector<double>& field)
 
 void starWipe(Ctx& c)
 {
+    if (c.openCl) { starWipeOpenCl(c); return; }
     if (c.levels) { starWipeFx8(c); return; }
     const bool rev = c.i("Direction") == 1, tooth = c.i("Waveform") == 1;
     const int W = c.out.w, H = c.out.h;
@@ -1424,6 +1718,7 @@ void venetian(Ctx& c)
 void pushFx8(Ctx& c);
 void pushFx(Ctx& c)
 {
+    if (c.openCl) { pushOpenCl(c); return; }
     if (c.levels) { pushFx8(c); return; }
     const int dir = c.i("Direction");
     const bool pushOff = c.b("PushOffPreviousImage");
@@ -1465,6 +1760,7 @@ void pushFx(Ctx& c)
 void swapFx8(Ctx& c);
 void swapFx(Ctx& c)
 {
+    if (c.openCl) { swapOpenCl(c); return; }
     if (c.levels) { swapFx8(c); return; }
     const int dir = c.i("Direction");
     const int W = c.out.w, H = c.out.h;
@@ -1501,6 +1797,7 @@ void squeezeFx8(Ctx& c);
 void zoomFx8(Ctx& c);
 void squeezeFx(Ctx& c)
 {
+    if (c.openCl) { squeezeOpenCl(c); return; }
     if (c.levels) { squeezeFx8(c); return; }
     const int start = c.i("Start");
     const bool prev = c.b("SqueezePreviousImage");
@@ -1546,6 +1843,7 @@ void squeezeFx(Ctx& c)
 // moving while the picture is held at full size.
 void zoomFx(Ctx& c)
 {
+    if (c.openCl) { zoomOpenCl(c); return; }
     if (c.levels) { zoomFx8(c); return; }
     const bool out = c.i("Direction") == 1;
     double cx, cy;
@@ -1596,8 +1894,33 @@ void zoomFx(Ctx& c)
     });
 }
 
+// Flash as VEGAS's OpenCL kernels draw it (vfxflash.h): float pictures, the blur's pictures and the result cut with the card's 12-bit store in an 8-bit frame. The kernels count rows from the
+// bottom, a Buf from the top.
+void flashOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    flashk::Settings s;
+    s.progress = (float)c.progress;
+    s.diffX = clampd(c.d("HorizontalDiffusion"), 0, 1);
+    s.diffY = clampd(c.d("VerticalDiffusion"), 0, 1);
+    const Color tc = c.color("Tint");
+    s.tint[0] = tc.r; s.tint[1] = tc.g; s.tint[2] = tc.b;
+    s.store8 = c.host8 ? more::oclStore12 : nullptr;
+    auto flip = [&](const Buf& b, std::vector<float>& v) {
+        v.resize((size_t)W * H * 4);
+        for (int y = 0; y < H; ++y) std::copy(b.at(0, y), b.at(0, y) + (size_t)W * 4, v.begin() + (size_t)(H - 1 - y) * W * 4);
+    };
+    std::vector<float> a, b, o;
+    flip(c.src, a);
+    flip(c.src2, b);
+    flashk::render(a, b, o, W, H, s);
+    for (int y = 0; y < H; ++y) std::copy(o.begin() + (size_t)(H - 1 - y) * W * 4, o.begin() + (size_t)(H - y) * W * 4, c.out.at(0, y));
+}
+
 void flashFx(Ctx& c)
 {
+    if (c.openCl) { flashOpenCl(c); return; }
     if (c.levels) { flashFx8(c); return; }
     // White light added to the outgoing picture (the incoming one after the midpoint): the amount follows the square of a
     // triangle; the diffusions add the Rec.601 luma of the picture blurred by a Gaussian of 5% of the diagonal times the diffusion.
@@ -1642,113 +1965,109 @@ void flashFx(Ctx& c)
     });
 }
 
+// Portals as sfpagepeel.dll draws it (vfxportals.h: random rectangles of the incoming picture with thin borders, 8-bit, the progress counted in 2N + 1 steps).
+// The frame's pictures are cut to bytes (a float frame goes through the same 8-bit drawing: the DLL has no float path Reno has read) and come back as levels.
 void portalsFx(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
-    const int n = std::max(2, c.i("Squares")), seed = c.i("RandomPatternSeed");
-    const double maxT = clampd(c.d("MaxTransparency"), 0, 1), maxO = c.d("MaxOffset");
-    const double bs = borderOf(c) * 0.3;
-    const Color bc = c.color("BorderColor");
-    auto rnd = [&](int a, int b, int k) {
-        uint32_t h = (uint32_t)a * 374761393u + (uint32_t)b * 668265263u + (uint32_t)k * 1013904223u + (uint32_t)seed * 1664525u;
-        h = (h ^ (h >> 13)) * 1274126177u;
-        return ((h ^ (h >> 16)) & 0xFFFF) / 65535.0;
-    };
-    const double p = c.progress;
-    forRows(H, W, [&](int y) {
-        for (int x = 0; x < W; ++x) {
-            const double u = (x + 0.5) / W * n, v = (y + 0.5) / H * n;
-            const int gx = (int)std::floor(u), gy = (int)std::floor(v);
-            const double when = rnd(gx, gy, 1) * 0.6;
-            const double t = clampd((p * 1.6 - when) / 0.4, 0, 1);
-            Px o = fromAt(c, x + 0.5, y + 0.5);
-            if (t > 0) {
-                const double fx = u - gx, fy = v - gy;
-                const double ox = (rnd(gx, gy, 3) - 0.5) * maxO * (1 - t) * W * 0.1, oy = (rnd(gx, gy, 4) - 0.5) * maxO * (1 - t) * H * 0.1;
-                const Px b = toAt(c, x + 0.5 + ox, y + 0.5 + oy);
-                o = mixPx(o, b, (1.0 - maxT * (1 - t)) * smooth01(t * 2));
-                if (bs > 0 && t < 1 && (fx < bs * 0.2 || fx > 1 - bs * 0.2 || fy < bs * 0.2 || fy > 1 - bs * 0.2)) o = mixPx(o, colorPx(bc), 0.8 * (1 - t));
-            }
-            store(c, x, y, o);
+    if (c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H) { c.out.px = c.src.px; return; }
+    const size_t n = (size_t)W * H * 4;
+    std::vector<uint8_t> from(n), to(n), res(n);
+    auto cut = [n](const Buf& b, std::vector<uint8_t>& o) {
+        for (size_t i = 0; i < n; ++i) {
+            const float v = b.px[i];
+            o[i] = (uint8_t)(v <= 0.f ? 0 : (v >= 1.f ? 255 : (int)(v * 255.f + 0.5f)));
         }
-    });
+    };
+    cut(c.src, from);
+    cut(c.src2, to);
+    vfxportals::Props p;
+    p.seed = c.i("RandomPatternSeed");
+    p.squares = std::min(256, std::max(0, c.i("Squares")));     // (the parameter range; nonsense values would ask for billions of tiles)
+    p.maxTransparency = clampd(c.d("MaxTransparency"), 0, 1);
+    p.maxOffset = clampd(c.d("MaxOffset"), 0, 1);
+    p.maxScale = clampd(c.d("MaxScale"), 0, 1);
+    p.borderSize = clampd(c.d("BorderSize"), 0, 1);
+    const Color bc = c.color("BorderColor");
+    p.borderColor[0] = (float)clampd(bc.r, 0, 1);
+    p.borderColor[1] = (float)clampd(bc.g, 0, 1);
+    p.borderColor[2] = (float)clampd(bc.b, 0, 1);
+    vfxportals::render(p, clampd(c.progress, 0, 1), 1.0, from.data(), to.data(), W, H, res.data());
+    for (size_t i = 0; i < n; ++i) c.out.px[i] = (float)res[i] * (1.0f / 255.0f);
 }
 
 // ------------------------------------------------------------------ 3D and page transitions, drawn flat
-// 3D Blinds / 3D Cascade: strips that turn over, showing the outgoing frame on one face and the incoming on the other.
-void blindsLike(Ctx& c, bool cascade)
-{
-    const int W = c.out.w, H = c.out.h;
-    const int dir = c.i("Direction");
-    const bool horizontal = dir == 1 || dir == 3;                   // strips run across, arranged top to bottom
-    const bool reverse = dir == 2 || dir == 3;
-    const int n = std::max(1, c.i("Divisions"));
-    const double stagger = cascade ? 0.6 : clampd(c.d("Stagger"), 0, 1) * 0.6;
-    const double p = c.progress;
-    const double light = clampd(c.d("SpecularLight"), 0, 1);
-    forRows(H, W, [&](int y) {
-        for (int x = 0; x < W; ++x) {
-            const double u = (x + 0.5) / W, v = (y + 0.5) / H;
-            const double along = horizontal ? v : u;
-            const int idx = std::min(n - 1, (int)(along * n));
-            const double cell = along * n - idx;
-            const double order = (double)(reverse ? n - 1 - idx : idx) / std::max(1, n - 1);
-            const double t = clampd((p - order * stagger) / std::max(0.05, 1 - stagger), 0, 1);
-            const double ang = t * kPi;                              // half a turn
-            const double sc = std::cos(ang);
-            const double width = std::fabs(sc);
-            const double across = horizontal ? u : v;
-            (void)across;
-            const double mid = (idx + 0.5) / n;
-            const double a = (along - mid) * (horizontal ? H : W);
-            const double a2 = a / std::max(0.02, width);
-            const double limit = (horizontal ? H : W) * 0.5 / n;
-            Px o = colorPx(Color{0, 0, 0, 0});
-            if (std::fabs(a2) <= limit) {
-                const double q = (mid * (horizontal ? H : W)) + a2;
-                const double qx = horizontal ? x + 0.5 : q, qy = horizontal ? q : y + 0.5;
-                o = t < 0.5 ? fromAt(c, qx, qy) : toAt(c, qx, qy);
-                const float shade = 1.f - (float)(0.55 * (1 - width)) + (float)(light * 0.3 * std::sin(ang) * (cell - 0.5));
-                for (int k = 0; k < 3; ++k) o.v[k] = std::min(o.v[k] * shade, o.v[3]);
-            }
-            (void)cell;
-            if (o.v[3] < 1.f) { Px under = t < 0.5 ? toAt(c, x + 0.5, y + 0.5) : fromAt(c, x + 0.5, y + 0.5); under = mixPx(colorPx(Color{0, 0, 0, 1}), under, 0.15); for (int k = 0; k < 4; ++k) o.v[k] = o.v[k] + under.v[k] * (1 - o.v[3]); }
-            store(c, x, y, o);
-        }
-    });
-}
-void blinds3d(Ctx& c) { blindsLike(c, false); }
-void cascade3d(Ctx& c) { blindsLike(c, true); }
+// 3D Blinds, 3D Cascade, 3D Fly In/Out and 3D Shuffle: VEGAS draws them with one 8-bit polygon rasteriser (vfx3d.h, the front ends in vfx3dfx.h).
+// The pictures go in and out as whole levels (the rasteriser works on bytes, floats are rounded in and scaled out like the other 8-bit transitions).
+double finiteIn(double v, double lo, double hi) { return v != v ? lo : std::min(hi, std::max(lo, v)); }
+int indexIn(int v, int n) { return std::min(n - 1, std::max(0, v)); }
 
-// 3D Fly In/Out: the incoming frame flies in from far away, scaling up and turning; or the outgoing flies away.
+template <class Draw>
+void draw3d(Ctx& c, Draw draw)
+{
+    namespace fx = vfx3d::fx;
+    const int W = c.out.w, H = c.out.h;
+    if (W < 1 || H < 1 || c.src.w != W || c.src.h != H || c.src2.w != W || c.src2.h != H || c.src.px.size() < (size_t)W * H * 4 || c.src2.px.size() < (size_t)W * H * 4 || c.out.px.size() < (size_t)W * H * 4) {
+        for (size_t k = 0; k < c.out.px.size(); ++k) c.out.px[k] = k < c.src.px.size() ? c.src.px[k] : 0.f;
+        return;
+    }
+    std::vector<uint8_t> A((size_t)W * H * 4), B((size_t)W * H * 4), out((size_t)W * H * 4, 0);
+    for (size_t k = 0; k < A.size(); ++k) {
+        A[k] = (uint8_t)roundNonNeg(std::min(std::max(std::isfinite(c.src.px[k]) ? c.src.px[k] : 0.f, 0.f), 1.f) * 255.f);
+        B[k] = (uint8_t)roundNonNeg(std::min(std::max(std::isfinite(c.src2.px[k]) ? c.src2.px[k] : 0.f, 0.f), 1.f) * 255.f);
+    }
+    fx::Frame f;
+    f.w = W;
+    f.h = H;
+    f.asp = 1.0;
+    f.a = A.data();
+    f.b = B.data();
+    f.out = out.data();
+    draw(f, finiteIn(c.progress, 0.0, 1.0));
+    for (size_t k = 0; k < out.size(); ++k) c.out.px[k] = out[k] * (1.f / 255.f);
+}
+
+void blinds3d(Ctx& c)
+{
+    vfx3d::fx::BlindsSettings S;
+    S.divisions = indexIn(c.i("Divisions"), 129);
+    S.extraSpins = indexIn(c.i("ExtraSpins"), 9);
+    S.stagger = finiteIn(c.d("Stagger"), 0.0, 1.0);
+    S.light = finiteIn(c.d("SpecularLight"), 0.0, 1.0);
+    S.direction = indexIn(c.i("Direction"), 4);
+    draw3d(c, [&](const vfx3d::fx::Frame& f, double p) { vfx3d::fx::blinds(f, S, p); });
+}
+void cascade3d(Ctx& c)
+{
+    vfx3d::fx::CascadeSettings S;
+    S.divisions = indexIn(c.i("Divisions"), 65);
+    S.direction = indexIn(c.i("Direction"), 4);
+    S.twist = finiteIn(c.d("Twist"), 0.0, 1.0);
+    S.light = finiteIn(c.d("SpecularLight"), 0.0, 1.0);
+    draw3d(c, [&](const vfx3d::fx::Frame& f, double p) { vfx3d::fx::cascade(f, S, p); });
+}
 void fly3d(Ctx& c)
 {
-    const int W = c.out.w, H = c.out.h;
-    const bool out = c.i("Direction") == 1;
-    const double p = c.progress;
-    const double fx = c.d("FarXPosition"), fy = c.d("FarYPosition"), fz = c.d("FarZPosition");
-    const double zr = c.d("ZRotations") * 2 * kPi;
-    const double t = out ? p : 1 - p;
-    const double s = std::max(0.02, std::pow(1.0 - t * 0.98, 1.0 + std::fabs(fz) * 0.02));
-    const double ang = zr * t, ca = std::cos(ang), sa = std::sin(ang);
-    const double ox = fx * 0.01 * W * t, oy = -fy * 0.01 * H * t;
-    forRows(H, W, [&](int y) {
-        for (int x = 0; x < W; ++x) {
-            const double dx = (x + 0.5 - W * 0.5 - ox) / s, dy = (y + 0.5 - H * 0.5 - oy) / s;
-            const double qx = dx * ca + dy * sa + W * 0.5, qy = -dx * sa + dy * ca + H * 0.5;
-            Px o = out ? toAt(c, x + 0.5, y + 0.5) : fromAt(c, x + 0.5, y + 0.5);
-            const Px f = out ? fromAt(c, qx, qy) : toAt(c, qx, qy);
-            for (int k = 0; k < 4; ++k) o.v[k] = f.v[k] * (float)(1 - 0.0) + o.v[k] * (1 - f.v[3]);
-            store(c, x, y, o);
-        }
-    });
+    vfx3d::fx::FlySettings S;
+    S.farX = finiteIn(c.d("FarXPosition"), 0.0, 1.0);
+    S.farY = finiteIn(c.d("FarYPosition"), 0.0, 1.0);
+    S.farZ = finiteIn(c.d("FarZPosition"), 0.0, 16.0);
+    S.rotX = finiteIn(c.d("XRotations"), 0.0, 16.0);
+    S.rotY = finiteIn(c.d("YRotations"), 0.0, 16.0);
+    S.rotZ = finiteIn(c.d("ZRotations"), 0.0, 16.0);
+    S.light = finiteIn(c.d("SpecularLight"), 0.0, 1.0);
+    S.in = 1 - indexIn(c.i("Direction"), 2);           // the plug-in's own direction runs the other way round: 0 is the incoming picture flying out
+    draw3d(c, [&](const vfx3d::fx::Frame& f, double p) { vfx3d::fx::flyInOut(f, S, p); });
+}
+void shuffle3d(Ctx& c)
+{
+    const double light = finiteIn(c.d("SpecularLight"), 0.0, 1.0);
+    draw3d(c, [&](const vfx3d::fx::Frame& f, double p) { vfx3d::fx::shuffle(f, light, p); });
 }
 
-// 3D Shuffle: the two frames swap places, one passing in front of the other.
-void shuffle3d(Ctx& c) { swapFx(c); }
-
 // Page Peel / Page Roll / Page Loop: the outgoing frame lifts from one side and curls over, revealing the incoming one.
-// Page Loop, Page Peel and Page Roll are VEGAS's CPU processors (Vfx1.ofx) sharing one renderer: 8-bit pixels, rows bottom first.
+// Page Loop, Page Peel and Page Roll: with GPU acceleration on (the default, Ctx::openCl) VEGAS draws them with float OpenCL kernels, ported in vfxpage.h (pageKernel below).
+// With it off they are VEGAS's CPU processors (Vfx1.ofx) sharing one renderer, which the rest of this section follows: 8-bit pixels, rows bottom first.
 // Each output pixel's offset from the centre is rotated by the angle; a per-transition hit test gives the layers drawn in order,
 // the page position (u, v), light/black mix and opacity. Pixels whose four corners show the same layer use an 8-bit bilinear
 // read, others average 2 x 2 nearest samples. Single precision throughout, as VEGAS.
@@ -1931,6 +2250,53 @@ void render(const Img8& paper, const Img8& bg, Img8& out, int layers, float ang,
     out.px.swap(fin.px);
 }
 
+// VEGAS with GPU acceleration on draws Page Peel / Loop / Roll with its float OpenCL kernels (Ctx::openCl, see vegasUsesOpenCl and vfxpage.h). The kernels' pictures are
+// RGBA floats, rows bottom first (Ctx's are top first).
+bool useKernel(const Ctx& c) { return c.openCl && c.src.w > 0 && c.src.h > 0 && c.src2.w == c.src.w && c.src2.h == c.src.h; }
+
+// 'which': 0 Peel, 1 Loop, 2 Roll
+void pageKernel(Ctx& c, int which, const char* angleName, const char* opacityName)
+{
+    const int w = c.src.w, h = c.src.h;
+    std::vector<float> fa((size_t)w * h * 4), fb((size_t)w * h * 4), res((size_t)w * h * 4);
+    for (int y = 0; y < h; ++y)
+        for (int k = 0; k < w * 4; ++k) {
+            const float a = c.src.at(0, h - 1 - y)[k], b = c.src2.at(0, h - 1 - y)[k];
+            fa[(size_t)y * w * 4 + k] = std::isfinite(a) ? a : 0.f;
+            fb[(size_t)y * w * 4 + k] = std::isfinite(b) ? b : 0.f;
+        }
+    vfxpage::Img ia, ib;
+    ia.p = fa.data(); ia.w = w; ia.h = h;
+    ib.p = fb.data(); ib.w = w; ib.h = h;
+    const Color lc = c.color("LightColor");
+    const double rgb[3] = {lc.r, lc.g, lc.b};
+    const double angle = c.d(angleName), opacity = c.d(opacityName), persp = c.d("Perspective");
+    if (which == 1) {
+        const vfxpage::LoopSetup s = vfxpage::loopSetup(w, h, c.progress, angle, c.d("LoopPosition"), c.d("LoopRadius"), opacity, persp, rgb);
+        const vfxpage::Geo g = vfxpage::makeGeo(w, h, s.sn, s.cs, 1.0f);
+        forRows(h, w, [&](int y) {
+            vfxpage::renderFrame(g, ia, res.data(), y, y + 1, [&](float a, float b, float* col) { vfxpage::loopSample(g, s, ib, a, b, col); });
+        });
+    } else if (which == 0) {
+        const vfxpage::PeelSetup s = vfxpage::peelSetup(w, h, c.progress, angle, c.d("FoldRadius"), c.d("SlideAmount"), opacity, persp, rgb);
+        const vfxpage::Geo g = vfxpage::makeGeo(w, h, s.sn, s.cs, 1.0f);
+        forRows(h, w, [&](int y) {
+            vfxpage::renderFrame(g, ib, res.data(), y, y + 1, [&](float a, float b, float* col) { vfxpage::peelSample(g, s, ia, a, b, col); });
+        });
+    } else {
+        const vfxpage::RollSetup s = vfxpage::rollSetup(w, h, c.progress, angle, c.d("FoldRadius"), c.d("SlideAmount"), opacity, persp, rgb);
+        const vfxpage::Geo g = vfxpage::makeGeo(w, h, s.sn, s.cs, 1.0f);
+        forRows(h, w, [&](int y) {
+            vfxpage::renderFrame(g, ib, res.data(), y, y + 1, [&](float a, float b, float* col) { vfxpage::rollSample(g, s, ia, a, b, col); });
+        });
+    }
+    // an 8-bit frame gets the kernel's store (write_imagef: the nearest level, as the other ported kernels do it)
+    if (c.host8)
+        for (float& v : res) v = more::oclWriteLevel(v);
+    for (int y = 0; y < h && y < c.out.h; ++y)
+        std::memcpy(c.out.at(0, y), &res[(size_t)(h - 1 - y) * w * 4], sizeof(float) * 4 * (size_t)std::min(w, c.out.w));
+}
+
 void store(Ctx& c, const Img8& img)
 {
     const int W = c.out.w, H = c.out.h;
@@ -1962,6 +2328,7 @@ float spanLoop(float ang, float W, float H)
 void pageLoop(Ctx& c)
 {
     using namespace page;
+    if (useKernel(c)) { pageKernel(c, 1, "PaperAngle", "PaperOpacity"); return; }
     const Img8 A = toBytes(c.src), B = toBytes(c.src2);
     const int w = B.w, h = B.h;
     const float ang = travelAngle((float)((360.0 - c.d("PaperAngle")) * 0.01745329238474369));
@@ -2025,6 +2392,7 @@ void pageLoop(Ctx& c)
 void pagePeel(Ctx& c)
 {
     using namespace page;
+    if (useKernel(c)) { pageKernel(c, 0, "PeelAngle", "PeelOpacity"); return; }
     const Img8 A = toBytes(c.src), B = toBytes(c.src2);
     const int w = A.w, h = A.h;
     const float ang = travelAngle((360.f - (float)c.d("PeelAngle")) * 0.01745329238474369f);
@@ -2089,6 +2457,7 @@ void pagePeel(Ctx& c)
 void pageRoll(Ctx& c)
 {
     using namespace page;
+    if (useKernel(c)) { pageKernel(c, 2, "RollAngle", "RollOpacity"); return; }
     const Img8 A = toBytes(c.src), B = toBytes(c.src2);
     const int w = A.w, h = A.h;
     const float ang = travelAngle((float)((360.0 - c.d("RollAngle")) * 0.01745329238474369));
@@ -2691,6 +3060,7 @@ void moveIn(Ctx& c, double angleDeg, double zoom, bool slide)
 // Spiral: the incoming frame (outgoing with Spiral out) shrunk by Zoom comes in along a spiral of Turns turns from the Orientation side.
 void spiral(Ctx& c)
 {
+    if (c.openCl) { spiralOpenCl(c); return; }
     const double p = (double)(float)c.progress;
     static const double orient[4] = {0.0, 90.0, 180.0, 270.0};
     const double ang = p * c.d("Turns") * (c.i("Motion") ? -360.0 : 360.0) + orient[std::min(3, std::max(0, c.i("Orientation")))];
@@ -2698,12 +3068,17 @@ void spiral(Ctx& c)
 }
 
 // Slide: the incoming frame (outgoing with Out) slides in along Angle.
-void slideFx(Ctx& c) { sf::moveIn(c, (double)(float)c.d("Angle"), 1.0, true); }
+void slideFx(Ctx& c)
+{
+    if (c.openCl) { slideOpenCl(c); return; }
+    sf::moveIn(c, (double)(float)c.d("Angle"), 1.0, true);
+}
 
 // Split: one frame cut into four quadrants at Center that move apart (Push), are cropped (Wipe) or squeezed (Squeeze) over the other,
 // with a border on the two inner edges (Vfx1.ofx 0x180609e60).
 void splitFx(Ctx& c)
 {
+    if (c.openCl) { splitOpenCl(c); return; }
     using namespace sf;
     Img8 A = toBytesTop(c.src), B = toBytesTop(c.src2);
     const int w = A.w, h = A.h;
@@ -3479,7 +3854,7 @@ bool transrec::record(const std::string& id, Ctx& c, Rec& r)
     r.h = c.frameH;
     struct Guard { Guard(transrec::Rec* p) { sf::gRec = p; } ~Guard() { sf::gRec = nullptr; } } guard(&r);
     if (id == "push") pushFx8(c);
-    else if (id == "swap" || id == "3dshuffle") swapFx8(c);
+    else if (id == "swap") swapFx8(c);
     else if (id == "squeeze") squeezeFx8(c);
     else if (id == "zoom") zoomFx8(c);
     else if (id == "barndoor") barndoorFx8(c);
@@ -3516,6 +3891,17 @@ void addTransitions(std::vector<Def>& out)
         Def d = vfxDef(P + r.id, r.fn);
         if (d.id.empty()) continue;
         d.transition = true;
+        if (d.id == P + "portals") {
+            // VEGAS's own default (its pictures of the unset transition equal its Mondrian preset): the layout's seed is the DLL's seed, not the OpenFX file's 0..166
+            vfxTune(d, "RandomPatternSeed", 634521, 0, 2147483647.0);
+            vfxTune(d, "Squares", 6, 0, 256);
+            vfxTune(d, "MaxTransparency", 0.85);
+            vfxTune(d, "MaxOffset", 0.1);
+            vfxTune(d, "MaxScale", 0.05);
+            vfxTune(d, "BorderSize", 0.1);
+            for (PDef& pd : d.params)
+                if (pd.name == "BorderColor") pd.def = {0.0, 0.0, 0.0};
+        }
         if (d.id == P + "iris")
             for (PDef& pd : d.params)
                 if (pd.name == "RepeatX" || pd.name == "RepeatY") { pd.dmin = pd.min; pd.dmax = pd.max; pd.max = 64; }

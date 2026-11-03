@@ -75,8 +75,6 @@ struct LdSetup {      // Layer Dimensionality's settings, shared by the CPU effe
     double eox = 0, eoy = 0, sigma = 0;
     float gain = 0.f;
 };
-struct LensSetup { bool plain = true; float cxp = 0, cyp = 0, d = 1, x14 = 0, x3 = 0, x13 = 0, s = 1, iw = 0, ih = 0; };
-bool lensSetupGpu(Ctx& c, int W, int H, LensSetup& o);      // builtins_mask.cpp (lensCorrection())
 struct RbSetup { bool pass = true, q8 = false; int type = 0, cx = 0, cy = 0; double s0 = 0, s1 = 0, wf = 0, iwf = 0; long long wi = 0, iwi = 0; };
 struct RpixSetup { bool pass = true, q8 = false; int gw = 1, gh = 1, sx = 0, sy = 0, bw = 1, bh = 1; float c0 = 0, c1 = 0; double inv = 1; };
 struct FillLightSetup { bool copy = true, blur = false; uint8_t lut[256][4]; double sigma = 0; float fop = 0; };
@@ -89,7 +87,8 @@ bool polarGeomGpu(int W, int H, double px0, double py0, double density, PolarGpu
 struct PanoSetup { bool copy = false; int n = 1, px[2] = {0, 0}, py[2] = {0, 0}, pw = 0, ph = 0; std::vector<float> map; };
 bool panoramaSetupGpu(Ctx& c, int W, int H, PanoSetup& o);   // builtins_vegasrest.cpp (360 Stabilization)
 struct SceneSetup { int stereo = 0; bool levels = false; std::vector<float> map; };
-bool sceneRotationSetupGpu(Ctx& c, int W, int H, SceneSetup& o);   // builtins_vegasrest.cpp (Scene Rotation)
+bool sceneRotationSetupGpu(Ctx& c, int W, int H, SceneSetup& o);
+bool stabilizationSceneGpu(Ctx& c, int W, int H, SceneSetup& o);   // builtins_vegasrest.cpp (360 Stabilization with no motion data and a setting changed)   // builtins_vegasrest.cpp (Scene Rotation)
 struct RaysSetup { struct Pass { std::vector<int> xi, yi; std::vector<float> xf, yf; }; int maskMode = 0; bool alpha = false, effectOnly = false, flicker = false, noise = false; std::vector<float> mask, tex, nxf, nyf; std::vector<int> nxi, nyi; float tlut[256]; uint8_t clut[256][4]; std::vector<Pass> passes; };
 namespace more { bool raysSetup(Ctx& c, int W, int H, RaysSetup& o); bool softContrastSetup(Ctx& c, int W, int H, ScSetup& o); bool fillLightSetup(Ctx& c, int W, FillLightSetup& o); void radialBlurSetup(Ctx& c, int W, int H, RbSetup& g); bool radialBlurSteps(const RbSetup& g, int W, int H, std::vector<uint32_t>& rec, std::vector<uint32_t>& starts, int maxSteps); void rpixSetup(Ctx& c, int W, int H, RpixSetup& o); void ldSetup(Ctx& c, int W, int H, LdSetup& o); void bbf8Setup(Ctx& c, int W, int H, Bbf8Setup& o); void rank8GpuKernel(Ctx& c, int W, int H, std::vector<float>& q, int& nx, int& ny); bool rank8Applies(int W, int H); void bbfSetup(Ctx& c, int W, int H, BbfSetup& o); void pipSetup(Ctx& c, int W, int H, PipSetup& o); void vignetteSetup(Ctx& c, int W, int H, VignetteSetup& o); void labAdjustGpuTables(std::vector<float>& t); void labAdjust8GpuTable(std::vector<float>& t); void broadcastColors8GpuTable(Ctx& c, std::vector<float>& t); void whiteBalanceSettings(Ctx& c, std::vector<float>& tab, bool& shift, bool& hasData); }   // builtins_more_colour.cpp
 
@@ -102,9 +101,7 @@ struct FilterGpuEntry {
 const std::vector<FilterGpuEntry>& filterGpuEntries();
 void gpuAddDeriche(gpu::Plan& p, int from, int to, double sigmaX, double sigmaY, bool levels, bool rawOut = false);   // VEGAS's Deriche Gaussian (kernel "deriche")
 std::vector<float> gaussKernelTable(double sigma);      // builtins.cpp: the float taps of the generic Gaussian (index 0 = centre)
-void tinyPlanetMapGpu(Ctx& c, int W, int H, std::vector<uint32_t>& idx);      // builtins_magix.cpp: the source pixel of every output pixel of VEGAS's Tiny Planet
 bool stitchMapGpu(Ctx& c, int W, int H, std::vector<float>& rec, bool& levels, float& noGamma);      // builtins_vr.cpp
-bool stereoTapsGpu(Ctx& c, int W, int H, std::vector<float>& rec, unsigned& full, unsigned& part);      // builtins_stereo.cpp
 void bezierMaskGpu(Ctx& c, int W, int H, int& mode, bool& invert, float& blend, std::string& key, std::vector<float>* total);      // builtins_mask_bezier.cpp
 bool gpuPlanMinMax8(Ctx& c, gpu::Plan& p);      // 8-bit Min and Max (the rank filter), for planMinMax in vkeffects.cpp
 void gpuPushDouble(std::vector<float>& tab, double v);      // a double as two floats holding its bits (tables read by ld_sf in the kernels)

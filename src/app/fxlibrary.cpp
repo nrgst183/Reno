@@ -273,6 +273,7 @@ int applyPreset(ofx::Instance* inst, const OfxPreset& p, double time)
 {
     if (!inst) return 0;
     int n = 0;
+    ofx::ParamBatch batch(*inst);       // the effect hears of the changes together, in its own order, once all the values are in (as VEGAS does)
     for (const OfxPreset::Value& v : p.values) {
         ofx::Param* pr = nullptr;
         {

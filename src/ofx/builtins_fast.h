@@ -40,6 +40,8 @@ struct DefocusIris {
 };
 DefocusIris defocusIris(double radiusPx, int sides, double turn, double curvature);
 void defocusRender(const Buf& src, Buf& out, double radiusPx, int sides, double turn, double curvature, double thresh, double strength, bool reduceFlicker);
+// Defocus as VEGAS's OpenCL path does it (vfxdefocus.h): shape 0 circle, 1 .. 4 a polygon of 5 .. 8 sides, orientDeg in degrees, curvature -1 .. 1, thresh = Bloom threshold / 100; store8: the 8-bit store.
+void defocusRenderGpu(const Buf& src, Buf& out, double radiusPx, int shape, double orientDeg, double curvature, double thresh, double strength, bool reduceFlicker, bool store8);
 
 // A Gaussian blur of every channel that, for a large sigma, is done on a smaller copy of the frame.
 void softBlur(Buf& b, double sigma);

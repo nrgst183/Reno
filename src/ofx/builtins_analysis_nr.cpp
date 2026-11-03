@@ -10,6 +10,7 @@
 // planes at half size (colour noise is soft). The strengths are the noise levels (in 1/255ths of the range) the denoiser expects.
 #include "builtins_analysis_internal.h"
 #include "../core/base.h"
+#include "vfxdenoise.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -229,7 +230,7 @@ void denoise(Ctx& c, double sigmaY, double sigmaC, int S, int R, double sharpen)
     });
 }
 
-// ---- VEGAS Denoise, as MagixCVFx.ofx does it (settled by running the plug-in's own routines: the 8-bit picture is read as bytes b0 b1 b2 a (the plug-in treats the first
+// ---- VEGAS Denoise, as MagixCVFx.ofx does it on the CPU (GPU acceleration off; with it on, denoisingNLM() calls vfxdenoise.h, the OpenCL kernels) (settled by running the plug-in's own routines: the 8-bit picture is read as bytes b0 b1 b2 a (the plug-in treats the first
 // byte as red but is given BGRA, so blue sits where it expects red - kept), turned into float planes Y U V (BT.601, rounded in the order the plug-in's code does it), each plane denoised
 // with a non-local-means over a 21 x 21 search window of 7 x 7 patches (L1 patch distance, weight table exp(-max(0, i - 2 h^2) / h^2) for the distance rounded to a whole number,
 // cut to 0 where it falls under 0.001), turned back and cut to whole levels; Amount then runs a 3 x 3 sharpening kernel over the bytes. Luminance and Color are the h of the planes
@@ -323,6 +324,17 @@ void denoisingNLM(Ctx& c)
     if (c.src.px.size() != c.out.px.size() || W < 1 || H < 1) { c.out.px = c.src.px; return; }
     const double lum = clampd(c.d("Luminance"), 0, 100), col = clampd(c.d("Color"), 0, 100), amt = clampd(c.d("Amount"), 0, 1);
     const double eps = 1.1920928955078125e-07;
+    if (c.openCl) {
+        // VEGAS's OpenCL kernels (what VEGAS draws with GPU acceleration on): vfxdenoise.h. The card holds the picture bottom row first.
+        const size_t n4 = (size_t)W * H * 4;
+        std::vector<float> in(n4), res(n4);
+        for (int y = 0; y < H; ++y) std::memcpy(&in[(size_t)(H - 1 - y) * W * 4], c.src.at(0, y), (size_t)W * 4 * sizeof(float));
+        vfxdn::Params pr;
+        pr.lum = lum; pr.col = col; pr.amt = amt; pr.host8 = c.host8;
+        vfxdn::run(in.data(), W, H, pr, res.data(), [](int rows, const std::function<void(int, int)>& f) { parallelRows(rows, (size_t)1 << 20, f); });
+        for (int y = 0; y < H; ++y) std::memcpy(c.out.at(0, y), &res[(size_t)(H - 1 - y) * W * 4], (size_t)W * 4 * sizeof(float));
+        return;
+    }
     const size_t n = (size_t)W * H;
     // the picture as the plug-in is given it: 8-bit premultiplied, first row at the bottom
     std::vector<uint8_t> px(n * 4);

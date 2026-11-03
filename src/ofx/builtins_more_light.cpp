@@ -5,6 +5,7 @@
 #include "builtins_fast.h"
 #include "vegas8.h"
 #include "vfxlightrays.h"
+#include "vfxgradmap.h"
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
@@ -66,16 +67,57 @@ void lightRays(Ctx& c)
         }
 }
 
+// Gradient Map, from VEGAS's own code (vfx1.dll, read and checked bit for bit against its render function on random gradients and pictures; see vfxgradmap.h): the stops
+// ("GradientStops": position r g b a;...) make an alpha curve and a colour curve through VEGAS's key-frame spline, a grey picks the gradient's colour and alpha from a 256-entry table
+// (8-bit frames; float frames read the curves at the grey itself), and Amount and Mode (Blend / Add) put it over the picture. No stops: VEGAS's "Reset to None", the picture as it was.
 void gradientMap(Ctx& c)
 {
-    const double amount = clampd(c.d("Amount"), 0, 1);
-    const bool add = c.i("Mode") == 1;
-    perPixel(c, [&](float& r, float& g, float& b, int, int) {
-        const float l = luma(r, g, b);
-        float gr = clamp01(l * 3), gg = clamp01(l * 3 - 1), gb = clamp01(l * 3 - 2);
-        if (add) { r = clamp01(r + (gr - 0.5f) * (float)amount); g = clamp01(g + (gg - 0.5f) * (float)amount); b = clamp01(b + (gb - 0.5f) * (float)amount); }
-        else { r += (gr - r) * (float)amount; g += (gg - g) * (float)amount; b += (gb - b) * (float)amount; }
-    });
+    const int W = c.out.w, H = c.out.h;
+    c.out.px = c.src.px;
+    if (W <= 0 || H <= 0) return;
+    vfxgm::Gradient g;
+    g.amount = clampd(c.d("Amount"), 0, 1);
+    g.mode = c.i("Mode") == 1 ? 1 : 0;
+    g.stops = vfxgm::parseStops(c.s("GradientStops"));
+    if (g.stops.empty()) return;
+    if (c.levels) {
+        // VEGAS's 8-bit routine: the frame as premultiplied bytes, blue first
+        std::vector<uint8_t> in((size_t)W * H * 4);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const float* s = c.src.at(x, y);
+                uint8_t* d = &in[((size_t)y * W + x) * 4];
+                d[0] = (uint8_t)v8::toLevel(s[2]);
+                d[1] = (uint8_t)v8::toLevel(s[1]);
+                d[2] = (uint8_t)v8::toLevel(s[0]);
+                d[3] = (uint8_t)v8::toLevel(s[3]);
+            }
+        vfxgm::run8(in.data(), W * 4, W, H, g);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const uint8_t* d = &in[((size_t)y * W + x) * 4];
+                float* o = c.out.at(x, y);
+                o[0] = v8::fromLevel(d[2]);
+                o[1] = v8::fromLevel(d[1]);
+                o[2] = v8::fromLevel(d[0]);
+                o[3] = v8::fromLevel(d[3]);
+            }
+    } else {
+        std::vector<float> in((size_t)W * H * 4);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const float* s = c.src.at(x, y);
+                float* d = &in[((size_t)y * W + x) * 4];
+                d[0] = s[2]; d[1] = s[1]; d[2] = s[0]; d[3] = s[3];
+            }
+        vfxgm::runFloat(in.data(), W * 16, W, H, g);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const float* d = &in[((size_t)y * W + x) * 4];
+                float* o = c.out.at(x, y);
+                o[0] = d[2]; o[1] = d[1]; o[2] = d[0]; o[3] = d[3];
+            }
+    }
 }
 
 }  // namespace more

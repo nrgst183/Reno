@@ -6,6 +6,11 @@
 #include "builtins_vec.h"
 #include "builtins_deriche.h"
 #include "vegas8.h"
+#include "vfxlevelsconv.h"
+#include "vfxnoise.h"
+#include "vfxhslwb.h"
+#include "vfxblurs.h"
+#include "vfxcolour.h"
 #include "vkfilters.h"
 #include <algorithm>
 #include <cstring>
@@ -32,6 +37,27 @@ void perPixel(Ctx& c, F fn)
         }
     });
 }
+
+// VEGAS with GPU acceleration on draws the colour effects below (Invert, Black and White, Sepia, Color Balance, Chroma Keyer; Saturation, LAB and Broadcast Colors in
+// builtins_more_colour.cpp) with its OpenCL kernels (vfxcolour.h): float32 on the premultiplied values as the picture stores them, one pixel at a time, then the kernels' 12-bit store
+// into an 8-bit frame (more::oclStore12). fn(in, out) works on one pixel's four floats.
+template <class F>
+void oclPixels(Ctx& c, F fn)
+{
+    const int W = c.out.w, H = c.out.h;
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float o[4], in[4];
+            const float* sp = c.src.at(x, y);
+            if (q) { vcol::readLevels(sp, in); sp = in; }
+            fn(sp, o);
+            float* d = c.out.at(x, y);
+            for (int k = 0; k < 4; ++k) d[k] = q ? more::oclStore12(o[k]) : o[k];
+        }
+    });
+}
+inline bool oclUsable(const Ctx& c) { return c.openCl && c.out.w > 0 && c.out.h > 0 && c.src.w == c.out.w && c.src.h == c.out.h; }
 
 // ------------------------------------------------------------------ colour
 // The colour effects below are row functions, four pixels at a time (see Def::rows); each channel does the same arithmetic as the plain version.
@@ -89,7 +115,15 @@ bool invertRows(Ctx& c, RowFn& fn)
     };
     return true;
 }
-void invert(Ctx& c) { runRows(c, invertRows); }
+void invert(Ctx& c)
+{
+    if (oclUsable(c)) {
+        const float t = (float)c.d("BlendAmount");
+        oclPixels(c, [t](const float* p, float* o) { vcol::invertPx(t, p, o); });
+        return;
+    }
+    runRows(c, invertRows);
+}
 
 // Black and White: on 8-bit levels, the grey is floor(sum / 3); each level moves towards it by ceil(|difference| * amount) levels.
 // Amount reads slightly high at 25% (65/256, measured), exact at 50% and 75%.
@@ -117,7 +151,16 @@ bool blackAndWhiteRows(Ctx& c, RowFn& fn)
     };
     return true;
 }
-void blackAndWhite(Ctx& c) { runRows(c, blackAndWhiteRows); }
+void blackAndWhite(Ctx& c)
+{
+    if (oclUsable(c)) {
+        // (the kernel is handed the share of the original picture: 1 - BlendAmount, worked out in doubles)
+        const float k = (float)(1.0 - c.d("BlendAmount"));
+        oclPixels(c, [k](const float* p, float* o) { vcol::blackWhitePx(k, p, o); });
+        return;
+    }
+    runRows(c, blackAndWhiteRows);
+}
 
 // Sepia on 8-bit levels of the premultiplied picture (alpha untouched). Grey = floor(sum / 3); a mix is c + (target - c) * w / 256 truncated.
 // Strength s: up to 1/3 each level goes towards the grey by w = 1.5 * s * 255; up to 2/3 the same, then towards the colour by a weight
@@ -182,7 +225,19 @@ bool sepiaRows(Ctx& c, RowFn& fn)
     };
     return true;
 }
-void sepia(Ctx& c) { runRows(c, sepiaRows); }
+void sepia(Ctx& c)
+{
+    if (oclUsable(c)) {
+        const Color col = c.color("Color");
+        vcol::SepiaSettings st;
+        st.col[0] = (float)col.r; st.col[1] = (float)col.g; st.col[2] = (float)col.b;
+        st.strength = (float)c.d("BlendingStrength");
+        st.falloff = (float)c.d("BlendingFalloff");
+        oclPixels(c, [st](const float* p, float* o) { vcol::sepiaPx(st, p, o); });
+        return;
+    }
+    runRows(c, sepiaRows);
+}
 
 // Automatic Contrast: brightness and contrast (about 0.5) that stretch the frame's brightness to Min..Max after cutting Percent of the
 // histogram (half at each end). A 256-bin luma histogram accumulates every frame given (Current Clip adds a few frames).
@@ -268,6 +323,10 @@ void brightnessContrast(Ctx& c)
 {
     float bright, contrast, center;
     brightnessContrastSettings(c, bright, contrast, center);
+    if (oclUsable(c)) {
+        oclPixels(c, [=](const float* p, float* o) { vcol::brightContrastPx(bright, contrast, center, p, o); });
+        return;
+    }
     runRowFn(c, brightnessContrastRow(bright, contrast, center));
 }
 
@@ -433,9 +492,26 @@ void hslToBytesScalar(const HslD& p, unsigned char* out)
     out[0] = (unsigned char)(int)(b * 255.0);
 }
 
+// VEGAS with GPU acceleration on draws HSL Adjust with its OpenCL kernel (vfxhslwb.h): float32 on the premultiplied values, no clamps before the store, 12-bit store into an 8-bit frame.
+static void hslAdjustOpenCl(Ctx& c, double addHue, double sat, double lum)
+{
+    const vhw::HslSettings st = vhw::hslSettings(addHue, sat, lum);
+    const int W = c.out.w, H = c.out.h;
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float o[4];
+            vhw::hslPixel(st, c.src.at(x, y), o);
+            float* d = c.out.at(x, y);
+            for (int k = 0; k < 4; ++k) d[k] = q ? more::oclStore12(o[k]) : o[k];
+        }
+    });
+}
+
 void hslAdjust(Ctx& c)
 {
     const double addHue = c.d("AddToHue"), sat = c.d("Saturation"), lum = c.d("Luminance");
+    if (c.openCl && c.out.w > 0 && c.out.h > 0) { hslAdjustOpenCl(c, addHue, sat, lum); return; }
     if (c.levels) {
         const int W = c.out.w, H = c.out.h;
         forRows(H, W, [&](int y) {
@@ -557,6 +633,22 @@ namespace {
 void levels(Ctx& c)
 {
     const int ch = c.i("Channel");
+    if (c.openCl && c.out.w > 0 && c.out.h > 0) {
+        // VEGAS's OpenCL kernel (vfxlevelsconv.h): float32 on the premultiplied pixel, no input clamp and no minimum range (a zero range gives not-a-number / infinity), the
+        // gamma curve with its straight toe, the 8-bit frame getting the 12-bit store (more::oclStore12).
+        const vfxlc::LevelsSetup s = vfxlc::levelsSetup(ch, c.d("InputStart"), c.d("InputEnd"), c.d("OutputStart"), c.d("OutputEnd"), c.d("Gamma"));
+        const int W = c.out.w, H = c.out.h;
+        const bool q8 = c.host8;
+        forRows(H, W, [&](int y) {
+            for (int x = 0; x < W; ++x) {
+                float* o = c.out.at(x, y);
+                vfxlc::levelsPixel(s, c.src.at(x, y), o);
+                if (q8)
+                    for (int k = 0; k < 4; ++k) o[k] = more::oclStore12(o[k]);
+            }
+        });
+        return;
+    }
     const double i0 = c.d("InputStart"), o0 = c.d("OutputStart"), o1 = c.d("OutputEnd"), gamma = c.d("Gamma");
     double i1 = c.d("InputEnd"), width = i1 - i0;
     if (std::fabs(width) < 0.003921568859368563) { i1 = i0 + 0.003921568859368563; width = 0.003921568859368563; }
@@ -642,6 +734,14 @@ static void colorBalance8(Ctx& c)
 
 void colorBalance(Ctx& c)
 {
+    if (oclUsable(c)) {
+        vcol::BalanceSettings st;
+        st.r = (float)c.d("Red"); st.g = (float)c.d("Green"); st.b = (float)c.d("Blue");
+        st.type = c.i("Type");
+        st.preserve = c.b("PreserveLuminosity") ? 1 : 0;
+        oclPixels(c, [st](const float* p, float* o) { vcol::colorBalancePx(st, p, o); });
+        return;
+    }
     if (c.levels) { colorBalance8(c); return; }
     const float dr = (float)c.d("Red"), dg = (float)c.d("Green"), db = (float)c.d("Blue");
     const int type = c.i("Type");
@@ -844,22 +944,22 @@ static void mirrorOpenCl(Ctx& c, double cxn, double cyn)
                 const float v30 = (std::fma(v29, -v23, v24) + std::fma(v22, v5g, -v6g)) / (v22 - v23);
                 const float v31 = std::fma(v22, v30 - v5g, v6g);
                 const float rx = (std::fma(v30, 2.f, -v29)) * sx, ry = (std::fma(v31, 2.f, -v24)) * sy;
-                const int v36 = (int)rx, v37 = (int)ry;
+                const int v36 = (int)std::floor(rx), v37 = (int)std::floor(ry);   // floor, not the kernel's convert_int: the captures keep the left/top edge pixel blended with the background
                 float r[4];
                 if (v36 < -1 || v36 >= W || v37 < -1 || v37 >= H) { std::memcpy(r, bg, sizeof r); store(x, y, r); continue; }
                 const float* t[4];
                 if (v36 < 0) {
                     t[0] = t[2] = bg;
                     if (v37 < 0) { t[1] = bg; t[3] = px(0, 0); }
-                    else { t[1] = px(0, v37); t[3] = v37 >= H - 1 ? bg : px(0, v37 + 1); }
+                    else { t[1] = px(0, v37); t[3] = v37 >= H - 1 ? px(0, v37) : px(0, v37 + 1); }
                 } else if (v36 >= W - 1) {
                     t[1] = t[3] = bg;
                     if (v37 < 0) { t[0] = bg; t[2] = px(v36, 0); }
-                    else { t[0] = px(v36, v37); t[2] = v37 >= H - 1 ? bg : px(v36, v37 + 1); }
+                    else { t[0] = px(v36, v37); t[2] = v37 >= H - 1 ? px(v36, v37) : px(v36, v37 + 1); }
                 } else if (v37 < 0) {
                     t[0] = t[1] = bg; t[2] = px(v36, 0); t[3] = px(v36 + 1, 0);
                 } else if (v37 >= H - 1) {
-                    t[2] = t[3] = bg; t[0] = px(v36, v37); t[1] = px(v36 + 1, v37);
+                    t[0] = px(v36, v37); t[1] = px(v36 + 1, v37); t[2] = t[0]; t[3] = t[1];   // the bottom row repeats (captures), the decoded kernel says background
                 } else {
                     t[0] = px(v36, v37); t[1] = px(v36 + 1, v37); t[2] = px(v36, v37 + 1); t[3] = px(v36 + 1, v37 + 1);
                 }
@@ -925,10 +1025,21 @@ void mirror(Ctx& c)
     });
 }
 
-// VEGAS's Gaussian Blur: its Deriche Gaussian (builtins_deriche.cpp) of size Range x the frame's larger side along / across; channels switched off keep the source.
+// VEGAS's Gaussian Blur. With GPU acceleration on (Ctx::openCl) it is the OpenCL kernels' recursive Gaussian (vfxblurs.h: sigma = Range x the frame's larger side + 1.5 turned into the
+// Gaussian's sigma, a column pass and a row pass, every picture between them an 8-bit texture with the 12-bit store; 28 captured pictures within 3 levels, 98% of the values exact, the
+// older model below was 0.24 levels off on average and 48 at worst); channels switched off keep the source. Without it: its Deriche Gaussian (builtins_deriche.cpp) of size Range x the
+// frame's larger side along / across.
 void gaussianBlurFx(Ctx& c)
 {
     const bool ch[4] = {c.b("R"), c.b("G"), c.b("B"), c.b("A")};
+    if (c.openCl && c.out.w > 0 && c.out.h > 0 && c.src.px.size() == (size_t)c.out.w * c.out.h * 4) {
+        std::vector<float> in, out;
+        more::oclRowsOf(c.src, in);
+        vfxblurs::gaussianBlur(in, c.out.w, c.out.h, more::oclSetting(c.d("HorizontalRange"), 0, 1), more::oclSetting(c.d("VerticalRange"), 0, 1), ch,
+                               c.host8 ? more::oclStore12 : nullptr, out);
+        more::oclRowsTo(out, c.out, c.out.w, c.out.h);
+        return;
+    }
     const double big = (double)std::max(c.out.w, c.out.h);
     Buf b = c.src;
     vegasDericheBlur(b, c.d("HorizontalRange") * big, c.d("VerticalRange") * big, c.levels);
@@ -1121,7 +1232,9 @@ namespace {
 
 void linearBlur(Ctx& c)
 {
-    // VEGAS's own (builtins_deriche.cpp): a shear, its Deriche Gaussian along the rows / columns, the shear back
+    // GPU acceleration on: VEGAS's OpenCL kernels (vfxlinblur.h): the frame turned into a larger canvas, the Gaussian down its columns, turned back
+    if (c.openCl && vegasLinearBlurOpenCl(c.src, c.out, c.d("Angle"), c.d("Amount"), c.host8)) return;
+    // off: VEGAS's CPU code (builtins_deriche.cpp): a shear, its Deriche Gaussian along the rows / columns, the shear back
     vegasLinearBlur(c.src, c.out, c.d("Angle"), c.d("Amount"), c.levels);
 }
 
@@ -1404,8 +1517,61 @@ namespace {
 
 std::vector<uint8_t>& tlLevels() { thread_local std::vector<uint8_t> v; return v; }
 
+// VEGAS with GPU acceleration on draws the Chroma Keyer with its OpenCL kernels (vfxcolour.h, notes: Colour_Kernels.md): the key's alpha per pixel in floats from the HSL and RGB
+// distances to the key colour, the same blur (sigma and coefficients as the CPU code above) run in floats down the columns and then along the rows on planes that are 8-bit in an 8-bit
+// project (each value of both recursive passes goes through the 12-bit store), then the despill and the premultiplying in floats.
+static float oclStore12Fn(float v) { return more::oclStore12(v); }
+static void chromaKeyerOpenCl(Ctx& c)
+{
+    const Color kc = c.color("color");
+    vcol::KeyerSettings s;
+    s.key[0] = (float)kc.r; s.key[1] = (float)kc.g; s.key[2] = (float)kc.b;
+    s.low = (float)c.d("LowThreshold");
+    s.high = (float)c.d("HighThreshold");
+    s.despill = (kc.b > kc.g && kc.b > kc.r) ? 2 : ((kc.g > kc.b && kc.g > kc.r) ? 1 : 0);
+    s.showMask = c.b("ShowMaskOnly");
+    const int W = c.out.w, H = c.out.h;
+    float kh[3];
+    vcol::keyerHsl(s.key, kh);
+    const float inv = vcol::keyerInvRange(s);
+    std::vector<float> alpha((size_t)W * H);
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float in[4];
+            const float* sp = c.src.at(x, y);
+            if (c.host8) { vcol::readLevels(sp, in); sp = in; }
+            alpha[(size_t)y * W + x] = vcol::keyerAlpha(s, kh, inv, sp);
+        }
+    });
+    const float amount = (float)clampd(c.d("BlurAmount"), 0, 1);
+    const float size = std::max((float)W, (float)H) * amount * 0.25f + 1.5f;
+    const float ln2 = std::log(0.003921568859368563f) + std::log(0.003921568859368563f);
+    const float sigma = std::sqrt(-((size * size) / ln2));
+    const bool blur = sigma > 0.6f && W > 1 && H > 1;
+    if (blur) {
+        const KeyerCoefs k = keyerCoefs(sigma);
+        // (VEGAS's rows run bottom first: the kernels' first row is the bottom row of the picture)
+        std::vector<float> plane((size_t)W * H);
+        for (int y = 0; y < H; ++y) std::memcpy(&plane[(size_t)(H - 1 - y) * W], &alpha[(size_t)y * W], sizeof(float) * (size_t)W);
+        vcol::keyerBlurPlane(k.A, k.B, k.C, k.D, k.E, W, H, plane, c.host8 ? oclStore12Fn : nullptr);
+        for (int y = 0; y < H; ++y) std::memcpy(&alpha[(size_t)y * W], &plane[(size_t)(H - 1 - y) * W], sizeof(float) * (size_t)W);
+    }
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float o[4], in[4];
+            const float* sp = c.src.at(x, y);
+            if (q) { vcol::readLevels(sp, in); sp = in; }
+            vcol::keyerFinish(s, sp, alpha[(size_t)y * W + x], blur, o);
+            float* d = c.out.at(x, y);
+            for (int k = 0; k < 4; ++k) d[k] = q ? more::oclStore12(o[k]) : o[k];
+        }
+    });
+}
+
 void chromaKeyer(Ctx& c)
 {
+    if (oclUsable(c)) { chromaKeyerOpenCl(c); return; }
     const Color kc = c.color("color");
     const double key[3] = {kc.r, kc.g, kc.b};
     const double low = clampd(c.d("LowThreshold"), 0, 1), high = clampd(c.d("HighThreshold"), 0, 1);
@@ -1616,7 +1782,8 @@ void border(Ctx& c)
                 const float k = 1.f - (float)out[(size_t)y * W + x] / 255.f;
                 const float* s = c.src.at(x, yt0);
                 float* o = c.out.at(x, yt0);
-                for (int ch = 0; ch < 4; ++ch) o[ch] = q8 ? (float)(int)(v8(s[ch]) * k) / 255.f : s[ch] * k;
+                // (an 8-bit frame, whichever way it is drawn: VEGAS's blur multiplies the whole level and cuts the product; the captured Soft Edge and Size 0.5 are exact so)
+                for (int ch = 0; ch < 4; ++ch) o[ch] = (q8 || c.host8) ? (float)(int)((float)roundNonNeg(std::min(std::max(s[ch], 0.f), 1.f) * 255.f) * k) / 255.f : s[ch] * k;
             }
         });
         return;
@@ -1651,6 +1818,18 @@ void border(Ctx& c)
 void glow(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
+    if (c.openCl && W > 0 && H > 0 && c.src.px.size() == (size_t)W * H * 4) {
+        // VEGAS's OpenCL path (GPU acceleration on): the same recursive Gaussian as Gaussian Blur (vfxblurs.h, sigma from larger side x Glow percent x 0.5), then one kernel mixes the
+        // picture towards Color (alpha towards 1) by clamp((mean of the blurred R, G, B - Suppression) x Intensity, 0, 1). Captured: 27 pictures within 7 levels, 99.9% of the values exact.
+        std::vector<float> in, out;
+        more::oclRowsOf(c.src, in);
+        const Color col = c.color("Color");
+        const float rgb[3] = {(float)more::oclSetting(col.r, -1e6, 1e6), (float)more::oclSetting(col.g, -1e6, 1e6), (float)more::oclSetting(col.b, -1e6, 1e6)};
+        vfxblurs::glow(in, W, H, more::oclSetting(c.d("GlowPercent"), 0, 1), (float)more::oclSetting(c.d("Intensity"), -1e6, 1e6), (float)more::oclSetting(c.d("Suppression"), -1e6, 1e6), rgb,
+                       c.host8 ? more::oclStore12 : nullptr, out);
+        more::oclRowsTo(out, c.out, W, H);
+        return;
+    }
     const double pct = clampd(c.d("GlowPercent"), 0, 1);
     const float intensity = (float)c.d("Intensity"), supp = (float)clampd(c.d("Suppression"), 0, 1);
     const Color col = c.color("Color");
@@ -1738,6 +1917,26 @@ struct NoiseR250 {
 void addNoise(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
+    if (c.openCl) {
+        // VEGAS with GPU acceleration on: the OpenCL kernel (vfxnoise.h), ranlux per column, noise added with the alpha taken out. No render-scale factor there. With Animate on VEGAS seeds
+        // from the C library's rand() of the whole process, which nobody can repeat; Reno takes a number from the frame's time stamp instead, so that preview and render agree and every
+        // frame differs. Animate off: seed 0, exactly VEGAS's pictures.
+        vfxnoise::Params P;
+        P.level = (float)clampd(c.d("NoiseLevel"), 0, 1);
+        P.mono = c.b("Monochromatic");
+        P.gauss = c.b("GaussianNoise");
+        if (c.b("Animate")) {
+            uint32_t h = (uint32_t)c.legacySeedTime() * 2654435761u;
+            h ^= h >> 15;
+            h *= 2246822519u;
+            h ^= h >> 13;
+            P.seed = (int)(h & 0x7fffu);
+        }
+        vfxnoise::render(c.src.px.data(), c.out.px.data(), W, H, P);
+        if (c.host8)
+            for (float& f : c.out.px) f = more::oclStore12(f);
+        return;
+    }
     const double level = clampd(c.d("NoiseLevel"), 0, 1) * c.scale;
     const bool mono = c.b("Monochromatic"), gauss = c.b("GaussianNoise"), animate = c.b("Animate");
     c.out.px = c.src.px;
@@ -1843,7 +2042,7 @@ void addFilters(std::vector<Def>& out)
         out.push_back(d);
     }
     out.push_back(filter("hsladjust", "HSL Adjust", "Hue turned, saturation and lightness scaled",
-                         {dbl("AddToHue", "Add to hue", 0, 0, 1), dbl("Saturation", "Saturation", 1, 0, 5), dbl("Luminance", "Luminance", 1, 0, 5)}, hslAdjust));
+                         {dbl("AddToHue", "Add to hue", 0, 0, 1), dbl("Saturation", "Saturation", 1, 0, 2), dbl("Luminance", "Luminance", 1, 0, 2)}, hslAdjust));
     {
         Def d = filter("levels", "Levels", "Input and output levels and gamma",
                        {choice("Channel", "Channel", 0, {"All", "Red", "Green", "Blue", "Alpha"}), dbl("InputStart", "Input start", 0, -1, 2),

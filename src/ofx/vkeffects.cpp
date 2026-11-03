@@ -35,6 +35,7 @@ inline uint32_t u32(int v) { return (uint32_t)std::max(0, v); }
 // ---------------------------------------------------------------------------------------------------- the planners
 bool planInvert(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxcolour.h) runs on the CPU; the shaders draw the older model
     if (c.levels) {
         // 8-bit: invertRows() (builtins_filters.cpp) works on the levels with VEGAS's integer steps; its weight is worked out here exactly as there
         const float amount = (float)clampd(c.d("BlendAmount"), 0, 1);
@@ -52,6 +53,7 @@ bool planInvert(Ctx& c, Plan& p)
 // Brightness and Contrast (brightnessContrastRows)
 bool planBrightnessContrast(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxcolour.h) runs on the CPU; the shader draws the older model
     const float bright = (float)c.d("Brightness");
     const float contrast = (float)clampd(c.d("Contrast"), -1, 1);
     const float center = (float)c.d("ContrastCenter");
@@ -63,6 +65,7 @@ bool planBrightnessContrast(Ctx& c, Plan& p)
 
 bool planBlackAndWhite(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxcolour.h) runs on the CPU; the shaders draw the older model
     float k = (float)clampd(c.d("BlendAmount"), 0, 1);
     if (k > 0.f && k < 0.375f) k += 1.f / 256.f;           // (as blackAndWhiteRows)
     P::Blackandwhite pc = {p.w, p.h, k};
@@ -88,6 +91,7 @@ D2 d2(double d)
 
 bool planColorBalance(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxcolour.h) runs on the CPU; the shaders draw the older model
     if (c.levels) {         // 8-bit: VEGAS's own byte routine (colorBalance8() in builtins_filters.cpp)
         const D2 R = d2((double)(float)c.d("Red")), G = d2((double)(float)c.d("Green")), B = d2((double)(float)c.d("Blue"));
         P::Colorbalance8 q = {p.w, p.h, R.h, R.l, G.h, G.l, B.h, B.l, u32(c.i("Type")), c.b("PreserveLuminosity") ? 1u : 0u};
@@ -101,6 +105,7 @@ bool planColorBalance(Ctx& c, Plan& p)
 
 bool planHslAdjust(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxhslwb.h) runs on the CPU; the shaders draw the older model
     if (c.levels) {         // 8-bit: VEGAS's byte HSL routines (hslAdjust() in builtins_filters.cpp)
         const D2 HU = d2(c.d("AddToHue")), SA = d2(c.d("Saturation")), LU = d2(c.d("Luminance"));
         P::Hsladjust8 pc8 = {p.w, p.h, HU.h, HU.l, SA.h, SA.l, LU.h, LU.l};
@@ -114,6 +119,7 @@ bool planHslAdjust(Ctx& c, Plan& p)
 
 bool planLevels(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: vfxlevelsconv.h)
     // levels() in builtins_filters.cpp: the same constants, worked out with the same calls
     const double i0 = c.d("InputStart"), o0 = c.d("OutputStart"), o1 = c.d("OutputEnd"), gamma = c.d("Gamma");
     double i1 = c.d("InputEnd"), width = i1 - i0;
@@ -175,6 +181,7 @@ bool planColorCurves(Ctx& c, Plan& p)
 // Color Corrector (Secondary) (colorCorrectorSecondaryRows in builtins_filters2.cpp: the settings are read the same way)
 bool planColorCorrectorSecondary(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // VEGAS's OpenCL kernels (vfxcolour.h ccsPx) run on the CPU; the shaders draw the older model
     if (c.levels) {         // 8-bit: VEGAS's own byte processor (colorCorrectorSecondary8() in builtins_filters2.cpp), its tables from the CPU's code
         Ccs8Gpu g;
         ccs8Gpu(c, g);
@@ -275,6 +282,7 @@ void addCopy(Plan& p, int from, int to)
 
 bool planGaussianBlur(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernels are ported on the CPU only: vfxblurs.h)
     // gaussianBlurFx() in builtins_filters.cpp: VEGAS's Deriche Gaussian of size Range x the larger side; channels switched off keep the source
     const double big = (double)std::max(p.w, p.h);
     const uint32_t mask = (c.b("R") ? 1u : 0u) | (c.b("G") ? 2u : 0u) | (c.b("B") ? 4u : 0u) | (c.b("A") ? 8u : 0u);
@@ -349,6 +357,7 @@ bool planMirror(Ctx& c, Plan& p)
 // ---- more colour effects and distortions
 bool planColorCorrector(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxcolour.h ccKernelPx) runs on the CPU; the shaders draw the older model
     if (c.levels) {
         std::vector<float> tab;
         const int flags = colorCorrector8Gpu(c, tab);
@@ -380,6 +389,7 @@ bool planColorCorrector(Ctx& c, Plan& p)
 
 bool planSaturationAdjust(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxcolour.h) runs on the CPU; the shaders draw the older model
     if (c.levels) {
         std::vector<float> tab;
         more::saturationAdjust8Gpu(c, tab);
@@ -426,6 +436,7 @@ bool planChannelBlend(Ctx& c, Plan& p)
 
 bool planUnsharpMask(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernels are ported on the CPU only: vfxblurs.h)
     bool none = false;
     const double sigma = more::unsharpSigma(c.d("Radius"), (int)p.w, (int)p.h, none);
     const int thr8 = (int)(c.d("Threshold") * 255.0 + 0.5);
@@ -493,51 +504,7 @@ bool planPixelate(Ctx& c, Plan& p)
     return true;
 }
 
-// The ellipse round Center that Swirl, Pinch/Punch and Spherize work inside (Area in builtins_distort.cpp)
-struct AreaPush { double px0, py0, rx, ry; };
-AreaPush areaOf(Ctx& c, int W, int H)
-{
-    double cx, cy;
-    c.xy("Center", cx, cy);
-    const double sh = clampd(c.d("ScalingHorizontal"), 0, 10);
-    const double sv = c.b("ScalingProportional") ? sh : clampd(c.d("ScalingVertical"), 0, 10);
-    AreaPush a;
-    a.rx = std::max(1e-3, sh * W * 0.5);
-    a.ry = std::max(1e-3, sv * H * 0.5);
-    a.px0 = cx * W + 0.5;
-    a.py0 = (1 - cy) * H + 0.5;
-    return a;
-}
-
-// (Spherize is planned in vkfilters.cpp)
-
-bool planSwirl(Ctx& c, Plan& p)
-{
-    const AreaPush a = areaOf(c, (int)p.w, (int)p.h);
-    const D2 X = d2(a.px0), Y = d2(a.py0), RX = d2(a.rx), RY = d2(a.ry), T = d2(clampd(c.d("Amount"), -1, 1) * -15.0);
-    P::Swirl pc = {p.w, p.h, X.h, X.l, Y.h, Y.l, RX.h, RX.l, RY.h, RY.l, T.h, T.l};
-    p.add("swirl", 0, 1, p.w, p.h).setPush(pc);
-    return true;
-}
-
-bool planPinchPunch(Ctx& c, Plan& p)
-{
-    const AreaPush a = areaOf(c, (int)p.w, (int)p.h);
-    const D2 X = d2(a.px0), Y = d2(a.py0), RX = d2(a.rx), RY = d2(a.ry), A = d2(clampd(c.d("Amount"), -1, 1));
-    P::Pinchpunch pc = {p.w, p.h, X.h, X.l, Y.h, Y.l, RX.h, RX.l, RY.h, RY.l, A.h, A.l};
-    p.add("pinchpunch", 0, 1, p.w, p.h).setPush(pc);
-    return true;
-}
-
-bool planWave(Ctx& c, Plan& p)
-{
-    const double W = p.w, H = p.h;
-    const D2 vn = d2(clampd(c.d("VerticalWaves"), 0, 1000)), hn = d2(clampd(c.d("HorizontalWaves"), 0, 1000)), va = d2(clampd(c.d("VerticalAmplitude"), -1, 1) * W),
-             ha = d2(clampd(c.d("HorizontalAmplitude"), -1, 1) * H), vp = d2(c.d("VerticalPhase")), hp = d2(c.d("HorizontalPhase"));
-    P::Wave pc = {p.w, p.h, vn.h, vn.l, hn.h, hn.l, va.h, va.l, ha.h, ha.l, vp.h, vp.l, hp.h, hp.l};
-    p.add("wave", 0, 1, p.w, p.h).setPush(pc);
-    return true;
-}
+// (Spherize is planned in vkfilters.cpp; Swirl and Pinch/Punch have no plan: VEGAS's fixed-point mixers run on the CPU, vfxswirl.h)
 
 // Min and Max (neighbourhood() in builtins_more_blur.cpp, halfWidths() in builtins_fast.cpp)
 bool planMinMax(Ctx& c, Plan& p)
@@ -572,12 +539,7 @@ bool planMinMax(Ctx& c, Plan& p)
     return true;
 }
 
-bool planGradientMap(Ctx& c, Plan& p)
-{
-    P::Gradientmap pc = {p.w, p.h, (float)clampd(c.d("Amount"), 0, 1), c.i("Mode") == 1 ? 1u : 0u};
-    p.add("gradientmap", 0, 1, p.w, p.h).setPush(pc);
-    return true;
-}
+// (Gradient Map has no Vulkan plan: it follows VEGAS's stop list, spline and 8-bit table on the CPU, vfxgradmap.h)
 
 bool planMaskGenerator(Ctx& c, Plan& p)
 {
@@ -589,6 +551,7 @@ bool planMaskGenerator(Ctx& c, Plan& p)
 
 bool planBroadcastColors(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxcolour.h) runs on the CPU; the shaders draw the older model
     if (c.levels) {          // 8-bit: VEGAS's own table pass (broadcastColors8() in builtins_more_colour.cpp), tables and constants as doubles
         std::vector<float> tab;
         more::broadcastColors8GpuTable(c, tab);
@@ -611,6 +574,7 @@ bool planBroadcastColors(Ctx& c, Plan& p)
 
 bool planChromaBlur(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernels are ported on the CPU only: vfxblurs.h)
     // 8-bit: chromaBlur8() in builtins_more_blur.cpp is a Gaussian on the colour differences with a clamp that has no kernel here: the CPU draws it
     if (c.levels) return false;
     const std::vector<float> kx = chromaBlurKernel(false, c.px(clampd(c.d("HorizontalPixels"), 0, 10) + 1.0)), ky = chromaBlurKernel(true, c.px(2.4 * clampd(c.d("VerticalPixels"), 0, 10) + 1.0));
@@ -679,6 +643,7 @@ bool planWipeClock(Ctx& c, Plan& p)
 
 bool planPushFrames(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // (VEGAS's OpenCL kernels are ported on the CPU only: vfxwipes.h)
     if (c.levels) return false;                 // the 8-bit picture is VEGAS's fixed-point maths on the CPU (builtins_trans.cpp)
     const int t = toTable(c, p);
     if (t < 0) return false;
@@ -705,6 +670,7 @@ bool planPushFrames(Ctx& c, Plan& p)
 
 bool planBarndoorFrames(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;     // (VEGAS's OpenCL kernel is ported on the CPU only: vfxwipes.h)
     if (c.levels) return false;     // 8-bit pictures use the exact CPU path
     const int t = toTable(c, p);
     if (t < 0) return false;
@@ -728,6 +694,7 @@ bool planBarndoorFrames(Ctx& c, Plan& p)
 // ---- generators: no input picture (buffer 0 is not filled); the numbers the CPU code works out in double precision come from builtins_gen.cpp
 bool planSolidColor(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: vfxgen.h)
     float v[4];
     solidColorGpu(c, v);
     P::FillPx pc = {p.w, p.h, v[0], v[1], v[2], v[3]};
@@ -748,6 +715,7 @@ void tabD(std::vector<float>& t, double d)
 
 bool planCheckerboard(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: vfxgen.h)
     std::vector<float> tab;
     float pa[4], pb[4];
     checkerboardGpu(c, (int)p.w, (int)p.h, tab, pa, pb);
@@ -760,6 +728,7 @@ bool planCheckerboard(Ctx& c, Plan& p)
 
 bool planTestPattern(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: vfxgen.h)
     std::vector<float> tab;
     int type, barW;
     testPatternGpu(c, (int)p.w, (int)p.h, type, barW, tab);
@@ -774,6 +743,7 @@ bool planTestPattern(Ctx& c, Plan& p)
 // ---- creative effects (builtins_more_creative.cpp)
 bool planCrop(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;      // VEGAS's OpenCL kernel (vfxpipcrop.h) runs on the CPU; the shader below draws the older model
     double lx, ly;
     c.xy("Location", lx, ly);
     const double xs = clampd(c.d("XScale"), 0, 1), ys = clampd(c.d("YScale"), 0, 1), ang = c.d("Angle") * kPi / 180.0;
@@ -784,23 +754,10 @@ bool planCrop(Ctx& c, Plan& p)
     return true;
 }
 
-bool planFilmEffects(Ctx& c, Plan& p)
-{
-    const double grain = clampd(c.d("Grain"), 0, 1), tint = clampd(c.d("Tint"), 0, 1);
-    const Color col = c.color("Color");
-    const double amount = clampd(c.d("EnableParticlesAmount"), 0, 1);
-    const uint32_t frame = (uint32_t)std::lround(c.time);
-    auto cellOf = [&](int full) { return (uint32_t)std::max(1, (int)std::lround(full * c.scale)); };
-    P::Filmeffects pc = {p.w, p.h, frame, c.b("ConvertToGreyscale") ? 1u : 0u, c.b("EnableEnableParticles") ? 1u : 0u, u32(c.i("EnableParticlesType")), cellOf(2), cellOf(3), cellOf(4), cellOf(40),
-                         (float)tint, (float)col.r, (float)col.g, (float)col.b, (float)grain, (float)c.scale, (float)(amount * 0.01), (float)(1.0 - amount * 0.0015), (float)(1.0 - amount * 0.0006), (float)amount};
-    p.add("filmeffects", 0, 1, p.w, p.h).setPush(pc);
-    return true;
-}
-
-
 // Bump Map (bumpMapRender in builtins_more_creative.cpp: the same float expressions)
 bool planBumpMapNamed(Ctx& c, Plan& p, const char* srcName, const char* dstName)
 {
+    if (c.levels || c.host8) return false;      // (an 8-bit frame gets the kernel's 12-bit store, oclStore12, which the shader does not have: CPU only)
     const int W = (int)p.w, H = (int)p.h;
     double psx, psy, psz, pdx, pdy;
     c.xyz(srcName, psx, psy, psz);
@@ -824,7 +781,7 @@ bool planBumpMapNamed(Ctx& c, Plan& p, const char* srcName, const char* dstName)
     const float kd = 0.6f - shin * 0.2f, ks = shin * 0.5f, power = shin * 8.f + 4.f;
     const float cosCut = std::cos((float)c.d("Focus") * 0.7853981852531433f);
     const float invCut = 1.f / std::max(1.f - cosCut, 1e-5f);
-    P::Bumpmap pc = {p.w, p.h, (uint32_t)type, (uint32_t)chan, sx, sy, sz, ax, ay, az, hs, amb2, i8, kd, ks, power, cosCut, invCut, 2.f / mx, W * 0.5f, H * 0.5f};
+    P::Bumpmap pc = {p.w, p.h, (uint32_t)type, (uint32_t)chan, sx, sy, sz, ax, ay, az, hs, amb2, i8, kd, ks, power, cosCut, invCut, 2.f / mx, W * 0.5f, H * 0.5f - 1.f};   // (cy - 1: the kernel counts rows from the bottom, so a top-down row y is at y + 1 - H/2 from the middle)
     p.add("bumpmap", 0, 1, p.w, p.h).setPush(pc);
     return true;
 }
@@ -947,54 +904,10 @@ bool planMeshWarp(Ctx& c, Plan& p)
 }
 
 
-// TV Simulator (tvSimulator in builtins_more_creative.cpp)
-bool planTvSimulator(Ctx& c, Plan& p)
-{
-    const int W = (int)p.w, H = (int)p.h;
-    const double zoom = 1.0 + clampd(c.d("DetailZoom"), 0, 1) * 1.5, grill = clampd(c.d("ApertureGrill"), 0, 1), inter = clampd(c.d("Interlacing"), 0, 1);
-    const double lineSync = clampd(c.d("LineSync"), 0, 1), vSync = clampd(c.d("VerticalSync"), 0, 1), scan = clampd(c.d("ScanPhasing"), 0, 1);
-    const double phos = clampd(c.d("Phosphorescence"), 0, 1), stat = clampd(c.d("Static"), 0, 1);
-    const double t = c.time;
-    if (!(t >= 0 && t < 1e8)) return false;
-    auto rnd = [&](uint32_t a, uint32_t b) {
-        uint32_t h = a * 374761393u + b * 668265263u;
-        h = (h ^ (h >> 13)) * 1274126177u;
-        return ((h ^ (h >> 16)) & 0xFFFF) / 65535.f;
-    };
-    // the table: per row the wobble (a double as two words), the band (a float), the sample y (a double); per column the sample x without the wobble (a double)
-    std::vector<float> tab((size_t)H * 5 + (size_t)W * 2);
-    auto putD = [&](size_t at, double v) {
-        const D2 b = d2(v);
-        std::memcpy(&tab[at], &b.h, 4);
-        std::memcpy(&tab[at + 1], &b.l, 4);
-    };
-    const double roll = (1.0 - vSync) * H * std::fmod(t * 0.07, 1.0);
-    for (int y = 0; y < H; ++y) {
-        const double yFull = y / c.scale;
-        const double wob = (1.0 - lineSync) * 0.03 * W * std::sin(yFull * 0.07 + t * 0.9) * (rnd((uint32_t)yFull, (uint32_t)t) > 0.8 ? 3 : 1);
-        putD((size_t)y * 2, wob);
-        tab[(size_t)H * 2 + (size_t)y] = 1.f - (float)scan * 0.25f * (0.5f + 0.5f * (float)std::sin(yFull * 0.02 - t * 0.4));
-        const double sy = std::fmod(y + roll, (double)H);
-        putD((size_t)H * 3 + (size_t)y * 2, (sy + 0.5 - H * 0.5) / zoom + H * 0.5);
-    }
-    for (int x = 0; x < W; ++x) putD((size_t)H * 5 + (size_t)x * 2, (x + 0.5 - W * 0.5) / zoom + W * 0.5);
-    int glow = 0;
-    if (phos > 0.01) {
-        const double sig = 2.0 * (std::max(1.0, (double)H) / 1080.0) + c.px(1);
-        glow = addBlur(p, 0, p.addBuf(p.w, p.h, 4), sig, sig, 15u, false);
-    }
-    P::Tvsimulator pc = {p.w, p.h, (float)phos, (float)grill, (float)inter, (float)scan, (float)stat, (float)c.scale, c.scale >= 0.999 ? 1u : 0u, (uint32_t)(t * 7)};
-    Pass& ps = p.add("tvsimulator", 0, 1, p.w, p.h);
-    ps.in1 = glow;
-    ps.table = p.addTable(std::move(tab));
-    ps.setPush(pc);
-    return true;
-}
-
-
 // Lens Flare (lensFlare in builtins_lensflare.cpp)
 bool planLensFlare(Ctx& c, Plan& p)
 {
+    if (c.openCl) return false;         // (VEGAS's OpenCL kernels are ported on the CPU only: vfxflare.h)
     std::vector<float> tab;
     int n = 0;
     float blend = 0.f;
@@ -1013,14 +926,13 @@ bool planLensFlare(Ctx& c, Plan& p)
 
 
 struct Entry { const char* id; bool (*plan)(Ctx&, Plan&); };
-// (no entries, so the CPU renders them: film grain (its noise table comes from VEGAS's shift-register generator), sepia, add noise and white balance - their 8-bit steps, the shift-register generator and the frame histogram follow
+// (no entries, so the CPU renders them: Swirl and Pinch/Punch (vfxswirl.h), Wave (fixed-point positions and the CRT sin, vfxwave.h), film grain and TV Simulator (their noise comes from VEGAS's shift-register generator and fixed-point code), sepia, add noise and white balance - their 8-bit steps, the shift-register generator and the frame histogram follow
 // VEGAS exactly in builtins_filters.cpp / builtins_more_colour.cpp)
 const Entry kEntries[] = {
     {"solidcolor", planSolidColor},
     {"checkerboard", planCheckerboard},
     {"testpattern", planTestPattern},
     {"crop", planCrop},
-    {"filmeffects", planFilmEffects},
     {"bumpmapfilter", planBumpMap},
     {"bumpmap", planBumpMapGeneral},
     {"lutfilter", planLutFilter},
@@ -1029,7 +941,6 @@ const Entry kEntries[] = {
     {"displacementmap", planDisplacementMap},
     {"heightmap", planHeightMap},
     {"de.magix:MeshWarp", planMeshWarp},
-    {"tvsimulator", planTvSimulator},
     {"lensflare", planLensFlare},
     {"invert", planInvert},
     {"brightnessandcontrast", planBrightnessContrast},
@@ -1050,13 +961,9 @@ const Entry kEntries[] = {
     {"unsharpmask", planUnsharpMask},
     {"quickblur", planQuickBlur},
     {"pixelate", planPixelate},
-        // (Spherize: on the CPU, see the note above planSwirl)
-    {"swirl", planSwirl},
-    {"pinchpunch", planPinchPunch},
-    {"wave", planWave},
+        // (Spherize: on the CPU, see vfxswirl.h)
     // (Border has no Vulkan plan: VEGAS's bevel faces, solid frame and blurred frame are worked out on the CPU, builtins_filters.cpp border())
     {"minandmax", planMinMax},
-    {"gradientmap", planGradientMap},
     {"maskgenerator", planMaskGenerator},
     {"broadcastcolors", planBroadcastColors},
     {"chromablur", planChromaBlur},
@@ -1171,11 +1078,6 @@ const std::vector<CaseSet>& caseSets()
         {"testpattern", {{"t1", PM{{"TestPatternType", {1}}}}, {"t2", PM{{"TestPatternType", {2}}}}, {"t3", PM{{"TestPatternType", {3}}}}, {"t4", PM{{"TestPatternType", {4}}}},
                          {"t5", PM{{"TestPatternType", {5}}}}, {"t6", PM{{"TestPatternType", {6}}}}, {"t7", PM{{"TestPatternType", {7}}}}, {"t8", PM{{"TestPatternType", {8}}}}}},
         {"crop", {{"turned", PM{{"XScale", {0.6}}, {"YScale", {0.7}}, {"Angle", {23}}, {"Location", {0.4, 0.55}}, {"Opacity", {0.8}}}}, {"whole", PM{{"XScale", {1.0}}, {"YScale", {1.0}}}}}},
-        {"filmeffects", {{"grey", PM{{"ConvertToGreyscale", {1}}, {"Tint", {0.6}}, {"Color", {0.9, 0.7, 0.4, 1.0}}, {"Grain", {0.7}}}},
-                         {"dust", PM{{"EnableEnableParticles", {1}}, {"EnableParticlesType", {0}}, {"EnableParticlesAmount", {1.0}}}},
-                         {"flicker", PM{{"EnableEnableParticles", {1}}, {"EnableParticlesType", {1}}, {"EnableParticlesAmount", {0.8}}}},
-                         {"hair", PM{{"EnableEnableParticles", {1}}, {"EnableParticlesType", {2}}, {"EnableParticlesAmount", {1.0}}}},
-                         {"scratch", PM{{"EnableEnableParticles", {1}}, {"EnableParticlesType", {4}}, {"EnableParticlesAmount", {1.0}}}}}},
         {"bumpmap", {{"spot", PM{{"Type", {1}}, {"Intensity", {0.5}}, {"Shininess", {0.7}}, {"BumpHeight", {0.6}}, {"BumpChannel", {2}}}},
                      {"omni", PM{{"Type", {2}}, {"Intensity", {0.4}}, {"Ambience", {0.2}}, {"BumpHeight", {0.9}}, {"WhiteIsHigh", {0}}, {"DualLocation3DAnd2DSrc", {0.3, -0.4, 1.5}}}},
                      {"directional", PM{{"Type", {0}}, {"BumpChannel", {0}}}}}},
@@ -1201,8 +1103,6 @@ const std::vector<CaseSet>& caseSets()
         {"lensflare", {{"t0", PM{{"Intensity", {0.8}}}}, {"t1", PM{{"Intensity", {1.0}}, {"LensType", {1}}, {"Tint", {0.5}}, {"LightColor", {1.0, 0.7, 0.3}}, {"Perspective", {0.4}}}},
                        {"t2", PM{{"Intensity", {1.0}}, {"LensType", {2}}, {"LightPosition", {-0.3, 0.4}}, {"Blend", {0.6}}}},
                        {"t3", PM{{"Intensity", {1.2}}, {"LensType", {3}}, {"Size", {0.7}}}}, {"t4", PM{{"Intensity", {1.0}}, {"LensType", {4}}, {"LightPosition", {0.2, -0.1}}}}}},
-        {"tvsimulator", {{"all", PM{{"DetailZoom", {0.4}}, {"ApertureGrill", {0.7}}, {"Interlacing", {0.6}}, {"LineSync", {0.5}}, {"VerticalSync", {0.6}}, {"ScanPhasing", {0.8}}, {"Phosphorescence", {0.5}}, {"Static", {0.4}}}},
-                         {"plain", PM{{"ApertureGrill", {0.0}}, {"Phosphorescence", {0.0}}, {"Static", {0.0}}}}}},
         {"invert", {{"half", PM{{"BlendAmount", {0.5}}}}, {"off", PM{{"BlendAmount", {0.0}}}}, {"full", PM{{"BlendAmount", {1.0}}}}}},
         {"brightnessandcontrast", {{"brighter", PM{{"Brightness", {0.2}}, {"Contrast", {0.3}}}}, {"darker", PM{{"Brightness", {-0.3}}, {"Contrast", {-0.4}}}},
                                    {"harsh", PM{{"Contrast", {0.95}}, {"ContrastCenter", {0.4}}}}}},
@@ -1266,12 +1166,8 @@ const std::vector<CaseSet>& caseSets()
         {"pixelate", {{"coarse", PM{{"HorizontalPixelization", {0.5}}, {"VerticalPixelization", {0.5}}}}, {"wide", PM{{"HorizontalPixelization", {0.9}}, {"VerticalPixelization", {0.2}}}},
                       {"fine", PM{{"HorizontalPixelization", {0.1}}, {"VerticalPixelization", {0.1}}}}}},
         {"spherize", {{"bulge", PM{{"Amount", {0.8}}, {"Center", {0.4, 0.6}}, {"ScalingHorizontal", {1.2}}}}, {"pinch", PM{{"Amount", {-0.7}}, {"ScalingProportional", {0}}, {"ScalingVertical", {0.6}}}}}},
-        {"swirl", {{"strong", PM{{"Amount", {1.0}}}}, {"back", PM{{"Amount", {-0.6}}, {"Center", {0.3, 0.4}}, {"ScalingHorizontal", {0.8}}}}}},
-        {"pinchpunch", {{"punch", PM{{"Amount", {1.0}}}}, {"pinch", PM{{"Amount", {-0.8}}, {"Center", {0.6, 0.3}}}}}},
-        {"wave", {{"medium", PM{{"VerticalWaves", {14}}, {"HorizontalWaves", {14}}, {"VerticalAmplitude", {0.05}}, {"HorizontalAmplitude", {0.05}}}}, {"phase", PM{{"VerticalWaves", {5}}, {"VerticalAmplitude", {0.04}}, {"VerticalPhase", {0.8}}}}, {"strong", PM{{"VerticalWaves", {6}}, {"HorizontalWaves", {9}}, {"VerticalAmplitude", {0.15}}, {"HorizontalAmplitude", {0.1}}, {"VerticalPhase", {0.3}}, {"HorizontalPhase", {0.7}}}}}},
         {"minandmax", {{"max", PM{{"Operation", {1}}, {"HorizontalRange", {0.5}}, {"VerticalRange", {0.7}}}}, {"min round", PM{{"Operation", {0}}, {"HorizontalRange", {0.8}}, {"VerticalRange", {0.8}}, {"CircularAreaProcessing", {1}}}},
                        {"max round", PM{{"Operation", {1}}, {"HorizontalRange", {1.0}}, {"VerticalRange", {0.6}}, {"CircularAreaProcessing", {1}}}}}},
-        {"gradientmap", {{"mix", PM{{"Amount", {0.7}}, {"Mode", {0}}}}, {"add", PM{{"Amount", {0.9}}, {"Mode", {1}}}}}},
         {"maskgenerator", {{"luma", PM{{"Type", {0}}, {"LowIn", {0.2}}, {"HighIn", {0.8}}}}, {"red inverted", PM{{"Type", {1}}, {"Invert", {1}}, {"LowOut", {0.1}}, {"HighOut", {0.9}}}},
                            {"alpha", PM{{"Type", {4}}}}, {"blue", PM{{"Type", {3}}, {"LowIn", {0.1}}, {"HighIn", {0.5}}}}}},
         {"broadcastcolors", {{"studio no setup", PM{{"StudioRGB16To135", {1}}, {"75IREsetup", {0}}, {"LumaMin", {15}}, {"LumaMax", {85}}, {"ChromaMax", {50}}}}, {"smooth", PM{{"LumaMin", {20}}, {"LumaMinSmoothness", {0.6}}, {"LumaMax", {80}}, {"LumaMaxSmoothness", {0.7}}, {"ChromaMax", {30}}, {"ChromaSmoothness", {0.5}}, {"CompositeMin", {30}}, {"CompositeMinSmoothness", {0.4}}, {"CompositeMax", {90}}, {"CompositeMaxSmoothness", {0.8}}}}, {"limits", PM{{"LumaMin", {10}}, {"LumaMax", {90}}, {"ChromaMax", {60}}}}, {"studio", PM{{"StudioRGB16To135", {1}}, {"75IREsetup", {1}}, {"ChromaMax", {40}}}},

@@ -164,7 +164,7 @@ struct LdEmboss { uint32_t w; uint32_t h; uint32_t ox_h; uint32_t ox_l; uint32_t
 struct RpixPolar { uint32_t w; uint32_t h; float c0; float c1; uint32_t q8; uint32_t pad; };
 struct RpixSmall { uint32_t w; uint32_t h; uint32_t gw; uint32_t gh; int32_t sx; int32_t sy; int32_t bw; int32_t bh; uint32_t q8; uint32_t pad; uint32_t inv_h; uint32_t inv_l; };
 struct RpixOut { uint32_t w; uint32_t h; uint32_t gw; uint32_t gh; int32_t tx; int32_t ty; float c0; float c1; };
-struct Autolooks { uint32_t w; uint32_t h; uint32_t n; float g8; float d0; float d1; float d2; float e0; float e1; float e2; };
+struct Autolooks { uint32_t w; uint32_t h; uint32_t n; float g; float d0; float d1; float d2; float e0; float e1; float e2; uint32_t mode; };
 struct Tpr { uint32_t w; uint32_t h; uint32_t ct_h; uint32_t ct_l; uint32_t st_h; uint32_t st_l; uint32_t r_h; uint32_t r_l; uint32_t lon_h; uint32_t lon_l; };
 struct GatherTab { uint32_t w; uint32_t h; };
 struct Ccs8 { uint32_t w; uint32_t h; uint32_t fl; uint32_t show; uint32_t inv; float tintu; float tintv; float satf; float alphaf; float r0; float r1; float r2; float r3; };

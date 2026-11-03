@@ -362,12 +362,23 @@ static void upscaleTests()
     check(d != nullptr, "Smart Upscale is a built-in (com.sonycreativesoftware:smart_upscale)");
     if (!d) return;
     const Buf pic = picture(320, 180, 0);
-    check(maxDiff(runS(*d, {{"EnableEnhancement", {0}}}, {}, pic, 1.0), pic) == 0, "Enhancement off: the picture is as it is");
-    check(maxDiff(runS(*d, {{"Scale", {1}}}, {}, pic, 1.0), pic) == 0, "Scale 1: the picture is as it is");
+    // (VEGAS's Y/U/V round trip with Y cut to a whole level changes a value by at most about two levels)
+    check(maxDiff(runS(*d, {{"EnableEnhancement", {0}}}, {}, pic, 1.0), pic) < 2.5 / 255, "Enhancement off: the picture is as it is, but for the Y U V round trip's level or two");
+    check(maxDiff(runS(*d, {{"Scale", {1}}}, {}, pic, 1.0), pic) < 2.5 / 255, "Scale 1: the picture is as it is, but for the Y U V round trip's level or two");
+    {
+        // VEGAS's own arithmetic, one pixel (Y = .299 R + .587 G + .114 B cut to a whole level, U and V about 127.5, back with 1.402 / .344 / .714 / 1.772)
+        Buf one;
+        one.resize(1, 1);
+        premul(one.at(0, 0), 100.f / 255, 200.f / 255, 50.f / 255, 1.f);
+        const Buf o = runS(*d, {{"EnableEnhancement", {0}}}, {}, one, 1.0);
+        const float Y = std::floor(.299f * 100 + .587f * 200 + .114f * 50), U = -.169f * 100 - .331f * 200 + .5f * 50 + 127.5f, V = .5f * 100 - .419f * 200 - .081f * 50 + 127.5f;
+        const float r = Y / 255 + 1.402f * (V / 255 - .5f), g = Y / 255 - .344f * (U / 255 - .5f) - .714f * (V / 255 - .5f), b = Y / 255 + 1.772f * (U / 255 - .5f);
+        check(std::fabs(o.at(0, 0)[0] - r) < 1.f / 1024 && std::fabs(o.at(0, 0)[1] - g) < 1.f / 1024 && std::fabs(o.at(0, 0)[2] - b) < 1.f / 1024, "Enhancement off: the pixel is VEGAS's Y U V round trip (Y a whole level; within the 12-bit store)", strfmt("%.5f %.5f %.5f", o.at(0, 0)[0] - r, o.at(0, 0)[1] - g, o.at(0, 0)[2] - b));
+    }
     Buf flat;
     flat.resize(64, 64);
     for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) premul(flat.at(x, y), 0.4f, 0.5f, 0.6f, 1.f);
-    check(maxDiff(runS(*d, {{"Scale", {4}}}, {}, flat, 1.0), flat) < 1e-5, "a flat picture stays flat");
+    check(maxDiff(runS(*d, {{"Scale", {4}}}, {}, flat, 1.0), flat) < 2.5 / 255, "a flat picture stays flat (within the Y U V round trip's level)");
     {
         // an edge gets steeper (overshoot on both sides) and the result stays in range
         Buf edge;

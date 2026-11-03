@@ -67,8 +67,8 @@ bool isArea(Kind k) { return k == Kind::Swirl || k == Kind::Punch; }
 
 // How far the centre's numbers go: 1 is the frame edge (GUESSED, see the header).
 const double kCenterReach = 0.5;
-// TV Simulator's Detail zoom: the record holds the magnification (1 = none); Reno's built-in magnifies by 1 + 1.5 z.
-const double kZoomSpan = 1.5;
+// TV Simulator's Detail zoom: the record holds the magnification (1 = none, 1..4 as the page shows it); Reno's built-in magnifies by 1 + 3 z.
+const double kZoomSpan = 3.0;
 
 typedef std::map<std::string, std::vector<double>> Values;
 

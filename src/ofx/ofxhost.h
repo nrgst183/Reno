@@ -229,6 +229,10 @@ public:
     // Changes made by the user (the effect is told, as OpenFX requires). 'time' is where the cursor is, in frames.
     void userSetValue(Param* p, const std::vector<double>& v, double time, bool setKey = false);
     void userSetString(Param* p, const std::string& s, double time, bool setKey = false);
+    // Settings put in as one edit (a preset, a scenario of settings): the effect hears of the changes together afterwards, in the order of its settings (VEGAS's script
+    // interface does the same: all the values are in, then each changed setting is reported). Calls nest; the effect is told when the outermost one ends.
+    void beginParamBatch();
+    void endParamBatch();
     void userPushButton(Param* p, double time);
     void userDeleteKeys(Param* p, double time);
     // The keyframe strip of the effects window (VEGAS's Animate): one keyframe of a number setting moved to another
@@ -317,6 +321,9 @@ public:
     std::atomic<const std::atomic<bool>*> renderAbort{nullptr};
     bool aborted() const { const std::atomic<bool>* a = renderAbort.load(); return abort_.load() || (a && a->load()); }
     int changeDepth = 0;
+    int batchDepth_ = 0;
+    struct PendingChange { Param* p; std::string reason; double time; };
+    std::vector<PendingChange> pendingChanges_;
     bool clipPrefsDirty = true;
     std::string persistentMessage;
 
@@ -334,6 +341,15 @@ private:
     void runClipPreferences();
     void changed(Param* p, const char* reason, double time);
     void setupClipProps();
+};
+
+// Holds an instance's change reports back while a group of settings is put in (see Instance::beginParamBatch).
+struct ParamBatch {
+    Instance& inst;
+    explicit ParamBatch(Instance& i) : inst(i) { inst.beginParamBatch(); }
+    ~ParamBatch() { inst.endParamBatch(); }
+    ParamBatch(const ParamBatch&) = delete;
+    ParamBatch& operator=(const ParamBatch&) = delete;
 };
 
 struct PluginInfo {

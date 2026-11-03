@@ -6,10 +6,12 @@
 //      it stays when the window's error is small and the round trip lands within a squared distance of 2;
 //   3. the picture's centre when nothing stayed, and a ring of fixed points along the edges (no movement);
 //   4. a Delaunay triangulation of the points; in each triangle the movement is blended from its corners, which gives a movement for every pixel;
+//   (With GPU acceleration on, step 5 is the OpenCL kernel of MagixCVFx: kernelBlend below, bit for bit on the captures.)
 //   5. the outgoing picture is looked up at x + progress * movement and the incoming one at x - (1 - progress) * movement (bilinear with weights in 1/1024),
 //      and the two are blended by progress (an empty-alpha side gives way to the other).
 // The tracker's own details (it tries several starting guesses per corner) are not known, so a movement of a few pixels can differ from VEGAS's by a fraction of a pixel.
 #include "builtins_mask_internal.h"
+#include "builtins_more_internal.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -468,6 +470,57 @@ void remapPlane(const Buf& s, const Field& f, float p, bool fromSide, Buf& out)
     });
 }
 
+// With GPU acceleration on VEGAS draws the transition with its OpenCL kernel (MagixCVFx.ofx, the triangle-mesh warp): the outgoing picture is read at x + p * movement and the
+// incoming one at x - (1 - p) * movement, each by a float bilinear read (the four pixels with weights (1 - fy)(1 - fx), (1 - fy) fx, fy (1 - fx), fy fx added in that order; outside the
+// picture the sampler gives transparent black), and the two are blended (1 - p) * outgoing + p * incoming unless the incoming read has no blue, in which case the outgoing one is kept.
+// The result goes into an 8-bit frame by the kernels' 12-bit store. (Checked bit for bit on all six captures, RGB and alpha; the kernel's alternative hardware-filtered read, whose
+// weights are in 1/256, gives the same pictures there, so which one the card used is not known.)
+void sampleKernel(const Buf& s, float px, float py, float o[4])
+{
+    const int W = s.w, H = s.h;
+    const float fxl = std::floor(px), fyl = std::floor(py);
+    const float fx = px - fxl, fy = py - fyl;
+    // (a position far outside, or not a number, reads nothing)
+    if (!(fxl > -2.f && fxl < (float)W + 1.f && fyl > -2.f && fyl < (float)H + 1.f)) { o[0] = o[1] = o[2] = o[3] = 0.f; return; }
+    const int ix = (int)fxl, iy = (int)fyl;
+    static const float zero[4] = {0.f, 0.f, 0.f, 0.f};
+    auto tap = [&](int x, int y) -> const float* { return (x < 0 || y < 0 || x >= W || y >= H) ? zero : s.at(x, y); };
+    const float* p00 = tap(ix, iy);
+    const float* p10 = tap(ix + 1, iy);
+    const float* p01 = tap(ix, iy + 1);
+    const float* p11 = tap(ix + 1, iy + 1);
+    const float v7 = 1.f - fy, v8 = 1.f - fx;
+    for (int k = 0; k < 4; ++k) {
+        float r = v7 * v8 * p00[k];
+        r = r + v7 * fx * p10[k];
+        r = r + fy * v8 * p01[k];
+        r = r + fy * fx * p11[k];
+        o[k] = r;
+    }
+}
+
+void kernelBlend(Ctx& c, const Field& fld, float p)
+{
+    const int W = c.out.w, H = c.out.h;
+    const float q = 1.f - p;
+    const bool store = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            const float fx0 = fld.f[((size_t)y * W + x) * 2], fy0 = fld.f[((size_t)y * W + x) * 2 + 1];
+            const float ax = (float)x + p * fx0, ay = (float)y + p * fy0;
+            const float bx = (float)x - q * fx0, by = (float)y - q * fy0;
+            float a[4], b[4];
+            sampleKernel(c.src, ax, ay, a);
+            sampleKernel(c.src2, bx, by, b);
+            float* o = c.out.at(x, y);
+            for (int k = 0; k < 4; ++k) {
+                const float v = b[2] == 0.f ? a[k] : q * a[k] + p * b[k];
+                o[k] = store ? more::oclStore12(v) : v;
+            }
+        }
+    });
+}
+
 void warpFlowWith(Ctx& c, bool showField)
 {
     const int W = c.out.w, H = c.out.h;
@@ -502,6 +555,10 @@ void warpFlowWith(Ctx& c, bool showField)
                 o[0] = r * m; o[1] = g * m; o[2] = b * m; o[3] = 1.f;
             }
         });
+        return;
+    }
+    if (c.openCl) {
+        kernelBlend(c, fld, p);
         return;
     }
     Buf a, b;

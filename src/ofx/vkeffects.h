@@ -45,7 +45,7 @@ void testPatternGpu(Ctx& c, int W, int H, int& type, int& barW, std::vector<floa
 struct ColorGradingGpu { uint32_t flags = 0; float f[21] = {0}; std::vector<float> tab; };
 bool lutFilterGpu(Ctx& c, int& n, float dmin[3], float dmax[3], float& gain, bool& tetra, std::vector<float>& tab);
 bool colorGradingGpu(Ctx& c, ColorGradingGpu& o);
-bool autoLooksGpu(Ctx& c, int& n, float dmin[3], float dmax[3], float& g8, std::vector<float>& tab);      // AutoLooks (builtins_color.cpp)
+bool autoLooksGpu(Ctx& c, int& n, float dmin[3], float dmax[3], float& gain, unsigned& mode, std::vector<float>& tab);      // AutoLooks (builtins_color.cpp)
 int meshWarpGpu(Ctx& c, int& cols, int& rows, std::vector<float>& pts);
 namespace more { void saturationAdjust8Gpu(Ctx& c, std::vector<float>& t); int lensFlareGpu(Ctx& c, int W, int H, std::vector<float>& tab, int& nflares, float& blend); }
 struct Ccs8Gpu { int mode = 0, flags = 0; bool show = false, inv = false; float tintU = 0, tintV = 0, satF = 1, alphaF = 1, rot[4] = {1, 0, 0, 1}; std::vector<float> tab; };

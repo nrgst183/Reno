@@ -1,4 +1,5 @@
-// VEGAS Newsprint: a halftone as VEGAS's own draws it (read off its Vfx1 plug-in). 8-bit, four channels, the frame in the library's order (top row first):
+// VEGAS Newsprint. With GPU acceleration on (Ctx::openCl, the default) it is what VEGAS's OpenCL kernels draw: vfxnews.h (a halftone read from the kernels, float; the dots take their colour from a
+// Gaussian-blurred copy of the picture). With it off, VEGAS's CPU code, below: a halftone as VEGAS's own draws it (read off its Vfx1 plug-in). 8-bit, four channels, the frame in the library's order (top row first):
 //   - P = max(W, H) * Dot size / 20 + 3 pixels is the dot pitch; the picture is shrunk by averaging boxes of P pixels (14-bit weights, whole-level results) to about W / P by H / P cells;
 //   - dots sit on a grid of rows P apart, every second row half a pitch over, centred on the frame (fractional part of half the leftover width / height taken off); each dot takes the
 //     colour at its cell (bilinear in the small picture, 14 bits) and is an ellipse of radius 0.625 P (1 - brightness) in the colour (Color), black (Monochrome) or the three inks of an
@@ -9,6 +10,7 @@
 // average of the P x P block around it (not a bilinear look into the shrunk picture), and the three offset inks keep their places by colour (yellow up left) although the channels lie red first.
 #include "builtins_impl.h"
 #include "vkfilters.h"
+#include "vfxnews.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -266,9 +268,35 @@ void newsprintCoverTable(int* t)
     std::memcpy(t, tab.t, sizeof(int) * 256);
 }
 
+// VEGAS's OpenCL Newsprint (vfxnews.h): rows bottom first, the 8-bit store of the card's textures in an 8-bit project (c.host8). Verified against the captured pictures
+// (320 x 180: 15 cases of the test picture and 4 of the photo, every pixel but the last four rows (the partial work-group row of the card, see vfxnews.h) the same).
+static void newsprintOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    double dot = clampd(c.d("DotSize"), 0, 1);
+    if (!(dot == dot)) dot = 0;
+    const int type = std::max(0, std::min(2, c.i("Type")));
+    std::vector<float> src((size_t)W * H * 4), out;
+    for (int y = 0; y < H; ++y) std::memcpy(&src[(size_t)y * W * 4], c.src.at(0, H - 1 - y), (size_t)W * 4 * sizeof(float));
+    const bool q8 = c.host8;
+    vfxnews::Opts o;
+    const vfxnews::Host h = vfxnews::host(W, H, dot, 1.0, 1.0, 1.0, o);
+    std::vector<float> B;
+    vfxnews::blurCopy(src, W, H, h.sig2, h.sig1, q8, o, B);
+    out.assign((size_t)W * H * 4, 0.f);
+    forRows(H, W, [&](int y) { vfxnews::drawRow(src, B, W, H, h, dot, type, q8, y, &out[(size_t)y * W * 4]); });
+    c.out.ensure(W, H);
+    for (int y = 0; y < H; ++y) std::memcpy(c.out.at(0, H - 1 - y), &out[(size_t)y * W * 4], (size_t)W * 4 * sizeof(float));
+}
+
 void vegasNewsprint(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
+    if (c.openCl) {
+        newsprintOpenCl(c);
+        return;
+    }
     NewsGeo g;
     newsprintGeometry(c, W, H, g);
     const double dot = g.dot;

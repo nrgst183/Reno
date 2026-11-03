@@ -12,6 +12,7 @@
 #include "ofxCore.h"
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,26 @@ using TextRasterizer = std::function<bool(const TextRequest&, TextMask&)>;
 void setTextRasterizer(TextRasterizer fn);
 bool rasterizeText(const TextRequest& req, TextMask& out);
 
+// Fonts for the generator's own text layout (vfxtitles.h): outlines and metrics in em units. On Windows the engine reads them from GDI itself; elsewhere the
+// application sets a source (Qt's fonts) when it starts.
+struct TextSeg {
+    char op = 'L';                      // 'M' move, 'L' line, 'C' cubic (three points), 'Z' close the figure
+    float p[6] = {0, 0, 0, 0, 0, 0};    // points (x, y) in em units, y up
+};
+struct TextGlyph {
+    double adv = 0;                     // advance in ems
+    std::vector<TextSeg> segs;
+};
+struct TextFace {
+    double ascent = 0.9, descent = 0.2, lineGap = 0;    // ems (hhea)
+    virtual bool glyph(uint32_t codePoint, TextGlyph& out) = 0;
+    virtual double kern(uint32_t, uint32_t) { return 0; }      // kerning between a pair, in ems
+    virtual ~TextFace() {}
+};
+using TextFaceSource = std::function<std::shared_ptr<TextFace>(const std::string& family, bool bold, bool italic)>;
+void setTextFaceSource(TextFaceSource fn);
+std::shared_ptr<TextFace> textFaceFromSource(const std::string& family, bool bold, bool italic);
+
 // The text, font and style held in VEGAS's Titles & Text "Text" parameter (rich text: RTF); plain text is taken as it
 // is. Exposed for the tests.
 struct RichText {
@@ -71,6 +92,11 @@ struct RichText {
     std::string font;
     double points = 0;
     bool bold = false, italic = false, underline = false;
+    int align = 0;                      // \ql 0, \qc 1, \qr 2
+    // The character formatting inside the text: one span per stretch of equal formatting, covering the whole text in order
+    // (empty for plain text). points 0 = not set by the span.
+    struct Span { size_t start = 0, len = 0; double points = 0; bool bold = false, italic = false; std::string font; };
+    std::vector<Span> spans;
 };
 RichText parseRichText(const std::string& rtf);
 

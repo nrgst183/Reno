@@ -8,6 +8,8 @@
 //   - beyond the frame the native code takes the pixel of the last column for columns left of it and the first row for rows above or below it (what VEGAS's pictures show).
 // The convolution is done in double precision (the native FFT is single precision): the result differs from VEGAS's only where a sum lies almost exactly between two bytes.
 #include "builtins_fast.h"
+#include "builtins_more_internal.h"
+#include "vfxdefocus.h"
 #include "../core/base.h"
 #include <algorithm>
 #include <cmath>
@@ -251,6 +253,124 @@ void defocusRender(const Buf& src, Buf& out, double radiusPx, int sides, double 
         float* o = &out.px[i * 4];
         for (int k = 0; k < 3; ++k) o[k] = std::min(o[k], o[3]);
     }
+}
+
+
+// Defocus as VEGAS's OpenCL path does it (Vfx1.ofx, the notes in vfxdefocus.h): the frame is held in an N x N float grid (N the next power of two of the larger side; the frame at the
+// grid's origin, its edges carried on to the rest of the grid), the bloom v += (v - t) * k is put on R, G and B above t, the grid is convolved (circularly, so the far side of the
+// grid wraps round) with the iris mask normalised to sum 1, and the frame's part is clamped to 0 .. 1. The mask's taps are the offsets -half + 1 .. half (the half pixel the plug-in's
+// copy of the bitmap loses). The plug-in does it with float FFTs of the whole grid; here the same sum is done in double with overlapping tiles. 'reduceFlicker': the input is first
+// blurred by [1 2 1; 2 4 2; 1 2 1] / 16 (float, edges carried on). radiusPx is Radius / 100 x the larger side, orientDeg in degrees, curvature -1 .. 1, thresh = BloomThreshold / 100.
+void defocusRenderGpu(const Buf& src, Buf& out, double radiusPx, int shape, double orientDeg, double curvature, double thresh, double strength, bool reduceFlicker, bool store8)
+{
+    const int W = src.w, H = src.h;
+    out.ensure(W, H);
+    if (W <= 0 || H <= 0) return;
+    // the picture with its first row at the bottom, as the kernels hold it
+    std::vector<float> img((size_t)W * H * 4);
+    for (int y = 0; y < H; ++y) std::memcpy(&img[(size_t)(H - 1 - y) * W * 4], src.at(0, y), (size_t)W * 4 * sizeof(float));
+    if (reduceFlicker) {
+        std::vector<float> bb(img.size());
+        static const float kk[3] = {1.f, 2.f, 1.f};
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                for (int k = 0; k < 4; ++k) {
+                    float acc = 0.f;
+                    for (int a = 0; a < 3; ++a)
+                        for (int b = 0; b < 3; ++b) {
+                            const int yy = std::max(0, std::min(H - 1, y + a - 1)), xx = std::max(0, std::min(W - 1, x + b - 1));
+                            acc = acc + img[((size_t)yy * W + xx) * 4 + k] * (kk[a] * kk[b]);
+                        }
+                    bb[((size_t)y * W + x) * 4 + k] = acc / 16.f;
+                }
+        img.swap(bb);
+    }
+    auto finish = [&](const std::vector<float>& res) {
+        for (int y = 0; y < H; ++y) {
+            float* o = out.at(0, H - 1 - y);
+            const float* r = &res[(size_t)y * W * 4];
+            for (int i = 0; i < W * 4; ++i) {
+                const float v = r[i] == r[i] ? std::min(1.f, std::max(0.f, r[i])) : 0.f;
+                o[i] = store8 ? more::oclStore12(v) : v;
+            }
+        }
+    };
+    // the plug-in leaves the frame as it is for an iris under 1.1 pixels (the blurred one, GUESS, when Reduce flicker is on: the choice of the copy is read from the code, not captured)
+    const double radPx = std::min(radiusPx, 0.25 * (double)std::max(W, H));
+    if (!(radPx >= 1.1)) { finish(img); return; }
+    std::vector<uint8_t> mask;
+    int half = 0;
+    vfxdf::maskBytes(radPx, curvature, orientDeg, shape, 1.0, 1.0, mask, half);
+    double total = 0;
+    for (uint8_t b : mask) total += b;
+    if (half < 1 || !(total > 0)) { finish(img); return; }
+    const bool bloom = thresh < 0.996078431;
+    const float t = bloom ? (float)thresh : 0.f;
+    const float kb = bloom ? (float)((strength - (double)t) / (double)(1.0f - t)) : 1.f;
+    if (bloom)
+        for (size_t i = 0; i < (size_t)W * H; ++i)
+            for (int k = 0; k < 3; ++k) {
+                float& v = img[i * 4 + (size_t)k];
+                if (v > t) v += (v - t) * kb;
+            }
+    const int M = 2 * half;
+    int T, ov;
+    bestTile((double)half, W, H, T, ov);
+    while (T - ov < 8 || ov / 2 < half + 1) { ov += 2; if (T - ov < 16) T *= 2; }
+    const int step = T - ov;
+    std::vector<int> xs, ys;
+    for (int x = -ov; x < W; x += step) xs.push_back(x);
+    for (int y = -ov; y < H; y += step) ys.push_back(y);
+    const Twiddles fw(T, false), inv(T, true);
+    int N = 1;
+    while (N < std::max(W, H)) N *= 2;
+    // the mask's transform: tap (row r, column c) is the offset (c - half + 1, r - half + 1)
+    std::vector<std::complex<double>> kf((size_t)T * T);
+    for (int r = 0; r < M; ++r)
+        for (int c = 0; c < M; ++c) {
+            const int u = c - half + 1, v = r - half + 1;
+            kf[(size_t)((v + T) % T) * T + (size_t)((u + T) % T)] = (double)mask[(size_t)r * M + c];
+        }
+    {
+        std::vector<std::complex<double>> col;
+        fft2(kf.data(), T, fw, col);
+    }
+    const double scale = 1.0 / ((double)T * T * total);
+    std::vector<float> res((size_t)W * H * 4);
+    const int nt = (int)(xs.size() * ys.size());
+    parallelRows(nt, (size_t)T * T * 60, [&](int t0, int t1) {
+        std::vector<std::complex<double>> pl[2];
+        pl[0].resize((size_t)T * T);
+        pl[1].resize((size_t)T * T);
+        std::vector<std::complex<double>> col;
+        for (int ti = t0; ti < t1; ++ti) {
+            const int x0 = xs[(size_t)ti % xs.size()], y0 = ys[(size_t)ti / xs.size()];
+            for (int y = 0; y < T; ++y) {
+                const int Y = ((y0 + y) % N + N) % N, sy = std::min(Y, H - 1);       // (the grid wraps; beyond the frame it carries the edge on)
+                for (int x = 0; x < T; ++x) {
+                    const int X = ((x0 + x) % N + N) % N, sx = std::min(X, W - 1);
+                    const float* p = &img[((size_t)sy * W + (size_t)sx) * 4];
+                    pl[0][(size_t)y * T + x] = std::complex<double>(p[0], p[1]);
+                    pl[1][(size_t)y * T + x] = std::complex<double>(p[2], p[3]);
+                }
+            }
+            for (int q = 0; q < 2; ++q) {
+                fft2(pl[q].data(), T, fw, col);
+                for (size_t i = 0; i < (size_t)T * T; ++i) pl[q][i] *= kf[i];
+                fft2(pl[q].data(), T, inv, col);
+            }
+            const int xa = std::max(0, x0 + ov / 2), xb = std::min(W, x0 + T - ov / 2);
+            const int ya = std::max(0, y0 + ov / 2), yb = std::min(H, y0 + T - ov / 2);
+            for (int y = ya; y < yb; ++y)
+                for (int x = xa; x < xb; ++x) {
+                    const size_t i = (size_t)(y - y0) * T + (size_t)(x - x0);
+                    const double v[4] = {pl[0][i].real(), pl[0][i].imag(), pl[1][i].real(), pl[1][i].imag()};
+                    float* o = &res[((size_t)y * W + (size_t)x) * 4];
+                    for (int k = 0; k < 4; ++k) o[k] = (float)(v[k] * scale);
+                }
+        }
+    });
+    finish(res);
 }
 
 }  // namespace builtin

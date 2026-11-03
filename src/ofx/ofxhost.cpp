@@ -798,9 +798,48 @@ void Instance::runClipPreferences()
     }
 }
 
+void Instance::beginParamBatch()
+{
+    std::lock_guard<std::recursive_mutex> lk(mutex);
+    ++batchDepth_;
+}
+
+void Instance::endParamBatch()
+{
+    std::vector<PendingChange> list;
+    {
+        std::lock_guard<std::recursive_mutex> lk(mutex);
+        if (batchDepth_ <= 0) return;
+        if (--batchDepth_ > 0) return;
+        list.swap(pendingChanges_);
+    }
+    // each changed setting once, in the order the effect lists its settings
+    std::vector<std::pair<size_t, PendingChange>> ordered;
+    {
+        std::lock_guard<std::recursive_mutex> lk(mutex);
+        for (const PendingChange& pc : list) {
+            size_t idx = 0;
+            for (; idx < params.params.size(); ++idx)
+                if (params.params[idx].get() == pc.p) break;
+            bool seen = false;
+            for (auto& o : ordered)
+                if (o.second.p == pc.p) { o.second = pc; seen = true; }
+            if (!seen) ordered.push_back(std::make_pair(idx, pc));
+        }
+    }
+    std::stable_sort(ordered.begin(), ordered.end(), [](const std::pair<size_t, PendingChange>& a, const std::pair<size_t, PendingChange>& b) { return a.first < b.first; });
+    for (auto& o : ordered) changed(o.second.p, o.second.reason.c_str(), o.second.time);
+}
+
 void Instance::changed(Param* p, const char* reason, double time)
 {
     if (!created_ || changeDepth > 8) return;
+    if (batchDepth_ > 0) {
+        PendingChange pc;
+        pc.p = p; pc.reason = reason ? reason : ""; pc.time = time;
+        pendingChanges_.push_back(pc);
+        return;
+    }
     ++changeDepth;
     PropertySet in;
     in.setString(kOfxPropChangeReason, reason);

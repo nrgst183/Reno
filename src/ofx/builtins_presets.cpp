@@ -5,6 +5,8 @@
 #include "builtins_magixdata.h"
 #include "builtins_colordata.h"
 #include "builtins_vegaspresets.h"
+#include "vfxcredit.h"
+#include <cstdio>
 #include <set>
 #include <sstream>
 
@@ -51,14 +53,36 @@ std::vector<P> table()
         return std::vector<V>{{S, "Text", text}, {D, "FontSize", size}, {D2, "Location", loc}, {C, "Alignment", align}, {RGBA, "TextColor", color},
                               {B, "ShadowEnable", shadow ? "true" : "false"}, {D, "OutlineWidth", outline}};
     };
-    // VEGAS Credit Roll's presets (their names are VEGAS's; the values were fitted to VEGAS's own pictures of them)
-    auto roll = [](const char* anim, const char* size, const char* color, const char* bgc, const char* text, const char* y = "0.5", bool left = false) {
-        return std::vector<V>{{C, "Animation", anim}, {B, "LeftSide", left ? "true" : "false"}, {D, "FontSize", size}, {RGBA, "TextColor", color}, {RGBA, "Background", bgc},
-                              {S, "Text", text}, {D, "TimedY", y}};
+    // VEGAS Credit Roll's presets: the eight records of its constructor, read from the DLL (vfxcredit.h)
+    auto credit = [](int idx) {
+        int n = 0;
+        const vfxcredit::Preset& p = vfxcredit::presets(n)[idx];
+        auto num = [](double x) {
+            char b[48];
+            std::snprintf(b, sizeof b, "%.9g", x);
+            return std::string(b);
+        };
+        auto col = [&](const float c[4]) { return num(c[0]) + " " + num(c[1]) + " " + num(c[2]) + " " + num(c[3]); };
+        std::vector<V> v = {{S, "Text", vfxcredit::defaultText()}, {C, "Mode", p.timed ? "1" : "0"}, {B, "Backward", p.back ? "true" : "false"},
+                            {D, "Left", num(p.left)}, {D, "Right", num(p.right)}, {D, "TimedY", num(p.timedY)}, {D, "ColumnGap", num(p.gap)},
+                            {C, "PageMode", std::to_string(p.page)}, {C, "InEffect", std::to_string(p.in)}, {C, "OutEffect", std::to_string(p.out)},
+                            {S, "Leader", p.leader}, {RGBA, "Background", col(p.bg)}};
+        for (int s = 0; s < 5; ++s) {
+            const std::string k = std::string("S") + (char)('0' + s);
+            const vfxcredit::StyleRec& r = p.st[s];
+            v.push_back({S, k + "Font", r.face});
+            v.push_back({D, k + "Size", std::to_string(r.size)});
+            v.push_back({B, k + "Bold", r.bold ? "true" : "false"});
+            v.push_back({B, k + "Italic", r.italic ? "true" : "false"});
+            v.push_back({RGBA, k + "Color", col(r.col)});
+            v.push_back({C, k + "Align", std::to_string(r.align)});
+            v.push_back({D, k + "Before", num(r.before)});
+            v.push_back({D, k + "After", num(r.after)});
+        }
+        return v;
     };
-    const char* rollText = " Title Text\nSubitem Text\nItem Left\tItem Right\nLonger Item Left\tLonger Item Right";
-    const char* rollTitle = " Title Text\nSubitem Text";
-    const char* rollItems = "Item Left\tItem Right\nLonger Item Left\tLonger Item Right";
+    int creditCount = 0;
+    const vfxcredit::Preset* creditTable = vfxcredit::presets(creditCount);
     auto anim = [](std::vector<V> v, const char* name) {
         v.push_back({S, "AnimationName", name});
         return v;
@@ -182,14 +206,14 @@ std::vector<P> table()
         {tt, g, "Popup", anim(title("Popup", "60", "0.5 0.5", "4", "1 0.85 0.2 1", false, "4"), "_Popup")},
         {tt, g, "Fall Down", anim(title("Fall Down", "48", "0.5 0.5", "4", "1 1 1 1", false, "4"), "_Fall_Down")},
         {tt, g, "Earthquake", anim(title("EARTHQUAKE", "60", "0.5 0.5", "4", "0.9 0.3 0.1 1", true, "0"), "_Earthquake")},
-        {cr, g, "Plain Scrolling on Black", roll("0", "16", "1 1 1 1", "0 0 0 1", rollText)},
-        {cr, g, "Scrolling on Transparent", roll("0", "26.67", "1 0 0 1", "0 0 0 0", rollText)},
-        {cr, g, "Timed, Fade on Black", roll("2", "26.67", "1 1 1 1", "0 0 0 1", rollTitle, "0.442")},
-        {cr, g, "Timed, Zoom In/Out on Blue", roll("3", "26.67", "1 1 1 1", "0 0 1 0.5", rollTitle, "0.553")},
-        {cr, g, "Scrolling, Left Side, on Semi-Black", roll("0", "32.4", "0.8 1 0.8 1", "0 0 0 0.5", rollText, "0.5", true)},
-        {cr, g, "Timed, Scroll Right, on Frosty White", roll("5", "26.67", "0 0 0 1", "1 1 1 0.847", rollText)},
-        {cr, g, "Timed, Wipe In/Out, on Black", roll("4", "26.67", "0.8 0.8 0.8 1", "0 0 0 1", rollItems, "0.536")},
-        {cr, g, "Backward Scrolling, Primary Colors", roll("1", "26.67", "1 0 0 1", "0 0 0 0", rollText)},
+        {cr, g, creditTable[0].name, credit(0)},
+        {cr, g, creditTable[1].name, credit(1)},
+        {cr, g, creditTable[2].name, credit(2)},
+        {cr, g, creditTable[3].name, credit(3)},
+        {cr, g, creditTable[4].name, credit(4)},
+        {cr, g, creditTable[5].name, credit(5)},
+        {cr, g, creditTable[6].name, credit(6)},
+        {cr, g, creditTable[7].name, credit(7)},
         {tt, g, "Scroll", anim(title("Credits\nDirected by\nStarring", "36", "0.5 0.5", "4", "1 1 1 1", false, "0"), "_Scroll")},
         {tt, g, "Scroll Left", anim(title("News crawl text goes here", "28", "0.5 0.1", "4", "1 1 1 1", false, "0"), "_Scroll_Left")},
         {"com.vegascreativesoftware:invert", f, "100% Inversion", {{D, "BlendAmount", "1"}}},
@@ -225,8 +249,16 @@ std::vector<P> table()
         {"com.vegascreativesoftware:border", f, "Bevel", {{C, "Type", "1"}, {D, "Size", "0.1"}, {D, "Angle", "135"}, {RGBA, "color", "1 1 1 1"}}},
         {"com.vegascreativesoftware:glow", f, "White Soft Glow", {{D, "GlowPercent", "0.22"}, {D, "Intensity", "3.2"}, {D, "Suppression", "0.3"}, {RGB, "Color", "1 1 1"}}},
         {"com.vegascreativesoftware:glow", f, "Red Glow", {{D, "GlowPercent", "0.5"}, {D, "Intensity", "1"}, {D, "Suppression", "0.2"}, {RGB, "Color", "1 0 0"}}},
-        {"com.vegascreativesoftware:addnoise", f, "Grainy", {{D, "NoiseLevel", "0.3"}, {B, "Monochromatic", "true"}, {B, "GaussianNoise", "true"}, {B, "Animate", "true"}}},
-        {"com.vegascreativesoftware:addnoise", f, "Color Noise", {{D, "NoiseLevel", "0.5"}, {B, "Monochromatic", "false"}, {B, "GaussianNoise", "false"}, {B, "Animate", "true"}}},
+        // VEGAS Gradient Map's nine presets (its legacy code holds them; stops as position r g b a, colour straight)
+        {"com.vegascreativesoftware:gradientmap", f, "Reset to None", {{D, "Amount", "1"}, {C, "Mode", "0"}, {S, "GradientStops", "0 0 0 0 0;0.5 0 0 0 0;1 0 0 0 0"}}},
+        {"com.vegascreativesoftware:gradientmap", f, "Night Vision", {{D, "Amount", "1"}, {C, "Mode", "0"}, {S, "GradientStops", "0 0 0 0 0.600000024;0.41 0.125490203 0.670588255 0.164705887 1;1 1 1 1 1"}}},
+        {"com.vegascreativesoftware:gradientmap", f, "Blue Light", {{D, "Amount", "1"}, {C, "Mode", "0"}, {S, "GradientStops", "0 0 0 0 0;0.6 0.388235301 0.458823532 0.882352948 0.600000024;1 1 1 1 0.894117653"}}},
+        {"com.vegascreativesoftware:gradientmap", f, "Red  Light", {{D, "Amount", "1"}, {C, "Mode", "0"}, {S, "GradientStops", "0 0 0 0 0;0.6 0.835294127 0.270588249 0.270588249 0.600000024;1 1 1 1 0.960784316"}}},
+        {"com.vegascreativesoftware:gradientmap", f, "Green  Light", {{D, "Amount", "1"}, {C, "Mode", "0"}, {S, "GradientStops", "0 0 0 0 0;0.325 0.372549027 0.866666675 0 0.603921592;1 1 1 1 0.764705896"}}},
+        {"com.vegascreativesoftware:gradientmap", f, "Overexposed", {{D, "Amount", "1"}, {C, "Mode", "0"}, {S, "GradientStops", "0 0 0 0 0;0.2175 0.388235301 0.458823532 0.882352948 0.600000024;0.651 1 1 1 1"}}},
+        {"com.vegascreativesoftware:gradientmap", f, "Sunset", {{D, "Amount", "1"}, {C, "Mode", "0"}, {S, "GradientStops", "0 0 0 0 0.262745112;0.4638 1 0.639215708 0.13333334 1;0.6957 1 1 0 0.894117653;1 1 1 1 1"}}},
+        {"com.vegascreativesoftware:gradientmap", f, "Warm", {{D, "Amount", "1"}, {C, "Mode", "1"}, {S, "GradientStops", "0 0 0 0 0;0.6 0.913725495 1 0 0.501960814"}}},
+        {"com.vegascreativesoftware:gradientmap", f, "Cool", {{D, "Amount", "1"}, {C, "Mode", "1"}, {S, "GradientStops", "0 0 0 0 0;0.6 0 0.258823544 0.933333337 0.709803939"}}},
         {"com.vegascreativesoftware:threshold", f, "50%", {{D, "Threshold", "0.5"}}},
         {"com.vegascreativesoftware:threshold", f, "25 %", {{D, "Threshold", "0.25"}}},
         {"com.vegascreativesoftware:threshold", f, "40 %", {{D, "Threshold", "0.4"}}},
@@ -274,7 +306,8 @@ std::vector<P> table()
         {"com.vegascreativesoftware:swirl", f, "Reset to None", {{D, "Amount", "0"}}},
         {"com.vegascreativesoftware:pinchpunch", f, "Reset to None", {{D, "Amount", "0"}}},
         {"com.vegascreativesoftware:wave", f, "Reset to None", {{D, "VerticalAmplitude", "0"}, {D, "HorizontalAmplitude", "0"}}},
-        {"com.vegascreativesoftware:lightrays", f, "Reset to None", {{D, "group0Strength", "0"}}},   // (VEGAS draws the input unchanged)
+        {"com.vegascreativesoftware:lightrays", f, "Reset to None", {{D, "group0Strength", "0"}}},
+        {"com.vegascreativesoftware:tvsimulator", f, "Reset to None", {{D, "DetailZoom", "0"}, {D, "ApertureGrill", "0"}, {D, "Interlacing", "0"}, {D, "LineSync", "1"}, {D, "VerticalSync", "1"}, {D, "ScanPhasing", "0"}, {D, "Phosphorescence", "0"}, {D, "Static", "0"}}},   // (VEGAS draws the input unchanged)   // (VEGAS draws the input unchanged)
         {"com.vegascreativesoftware:wave", f, "Large", {{D, "VerticalWaves", "5.4"}, {D, "HorizontalWaves", "5.4"}, {D, "VerticalAmplitude", "0.05"}, {D, "HorizontalAmplitude", "0.05"}, {D, "VerticalPhase", "0"}, {D, "HorizontalPhase", "0"}}},
         {"com.vegascreativesoftware:wave", f, "Medium", {{D, "VerticalWaves", "14"}, {D, "HorizontalWaves", "14"}, {D, "VerticalAmplitude", "0.05"}, {D, "HorizontalAmplitude", "0.05"}, {D, "VerticalPhase", "0"}, {D, "HorizontalPhase", "0"}}},
         {"com.vegascreativesoftware:wave", f, "Small", {{D, "VerticalWaves", "20"}, {D, "HorizontalWaves", "20"}, {D, "VerticalAmplitude", "0.03"}, {D, "HorizontalAmplitude", "0.03"}, {D, "VerticalPhase", "0"}, {D, "HorizontalPhase", "0"}}},
@@ -298,6 +331,15 @@ std::vector<P> table()
         {"com.vegascreativesoftware:cookiecutter", f, "Pop-up, Bottom Right", {{RGB, "Color", "1 1 1"}, {C, "Shape", "0"}, {C, "Method", "0"}, {D, "Feather", "0"}, {D, "Border", "0.04"}, {I, "RepeatX", "0"}, {I, "RepeatY", "1"}, {D, "Size", "0.28"}, {D2, "Center", "1 0"}}},
         {"com.vegascreativesoftware:cookiecutter", f, "Picture-In-Picture", {{RGB, "Color", "0 0 0"}, {C, "Shape", "3"}, {C, "Method", "0"}, {D, "Feather", "0"}, {D, "Border", "0.01"}, {I, "RepeatX", "0"}, {I, "RepeatY", "1"}, {D, "Size", "0.2"}, {D2, "Center", "0.75 0.25"}}},
         {"com.vegascreativesoftware:cookiecutter", f, "Grate", {{RGB, "Color", "0 0 0"}, {C, "Shape", "4"}, {C, "Method", "1"}, {D, "Feather", "0"}, {D, "Border", "0.08"}, {I, "RepeatX", "10"}, {I, "RepeatY", "10"}, {D, "Size", "0.15"}, {D2, "Center", "0.5 0.5"}}},
+        // Portals: VEGAS's own (DirectX) transition's presets, found by fitting its pictures with the code's layout (the seed is the DLL's: the OpenFX file's 0..166 seeds of White Wash and
+        // Mondrian are not what VEGAS draws). Mondrian is also what VEGAS gives when no preset is chosen.
+        {"com.vegascreativesoftware:portals", "Transition", "Mondrian", {{I, "RandomPatternSeed", "634521"}, {I, "Squares", "6"}, {D, "MaxTransparency", "0.85"}, {D, "MaxOffset", "0.1"}, {D, "MaxScale", "0.05"}, {D, "BorderSize", "0.1"}, {RGB, "BorderColor", "0 0 0"}}},
+        {"com.vegascreativesoftware:portals", "Transition", "White Wash", {{I, "RandomPatternSeed", "574321"}, {I, "Squares", "12"}, {D, "MaxTransparency", "0.5"}, {D, "MaxOffset", "0.5"}, {D, "MaxScale", "0.5"}, {D, "BorderSize", "0.5"}, {RGB, "BorderColor", "1 1 1"}}},
+        {"com.vegascreativesoftware:portals", "Transition", "Windowed Fade", {{I, "RandomPatternSeed", "376251"}, {I, "Squares", "5"}, {D, "MaxTransparency", "0.75"}, {D, "MaxOffset", "0"}, {D, "MaxScale", "0"}, {D, "BorderSize", "0.3"}, {RGB, "BorderColor", "0.733333 0.184314 0"}}},
+        // (Windowed Fade, Plaid and Jigsaw Puzzle are in the table sfpagepeel.dll keeps for them with Mondrian and White Wash, ids 1538-1542, one 64-byte record each: seed, squares, four doubles, the border
+        // colour as floats in blue, green, red order. Windowed Fade's green there is 46/255; VEGAS's pictures match 47/255, which is kept.)
+        {"com.vegascreativesoftware:portals", "Transition", "Plaid", {{I, "RandomPatternSeed", "5647135"}, {I, "Squares", "30"}, {D, "MaxTransparency", "0.57"}, {D, "MaxOffset", "0.5"}, {D, "MaxScale", "0.5"}, {D, "BorderSize", "0.82"}, {RGB, "BorderColor", "0.4 0 0.019608"}}},
+        {"com.vegascreativesoftware:portals", "Transition", "Jigsaw Puzzle", {{I, "RandomPatternSeed", "987347"}, {I, "Squares", "256"}, {D, "MaxTransparency", "1"}, {D, "MaxOffset", "0.16"}, {D, "MaxScale", "0.32"}, {D, "BorderSize", "0.18"}, {RGB, "BorderColor", "0 0.086275 0.266667"}}},
         // Slow Motion, VEGAS Pro 23's; its Default preset is half speed with medium quality
         {"com.vegascreativesoftware:slowmotion", f, "Default", {{C, "Quality", "1"}, {C, "Blending", "0"}, {D, "PlaybackRate", "0.5"}, {B, "ShowOpticalFlowField", "false"}}},
         {"com.vegascreativesoftware:slowmotion", f, "Quarter Speed, High Quality", {{C, "Quality", "2"}, {C, "Blending", "0"}, {D, "PlaybackRate", "0.25"}, {B, "ShowOpticalFlowField", "false"}}},
@@ -353,6 +395,24 @@ const std::string& builtinPresetPackage()
         for (int k = 0; k < builtin::kColorPresetChunkCount; ++k) o << "  " << builtin::kColorPresetChunks[k];
         o << "</OfxPresetPackage>\n";
         std::string x = o.str();
+        // (Portals' presets are VEGAS's DirectX ones above: drop the OpenFX file's two, whose seeds (83, 64) mean something else)
+        {
+            const std::string head = "<OfxPreset plugin=\"com.vegascreativesoftware:portals\" context=\"Transition\"";
+            const std::string seedKey = "name=\"RandomPatternSeed\"><OfxParamValue>";
+            for (size_t at = x.find(head); at != std::string::npos;) {
+                const size_t end = x.find("</OfxPreset>", at);
+                if (end == std::string::npos) break;
+                const size_t sk = x.find(seedKey, at);
+                const bool oldSeed = sk != std::string::npos && sk < end && (x.compare(sk + seedKey.size(), 3, "83<") == 0 || x.compare(sk + seedKey.size(), 3, "64<") == 0);
+                if (oldSeed) {
+                    size_t to = end + 12;
+                    if (to < x.size() && x[to] == '\n') ++to;
+                    x.erase(at, to - at);
+                    at = x.find(head, at);
+                } else
+                    at = x.find(head, end);
+            }
+        }
         // VEGAS Pro 18 runs Rays and Glint as managed CoreGraphics filters whose presets (in ScriptPortal.MediaSoftware.TextGen.CoreGraphics.dll) differ from the OpenFX preset file where the
         // conversion lost values: the rays' light position of "Luminance" (0.8599, 0.2288 from the top) and "Alpha" (0.4732, 0.3220), and the small soft ellipse of "Center Mask, Glint"
         // (19.71% x 28.42%, blur 0.0349 of the width).

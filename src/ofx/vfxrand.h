@@ -20,9 +20,12 @@ struct VegasShiftRandom {
             a += crand();
             w_[k] = a;
         }
+        crandState_ = st;
         uint32_t m = 0xffffffffu, b = 0x80000000u;
         for (int k = 0; k < 32; ++k, m >>= 1, b >>= 1) w_[3 + 7 * k] = (w_[3 + 7 * k] & m) | b;
     }
+    // where the C library's rand() stands after the 750 numbers the register was filled with (VEGAS's other noise tables go on from there)
+    uint32_t randState() const { return crandState_; }
     // the next 32-bit word
     uint32_t next()
     {
@@ -35,6 +38,7 @@ struct VegasShiftRandom {
 private:
     uint32_t w_[250];
     int i0_ = 0, i1_ = 0x67;
+    uint32_t crandState_ = 0;
 };
 
 }

@@ -44,7 +44,7 @@ static Params withDefaults(const Def& d, const Params& over)
     for (const auto& kv : over) p[kv.first] = kv.second;
     return p;
 }
-static void refByPixel(const Def& d, const Buf& s, Buf& o, const Params& store, bool levels)
+static void refByPixel(const Def& d, const Buf& s, Buf& o, const Params& store, bool levels, bool openCl = false, bool host8 = false)
 {
     o.resize(s.w, s.h);
     for (int y = 0; y < s.h; ++y)
@@ -53,6 +53,8 @@ static void refByPixel(const Def& d, const Buf& s, Buf& o, const Params& store, 
             Ctx c;
             c.testParams = &one;
             c.levels = levels;
+            c.openCl = openCl;
+            c.host8 = host8;
             c.src.resize(1, 1);
             std::memcpy(c.src.at(0, 0), s.at(x, y), sizeof(float) * 4);
             c.out.resize(1, 1);
@@ -272,6 +274,8 @@ static void engineTests()
             const PixelDepth depth = isFloat ? PixelDepth::Float : PixelDepth::Byte;
             if (plain->depth != depth || with->depth != depth || plain->w != with->w || plain->h != with->h) { check(false, name + " is a picture of the project's depth"); continue; }
             // the picture without the effect as the host loads it (bottom row first), the effect pixel by pixel over it
+            // (an effect drawn as VEGAS's OpenCL kernel is: levels off if it is drawn in float, and the host reads a level as level / 255)
+            const bool ocl = vegasUsesOpenCl(d->id), lv = !isFloat && !vegasDrawsFloat(d->id);
             Buf src;
             src.resize(plain->w, plain->h);
             for (int y = 0; y < plain->h; ++y) {
@@ -279,12 +283,13 @@ static void engineTests()
                 if (isFloat) { std::memcpy(src.at(0, y), row, (size_t)plain->w * 16); continue; }
                 for (int x = 0; x < plain->w; ++x) {
                     float* q = src.at(x, y);
+                    if (ocl) { q[0] = row[x * 4 + 2] / 255.f; q[1] = row[x * 4 + 1] / 255.f; q[2] = row[x * 4] / 255.f; q[3] = row[x * 4 + 3] / 255.f; continue; }
                     q[0] = row[x * 4 + 2] * (1.f / 255.f); q[1] = row[x * 4 + 1] * (1.f / 255.f); q[2] = row[x * 4] * (1.f / 255.f); q[3] = row[x * 4 + 3] * (1.f / 255.f);
                 }
             }
             Params store = withDefaults(*d, cs.over);
             Buf want;
-            refByPixel(*d, src, want, store, !isFloat);
+            refByPixel(*d, src, want, store, lv, ocl, !isFloat);
             size_t bad = 0;
             for (int y = 0; y < with->h; ++y) {
                 const float* exp = want.at(0, with->h - 1 - y);

@@ -7,6 +7,7 @@
 #include "../../src/engine/catalog.h"
 #include "../../src/ofx/builtins.h"
 #include "../../src/ofx/ofxhost.h"
+#include "../../src/ofx/vfxcredit.h"
 #include "../../src/vegas/vegas.h"
 #include <cstdio>
 #include <cstdlib>
@@ -340,13 +341,22 @@ int main(int argc, char** argv)
         Project p = rig.generated(kV + "testpattern");
         ImagePtr img = rig.render(p);
         Px grey = pixel(img, 5, 20), blue = pixel(img, 155, 20);
-        check(near(grey, 180, 180, 180, 2) && near(blue, 180, 16, 16, 2), "Test Pattern: SMPTE bars by default (VEGAS's: 180 grey on the left, 180/16/16 at the right edge)", pxs(grey) + " / " + pxs(blue));
+        check(near(grey, 180, 180, 180, 2) && near(blue, 16, 16, 180, 2), "Test Pattern: colour bars by default (VEGAS's OpenCL kernel: 180 grey on the left, 16/16/180 blue at the right edge)", pxs(grey) + " / " + pxs(blue));
         Json ps = Json::object();
         ps["TestPatternType"] = val({4});
         Project r = rig.generated(kV + "testpattern", ps);
         img = rig.render(r);
         check(near(pixel(img, 20, 45), 25 + 4 * 204 / 128, 25 + 4 * 204 / 128, 25 + 4 * 204 / 128, 3) && near(pixel(img, 140, 45), 25 + 124 * 204 / 128, 25 + 124 * 204 / 128, 25 + 124 * 204 / 128, 3),
               "Ramp: VEGAS's 25..229 grey steps across the middle", pxs(pixel(img, 20, 45)) + " / " + pxs(pixel(img, 140, 45)));
+        ps["TestPatternType"] = val({5});
+        Project sm = rig.generated(kV + "testpattern", ps);
+        img = rig.render(sm);
+        {
+            // (the kernel's rows count from the bottom: the strip under the bars is the bottom quarter, its first part the -I colour 7/40/113)
+            const Px top = pixel(img, 5, 5), low = pixel(img, 5, 85), mid = pixel(img, 5, 66);
+            check(near(top, 180, 180, 180, 2) && near(low, 7, 40, 113, 2) && near(mid, 7, 7, 235, 2),
+                  "SMPTE bars (NTSC): bars on top, the blue-black-magenta strip, the -I strip at the bottom", pxs(top) + " / " + pxs(mid) + " / " + pxs(low));
+        }
         ps["TestPatternType"] = val({99});
         Project bad = rig.generated(kV + "testpattern", ps);
         img = rig.render(bad);
@@ -369,7 +379,7 @@ int main(int argc, char** argv)
         // 100 points at 90 lines: 22.5 px em; "HI" is 22 px wide, centred at (80, 45)
         Px c = pixel(img, 74, 45), off = pixel(img, 80, 10);
         check(gRasterCalls > 0 && near(c, 255, 255, 255) && near(off, 0, 0, 255), "the text in Text color, centred, over the background", pxs(c) + " / " + pxs(off));
-        check(std::fabs(gLastRequest.pixelSize - 22.5) < 0.01 && gLastRequest.font == "Arial" && gLastRequest.text == "HI", "its size scales with the frame (100 points: a quarter of the height)",
+        check(std::fabs(gLastRequest.pixelSize - 22.5) < 0.01 && gLastRequest.font == "Verdana" && gLastRequest.text == "HI", "its size scales with the frame (100 points: a quarter of the height)",
               strfmt("%.2f px, %s", gLastRequest.pixelSize, gLastRequest.font.c_str()));
         // anchor: bottom left at (0.1, 0.1)
         ps["Alignment"] = val({6});
@@ -450,19 +460,18 @@ int main(int argc, char** argv)
         for (int y = 0; y < 90; ++y) for (int x = 60; x < 100; ++x) if (pixel(img, x, y).r > 200) any = true;
         Px mid = pixel(rig.render(sc, 4.9), 74, 45);
         check(!any && near(mid, 255, 255, 255), "Scroll: a credit roll from below the frame, through the middle near 5 s", pxs(mid));
-        // Credit Roll rows roll from below the frame to above it over the Roll duration
+        // Credit Roll (VEGAS's code, vfxcredit.h): the block starts just below the frame and moves up by (frame height + block height) x progress, progress being the
+        // time over the Duration
         {
             Json cs = Json::object();
-            cs["Text"] = str("// a comment\n Cast\nAlice\tHero");
-            cs["FontSize"] = val({30});
-            cs["RollDuration"] = val({4});    // (the test events are 5 s long)
+            cs["Text"] = str(" Cast\nAlice\tHero\n");
+            cs["Duration"] = val({4});        // (the test events are 5 s long)
             Project cr = rig.generated(kV + "creditroll", cs);
             auto whites = [&](ImagePtr im, int x0, int x1) {
                 int n = 0;
                 for (int y = 0; y < 90; ++y) for (int x = x0; x < x1; ++x) if (pixel(im, x, y).r > 200) ++n;
                 return n;
             };
-            gRasterCalls = 0;
             ImagePtr a0 = rig.render(cr, 0.0), a5 = rig.render(cr, 2.0), a10 = rig.render(cr, 4.9);
             check(whites(a0, 0, 160) == 0 && whites(a10, 0, 160) == 0, "Credit Roll: nothing at the start (below the frame) or at the end (above it)",
                   strfmt("%d / %d", whites(a0, 0, 160), whites(a10, 0, 160)));
@@ -472,9 +481,34 @@ int main(int argc, char** argv)
             int lowest2 = -1, lowest5 = -1;
             for (int y = 0; y < 90; ++y) for (int x = 0; x < 160; ++x) { if (pixel(a2, x, y).r > 200) lowest2 = y; if (pixel(a5, x, y).r > 200) lowest5 = y; }
             check(lowest2 > lowest5, "Credit Roll: it rolls up", strfmt("%d then %d", lowest2, lowest5));
-            check(gRasterCalls >= 4 * 3 && gLastRequest.text != "// a comment", "Credit Roll: the comment line is not drawn (the title and the two columns are, and the dot a leader is made of)", strfmt("%d calls", gRasterCalls));
+            gRasterCalls = 0;
+            rig.render(cr, 2.0);
+            check(gRasterCalls >= 3 && gLastRequest.text == "Hero", "Credit Roll: the title (without its leading space) and the two columns are drawn, the right column last",
+                  strfmt("%d calls, '%s'", gRasterCalls, gLastRequest.text.c_str()));
+            // backward: the block starts above the frame and comes down
+            cs["Backward"] = val({1});
+            Project bk = rig.generated(kV + "creditroll", cs);
+            ImagePtr b2 = rig.render(bk, 1.0), b5 = rig.render(bk, 2.0);
+            int lowestB2 = -1, lowestB5 = -1;
+            for (int y = 0; y < 90; ++y) for (int x = 0; x < 160; ++x) { if (pixel(b2, x, y).r > 200) lowestB2 = y; if (pixel(b5, x, y).r > 200) lowestB5 = y; }
+            check(lowestB2 >= 0 && lowestB5 > lowestB2, "Credit Roll (backward): it rolls down", strfmt("%d then %d", lowestB2, lowestB5));
         }
-        // Credit Roll with its own text: VEGAS's default credits come in from the bottom at 1 frame height in 6 seconds (15 of 90 lines at 1 s; the test's text has no margin, so the check leaves a few lines of room)
+        // Credit Roll, the parts read from VEGAS's code: a last line with no line end is not a line; the zoom's cubic resampler (0x1802566d0, checked bit for bit
+        // against the DLL) leaves a flat picture flat and the 3x3 smoothing leaves a small zoom alone
+        {
+            check(vfxcredit::parse(" A\r\nB\tC\r\nD").size() == 3, "Credit Roll: a last line with no line end is kept (Reno's text box need not end it)");
+            check(vfxcredit::parse(" A\r\nB\tC\r\n").size() == 2, "Credit Roll: the lines of text that ends with a line end are all kept");
+            std::vector<uint8_t> flat(40 * 30 * 4, 200), small((size_t)17 * 11 * 4, 0);
+            vfxcredit::cubicShrink(small.data(), 17, 11, flat.data(), 40 * 4, 40, 30);
+            bool same = true;
+            for (uint8_t v : small) same = same && v == 200;
+            check(same, "Credit Roll zoom: a flat picture stays flat when it is brought down");
+            std::vector<uint8_t> a(8 * 8 * 4, 0), b(8 * 8 * 4, 0);
+            a[(4 * 8 + 4) * 4] = 255;
+            vfxcredit::smooth3(b.data(), a.data(), 8, 8, 0.1);
+            check(b == a, "Credit Roll zoom: the smoothing leaves a small zoom alone");
+        }
+        // Credit Roll with its own text: the default credits come in from the bottom at (frame height + block height) over the 10 seconds of the Duration
         {
             Project dr = rig.generated(kV + "creditroll", Json::object());
             ImagePtr d0 = rig.render(dr, 0.0), d1 = rig.render(dr, 1.0), d6 = rig.render(dr, 4.5);
@@ -483,9 +517,28 @@ int main(int argc, char** argv)
                 for (int y = y0; y < y1; ++y) for (int x = 0; x < 160; ++x) if (pixel(im, x, y).r > 200) ++n;
                 return n;
             };
-            check(whitesIn(d0, 0, 86) == 0 && whitesIn(d1, 0, 70) == 0 && whitesIn(d1, 70, 90) > 0,
-                  "Credit Roll (defaults): a black frame, then 'Title Text' climbing in from the bottom at VEGAS's speed", strfmt("%d / %d / %d", whitesIn(d0, 0, 86), whitesIn(d1, 0, 70), whitesIn(d1, 70, 90)));
+            check(whitesIn(d0, 0, 90) == 0 && whitesIn(d1, 0, 70) == 0 && whitesIn(d1, 70, 90) > 0,
+                  "Credit Roll (defaults): a black frame, then 'Title Text' climbing in from the bottom", strfmt("%d / %d / %d", whitesIn(d0, 0, 90), whitesIn(d1, 0, 70), whitesIn(d1, 70, 90)));
             check(whitesIn(d6, 0, 90) > whitesIn(d1, 0, 90), "Credit Roll (defaults): more of the credits are in view later");
+        }
+        // Credit Roll, timed fade: page 0 (the title and the first item) fades in over the first quarter of its time, the text colour going from the background to
+        // its own (VEGAS's colour mix); three pages of the default text, so progress 0.025 is 0.075 into the first page, 0.3 of the way through its fade
+        {
+            Json fs = Json::object();
+            fs["Mode"] = val({1});
+            fs["PageMode"] = val({2});
+            fs["InEffect"] = val({1});
+            fs["OutEffect"] = val({1});
+            fs["Duration"] = val({4});
+            Project fd = rig.generated(kV + "creditroll", fs);
+            int hi = 0;
+            ImagePtr f1 = rig.render(fd, 0.1);
+            for (int y = 0; y < 90; ++y) for (int x = 0; x < 160; ++x) hi = std::max(hi, (int)pixel(f1, x, y).r);
+            check(hi >= 74 && hi <= 80, "Credit Roll (timed fade): the text is 0.3 of the way from black to white a little way into the first page", strfmt("%d", hi));
+            int mid = 0;
+            ImagePtr f2 = rig.render(fd, 0.5);       // (progress 0.125: a third of the way through page 0, no effect now)
+            for (int y = 0; y < 90; ++y) for (int x = 0; x < 160; ++x) mid = std::max(mid, (int)pixel(f2, x, y).r);
+            check(mid >= 250, "Credit Roll (timed fade): fully in between the fades", strfmt("%d", mid));
         }
         ps["AnimationName"] = str("_Title07");
         Project fade = rig.generated(kV + "titlesandtext", ps);
@@ -649,6 +702,17 @@ int main(int argc, char** argv)
         Project sz = rig.filtered("split:0,0,0,255,255,255", kV + "spherize", ps);
         img = rig.render(sz);
         check(near(pixel(img, 85, 45), 0, 0, 0) && near(pixel(img, 150, 45), 255, 255, 255), "Spherize bulges (the edge pushed away from the centre)", pxs(pixel(img, 85, 45)));
+        // with Proportional on (the default) the vertical scaling is the horizontal one, as VEGAS's kernel is fed: ScalingVertical changes nothing
+        {
+            Json pv = Json::object();
+            pv["Amount"] = val({1});
+            pv["Center"] = val({0.4, 0.5});
+            pv["ScalingVertical"] = val({0.2});
+            ImagePtr imv = rig.render(rig.filtered("split:0,0,0,255,255,255", kV + "spherize", pv));
+            bool same = imv != nullptr;
+            for (int x = 40; same && x < 120; x += 7) same = near(pixel(imv, x, 20), pixel(img, x, 20).r, pixel(img, x, 20).g, pixel(img, x, 20).b);
+            check(same, "Spherize: with Proportional on, ScalingVertical is ignored");
+        }
         // Swirl turns a split's straight edge into a curve; Pinch/Punch moves it; Wave ripples it; at Amount 0
         // / amplitude 0 they change nothing
         {

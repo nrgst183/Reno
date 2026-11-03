@@ -7,6 +7,10 @@
 #include "builtins_impl.h"
 #include "builtins_vec.h"
 #include "vegas8.h"
+#include "vfxlevelsconv.h"
+#include "vfxcolour.h"
+#include "builtins_more_internal.h"
+#include "vfxpolar.h"
 #include "vkeffects.h"
 #include <cmath>
 #include "../core/base.h"
@@ -178,7 +182,12 @@ bool colorCorrectorSecondaryRows(Ctx& c, RowFn& fn)
     };
     return true;
 }
-void colorCorrectorSecondary(Ctx& c) { runRows(c, colorCorrectorSecondaryRows); }
+static bool ccsOpenCl(Ctx& c);
+void colorCorrectorSecondary(Ctx& c)
+{
+    if (ccsOpenCl(c)) return;
+    runRows(c, colorCorrectorSecondaryRows);
+}
 
 // "Select effect range": Reno takes the colours of the middle of the current frame (a quarter of its width and height, non-transparent pixels)
 // and limits luminance, saturation and hue to where 90 per cent of them lie (a little wider), switching the three limits on.
@@ -722,6 +731,65 @@ bool colorCorrectorSecondary8(Ctx& c, RowFn& fn)
 }
 
 
+// VEGAS's OpenCL kernels for this effect (vfxcolour.h ccsPx). Which kernel runs and its numbers are those of the 8-bit routine's flag word (ccsFlags): only gain / gamma / offset, saturation,
+// the tint and a luminance limit: the primary-like kernel; any other limit, a rotation or an alpha: the general kernel; Show Mask: the mask kernel; limits with nothing to apply: the picture as it is.
+static bool ccsOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (!(c.openCl && W > 0 && H > 0 && c.src.w == W && c.src.h == H)) return false;
+    CcsSet p;
+    ccsRead(c, p);
+    for (double* v : {&p.ang, &p.amt, &p.rot, &p.sat, &p.gamma, &p.gain, &p.off, &p.alpha, &p.l0, &p.l1, &p.ls, &p.s0, &p.s1, &p.ss, &p.hc, &p.hw, &p.hs})
+        if (!(*v == *v)) *v = 0.0;
+    bool inv = false;
+    const int fl = ccsFlags(p, inv);
+    vcol::CcsKernel k;
+    k.inv = inv;
+    k.satOn = (fl & 2) != 0;
+    k.lumOn = (fl & 0x20) != 0;
+    k.ang = (float)p.ang; k.amt = (float)p.amt;
+    k.satv = (float)p.sat; k.alphaF = (float)p.alpha; k.gain = (float)p.gain; k.offset = (float)(p.off / 255.0);
+    double tg = 2.0 - p.gamma;
+    if (tg > 1.0) tg = (tg - 1.0) + (tg - 1.0) + 1.0;
+    else if (1.0 > tg) tg = 1.0 - (1.0 - tg) * 0.8;
+    const CcCurve cur = ccCurve(tg);
+    k.g = (float)cur.g; k.A = (float)cur.A; k.B = (float)cur.B; k.P = (float)cur.P; k.C = (float)cur.C;
+    const bool passThrough = !p.show && (fl & 0x1f) == 0 && (fl & 0xd8) != 0;
+    if (p.show) k.mode = 3;
+    else if (!(fl & 0xd8)) k.mode = 1;
+    else k.mode = 2;
+    if (k.mode == 1) {
+        k.inv = p.invert;
+        k.lum.make((float)p.l0, (float)p.l1, (float)p.ls, 255.0f);
+    } else {
+        k.lum.make((float)p.l0, (float)p.l1, (float)p.ls, 256.0f);
+        k.sat.make((float)p.s0, (float)p.s1, (float)p.ss, 162.0f);
+        float half = (float)(0.5 * p.hw);
+        half = std::min(half, 180.0f);
+        k.hue.make(180.0f - half, 180.0f + half, (float)p.hs, 360.0f, true);
+        k.hueShift = 180.0f - (float)p.hc;
+        const double rad = p.ang * 3.141592653589793 / 180.0, amt2 = p.amt * p.amt;
+        k.tintU = (float)((std::cos(rad) * amt2) * 0.5);
+        k.tintV = (float)((std::sin(rad) * amt2) * 0.5);
+        float cc = 1.0f, ss = 0.0f;
+        if (fl & 0x18) { const double r = p.rot * 3.141592653589793 / 180.0; cc = (float)std::cos(r); ss = (float)std::sin(r); }
+        k.M[0] = k.satv * cc; k.M[1] = k.satv * -ss; k.M[2] = k.satv * ss; k.M[3] = k.satv * cc;
+    }
+    const bool q = c.host8;
+    forRows(H, W, [&](int y) {
+        for (int x = 0; x < W; ++x) {
+            float in[4], o[4];
+            const float* sp = c.src.at(x, y);
+            if (q) { vcol::readLevels(sp, in); sp = in; }
+            if (passThrough) { for (int i = 0; i < 4; ++i) o[i] = sp[i]; }
+            else vcol::ccsPx(k, sp, o);
+            float* d = c.out.at(x, y);
+            for (int i = 0; i < 4; ++i) d[i] = q ? more::oclStore12(o[i]) : o[i];
+        }
+    });
+    return true;
+}
+
 // ------------------------------------------------------------------ Color Corrector
 // Measured on VEGAS: like the secondary corrector, works on Rec. 601 Y, U, V of the straight colour. Gain, gamma and offset change Y alone
 // (see secondaryGamma); then each wheel adds its tint to (U, V) weighted by the NEW Y with a Gaussian - Low exp(-(Y / 0.402)^2), Mid
@@ -788,7 +856,44 @@ bool colorCorrectorRows(Ctx& c, RowFn& fn)
     };
     return true;
 }
-void colorCorrector(Ctx& c) { runRows(c, colorCorrectorRows); }
+void colorCorrector(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.openCl && W > 0 && H > 0 && c.src.w == W && c.src.h == H) {
+        // VEGAS's OpenCL kernel (vfxcolour.h ccKernelPx): the settings the 8-bit routine reads (ccBuild: the same flags and curve), float arithmetic, the 12-bit store into an 8-bit frame
+        vcol::CcKernel k;
+        double P[10];
+        const char* names[3] = {"Low", "Mid", "High"};
+        for (int w = 0; w < 3; ++w) c.xy(names[w], P[2 * w], P[2 * w + 1]);
+        P[6] = c.d("Offset"); P[7] = c.d("Gamma"); P[8] = c.d("Gain"); P[9] = c.d("Saturation");
+        for (double& v : P) if (!(v == v)) v = 0.0;
+        k.gcurve = P[6] != 0.0 || P[7] != 1.0 || P[8] != 1.0;
+        k.sat = P[9] != 1.0;
+        k.wheels = P[1] != 0.0 || P[3] != 0.0 || P[5] != 0.0;
+        for (int w = 0; w < 3; ++w) { k.ang[w] = (float)P[2 * w]; k.amt[w] = (float)P[2 * w + 1]; }
+        k.satv = (float)P[9];
+        k.gain = (float)P[8];
+        k.offset = (float)(P[6] / 255.0);
+        double tg = 2.0 - P[7];
+        if (tg > 1.0) tg = (tg - 1.0) + (tg - 1.0) + 1.0;
+        else if (1.0 > tg) tg = 1.0 - (1.0 - tg) * 0.8;
+        const CcCurve cur = ccCurve(tg);
+        k.g = (float)cur.g; k.A = (float)cur.A; k.B = (float)cur.B; k.P = (float)cur.P; k.C = (float)cur.C;
+        const bool q = c.host8;
+        forRows(H, W, [&](int y) {
+            for (int x = 0; x < W; ++x) {
+                float in[4], o[4];
+                const float* sp = c.src.at(x, y);
+                if (q) { vcol::readLevels(sp, in); sp = in; }
+                vcol::ccKernelPx(k, sp, o);
+                float* d = c.out.at(x, y);
+                for (int i = 0; i < 4; ++i) d[i] = q ? more::oclStore12(o[i]) : o[i];
+            }
+        });
+        return;
+    }
+    runRows(c, colorCorrectorRows);
+}
 
 // ------------------------------------------------------------------ Convolution Kernel
 // A 3 x 3 kernel over each pixel's neighbours (read at places turned by Rotation, in degrees), divided by the kernel sum when Auto normalize
@@ -1098,6 +1203,24 @@ static void convolutionKernel8(Ctx& c)
 
 void convolutionKernel(Ctx& c)
 {
+    if (c.openCl && c.out.w > 0 && c.out.h > 0) {
+        // VEGAS's OpenCL kernel (vfxlevelsconv.h): the premultiplied 0..1 floats, all nine products summed left to right, Offset in 0..1 units, the sum multiplied by its clamped
+        // alpha; the raw Scale is used when Auto normalize is off. The 8-bit frame gets the 12-bit store (more::oclStore12).
+        double w[9];
+        for (int r = 0; r < 3; ++r)
+            for (int col = 0; col < 3; ++col) w[r * 3 + col] = c.d(strfmt("Row%dColumn%d", r + 1, col + 1).c_str());
+        const vfxlc::ConvSetup s = vfxlc::convSetup(w, c.d("Rotation"), c.d("Scale"), c.d("Offset"), c.b("AutoNormalize"));
+        const int W = c.out.w, H = c.out.h;
+        const bool q8 = c.host8;
+        forRows(H, W, [&](int y) {
+            vfxlc::convRows(s, c.src.px.data(), W, H, c.out.px.data(), y, y + 1);
+            if (q8) {
+                float* o = c.out.at(0, y);
+                for (int i = 0; i < W * 4; ++i) o[i] = more::oclStore12(o[i]);
+            }
+        });
+        return;
+    }
     if (c.levels) { convolutionKernel8(c); return; }
     convolutionKernelRaw(c);
     const bool levels = c.levels;
@@ -1124,6 +1247,16 @@ void spherize(Ctx& c)
     double pcx, pcy;
     c.xy("Center", pcx, pcy);
     const double amount = c.d("Amount"), sh = c.d("ScalingHorizontal"), sv = c.d("ScalingVertical");
+    if (c.openCl && W > 0 && H > 0) {
+        // VEGAS's OpenCL kernel (vfxpolar.h), float, bilinear. With Proportional on the vertical scaling is the horizontal one (checked on the captures); no setting is the identity.
+        std::vector<float> src((size_t)W * H * 4), out;
+        for (int y = 0; y < H; ++y) std::memcpy(&src[(size_t)y * W * 4], c.src.at(0, H - 1 - y), (size_t)W * 4 * sizeof(float));
+        const bool prop = c.b("ScalingProportional");
+        more::vfxpolar::spherize(src, W, H, (float)pcx, (float)pcy, (float)amount, (float)sh, (float)(prop ? sh : sv), out);
+        c.out.ensure(W, H);
+        for (int y = 0; y < H; ++y) std::memcpy(c.out.at(0, H - 1 - y), &out[(size_t)y * W * 4], (size_t)W * 4 * sizeof(float));
+        return;
+    }
     if (W <= 0 || H <= 0 || std::fabs((float)amount) <= 1e-6f || std::fabs((float)sh) <= 1e-6f || std::fabs((float)sv) <= 1e-6f) { c.out.px = c.src.px; return; }
     const int cxp = (int)((pcx * 2 - 0.5) * W), cyp = (int)((pcy * 2 - 0.5) * H);
     const double ky = 1.0 / (sv + 0.0001), kx = 1.0 / (sh + 0.0001) * 2.0 / W;

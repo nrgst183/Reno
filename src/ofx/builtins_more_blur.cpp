@@ -4,6 +4,8 @@
 #include "builtins_more_internal.h"
 #include "vkfilters.h"
 #include "builtins_deriche.h"
+#include "vfxgauss.h"
+#include "vfxblurs.h"
 #include "builtins_fast.h"
 #include <cstdio>
 #include <cstdlib>
@@ -159,11 +161,13 @@ bool radialBlurSteps(const RbSetup& g, int W, int H, std::vector<uint32_t>& rec,
     return true;
 }
 
-// Radial Blur as VEGAS's OpenCL kernels draw it (GPU acceleration on; Type Proportional / Fixed radius, read from the decoded kernels): the picture is unwrapped to polar form (columns = angle,
-// rows = radius, 2.828427125 = 2 sqrt 2 frame radii; the Center sets where the radius starts), every column is run outwards as a one-pole recursion (row y = row(y) + (row(y - back) - row(y)) * w, with
-// back = y - round(y * s1) for Proportional and y - round(s0) for Fixed, s0 = Strength^2 + 1, s1 = 0.018 Strength^1.5 / (H / 300), w = (Strength^(300 / H))^0.25) and wrapped back. The taps are read
-// as the card's texture unit does (oclLinear4: weights cut to 1/256, pixel coordinates without the half). In an 8-bit project the two middle pictures are 8-bit textures (rounded to a level); the last
-// conversion to a level is floor(v * 255 + 0.46) (fitted: the captured pictures are 96% exact, the rest one level off). Type Gaussian (a Deriche pass in the kernels) is not ported.
+// Radial Blur as VEGAS's OpenCL kernels draw it (GPU acceleration on, read from the decoded kernels): the picture is unwrapped to polar form (columns = angle, rows = radius, 2.828427125 = 2 sqrt 2 frame
+// radii; the Center sets where the radius starts), then every column is blurred along the radius and the result wrapped back. Proportional / Fixed radius run outwards as a one-pole recursion
+// (row y = row(y) + (row(y - back) - row(y)) * w, with back = y - round(y * s1) for Proportional and y - round(s0) for Fixed, s0 = Strength^2 + 1, s1 = 0.018 Strength^1.5 / (H / 300),
+// w = (Strength^(300 / H))^0.25). Type Gaussian runs the recursive Gaussian of vfxgauss.h along the radius (sigma = (float)Strength x 20 polar rows: a causal and an anti-causal pass into two
+// pictures, then their sum). The taps are read as the card's texture unit does (oclLinear4: weights cut to 1/256, pixel coordinates without the half). In an 8-bit project every picture the kernels
+// write (the polar one, the two Gaussian halves and their sum, the recursion's result, the result) is an 8-bit texture with the card's 12-bit store (oclStore12: all 13 captured Radial Blur
+// pictures within one level, 99.9% exact; Gaussian 99.8%).
 static void radialBlurOpenCl(Ctx& c, const RbSetup& g, int W, int H)
 {
     const bool q = c.host8;
@@ -184,21 +188,33 @@ static void radialBlurOpenCl(Ctx& c, const RbSetup& g, int W, int H)
             px = (px / 2.f + 0.5f) * (float)W; py = (py / 2.f + 0.5f) * (float)H;
             float* o = &P[((size_t)y * W + x) * 4];
             oclLinear4(src, W, H, px, py, o);
-            if (q) for (int ch = 0; ch < 4; ++ch) o[ch] = oclUnormLevel(o[ch], 0.5f);
+            if (q) for (int ch = 0; ch < 4; ++ch) o[ch] = oclStore12(o[ch]);
         }
     });
-    std::vector<float> buf = P;
-    for (int y = 0; y < H; ++y) {
-        int back;
-        if (g.type == 1) back = y <= s0 ? 0 : y - (int)std::nearbyint((double)((float)y * (s0 / (float)y)));
-        else back = y - (int)std::nearbyint((double)((float)y * s1));
-        back = std::max(0, std::min(y, back));
-        const float* p = &P[(size_t)y * W * 4];
-        const float* bk = &buf[(size_t)back * W * 4];
-        float* o = &buf[(size_t)y * W * 4];
-        for (int i = 0; i < W * 4; ++i) o[i] = p[i] + (bk[i] - p[i]) * w;
+    std::vector<float> buf;
+    if (g.type == 2) {
+        // Gaussian: the five coefficient sets as floats, sigma (float)Strength x 20 (a float multiply, then the builder's double)
+        const float sigma = (float)st * 20.0f;
+        const vfxgauss::Coefsf cf = vfxgauss::toFloats(vfxgauss::build((double)sigma));
+        std::vector<float> A, B;
+        vfxgauss::passColumns(cf, P, W, H, A, B, [](float a, float b, float cc) { return a * b + cc; });
+        if (q) { for (float& v : A) v = oclStore12(v); for (float& v : B) v = oclStore12(v); }
+        buf.resize(A.size());
+        for (size_t i = 0; i < buf.size(); ++i) { const float sum = A[i] + B[i]; buf[i] = q ? oclStore12(sum) : sum; }
+    } else {
+        buf = P;
+        for (int y = 0; y < H; ++y) {
+            int back;
+            if (g.type == 1) back = y <= s0 ? 0 : y - (int)std::nearbyint((double)((float)y * (s0 / (float)y)));
+            else back = y - (int)std::nearbyint((double)((float)y * s1));
+            back = std::max(0, std::min(y, back));
+            const float* p = &P[(size_t)y * W * 4];
+            const float* bk = &buf[(size_t)back * W * 4];
+            float* o = &buf[(size_t)y * W * 4];
+            for (int i = 0; i < W * 4; ++i) o[i] = p[i] + (bk[i] - p[i]) * w;
+        }
+        if (q) for (float& v : buf) v = oclStore12(v);
     }
-    if (q) for (float& v : buf) v = oclUnormLevel(v, 0.5f);
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const float xn = (float)x / (float)W, yn = (float)y / (float)H;
@@ -207,7 +223,7 @@ static void radialBlurOpenCl(Ctx& c, const RbSetup& g, int W, int H)
             const float u = ((a2 / pi) / 2.f + 0.5f) * (float)W, vv = (r2 / two) * (float)H;
             float* o = &out[((size_t)y * W + x) * 4];
             oclLinear4(buf, W, H, u, vv, o);
-            if (q) for (int ch = 0; ch < 4; ++ch) o[ch] = oclWriteLevel(o[ch]);
+            if (q) for (int ch = 0; ch < 4; ++ch) o[ch] = oclStore12(o[ch]);
         }
     });
     c.out.ensure(W, H);
@@ -221,7 +237,7 @@ void radialBlur(Ctx& c)
     RbSetup g;
     radialBlurSetup(c, W, H, g);
     if (g.pass) { copyThrough(c); return; }
-    if (c.openCl && g.type != 2) { radialBlurOpenCl(c, g, W, H); return; }
+    if (c.openCl) { radialBlurOpenCl(c, g, W, H); return; }
     const bool q8 = g.q8;
     // the picture bottom row first; 8-bit values (exact levels) or floats in 0..255
     std::vector<float> src((size_t)W * H * 4), dst;
@@ -292,17 +308,24 @@ void radialBlur(Ctx& c)
 }
 
 // Defocus, as VEGAS's FilterLibrary.Defocus does it (builtins_defocus.cpp): the iris radius is Radius / 100 of the larger side of the frame (ApertureRadius, a fraction of the frame), the
-// bloom threshold Bloom threshold / 100 and the strength Bloom strength; Iris shape 0 is a circle, 1 .. 4 a polygon of 5 .. 8 sides; Orientation is a fraction of a turn (assumed, as for
-// Starburst); Disc curvature / 100 shapes the gradient of the iris (below 0 the rim is dimmer).
+// bloom threshold Bloom threshold / 100 and the strength Bloom strength; Iris shape 0 is a circle, 1 .. 4 a polygon of 5 .. 8 sides; Orientation is in degrees (as for
+// Starburst, which VEGAS stores the same way); Disc curvature / 100 shapes the gradient of the iris (below 0 the rim is dimmer).
 void defocus(Ctx& c)
 {
     // (the slider stops at 11.2; a hand-edited setting is held to the frame's own size, or the iris table would need gigabytes)
-    const double radius = std::min(100.0, std::max(0.0, c.d("Radius"))) / 100.0 * (double)std::max(c.out.w, c.out.h);
-    if (radius < 0.5) { copyThrough(c); return; }
-    const int shape = c.i("IrisShape");
-    const double turn = c.d("Orientation") * 2 * kPi;
-    const double curvature = clampd(c.d("DiscCurvature") / 100.0, -2.01, 1.0);
+    const double pct = std::min(100.0, std::max(0.0, c.d("Radius")));
+    const double radius = pct / 100.0 * (double)std::max(c.out.w, c.out.h);
+    const int shape = std::max(0, std::min(4, c.i("IrisShape")));
+    const double orient = c.d("Orientation");                                  // degrees
+    const double curvature = clampd(c.d("DiscCurvature") / 100.0, -1.0, 1.0);
     const double thresh = clampd(c.d("BloomThreshold") / 100.0, 0, 2), strength = std::max(0.0, c.d("BloomStrength"));
+    if (c.openCl && c.out.w > 0 && c.out.h > 0 && c.src.px.size() == c.out.px.size()) {
+        // VEGAS's OpenCL path (GPU acceleration on): the radius in pixels is max(width x pixel aspect, height) x Radius / 100 (pixel aspect 1 here)
+        defocusRenderGpu(c.src, c.out, radius, shape, orient, curvature, thresh, strength, c.b("ReduceFlicker"), c.host8);
+        return;
+    }
+    if (radius < 0.5) { copyThrough(c); return; }
+    const double turn = orient * kPi / 180.0;
     const int sides = shape == 0 ? 0 : shape + 4;
     defocusRender(c.src, c.out, radius, sides, turn, curvature, thresh, strength, c.b("ReduceFlicker"));
 }
@@ -320,6 +343,17 @@ double unsharpSigma(double radius, int W, int H, bool& none)
 void unsharpMask(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
+    if (c.openCl && W > 0 && H > 0 && c.src.px.size() == (size_t)W * H * 4) {
+        // VEGAS's OpenCL path (GPU acceleration on): the recursive Gaussian of vfxblurs.h with sigma from larger side x Radius + 1.5, then one kernel on every channel (alpha too):
+        // v = s + Amount (s - blur), taken where |v - blur| > Threshold (floats, no rounding of the amounts), else the source; 8-bit frames get the 12-bit store. Captured: 25 pictures,
+        // 99.5% of the values exact (the rest are ties of the threshold test at Radius 1); the older model was 0.16 levels off on average and 70 at worst.
+        std::vector<float> in, out;
+        oclRowsOf(c.src, in);
+        vfxblurs::unsharpMask(in, W, H, oclSetting(c.d("Radius"), 0, 1), (float)oclSetting(c.d("Amount"), -1e6, 1e6), (float)oclSetting(c.d("Threshold"), -1e6, 1e6),
+                              c.host8 ? oclStore12 : nullptr, out);
+        oclRowsTo(out, c.out, W, H);
+        return;
+    }
     const double amount = c.d("Amount");
     const int thr8 = (int)(c.d("Threshold") * 255.0 + 0.5);
     bool none = false;
@@ -816,6 +850,16 @@ static void chromaBlur8(Ctx& c)
 
 void chromaBlur(Ctx& c)
 {
+    if (c.openCl && c.out.w > 0 && c.out.h > 0 && c.src.px.size() == (size_t)c.out.w * c.out.h * 4) {
+        // VEGAS's OpenCL path (GPU acceleration on), from the decoded kernels: the picture becomes Y U V (V held in 0..1 by the 8-bit texture), U and V are blurred by the recursive Gaussian
+        // of vfxblurs.h (sigma from Pixels + 1.5, vertical and horizontal separately), Y and alpha stay, and the picture is turned back. Captured: 20 pictures, 99.999% of the values
+        // exact and none more than 2 levels off; the model below (fitted to the 8-bit pictures) was 0.36 levels off on average.
+        std::vector<float> in, out;
+        oclRowsOf(c.src, in);
+        vfxblurs::chromaBlur(in, c.out.w, c.out.h, oclSetting(c.d("HorizontalPixels"), 0, 10), oclSetting(c.d("VerticalPixels"), 0, 10), c.host8 ? oclStore12 : nullptr, out);
+        oclRowsTo(out, c.out, c.out.w, c.out.h);
+        return;
+    }
     if (c.levels) { chromaBlur8(c); return; }
     const int W = c.out.w, H = c.out.h;
     const float wr = 0.114f, wg = 0.587f, wb = 0.299f;

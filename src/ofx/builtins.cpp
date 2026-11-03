@@ -1,6 +1,7 @@
 // Built-in OpenFX plug-ins: the plumbing (entry points, describing, parameters, frames in and out), their presets, and VEGAS's rich text read
 // for Titles & Text. The effects are in builtins_gen.cpp (media generators) and builtins_filters.cpp (video effects).
 #include "builtins_impl.h"
+#include "builtins_more_internal.h"
 #include "vegas_ext.h"
 #include "../core/base.h"
 #include "../core/pixrows.h"
@@ -362,6 +363,8 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
         gEff->getPropertySet(effect, &eprops);
         c.fps = propDouble(eprops, kOfxImageEffectPropFrameRate);
         if (!(c.fps > 0 && c.fps < 10000)) c.fps = 0;
+        c.duration = propDouble(eprops, kOfxImageEffectInstancePropEffectDuration, 0, 0);
+        if (!(c.duration > 0 && c.duration < 1e9)) c.duration = 0;
     }
     OfxImageClipHandle outClip = nullptr;
     if (gEff->clipGetHandle(effect, kOfxImageEffectOutputClipName, &outClip, nullptr) != kOfxStatOK || !outClip) return kOfxStatFailed;
@@ -395,6 +398,8 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
         // On the GPU (Vulkan) when the transition has a kernel and both frames are of one kind covering the whole frame: the outgoing frame goes up
         // as is, the incoming one as floats with the plan (see vkeffects.cpp); else the CPU below
         const View fv = viewOf(fromImg), tv = viewOf(toImg);
+        c.openCl = vegasUsesOpenCl(d.id);          // (the transitions with ported kernels draw as VEGAS's OpenCL kernels do: float, cut to levels on the way into an 8-bit frame)
+        c.host8 = !(fv.ok() && fv.isFloat);
         if (d.gpu && fv.ok() && tv.ok() && ov.ok() && fv.isFloat == ov.isFloat && fv.bgra == ov.bgra && fv.x1 <= fx1 && fv.x2 >= fx1 + c.frameW && fv.y1 <= fy1 &&
             fv.y2 >= fy1 + c.frameH && ov.x1 == fx1 && ov.y1 == fy1 && fv.rowBytes > 0 && ov.rowBytes > 0) {
             // an 8-bit incoming frame that covers the frame goes up as it is (a quarter of the bytes of the floats, and no converting here); the card makes the floats
@@ -509,6 +514,11 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
             };
         }
     }
+    if (d.generator) {
+        // (Solid Color, Checkerboard, Test Pattern and Noise Texture draw as VEGAS's OpenCL kernels do when GPU acceleration is on: float, cut to levels on the way into an 8-bit frame)
+        c.openCl = vegasUsesOpenCl(d.id);
+        c.host8 = !ov.isFloat;
+    }
     if (d.generator && d.gpu && ov.ok() && ov.x1 == fx1 && ov.y1 == fy1 && ov.rowBytes > 0) {
         // a generator on the GPU (Vulkan): no input frame, the plan makes the picture; false when it cannot and the CPU below runs
         GpuFrame gf;
@@ -562,6 +572,21 @@ OfxStatus instanceChanged(const Def& d, OfxImageEffectHandle effect, PS inArgs)
     return kOfxStatOK;
 }
 
+// A new instance: the effect's own function, if it has one, may set up its hidden settings.
+OfxStatus instanceCreated(const Def& d, OfxImageEffectHandle effect)
+{
+    if (!d.created) return kOfxStatOK;
+    Change ch;
+    ch.effect = effect;
+    gEff->getParamSet(effect, &ch.ctx.params);
+    if (!ch.ctx.params) return kOfxStatOK;
+    try {
+        d.created(ch);
+    } catch (...) {
+    }
+    return kOfxStatOK;
+}
+
 OfxStatus dispatch(int index, const char* action, const void* handle, PS inArgs, PS /*outArgs*/)
 {
     const auto& all = defs();
@@ -576,7 +601,7 @@ OfxStatus dispatch(int index, const char* action, const void* handle, PS inArgs,
         if (d.destroy) d.destroy(handle);
         return kOfxStatOK;
     }
-    if (!std::strcmp(action, kOfxActionCreateInstance)) return kOfxStatOK;
+    if (!std::strcmp(action, kOfxActionCreateInstance)) return instanceCreated(d, effect);
     if (!std::strcmp(action, kOfxImageEffectActionRender)) return render(d, effect, inArgs);
     if (!std::strcmp(action, kOfxActionInstanceChanged)) return instanceChanged(d, effect, inArgs);
     return kOfxStatReplyDefault;
@@ -614,11 +639,11 @@ std::vector<OfxPlugin>& plugins()
 
 }  // namespace
 
-// Float results exactly half way between two levels go to the lower level, as VEGAS stores float-drawn effects into 8-bit frames.
+// Float results of the effects VEGAS draws in float (OpenCL), going into an 8-bit frame: the kernels' 12-bit store (more::oclStore12; exact halves go down). (The name is older.)
 void vegasTiesDown(Buf& b)
 {
     for (float& f : b.px)
-        if (std::isfinite(f) && f > 0.f && f < 1.f) f = (float)std::ceil((double)f * 255.0 - 0.5) * (1.f / 255.f);      // (exact in a double)
+        if (std::isfinite(f) && f > 0.f && f < 1.f) f = more::oclStore12(f);      // (the 12-bit step: levels already on a level stay)
 }
 
 // VEGAS's GPU acceleration (Preferences > Video, "GPU acceleration of video processing"; ofx::HostConfig::gpu). On, VEGAS renders every one of its own effects that has an OpenCL
@@ -636,7 +661,7 @@ static const char* const kOpenClEffects[] = {
     "cookiecutter", "crop", "crosseffect", "defocusvelvetmatter", "deportraitize", "dissolve", "filllightvelvetmatter", "flash", "gaussianblur", "glow",
     "hsladjust", "invert", "iris", "labadjust", "layerdimensionality", "lensflare", "levels", "linearblur", "linearwipe", "maskgenerator",
     "median", "minandmax", "mirror", "newsprint", "noisetexture", "pageloop", "pagepeel", "pageroll", "pictureinpicture", "pixelate",
-    "push", "quickblur", "radialblur", "radialpixelate", "saturationadjust", "sepia", "sharpen", "slide", "solidcolor", "spherize",
+    "push", "quickblur", "linearblur", "radialblur", "radialpixelate", "saturationadjust", "sepia", "sharpen", "slide", "solidcolor", "spherize",
     "spiral", "split", "squeeze", "starburstvelvetmatter", "starwipe", "swap", "testpattern", "timecode", "unsharpmask", "vignette",
     "whitebalance", "zoom"};
 
@@ -644,6 +669,7 @@ static const char* const kOpenClEffects[] = {
 bool vegasUsesOpenCl(const std::string& id)
 {
     if (!gVegasGpu) return false;
+    if (id == "de.magix:DenoisingNLM" || id == "de.magix:WarpFlowTransition") return true;          // (MagixCVFx.ofx's Denoise has OpenCL kernels too: vfxdenoise.h)
     const std::string pre = "com.vegascreativesoftware:";
     if (id.compare(0, pre.size(), pre) != 0) return false;
     const std::string rest = id.substr(pre.size());
@@ -658,8 +684,8 @@ bool vegasUsesOpenCl(const std::string& id)
 // decoded code); the remaining OpenCL effects draw better with the older fitted models, so this list is those, per effect, and shrinks as kernels are ported. With GPU acceleration off none of them is float.
 bool vegasDrawsFloat(const std::string& id)
 {
-    static const char* const ids[] = {"hsladjust", "labadjust", "sharpen", "glow", "colorbalance", "pixelate", "maskgenerator", "quickblur", "radialblur", "channelblend", "saturationadjust", "spherize", "mirror", "invert", "border", "newsprint", "levels"};
-    if (id == "de.magix:LensCorrection" || id == "com.vegascreativesoftware:blackbarfill") return true;
+    static const char* const ids[] = {"hsladjust", "labadjust", "sharpen", "colorbalance", "pixelate", "maskgenerator", "quickblur", "radialblur", "radialpixelate", "channelblend", "saturationadjust", "spherize", "mirror", "invert", "border", "newsprint", "levels", "convolutionkernel", "vignette", "crop", "pictureinpicture", "layerdimensionality", "blackandwhite", "sepia", "broadcastcolors", "chromakeyer", "brightnessandcontrast", "colorcorrector", "colorcorrectorsecondary"};
+    if (id == "de.magix:LensCorrection" || id == "de.magix:stereographicProjectionOCL" || id == "com.vegascreativesoftware:blackbarfill") return true;
     if (!gVegasGpu) return false;
     const std::string pre = "com.vegascreativesoftware:";
     if (id.compare(0, pre.size(), pre) != 0) return false;
@@ -1442,6 +1468,30 @@ bool rasterizeText(const TextRequest& req, TextMask& out)
     return true;
 }
 
+static std::mutex gFaceMutex;
+static TextFaceSource gFace;
+
+void setTextFaceSource(TextFaceSource fn)
+{
+    std::lock_guard<std::mutex> lk(gFaceMutex);
+    gFace = std::move(fn);
+}
+
+std::shared_ptr<TextFace> textFaceFromSource(const std::string& family, bool bold, bool italic)
+{
+    TextFaceSource fn;
+    {
+        std::lock_guard<std::mutex> lk(gFaceMutex);
+        fn = gFace;
+    }
+    if (!fn) return nullptr;
+    try {
+        return fn(family, bold, italic);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 // Appends a Unicode code point as UTF-8.
 static void putUtf8(std::string& s, uint32_t c)
 {
@@ -1469,8 +1519,14 @@ RichText parseRichText(const std::string& in)
         return r;
     }
     std::map<int, std::string> fonts;
-    struct State { bool skip = false; bool fontTable = false; int ucSkip = 1; };
+    struct State { bool skip = false; bool fontTable = false; int ucSkip = 1; double fs = 0; bool b = false, i = false; int f = -1; };
     std::vector<State> stack(1);
+    struct Fmt { double fs; bool b, i; int f; };
+    std::vector<Fmt> fmt;             // the character formatting of every byte of the text
+    auto sync = [&]() {
+        const State& cs = stack.back();
+        while (fmt.size() < r.text.size()) fmt.push_back(Fmt{cs.fs, cs.b, cs.i, cs.f});
+    };
     int defaultFont = 0, firstFont = -1;
     std::string fontName;
     int curFontNo = 0;
@@ -1479,6 +1535,7 @@ RichText parseRichText(const std::string& in)
     const size_t n = in.size();
     for (size_t i = start; i < n; ++i) {
         const char c = in[i];
+        sync();
         State& st = stack.back();
         if (c == '{') { stack.push_back(st); continue; }
         if (c == '}') {
@@ -1546,6 +1603,11 @@ RichText parseRichText(const std::string& in)
                 pendingSkip = st.ucSkip;
                 continue;
             }
+            if (word == "fs" && hasNum) st.fs = num / 2.0;
+            else if (word == "b") st.b = !hasNum || num != 0;
+            else if (word == "i") st.i = !hasNum || num != 0;
+            else if (word == "f" && hasNum) st.f = (int)num;
+            else if (word == "plain") { st.fs = 0; st.b = st.i = false; st.f = -1; }
             if (!sawText) {
                 if (word == "f" && hasNum && firstFont < 0) firstFont = (int)num;
                 else if (word == "fs" && hasNum && r.points <= 0) r.points = num / 2.0;
@@ -1553,6 +1615,9 @@ RichText parseRichText(const std::string& in)
                 else if (word == "i") r.italic = !hasNum || num != 0;
                 else if (word == "ul") r.underline = !hasNum || num != 0;
                 else if (word == "ulnone") r.underline = false;
+                else if (word == "ql") r.align = 0;
+                else if (word == "qc") r.align = 1;
+                else if (word == "qr") r.align = 2;
             }
             continue;
         }
@@ -1563,10 +1628,31 @@ RichText parseRichText(const std::string& in)
             continue;
         }
         if (st.skip) continue;
+        if ((c == ' ' || c == '\t') && !sawText) continue;      // (blanks before the text are the file's line breaks, not text; the settings after them still count)
         r.text += c;
         sawText = true;
     }
+    sync();
     while (!r.text.empty() && (r.text.back() == '\n' || r.text.back() == ' ')) r.text.pop_back();
+    fmt.resize(r.text.size());
+    {
+        auto clean = [&](int no) {
+            std::string f;
+            auto q = fonts.find(no < 0 ? (firstFont >= 0 ? firstFont : defaultFont) : no);
+            if (q != fonts.end()) f = q->second;
+            while (!f.empty() && f.front() == ' ') f.erase(f.begin());
+            while (!f.empty() && (f.back() == ' ' || f.back() == ';')) f.pop_back();
+            return f;
+        };
+        for (size_t k = 0; k < fmt.size();) {
+            size_t e = k + 1;
+            while (e < fmt.size() && fmt[e].fs == fmt[k].fs && fmt[e].b == fmt[k].b && fmt[e].i == fmt[k].i && fmt[e].f == fmt[k].f) ++e;
+            RichText::Span sp;
+            sp.start = k; sp.len = e - k; sp.points = fmt[k].fs; sp.bold = fmt[k].b; sp.italic = fmt[k].i; sp.font = clean(fmt[k].f);
+            r.spans.push_back(sp);
+            k = e;
+        }
+    }
     auto it = fonts.find(firstFont >= 0 ? firstFont : defaultFont);
     if (it != fonts.end()) {
         std::string f = it->second;

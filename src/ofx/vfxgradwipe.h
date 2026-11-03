@@ -518,14 +518,34 @@ inline void stretchMean(const std::vector<uint8_t>& src, int sw, int sh, double 
                 const int j = std::min(ry1, std::max(ry0, t.first + (int)k));
                 s += (double)t.w[k] * mid[(size_t)(j - ry0) * W + x];
             }
-            const int v = (int)(s + 0.5);
+            const int v = (int)std::ceil(s - 0.5);
             out[(size_t)y * W + x] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
         }
     }
 }
 
+// Whether a picture is rings about its middle pixel (green byte a function of the distance only, within one level): then 'prof' is its value along the middle row
+// outward, one entry per pixel of distance up to the picture's half width.
+inline bool radialProfile(const std::vector<uint8_t>& g, int pw, int ph, std::vector<double>& prof)
+{
+    if (pw != ph || pw < 16 || g.size() < (size_t)pw * ph) return false;
+    const int cx = pw / 2, cy = ph / 2, half = cx;
+    prof.assign((size_t)half + 1, 0.0);
+    for (int r = 0; r <= half; ++r) prof[(size_t)r] = g[(size_t)cy * pw + (size_t)(cx - r)];
+    for (int y = 0; y < ph; y += 7)
+        for (int x = 0; x < pw; x += 7) {
+            const double r = std::hypot((double)(x - cx), (double)(y - cy));
+            if (r > half) continue;
+            const int r0 = (int)std::floor(r);
+            const double f = r - r0;
+            const double v = prof[(size_t)r0] * (1.0 - f) + prof[(size_t)std::min(half, r0 + 1)] * f;
+            if (std::fabs(v - g[(size_t)y * pw + (size_t)x]) > 1.5) return false;
+        }
+    return true;
+}
+
 // The frame's mask (W x H bytes, row 0 at the top) for a gradient picture: contrast table, the visible part of the picture, the threshold, the stretch.
-inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::vector<uint8_t>& out)
+inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::vector<uint8_t>& out, double* visW = nullptr, double* visH = nullptr)
 {
     const int pw = pic.w, ph = pic.h;
     // the part of the picture that the frame shows (picture pixels)
@@ -534,7 +554,7 @@ inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::
         // the picture is cropped to the frame's shape about its middle; a square picture (the circles) is scaled so that the frame's corners lie on the picture's
         // corner circle, which leaves parts of the frame outside the picture (the gradient goes on there)
         double sc;
-        if (pw == ph) sc = std::hypot((double)W, (double)H) / std::hypot((double)pw, (double)ph);
+        if (pw == ph) sc = std::hypot((double)W + 1.0, (double)H + 1.0) / std::hypot((double)pw, (double)ph);
         else sc = std::max((double)W / pw, (double)H / ph);
         vw = W / sc;
         vh = H / sc;
@@ -543,6 +563,8 @@ inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::
         vx0 = (pw - vw) * 0.5;
         vy0 = (ph - vh) * 0.5;
     }
+    if (visW) *visW = vw;
+    if (visH) *visH = vh;
     std::vector<uint8_t> g = pic.g;
     if (s.autoContrast && !g.empty()) {
         int lo = 255, hi = 0;
@@ -587,6 +609,20 @@ inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::
             const uint8_t* in = canvas.data() + (size_t)((y < 0 ? ky : ph - 1 - ky) - cy0) * cw;
             for (int x = 0; x < cw; ++x) o[x] = ky > 0 ? ext(e[x], in[x], ky, y < 0 ? -y : y - (ph - 1)) : e[x];
         }
+        // a picture that is a set of rings about its middle (the circles) goes on in rings, not as a plane in the corners
+        std::vector<double> prof;
+        if (radialProfile(g, pw, ph, prof)) {
+            const int half = (int)prof.size() - 1;
+            const int kk = std::min(half, 64);
+            const double slope = kk > 0 ? (prof[(size_t)half] - prof[(size_t)(half - kk)]) / kk : 0.0;
+            for (int y = cy0; y < cy1; ++y)
+                for (int x = cx0; x < cx1; ++x) {
+                    if (x >= 0 && x < pw && y >= 0 && y < ph) continue;
+                    const double r = std::hypot((double)(x - pw / 2), (double)(y - ph / 2));
+                    const double v = r <= half ? prof[(size_t)std::floor(r + 0.5)] : prof[(size_t)half] + slope * (r - half);
+                    canvas[(size_t)(y - cy0) * cw + (size_t)(x - cx0)] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : (int)(v + 0.5)));
+                }
+        }
         cv = canvas.data();
         canvasW = cw;
         canvasH = ch;
@@ -598,6 +634,14 @@ inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::
     std::vector<uint8_t> mask((size_t)canvasW * canvasH);
     for (size_t i = 0; i < mask.size(); ++i) mask[i] = lut[cv[i]];
     stretchMean(mask, canvasW, canvasH, vx0 + ox, vy0 + oy, vw, vh, W, H, out);
+}
+
+// The Gradient blur setting (0 .. 1) as VEGAS's blur sigma in pixels of the part of the picture the frame shows (its larger side 'visMax'): visMax x 0.0011536774 x 846.8063024^(0.8 x blur).
+// (VEGAS blurs the mask before it is stretched to the frame; Reno blurs the stretched mask, so the sigma goes to frame pixels by the stretch.)
+inline double blurSigma(double blur, double visMax)
+{
+    if (!(blur > 9.999999974752427e-07)) return 0.0;
+    return visMax * 0.0011536774 * std::pow(846.8063024, 0.8 * blur);
 }
 
 // The index of the mask pixel a frame pixel takes: Mirror folds about the middle, then Flip turns over.
