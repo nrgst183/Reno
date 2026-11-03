@@ -63,6 +63,7 @@
 #include <thread>
 #include <tuple>
 #include <unordered_map>
+#include "uifont.h"
 
 namespace reno {
 namespace app {
@@ -668,6 +669,7 @@ struct TimelineWidget::Impl {
     std::string loadedPath;
     uint64_t paintCount = 0;
     QFont smallFont;
+    QFont labelFont;   // the label above the time display (VEGAS: 10 px)
     QFont rulerFont;
     QFont fontsFor;
     bool fontsMade = false;
@@ -1165,11 +1167,17 @@ struct TimelineWidget::Impl {
     static QString sizingText(QString text);
     void paintHeaders(QPainter& p, const QRect& clip);
     void paintRuler(QPainter& p, const QRect& clip);
+    int64_t rulerStepNow(double pps) const;
     void paintCursor(QPainter& p, const QRect& clip);
 
     QString timeFormatName() const
     {
         const ProjectSettings& s = app.project().settings;
+        const TimeDisplaySource src = timeDisplaySource();
+        if (src != TimeDisplaySource::Cursor && midiTimeDisplayLabel()) {
+            const std::string label = midiTimeDisplayLabel()(src);
+            if (!label.empty()) return QString::fromStdString(label);
+        }
         return QString::fromStdString(timeFormatTitle(s, s.rulerFormat));
     }
 

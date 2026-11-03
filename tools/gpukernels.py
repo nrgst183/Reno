@@ -47,15 +47,15 @@ def unpack_f32(S):
 @kernel("pack_u8", WH + [('bgra', 'u'), ('pad', 'u')], [(0, 'in0', 'v4', 'r'), (2, 'raw', 'u', 'w')])
 def pack_u8(S):
     # what store() does in builtins.cpp: alpha made sane and limited to 0..1, a colour never above alpha, rounded halves up
-    # (pad = 1: an effect VEGAS draws in float - vegasTiesDown() on the CPU: a value 0 < v < 1 first goes to ceil(v * 255 - 0.5) / 255, so exact halves round down)
+    # (pad = 1: an effect VEGAS draws in float - vegasTiesDown() on the CPU: a value 0 < v < 1 first goes through the OpenCL kernels' 12-bit store, more::oclStore12:
+    # (floor(v * 4096) * 255 + 2047) >> 12 as a level, so exact halves go down)
     with S.in_range(S.p.w, S.p.h):
         p0 = S.buf('in0').load(S.gy * S.p.w + S.gx)
         td = S.ne(S.p.pad, 0)
         def tie(v):
-            t = SF.from_f32(S, v) * 255.0 + 0.5            # (exact: 24 + 8 bits in a double)
-            fl = t.floor_i32()
-            k = fl - S.select(t > SF.from_i32(S, fl), S.i(0), S.i(1))
-            q = S.to_f(k) * S.f(1.0 / 255.0)
+            n = S.to_i(S.floor(S.min(S.max(v, 0.0), 1.0) * 4096.0))
+            lv = (n * 255 + 2047) >> 12
+            q = S.to_f(lv) / 255.0
             return S.select(td & (v > 0.0) & (v < 1.0), q, v)
         p = S.vec4(tie(p0.x), tie(p0.y), tie(p0.z), tie(p0.w))
         a3 = S.select(p.w >= 0.0, p.w, S.f(0.0))
@@ -1518,7 +1518,7 @@ def filmeffects(S):
     pixel_row(S, body, True)
 
 @kernel("bumpmap", WH + [('type', 'u'), ('chan', 'u'), ('sx', 'f'), ('sy', 'f'), ('sz', 'f'), ('ax', 'f'), ('ay', 'f'), ('az', 'f'), ('hs', 'f'), ('amb2', 'f'), ('i8', 'f'),
-                         ('kd', 'f'), ('ks', 'f'), ('power', 'f'), ('cut', 'f'), ('icut', 'f'), ('unit', 'f'), ('cx', 'f'), ('cy', 'f')], [PIC_IN, PIC_OUT])
+                         ('kd', 'f'), ('ks', 'f'), ('power', 'f'), ('cut', 'f'), ('icut', 'f'), ('unit', 'f'), ('cx', 'f'), ('cy', 'f'), ('q8', 'u')], [PIC_IN, PIC_OUT])
 def bumpmap(S):
     # bumpMapRender() in builtins_more_creative.cpp: a Prewitt gradient of the chosen channel is the normal; a Phong light on the colour
     P = S.p
@@ -1573,7 +1573,11 @@ def bumpmap(S):
         spec = fpow(S, S.max(rz, 0.01), P.power)
         k = S.max(0.0, P.i8 * (P.kd * ndl + P.ks * spec) * att + P.amb2)
         s = inb.load(y * W + x)
-        S.buf('out').store(y * W + x, S.vec4(s.x * k, s.y * k, s.z * k, s.w))
+        from gpukernels_blur import store12
+        r = S.vec4(s.x * k, s.y * k, s.z * k, s.w)
+        q8 = S.ne(P.q8, 0)
+        # (an 8-bit frame gets the kernel's write_imagef store, more::oclStore12, on all four channels)
+        S.buf('out').store(y * W + x, S.select(q8, S.vec4(store12(S, r.x), store12(S, r.y), store12(S, r.z), store12(S, r.w)), r))
 
 # ---------------------------------------------------------------------------------------------------------- colour tables (builtins_color.cpp)
 def lut_apply(S, tab, off, n, dmin, dmax, tetra, rgb):

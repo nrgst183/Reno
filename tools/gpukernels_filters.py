@@ -1185,8 +1185,9 @@ def cookie_cands(shape, i, j, rx, ry, which):
             add(1, 1, AND(rx > 1, ry > 1)); add(1, 0, rx > 1); add(0, 1, ry > 1)
     return L
 
-def _cookie_mask_kernel(shape):
-    @kernel("cookie_mask%d" % shape, [('w', 'u'), ('h', 'u'), ('repx', 'u'), ('repy', 'u'), ('cw', 'u'), ('ch', 'u'), ('nob', 'u'), ('pad', 'u'),
+def _cookie_mask_kernel(shape, kmode=False):
+    """kmode: the OpenCL kernel's circle (vfxcookie.h maskRow with kernel = true): the sure-inside box is cut from the inner radius, one rule for thresholds with or without a border"""
+    @kernel("cookie_mask%d%s" % (shape, "k" if kmode else ""), [('w', 'u'), ('h', 'u'), ('repx', 'u'), ('repy', 'u'), ('cw', 'u'), ('ch', 'u'), ('nob', 'u'), ('pad', 'u'),
                                        ('cx0', 'f'), ('cy0', 'f'), ('ratio', 'f'), ('tin', 'f'), ('tout', 'f'), ('rin', 'f'), ('hx', 'f'), ('hy', 'f'), ('ix0', 'f'), ('iy0', 'f'),
                                        ('ovw', 'f'), ('ovh', 'f'), ('boxhi', 'f'), ('boxlo', 'f'), ('ntout', 'f')], [PIC_IN, PIC_OUT])
     def cookie_mask(S):
@@ -1245,6 +1246,16 @@ def _cookie_mask_kernel(shape):
                 dy = dy * dy
                 s2 = dy + dx
                 res.set(S.select(P.tin > s2, S.f(0.0), S.select(s2 > P.tout, S.f(2.0), S.f(1.0))))
+            elif shape == 0 and kmode:
+                bh = P.tin * 0.7
+                inbox = (ax >= -bh) & (bh >= ax) & (ay >= -bh) & (bh > ay)
+                outer = (P.ntout > ax) | (ax > P.tout) | (P.ntout > ay) | (ay > P.tout)
+                with S.if_(inbox): res.set(S.f(0.0))
+                with S.else_():
+                    with S.if_(outer): res.set(S.f(2.0))
+                    with S.else_():
+                        d = tile_dist()
+                        res.set(S.select(P.tin > d, S.f(0.0), S.select(d > P.tout, S.f(2.0), S.f(1.0))))
             elif shape == 0:
                 inbox = (ax >= P.boxlo) & (P.boxhi >= ax) & (ay >= P.boxlo) & (P.boxhi > ay)
                 outer = (P.ntout > ax) | (ax > P.tout) | (P.ntout > ay) | (ay > P.tout)
@@ -1263,6 +1274,7 @@ def _cookie_mask_kernel(shape):
 
 for _s in range(14):
     _cookie_mask_kernel(_s)
+_cookie_mask_kernel(0, True)
 
 @kernel("cookie_apply", WH + [('nob', 'u'), ('cut', 'u'), ('lv', 'u'), ('c0', 'i'), ('c1', 'i'), ('c2', 'i'), ('c3', 'i'), ('br', 'f'), ('bg', 'f'), ('bb', 'f'), ('pad', 'u')],
         [PIC_IN, PIC_IN1, PIC_OUT])
@@ -3475,14 +3487,36 @@ def sc_gray(S):
         S.buf('out').store(i, S.vec4(l, l, l, S.f(255.0)))
 
 
-@kernel("sc_final", WH + [('oq', 'i'), ('ext', 'i'), ('vq', 'i'), ('flags', 'u')], [PIC_IN, PIC_IN1, PIC_OUT, TABLE])
-def sc_final(S):
+@kernel("sc_ext", WH, [PIC_IN, PIC_IN1, PIC_OUT])
+def sc_ext(S):
+    # Soft Contrast's vignette "Blur exterior": in0 the stretched picture, in1 the blurred source; out = (R + 256 e0, G + 256 e1, B + 256 e2, alpha) with e the blurred straight colour's levels
+    P = S.p
+    with S.in_range(P.w, P.h):
+        i = S.gy * P.w + S.gx
+        st = S.buf('in0').load(i)
+        sp = S.buf('in1').load(i)
+        a = sp.w
+        has = a > 1e-6
+        z = S.f(0.0)
+        def e(v):
+            q = S.select(has, fdiv(S, v, a), z)
+            return S.to_i(sf_byte(S, clamp01(S, q)))
+        def pk(d, ev): return S.to_f(S.to_i(d) + ev * 256)
+        S.buf('out').store(i, S.vec4(pk(st.x, e(sp.x)), pk(st.y, e(sp.y)), pk(st.z, e(sp.z)), st.w))
+
+
+def _sc_final(S, packed):
     # in0 the stretched picture, in1 the grey (blurred, not yet rounded when flags & 1); table: 0 trim table, 256 tint tables (3 x 256), 1024 the vignette mask (w x h)
+    # packed: in0 is sc_ext's picture, whose levels carry the exterior colour (ext 1)
     P = S.p
     with S.in_range(P.w, P.h):
         i = S.gy * P.w + S.gx
         st = S.buf('in0').load(i)
         gr = S.buf('in1').load(i)
+        if packed:
+            pk = [S.to_i(st.x), S.to_i(st.y), S.to_i(st.z)]
+            st = S.vec4(S.to_f(pk[0] & 255), S.to_f(pk[1] & 255), S.to_f(pk[2] & 255), st.w)
+            ek = [pk[0] >> 8, pk[1] >> 8, pk[2] >> 8]
         t = S.buf('table')
         a = st.w
         c255, zero = SF.const(S, 255.0), SF.const(S, 0.0)
@@ -3511,9 +3545,22 @@ def sc_final(S):
         k255 = S.f(1.0 / 255.0)
         o = []
         for k in range(3):
-            vk = S.select(hasx, (e * M + v[k] * (S.i(255) - M)) / 255, v[k])
+            ee = ek[k] if packed else e
+            vk = S.select(hasx, (ee * M + v[k] * (S.i(255) - M)) / 255, v[k])
             o.append(S.select(a <= 0.0, S.f(0.0), (S.to_f(vk) * k255) * oa))
         S.buf('out').store(i, S.vec4(o[0], o[1], o[2], S.select(a <= 0.0, S.f(0.0), oa)))
+
+
+_SC_PUSH = WH + [('oq', 'i'), ('ext', 'i'), ('vq', 'i'), ('flags', 'u')]
+_SC_BUFS = [PIC_IN, PIC_IN1, PIC_OUT, TABLE]
+
+@kernel("sc_final", _SC_PUSH, _SC_BUFS)
+def sc_final(S):
+    _sc_final(S, False)
+
+@kernel("sc_final_x", _SC_PUSH, _SC_BUFS)
+def sc_final_x(S):
+    _sc_final(S, True)
 
 
 # ---------------------------------------------------------------------------------------------------------- Glint (glintVelvet() in builtins_velvet.cpp)

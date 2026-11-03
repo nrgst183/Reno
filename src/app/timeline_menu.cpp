@@ -610,6 +610,7 @@ void TimelineWidget::Impl::timeDisplayMenu(QMenu& menu)
         const TimeDisplaySource src = s.src;
         QAction* a = toggleItem(menu, s.text, now == src, [this, src] {
             timeDisplaySource() = src;
+            QSettings().setValue("timeline/timeDisplaySource", (int)src);
             q->update(QRect(0, 0, headerW, kTopH));
         });
         if (a && src != TimeDisplaySource::Cursor && !midi) a->setEnabled(false);

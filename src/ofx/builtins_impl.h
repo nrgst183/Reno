@@ -304,6 +304,7 @@ inline void unpremul(const float* p, float& r, float& g, float& b, float& a)
 // Linear Blur's taps (builtins_filters.cpp): n taps each way, the step (sx, sy) in pixels, the weights from the centre outwards (summing to 1 over both sides)
 void linearBlurTaps(double len, double dx, double dy, int& n, double& sx, double& sy, std::vector<float>& wt);
 void pixelateAxis(int n, double p, double scale, bool fromEnd, std::vector<int>& starts);
+void pixelateCellsOclHost(int n, int cells, bool vertical, std::vector<std::pair<int, int>>& out);   // the OpenCL Pixelate cells (start, length), for the GPU plan
 // Chroma Blur's kernel (builtins_more_blur.cpp): a box (triangle = false) of radius r or a triangle of half width r, normalised, 2n+1 taps.
 std::vector<float> chromaBlurKernel(bool triangle, double r);
 // A value of 0 .. 2^31 rounded to the nearest whole number, halves up (what std::lround gives there, without a library call).

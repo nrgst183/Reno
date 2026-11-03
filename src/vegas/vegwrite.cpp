@@ -264,7 +264,12 @@ OutNode Writer::header()
         else if (s.deinterlace == "blend") setU32(d, blk + 0xf4, 1);
         else if (s.deinterlace == "interpolate") setU32(d, blk + 0xf4, 2);
     }
-    if (s.rulerFormat != was.rulerFormat || s.rulerStart != was.rulerStart) lost.push_back("ruler");
+    if (s.rulerFormat != was.rulerFormat) {
+        const int word = headerWordOfRulerFormat(s.rulerFormat);
+        if (word >= 0) setU32(d, 0x08, (uint32_t)word);
+        else lost.push_back("ruler format");
+    }
+    if (s.rulerStart != was.rulerStart) lost.push_back("ruler start time");
     if (s.output360 != was.output360) lost.push_back("360\xC2\xB0 output");
     if (s.masterDisplay != was.masterDisplay) lost.push_back("master display");
     if (s.viewTransform != was.viewTransform || s.acesVersion != was.acesVersion) lost.push_back("view transform");

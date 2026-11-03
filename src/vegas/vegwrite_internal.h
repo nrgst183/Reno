@@ -158,7 +158,7 @@ private:
     void eventAudioParts(const Event& e, const Chunk& base, const VegEventOrigin* o, const Event& was, const std::string& where, OutNode& out);
     void eventTake(const Event& e, const Track& t, const VegEventOrigin* o, const Chunk& base, OutNode& out, uint64_t vegId);
     void envelopes(OutNode& list, const Envelopes& envs, const std::vector<VegHidden>* hidden, bool track, TrackType type, const Event* ev,
-                   const Event* evRead, const std::string& where);
+                   const Event* evRead, const std::string& where, const FxChain* chain = nullptr);
     void videoFx(OutNode& list, const FxChain& chain, const std::vector<VegHidden>* hidden, const std::string& where, size_t* written);
     std::string ofxRecord(const FxSlot& s, const std::string& where);
     bool audioChain(const FxChain& chain, const Bytes* original, const char* tplName, std::string& out, size_t* written, const std::string& where);

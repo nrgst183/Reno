@@ -62,7 +62,7 @@ int main(int argc, char** argv)
         }
         closedir(d);
     }
-    int projects = 0, qualities = 0, deints = 0, disabled = 0, disabledVegas = 0;
+    int rulers = 0, rulerTime = 0, projects = 0, qualities = 0, deints = 0, disabled = 0, disabledVegas = 0;
     std::string firstVeg;
     for (const std::string& base : infos) {
         std::string name = base;
@@ -85,6 +85,13 @@ int main(int argc, char** argv)
             ++deints;
             check(p.settings.deinterlace == sb.get("deinterlace").asString(), base + ": deinterlace " + p.settings.deinterlace + " = VEGAS's " + sb.get("deinterlace").asString());
         }
+        if (sb.get("vegas").has("rulerFormat")) {
+            ++rulers;
+            const std::string v = sb.get("vegas").get("rulerFormat").asString();
+            const std::string want = v == "Time" ? "time" : v == "Smpte30" ? "smpte30" : "timecode";
+            check(p.settings.rulerFormat == want, base + ": ruler format " + p.settings.rulerFormat + " = VEGAS's " + v);
+            if (v == "Time") ++rulerTime;
+        }
         int mine = 0, theirs = 0;
         for (const Track& t : p.tracks) for (const Event& e : t.events) mine += (t.type == TrackType::Video && e.resample == "off") ? 1 : 0;
         for (const Json& tj : B.get("tracks").items())
@@ -95,6 +102,7 @@ int main(int argc, char** argv)
         for (const Track& t : p.tracks) for (const Event& e : t.events) if (t.type == TrackType::Video && !e.keepAspect) { check(false, base + ": no event is stretched on load"); break; }
     }
     if (!projects) { std::printf("SKIP: no VEGAS export (info/real_<project>.vegas.reno) of a project under %s\n", cmp.c_str()); return 0; }
+    check(rulers == projects && rulerTime > 0, strfmt("%d projects' ruler formats compared (%d with Time)", rulers, rulerTime));
     check(qualities == projects && deints == projects, strfmt("%d projects compared (%d qualities, %d deinterlace methods)", projects, qualities, deints));
     std::printf("resample off: importer %d, VEGAS %d (the export can be another version of the project)\n", disabled, disabledVegas);
     check(disabledVegas == 0 || disabled > 0, "an event VEGAS says has Disable Resample is read as resample off");
@@ -108,6 +116,7 @@ int main(int argc, char** argv)
         Project w = p;
         w.settings.renderQuality = w.settings.renderQuality == "best" ? "preview" : "best";
         w.settings.deinterlace = w.settings.deinterlace == "blend" ? "interpolate" : "blend";
+        w.settings.rulerFormat = p.settings.rulerFormat == "time" ? "smpte30" : "time";
         int toggled = 0;
         for (Track& t : w.tracks)
             if (t.type == TrackType::Video)
@@ -120,6 +129,7 @@ int main(int argc, char** argv)
         if (ok) {
             check(q.settings.renderQuality == w.settings.renderQuality, "changed render quality survives: " + q.settings.renderQuality);
             check(q.settings.deinterlace == w.settings.deinterlace, "changed deinterlace survives: " + q.settings.deinterlace);
+            check(q.settings.rulerFormat == w.settings.rulerFormat, "changed ruler format survives: " + q.settings.rulerFormat);
             std::vector<std::string> a, b;
             for (const Track& t : w.tracks) if (t.type == TrackType::Video) for (const Event& e : t.events) a.push_back(e.resample);
             for (const Track& t : q.tracks) if (t.type == TrackType::Video) for (const Event& e : t.events) b.push_back(e.resample);

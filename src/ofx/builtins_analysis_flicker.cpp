@@ -19,6 +19,7 @@
 #include "builtins_analysis_internal.h"
 #include "builtins_more_internal.h"
 #include "vfxflicker.h"
+#include "vkfft.h"
 #include "../core/base.h"
 #include <algorithm>
 #include <cmath>
@@ -117,15 +118,15 @@ inline bool inClip(const Ctx& c, double t)
 // settings give): the identity for a proper quadrangle. For corners that cannot be solved (their default is -1, -1 for all four) the plug-in's solver (not decoded) gives a map under
 // which, in VEGAS's pictures, only the left column of the frame finds a position in the frame (the bottom left pixel, for every row of it) and the rest has none: a
 // huge x factor with everything else 0 reproduces that (GUESS about the numbers, measured on one picture).
-void cornerMap(const Ctx& c, float m[9])
+void cornerMap(const Ctx& c, int W, int H, float m[9])
 {
     double px[4], py[4];
     const char* names[4] = {"CornerTL", "CornerTR", "CornerBR", "CornerBL"};
     for (int k = 0; k < 4; ++k) {
         double x = 0, y = 0;
         c.xy(names[k], x, y);
-        px[k] = x * c.src.w;
-        py[k] = y * c.src.h;
+        px[k] = x * W;
+        py[k] = y * H;
     }
     bool bad = false;
     for (int a = 0; a < 4 && !bad; ++a)
@@ -177,7 +178,7 @@ void temporalBlend(Ctx& c, int tw, float sens, int type, bool useMotion, bool sh
     int cen = before;
     if (useMotion && nf <= cen) cen = nf - 1;
     float map[9];
-    cornerMap(c, map);
+    cornerMap(c, W, H, map);
     // (the kernels' coordinates have row 0 at the bottom; Buf row 0 is the top)
     forRows(H, W, [&](int y) {
         float* o = c.out.at(0, y);
@@ -216,11 +217,9 @@ void temporalBlend(Ctx& c, int tw, float sens, int type, bool useMotion, bool sh
     (void)npx;
 }
 
-// Addition: the plug-in's flicker added (the Addition kernel).
-void additionRender(Ctx& c, int type, double sens, bool showMask)
+// The amount of flicker Addition adds at this frame (the kernel's argument).
+float additionAmount(Ctx& c, double sens)
 {
-    const int W = c.src.w, H = c.src.h;
-    const bool q = c.host8;
     const double fps = c.fps > 0 ? c.fps : 30.0;
     const double freq = c.d("Frequency");
     const double t = std::floor(c.time);
@@ -245,7 +244,15 @@ void additionRender(Ctx& c, int type, double sens, bool showMask)
         const long secs = (long)(t / fps);
         if (secs % ((long)std::max(0.0, nB) + 1) == 0) amount = std::max(0.0, nA) * 0.0001;
     }
-    const float amt = (float)amount;
+    return (float)amount;
+}
+
+// Addition: the plug-in's flicker added (the Addition kernel).
+void additionRender(Ctx& c, int type, double sens, bool showMask)
+{
+    const int W = c.src.w, H = c.src.h;
+    const bool q = c.host8;
+    const float amt = additionAmount(c, sens);
     forRows(H, W, [&](int y) {
         const float* s = c.src.at(0, y);
         float* o = c.out.at(0, y);
@@ -426,6 +433,65 @@ void flickerChanged(Change& ch)
 }
 
 }  // namespace
+
+// What the Vulkan plan needs of flickerRender (vkfft.h): the same decisions and numbers (the weights, the frames the window fetches, the motion map, the amount of Addition).
+bool flickerGpuSetup(Ctx& c, int W, int H, FlickerGpuSetup& o)
+{
+    o = FlickerGpuSetup();
+    if (W <= 0 || H <= 0) return false;
+    const int mode = c.i("Mode");
+    const int model = c.i("Model");
+    const int type = std::max(0, std::min(3, c.i("Type")));
+    const double sens = std::max(0.0, c.d("Sensitivity"));
+    const bool showMask = c.b("ShowMask");
+    const bool useMotion = c.b("UseMotion");
+    int tw = std::max(0, std::min(60, (int)c.d("TimeWindow")));
+    bool calculated = false;
+    if (model == 1 && c.instance) calculated = stateFor(c.instance)->calculated;
+    const bool identity = sens < 2.220446049250313e-16 || (mode < 1 && (tw == 0 || (model == 1 && !calculated)));
+    o.type = type;
+    o.showMask = showMask;
+    o.q8 = c.host8;
+    if (identity) { o.kind = 1; return true; }
+    if (mode >= 1) {
+        o.kind = 3;
+        o.amount = additionAmount(c, sens);
+        return true;
+    }
+    if (model != 0) return false;                       // (Reno's own histogram smoothing stays on the CPU)
+    const float sensF = (float)sens;
+    if (tw == 1) tw = 2;
+    int before = 0, after = 0;
+    std::vector<float> wts;
+    vfxfl::windowWeights(tw, sensF, before, after, wts);
+    int nf = 0, selfk = -1;
+    std::vector<float> fw;
+    for (int i = 0; i <= tw && nf < 6; ++i) {
+        const double t = c.time - before + i;
+        if (!inClip(c, t)) continue;
+        if (std::fabs(t - c.time) < 1e-9) {
+            selfk = nf;
+        } else {
+            Buf b;
+            if (!(c.fetch && c.fetch(t, b) && b.w == W && b.h == H)) continue;     // (the clip has no such frame: as if it were outside)
+            o.frames.insert(o.frames.end(), b.px.begin(), b.px.end());
+        }
+        fw.push_back(wts[(size_t)i]);
+        ++nf;
+    }
+    if (nf == 0) { o.kind = 1; return true; }
+    int cen = before;
+    if (useMotion && nf <= cen) cen = nf - 1;
+    o.kind = 2;
+    o.nf = nf;
+    o.selfk = selfk;
+    o.cen = cen;
+    o.before = before;
+    o.motion = useMotion;
+    cornerMap(c, W, H, o.map);
+    for (int k = 0; k < 6; ++k) o.fw[k] = k < nf ? fw[(size_t)k] : 0.f;
+    return true;
+}
 
 void addFlickerEffect(std::vector<Def>& out)
 {

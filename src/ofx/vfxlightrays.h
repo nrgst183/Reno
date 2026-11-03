@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <vector>
 
 namespace reno {
 namespace ofx {
@@ -212,6 +213,60 @@ inline void render(const Params& pr, int W, int H, int pitch, const uint8_t* src
                 d[1] = (uint8_t)(((uint32_t)s[1] * t + (uint32_t)v1 * r9) >> 16);
                 d[0] = (uint8_t)(((uint32_t)s[0] * t + (uint32_t)v0 * r9) >> 16);
                 d[3] = (uint8_t)(((uint32_t)s[3] * t + d3 * r9) >> 16);
+            }
+        }
+    }
+}
+
+// ---- the same constants and noise numbers for a card (vkfx2.cpp): render()'s settings worked out once, and the noise generator's number for every pixel in the order render() draws
+// them. The card draws the final-quality way only (highQuality), as the host does.
+struct Setup {
+    int lxc = 0, lyc = 0, sensQ = 0, strQ = 0, noiseQ = 0, blendQ = 0, tintR = 0, tintG = 0, tintB = 0;
+    double invRW = 0, invRH = 0, inner = 0, featherInv = 0;
+    bool bound = false, zone1 = false, zone2 = false, zone3 = false;
+    std::vector<uint32_t> seeds;        // per pixel (row * W + column), when noise is on
+};
+inline void prepare(const Params& pr, int W, int H, int32_t seed, Setup& o)
+{
+    const double scale = (double)std::min(W, H) / 300.0;
+    int lx = cvt32((double)W * pr.lightX), ly = cvt32((double)H * pr.lightY);
+    double st = std::pow(pr.strength, 1.0 / scale);
+    o.sensQ = (int)cvt64(std::pow(st, 0.25) * 65536.0);
+    const double rW = (double)W * pr.radiusX, rH = (double)H * pr.radiusY;
+    o.inner = 1.0 - pr.feather;
+    o.invRW = 1.0 / (1.0 > rW ? 1.0 : rW);
+    o.invRH = 1.0 / (1.0 > rH ? 1.0 : rH);
+    o.featherInv = (1.0 == o.inner) ? 0.0 : 1.0 / (1.0 - o.inner);
+    o.strQ = (int)cvt64((1.0 - pr.sensitivity) * 256.0);
+    o.noiseQ = (int)cvt64(pr.noise * 255.0);
+    o.blendQ = (int)cvt64(pr.blend * 65536.0);
+    o.tintR = (int)cvt64(pr.tintR * 256.0);
+    o.tintG = (int)cvt64(pr.tintG * 256.0);
+    o.tintB = (int)cvt64(pr.tintB * 256.0);
+    o.bound = pr.boundRadius;
+    o.lxc = std::max(0, std::min(W - 1, lx == W ? lx - 1 : lx));
+    o.lyc = std::max(0, std::min(H - 1, ly == H ? ly - 1 : ly));
+    o.zone1 = o.lxc != W - 1;
+    o.zone2 = o.lyc != H - 1;
+    o.zone3 = o.zone1 && o.zone2;
+    o.seeds.clear();
+    if (o.noiseQ == 0) return;
+    o.seeds.assign((size_t)W * H, 0u);
+    for (int zone = 0; zone < 4; ++zone) {
+        if ((zone == 1 || zone == 3) && o.lxc == W - 1) continue;
+        if ((zone == 2 || zone == 3) && o.lyc == H - 1) continue;
+        const int xdir = (zone & 1) ? 1 : -1, ydir = (zone & 2) ? 1 : -1;
+        const int cols = (zone & 1) ? W - o.lxc - 1 : o.lxc + 1, rows = (zone & 2) ? H - o.lyc - 1 : o.lyc + 1;
+        const int startX = (zone & 1) ? o.lxc + 1 : o.lxc, startY = (zone & 2) ? o.lyc + 1 : o.lyc;
+        int y = startY;
+        for (int row = 0; row < rows; ++row, y += ydir) {
+            int x = startX;
+            for (int col = 0; col < cols; ++col, x += xdir) {
+                uint32_t s = (uint32_t)seed * 0x6255u + 0x3619u;
+                s &= 0x8000ffffu;
+                if ((int32_t)s < 0) s = ((s - 1u) | 0xffff0000u) + 1u;
+                seed = (int32_t)s;
+                o.seeds[(size_t)y * W + x] = s;
             }
         }
     }

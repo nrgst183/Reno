@@ -10,6 +10,20 @@ namespace reno {
 namespace ofx {
 namespace builtin {
 
+// builtins_distort.cpp: Swirl and Pinch/Punch's set-up (vfxswirl.h Area) and Wave's settings, for the Vulkan plans in vkgeom.cpp
+struct SwirlAreaGpu { int cx = 0, cy = 0; double k13 = 0, syInv = 1, rx = 0, ry = 0, amount = 0; };
+void swirlAreaGpu(Ctx& c, int W, int H, SwirlAreaGpu& o);
+bool waveGpu(Ctx& c, int W, int H, double P[6]);
+void waveKernelConstants(const double P[6], int W, int H, double k[4]);      // ky, kx, amplitude across, amplitude down (the doubles of vfwave::render)
+// builtins_stereo.cpp: Stereoscopic 3D Adjust's inverse matrix (rows), the whole columns of the floating window and the part of the next one
+struct StereoGpu { double mi[9] = {0}; int full = 0; double part = 0; bool levels = false; };
+bool stereoGpu(Ctx& c, int W, int H, StereoGpu& o);
+// builtins_more_creative.cpp: Deform's table (the doubles of vfdeform::Geom), its box, flags, sampler (0 nearest, 1 bilinear, 2 footprint) and background
+struct DeformGpu { std::vector<float> tab; unsigned flags = 0, mode = 2; int bx0 = 0, by0 = 0, ow = 0, oh = 0; bool q8 = false; float bg[4] = {0, 0, 0, 0}; };
+bool deformGpu(Ctx& c, int W, int H, DeformGpu& o);
+// vkgeom.cpp: the plans of the geometry effects that are not in vkfilters.cpp, and their table entries (appended to filterGpuEntries())
+bool planStereo3dAdjust(Ctx& c, gpu::Plan& p);
+
 // builtins_filters.cpp: Sepia's integer settings
 struct SepiaSettings {
     int toGrey = 0;
@@ -18,6 +32,11 @@ struct SepiaSettings {
     bool useLut = false, greyMix = false;
 };
 void sepiaSettingsGpu(Ctx& c, SepiaSettings& o);
+
+// builtins_filters.cpp: the Chroma Keyer settings of VEGAS's OpenCL kernels (vfxcolour.h); k = the blur's coefficients (A..E, five floats each, as coefs[25])
+struct KeyerCoefs { float A[5], B[5], C[5], D[5], E[5]; };
+struct ChromaKeyerCl { vcol::KeyerSettings s; float kh[3] = {0, 0, 0}; float inv = 0; bool blur = false; float coefs[25] = {0}; KeyerCoefs k = KeyerCoefs(); };
+void chromaKeyerClSetup(Ctx& c, int W, int H, ChromaKeyerCl& o);
 
 // builtins_cookie.cpp: Cookie Cutter's set-up numbers (single precision, as VEGAS has them)
 struct CookieSetup {
@@ -90,6 +109,7 @@ struct SceneSetup { int stereo = 0; bool levels = false; std::vector<float> map;
 bool sceneRotationSetupGpu(Ctx& c, int W, int H, SceneSetup& o);
 bool stabilizationSceneGpu(Ctx& c, int W, int H, SceneSetup& o);   // builtins_vegasrest.cpp (360 Stabilization with no motion data and a setting changed)   // builtins_vegasrest.cpp (Scene Rotation)
 struct RaysSetup { struct Pass { std::vector<int> xi, yi; std::vector<float> xf, yf; }; int maskMode = 0; bool alpha = false, effectOnly = false, flicker = false, noise = false; std::vector<float> mask, tex, nxf, nyf; std::vector<int> nxi, nyi; float tlut[256]; uint8_t clut[256][4]; std::vector<Pass> passes; };
+namespace more { struct MedianOclGpu { int wh = 0, hh = 0, nfull = 0, nedge = 0; bool interval = false; float rank = 0.f; std::vector<float> tab; }; bool medianOclGpuSetup(Ctx& c, bool minMax, int W, int H, MedianOclGpu& g); }   // builtins_more_blur.cpp
 namespace more { bool raysSetup(Ctx& c, int W, int H, RaysSetup& o); bool softContrastSetup(Ctx& c, int W, int H, ScSetup& o); bool fillLightSetup(Ctx& c, int W, FillLightSetup& o); void radialBlurSetup(Ctx& c, int W, int H, RbSetup& g); bool radialBlurSteps(const RbSetup& g, int W, int H, std::vector<uint32_t>& rec, std::vector<uint32_t>& starts, int maxSteps); void rpixSetup(Ctx& c, int W, int H, RpixSetup& o); void ldSetup(Ctx& c, int W, int H, LdSetup& o); void bbf8Setup(Ctx& c, int W, int H, Bbf8Setup& o); void rank8GpuKernel(Ctx& c, int W, int H, std::vector<float>& q, int& nx, int& ny); bool rank8Applies(int W, int H); void bbfSetup(Ctx& c, int W, int H, BbfSetup& o); void pipSetup(Ctx& c, int W, int H, PipSetup& o); void vignetteSetup(Ctx& c, int W, int H, VignetteSetup& o); void labAdjustGpuTables(std::vector<float>& t); void labAdjust8GpuTable(std::vector<float>& t); void broadcastColors8GpuTable(Ctx& c, std::vector<float>& t); void whiteBalanceSettings(Ctx& c, std::vector<float>& tab, bool& shift, bool& hasData); }   // builtins_more_colour.cpp
 
 struct FilterGpuEntry {
@@ -98,11 +118,14 @@ struct FilterGpuEntry {
     double floatTol;
     std::vector<GpuCheckCase> cases;
 };
-const std::vector<FilterGpuEntry>& filterGpuEntries();
+const std::vector<FilterGpuEntry>& filterGpuEntries();        // (the table below and the blur and light effects of vkblur.cpp)
+const std::vector<FilterGpuEntry>& filterGpuEntriesBase();
+const std::vector<FilterGpuEntry>& geomGpuEntries();      // vkgeom.cpp (appended to filterGpuEntriesBase())
 void gpuAddDeriche(gpu::Plan& p, int from, int to, double sigmaX, double sigmaY, bool levels, bool rawOut = false);   // VEGAS's Deriche Gaussian (kernel "deriche")
 std::vector<float> gaussKernelTable(double sigma);      // builtins.cpp: the float taps of the generic Gaussian (index 0 = centre)
 bool stitchMapGpu(Ctx& c, int W, int H, std::vector<float>& rec, bool& levels, float& noGamma);      // builtins_vr.cpp
 void bezierMaskGpu(Ctx& c, int W, int H, int& mode, bool& invert, float& blend, std::string& key, std::vector<float>* total);      // builtins_mask_bezier.cpp
+bool gpuPlanMedianOcl(Ctx& c, gpu::Plan& p, bool minMax);      // OpenCL Median / Min and Max (the half-size picture's rank), for planMedian and planMinMax
 bool gpuPlanMinMax8(Ctx& c, gpu::Plan& p);      // 8-bit Min and Max (the rank filter), for planMinMax in vkeffects.cpp
 void gpuPushDouble(std::vector<float>& tab, double v);      // a double as two floats holding its bits (tables read by ld_sf in the kernels)
 

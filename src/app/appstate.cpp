@@ -2281,7 +2281,7 @@ std::string timecode(double seconds, double fps)
     const long long frames = (long long)std::floor(seconds * fps + 1e-6);
     const int nominal = std::max(1, (int)std::lround(fps));
     const long long f = frames % nominal, s = frames / nominal;
-    return strfmt("%02lld:%02lld:%02lld;%0*lld", s / 3600, (s / 60) % 60, s % 60, frameDigits(nominal), f);
+    return strfmt("%02lld:%02lld:%02lld;%02lld", s / 3600, (s / 60) % 60, s % 60, f);
 }
 
 }

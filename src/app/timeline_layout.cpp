@@ -709,13 +709,26 @@ void TimelineWidget::Impl::updateFonts()
     rulerLabelW = 0;
     titles.clear();
     ++headerGeneration;
+    // VEGAS draws the track header texts (volume, pan), marker tags and the like in the window font itself, the ruler labels
+    // 9 px (digit height 7 rows, digits 5 px apart) and the label above the time display 10 px (uifont.h). The font the
+    // user picked in Preferences (q->font()) is kept as the base: only its size is replaced when it is the default.
     smallFont = q->font();
-    if (smallFont.pixelSize() > 0) smallFont.setPixelSize(std::max(8, (int)std::lround(smallFont.pixelSize() * 0.9)));
-    else if (smallFont.pointSizeF() > 0) smallFont.setPointSizeF(std::max(6.5, smallFont.pointSizeF() * 0.9));
-    rulerFont = smallFont;
-    for (int px = 11; px >= 7; --px) {
-        rulerFont.setPixelSize(px);
-        if (QFontMetrics(rulerFont).horizontalAdvance(QString("00:00:00:00")) <= 52) break;
+    rulerFont = q->font();
+    labelFont = q->font();
+    if (timelineFontSet <= 0) {
+        smallFont = vegasUiFont(11);
+        rulerFont = vegasUiFont(9);
+        labelFont = vegasUiFont(10);
+    } else {
+        // a font chosen in Preferences: the old proportions
+        if (smallFont.pixelSize() > 0) smallFont.setPixelSize(std::max(8, (int)std::lround(smallFont.pixelSize() * 0.9)));
+        else if (smallFont.pointSizeF() > 0) smallFont.setPointSizeF(std::max(6.5, smallFont.pointSizeF() * 0.9));
+        rulerFont = smallFont;
+        for (int px = 11; px >= 7; --px) {
+            rulerFont.setPixelSize(px);
+            if (QFontMetrics(rulerFont).horizontalAdvance(QString("00:00:00:00")) <= 52) break;
+        }
+        labelFont = smallFont;
     }
     smallFm = QFontMetrics(smallFont);
 }
@@ -1096,7 +1109,7 @@ std::vector<double> TimelineWidget::Impl::snapTargets(const std::set<uint64_t>& 
 double TimelineWidget::Impl::gridStep(double minPx) const
 {
     const double f = fps();
-    if (opt.gridSpacing == "ruler" || opt.gridSpacing.empty()) return (double)rulerStep(pps, f, rulerLabelWidth()) / f;
+    if (opt.gridSpacing == "ruler" || opt.gridSpacing.empty()) return (double)rulerStepNow(pps) / f;
     const ProjectSettings& s = app.project().settings;
     const double beat = 60.0 / (s.tempo > 0 ? s.tempo : 120.0);
     const std::string& g = opt.gridSpacing;
@@ -1104,7 +1117,7 @@ double TimelineWidget::Impl::gridStep(double minPx) const
                 : g == "measures" ? beat * std::max(1, s.beatsPerMeasure) : g == "quarter" ? beat : g == "quarter3" ? beat * 2.0 / 3.0
                 : g == "8th" ? beat / 2.0 : g == "8th3" ? beat / 3.0 : g == "16th" ? beat / 4.0 : g == "16th3" ? beat / 6.0
                 : g == "32nd" ? beat / 8.0 : g == "32nd3" ? beat / 12.0 : 0.0;
-    if (!(step > 0)) return (double)rulerStep(pps, f, rulerLabelWidth()) / f;
+    if (!(step > 0)) return (double)rulerStepNow(pps) / f;
     const double base = step;
     for (int k = 2; step * pps < minPx && k < 1000000; k = k < 10 ? k + (k < 5 ? 3 : 5) : k * 10) step = base * k;
     return step;

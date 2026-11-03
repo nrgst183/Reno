@@ -733,17 +733,16 @@ bool colorCorrectorSecondary8(Ctx& c, RowFn& fn)
 
 // VEGAS's OpenCL kernels for this effect (vfxcolour.h ccsPx). Which kernel runs and its numbers are those of the 8-bit routine's flag word (ccsFlags): only gain / gamma / offset, saturation,
 // the tint and a luminance limit: the primary-like kernel; any other limit, a rotation or an alpha: the general kernel; Show Mask: the mask kernel; limits with nothing to apply: the picture as it is.
-static bool ccsOpenCl(Ctx& c)
+// (the kernel's settings from the effect's: shared with the Vulkan plan, vkeffects.cpp)
+void ccsSettingsImpl(Ctx& c, vcol::CcsKernel& k, bool& passThrough)
 {
-    const int W = c.out.w, H = c.out.h;
-    if (!(c.openCl && W > 0 && H > 0 && c.src.w == W && c.src.h == H)) return false;
     CcsSet p;
     ccsRead(c, p);
     for (double* v : {&p.ang, &p.amt, &p.rot, &p.sat, &p.gamma, &p.gain, &p.off, &p.alpha, &p.l0, &p.l1, &p.ls, &p.s0, &p.s1, &p.ss, &p.hc, &p.hw, &p.hs})
         if (!(*v == *v)) *v = 0.0;
     bool inv = false;
     const int fl = ccsFlags(p, inv);
-    vcol::CcsKernel k;
+    k = vcol::CcsKernel();
     k.inv = inv;
     k.satOn = (fl & 2) != 0;
     k.lumOn = (fl & 0x20) != 0;
@@ -754,7 +753,7 @@ static bool ccsOpenCl(Ctx& c)
     else if (1.0 > tg) tg = 1.0 - (1.0 - tg) * 0.8;
     const CcCurve cur = ccCurve(tg);
     k.g = (float)cur.g; k.A = (float)cur.A; k.B = (float)cur.B; k.P = (float)cur.P; k.C = (float)cur.C;
-    const bool passThrough = !p.show && (fl & 0x1f) == 0 && (fl & 0xd8) != 0;
+    passThrough = !p.show && (fl & 0x1f) == 0 && (fl & 0xd8) != 0;
     if (p.show) k.mode = 3;
     else if (!(fl & 0xd8)) k.mode = 1;
     else k.mode = 2;
@@ -775,6 +774,14 @@ static bool ccsOpenCl(Ctx& c)
         if (fl & 0x18) { const double r = p.rot * 3.141592653589793 / 180.0; cc = (float)std::cos(r); ss = (float)std::sin(r); }
         k.M[0] = k.satv * cc; k.M[1] = k.satv * -ss; k.M[2] = k.satv * ss; k.M[3] = k.satv * cc;
     }
+}
+static bool ccsOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (!(c.openCl && W > 0 && H > 0 && c.src.w == W && c.src.h == H)) return false;
+    vcol::CcsKernel k;
+    bool passThrough = false;
+    ccsSettingsImpl(c, k, passThrough);
     const bool q = c.host8;
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
@@ -856,12 +863,9 @@ bool colorCorrectorRows(Ctx& c, RowFn& fn)
     };
     return true;
 }
-void colorCorrector(Ctx& c)
+void ccSettingsImpl(Ctx& c, vcol::CcKernel& k)
 {
-    const int W = c.out.w, H = c.out.h;
-    if (c.openCl && W > 0 && H > 0 && c.src.w == W && c.src.h == H) {
-        // VEGAS's OpenCL kernel (vfxcolour.h ccKernelPx): the settings the 8-bit routine reads (ccBuild: the same flags and curve), float arithmetic, the 12-bit store into an 8-bit frame
-        vcol::CcKernel k;
+    {
         double P[10];
         const char* names[3] = {"Low", "Mid", "High"};
         for (int w = 0; w < 3; ++w) c.xy(names[w], P[2 * w], P[2 * w + 1]);
@@ -879,6 +883,15 @@ void colorCorrector(Ctx& c)
         else if (1.0 > tg) tg = 1.0 - (1.0 - tg) * 0.8;
         const CcCurve cur = ccCurve(tg);
         k.g = (float)cur.g; k.A = (float)cur.A; k.B = (float)cur.B; k.P = (float)cur.P; k.C = (float)cur.C;
+    }
+}
+void colorCorrector(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (c.openCl && W > 0 && H > 0 && c.src.w == W && c.src.h == H) {
+        // VEGAS's OpenCL kernel (vfxcolour.h ccKernelPx): the settings the 8-bit routine reads (ccBuild: the same flags and curve), float arithmetic, the 12-bit store into an 8-bit frame
+        vcol::CcKernel k;
+        ccSettingsImpl(c, k);
         const bool q = c.host8;
         forRows(H, W, [&](int y) {
             for (int x = 0; x < W; ++x) {
@@ -1331,6 +1344,10 @@ static void ccTableGpu(const CcTable& t, std::vector<float>& tab)
     if (!t.d.empty())
         for (size_t i = 0; i < 4096; ++i) tab[4096 + i] = (float)t.d[i];
 }
+
+// The settings of VEGAS's OpenCL kernels of Color Corrector and Color Corrector (Secondary), for the Vulkan plans (vkeffects.cpp)
+void ccsOpenClSettings(Ctx& c, vcol::CcsKernel& k, bool& passThrough) { ccsSettingsImpl(c, k, passThrough); }
+void ccOpenClSettings(Ctx& c, vcol::CcKernel& k) { ccSettingsImpl(c, k); }
 
 // Color Corrector, 8-bit, for the GPU: the CPU's tables (ccBuild) as floats and the flags.
 int colorCorrector8Gpu(Ctx& c, std::vector<float>& tab)

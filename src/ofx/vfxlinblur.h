@@ -40,26 +40,51 @@ inline Geometry geometry(int W, int H, double angle, double amount)
     return g;
 }
 
+// Everything the three kernels get from the host, worked out in one place (shared with the Vulkan plan, vkblur.cpp). state 0: the kernels run; 1: the frame passes through (only the final
+// write: amount 0); -1: the canvas is too small or too big to be drawn this way (the caller draws the CPU version).
+struct Setup {
+    int state = 1;
+    Geometry g;
+    float s1 = 0, c1 = 0, cx = 0, cy = 0, offx = 0, offy = 0;       // frame -> canvas
+    float s2 = 0, c2 = 0, cx2 = 0, cy2 = 0;                         // canvas -> frame
+    vfxgauss::Coefsf cf;
+};
+inline Setup prepare(int W, int H, double angle, double amount)
+{
+    Setup s;
+    if (!(amount > 0.0) || W < 1 || H < 1) { s.state = 1; return s; }
+    if (!(angle >= 0.0)) angle = 0.0;
+    if (angle > 360.0) angle = 360.0;
+    if (amount > 1.0) amount = 1.0;
+    s.g = geometry(W, H, angle, amount);
+    if (s.g.Wc < 2 || s.g.Hc < 2 || (double)s.g.Wc * s.g.Hc > 1.0e8) { s.state = -1; return s; }
+    const int Wc = s.g.Wc, Hc = s.g.Hc;
+    const float nth = -s.g.thf;
+    s.s1 = std::sin(nth); s.c1 = std::cos(nth);
+    s.cx = (float)Wc * 0.5f; s.cy = (float)Hc * 0.5f;
+    s.offx = (float)std::nearbyint((double)(Wc - W)) / 2.0f; s.offy = (float)std::nearbyint((double)(Hc - H)) / 2.0f;
+    s.s2 = std::sin(s.g.thf); s.c2 = std::cos(s.g.thf);
+    s.cx2 = (float)W * 0.5f; s.cy2 = (float)H * 0.5f;
+    s.cf = vfxgauss::toFloats(vfxgauss::build(s.g.sigma));
+    s.state = 0;
+    return s;
+}
+
 // mem: the frame, rows bottom first, RGBA floats 0..1. out: the same layout. samp(img, w, h, px, py, o): the kernels' bilinear read; store(v): the write of an 8-bit texture
 // (q off: floats are kept as they are, only the last write is clamped to 0..1). Returns false (out untouched) when the frame is left as it is (amount 0 or too small a canvas).
 template <class Samp, class Store>
 inline bool run(const std::vector<float>& mem, int W, int H, double angle, double amount, bool q, Samp samp, Store store, std::vector<float>& out)
 {
     out.assign((size_t)W * H * 4, 0.f);
-    if (!(amount > 0.0) || W < 1 || H < 1) {
+    const Setup su = prepare(W, H, angle, amount);
+    if (su.state == 1) {
         for (size_t i = 0; i < out.size(); ++i) out[i] = store(mem[i]);
         return true;
     }
-    if (!(angle >= 0.0)) angle = 0.0;
-    if (angle > 360.0) angle = 360.0;
-    if (amount > 1.0) amount = 1.0;
-    const Geometry g = geometry(W, H, angle, amount);
+    if (su.state < 0) return false;
+    const Geometry g = su.g;
     const int Wc = g.Wc, Hc = g.Hc;
-    if (Wc < 2 || Hc < 2 || (double)Wc * Hc > 1.0e8) return false;
-    const float nth = -g.thf;
-    const float s1 = std::sin(nth), c1 = std::cos(nth);
-    const float cx = (float)Wc * 0.5f, cy = (float)Hc * 0.5f;
-    const float offx = (float)std::nearbyint((double)(Wc - W)) / 2.0f, offy = (float)std::nearbyint((double)(Hc - H)) / 2.0f;
+    const float s1 = su.s1, c1 = su.c1, cx = su.cx, cy = su.cy, offx = su.offx, offy = su.offy;
     // pass 1: the frame turned into the canvas
     std::vector<float> I3((size_t)Wc * Hc * 4);
     for (int y = 0; y < Hc; ++y)
@@ -71,14 +96,13 @@ inline bool run(const std::vector<float>& mem, int W, int H, double angle, doubl
             if (q) for (int k = 0; k < 4; ++k) o[k] = store(o[k]);
         }
     // pass 2: the Gaussian along the canvas columns (causal and anti-causal into two pictures, then their sum)
-    const vfxgauss::Coefsf cf = vfxgauss::toFloats(vfxgauss::build(g.sigma));
+    const vfxgauss::Coefsf cf = su.cf;
     std::vector<float> A, B;
     vfxgauss::passColumns(cf, I3, Wc, Hc, A, B, [](float a, float b, float cc2) { return a * b + cc2; });
     if (q) { for (float& v : A) v = store(v); for (float& v : B) v = store(v); }
     for (size_t i = 0; i < A.size(); ++i) { const float s = A[i] + B[i]; I3[i] = q ? store(s) : s; }
     // pass 3: back out of the canvas
-    const float s2 = std::sin(g.thf), c2 = std::cos(g.thf);
-    const float cx2 = (float)W * 0.5f, cy2 = (float)H * 0.5f;
+    const float s2 = su.s2, c2 = su.c2, cx2 = su.cx2, cy2 = su.cy2;
     for (int y = 0; y < H; ++y)
         for (int x = 0; x < W; ++x) {
             const float u = ((float)x - cx2) * c2 + ((float)y - cy2) * s2 + cx2;

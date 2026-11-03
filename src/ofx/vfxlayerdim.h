@@ -252,24 +252,34 @@ inline LightArgs lightArgs(const Settings& s, int W, int H, float amt)
     a.v90 = s.shininess * 8.0f + 4.0f;
     return a;
 }
+// The Phong sum of the light kernel for a normalised normal n (four lanes).
+inline float phongValue(const LightArgs& a, const float* n)
+{
+    float dot = n[0] * a.L[0] + n[1] * a.L[1] + n[2] * a.L[2] + n[3] * a.L[3];
+    const float v101 = dot;
+    float r[3];
+    const float two = 2.0f * v101;
+    r[0] = n[0] * two - a.L[0]; r[1] = n[1] * two - a.L[1]; r[2] = n[2] * two - a.L[2];
+    float v103 = r[2];
+    v103 = std::fmax(v103, 0.01f);
+    v103 = std::pow(v103, a.v90);
+    const float x = a.v88 * v101, y = a.v89 * v103;
+    float v = a.v87 * (x + y);
+    v += a.v86;
+    return v;
+}
+// The light of a flat surface (normal 0, 0, 1): what the kernel subtracts to get the alpha.
+inline float flatLight(const LightArgs& a)
+{
+    const float n[4] = {0.f, 0.f, 1.f, 0.f};
+    return phongValue(a, n);
+}
 // kc4145ad212: Sobel of the alpha of 'height', Phong lighting, the colour of 'col' in HSL with its lightness x the light, alpha = |light - flat light|.
 inline void kLight(const Img& height, const Img& col, Img& out, int W, int H, const LightArgs& a)
 {
     out.assign((size_t)W * H * 4, 0.f);
     auto rd = [&](int x, int y) { return &height[((size_t)y * W + x) * 4]; };
-    auto phong = [&](const float* n /*normalised*/, float& v) {
-        float dot = n[0] * a.L[0] + n[1] * a.L[1] + n[2] * a.L[2] + n[3] * a.L[3];
-        const float v101 = dot;
-        float r[3];
-        const float two = 2.0f * v101;
-        r[0] = n[0] * two - a.L[0]; r[1] = n[1] * two - a.L[1]; r[2] = n[2] * two - a.L[2];
-        float v103 = r[2];
-        v103 = std::fmax(v103, 0.01f);
-        v103 = std::pow(v103, a.v90);
-        const float x = a.v88 * v101, y = a.v89 * v103;
-        v = a.v87 * (x + y);
-        v += a.v86;
-    };
+    auto phong = [&](const float* n /*normalised*/, float& v) { v = phongValue(a, n); };
     float flat;
     {
         const float n[4] = {0.f, 0.f, 1.f, 0.f};
@@ -280,7 +290,8 @@ inline void kLight(const Img& height, const Img& col, Img& out, int W, int H, co
         for (int x = 0; x < W; ++x) {
             float gx, gy;
             if (x == 0 || x == W - 1) {
-                const int xa = x == 0 ? x : x - 1, xb = x == 0 ? x + 1 : x;
+                // (a one pixel wide picture has no second column: both sides read column 0; for W >= 2 nothing changes)
+                const int xa = x == 0 ? x : x - 1, xb = std::min(x == 0 ? x + 1 : x, W - 1);
                 const float p0 = rd(xa, y0)[3], p1 = rd(xa, y)[3], p2 = rd(xa, y2)[3], p3 = rd(xb, y0)[3], p4 = rd(xb, y)[3], p5 = rd(xb, y2)[3];
                 gx = p0 - p3 + p1 - p4 + p2 - p5;
                 gy = p2 - p0 + p5 - p3 + p5 - p3;
@@ -311,7 +322,8 @@ inline void kLight(const Img& height, const Img& col, Img& out, int W, int H, co
 
 // The alpha plane blurred in place and put back as four lanes (kc4145ad25, ad26, ad24, ad218): colour = null: the blurred alpha in all lanes; else (colour, blurred alpha).
 // size: the host's amount; the sigma of an axis = sqrt(((pair x amount x larger side / 8) + 1.5)^2 / (2 ln 255)), the first pass down the columns with the sigma of y.
-inline void blurAlpha(Img& img, int W, int H, float amount, float pairX, float pairY, const float* colour)
+// The sigmas of the two axes for the host's amount (x first).
+inline void blurSigmas(int W, int H, float amount, float pairX, float pairY, float& sigx, float& sigy)
 {
     const float maxdim = (float)std::max(W, H);
     float s = maxdim * amount;
@@ -319,7 +331,13 @@ inline void blurAlpha(Img& img, int W, int H, float amount, float pairX, float p
     const float fx = pairX * s + 1.5f, fy = pairY * s + 1.5f;
     const float l = std::log(0.003921568859368563f);
     const float l2 = l + l;
-    const float sigx = std::sqrt(-((fx * fx) / l2)), sigy = std::sqrt(-((fy * fy) / l2));
+    sigx = std::sqrt(-((fx * fx) / l2));
+    sigy = std::sqrt(-((fy * fy) / l2));
+}
+inline void blurAlpha(Img& img, int W, int H, float amount, float pairX, float pairY, const float* colour)
+{
+    float sigx, sigy;
+    blurSigmas(W, H, amount, pairX, pairY, sigx, sigy);
     std::vector<float> plane((size_t)W * H);
     for (size_t i = 0; i < plane.size(); ++i) plane[i] = img[i * 4 + 3];
     vfxcookie::feather(plane, W, H, sigx, sigy);

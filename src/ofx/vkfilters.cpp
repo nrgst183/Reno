@@ -1,8 +1,12 @@
 // Vulkan plans of the built-in filters, bit-identical to their CPU code (see vkfilters.h). Kernels: tools/gpukernels.py.
 #include "vkfilters.h"
+#include "vfxlens.h"
 #include "builtins_cgblur.h"
 #include "vkshaders/push_layouts.h"
 #include "builtins_deriche.h"
+#include "vfxlevelsconv.h"
+#include "vfxhslwb.h"
+#include "vkblur.h"
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -30,7 +34,7 @@ D2 d2(double d)
 
 bool planSepia(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxcolour.h) runs on the CPU; the shaders draw the older model
+    if (c.openCl) return gpuOclSepia(c, p);
     SepiaSettings st;
     sepiaSettingsGpu(c, st);
     std::vector<float> lut(256);
@@ -52,16 +56,21 @@ void pushDouble(std::vector<float>& tab, double v)
     tab.push_back(f[1]);
 }
 
-// (Deform has no plan: its CPU effect is VEGAS's own code, a per-pixel footprint average along an approximate inverse, vfxdeform.h; the old kernel drew the picture-fitted model.)
+// (Deform is planned in vkgeom.cpp: VEGAS's own code, a per-pixel footprint average along an approximate inverse, vfxdeform.h)
 
 // Spherize (spherize() in builtins_filters2.cpp)
 bool planSpherize(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: vfxpolar.h)
     const int W = (int)p.w, H = (int)p.h;
     double pcx, pcy;
     c.xy("Center", pcx, pcy);
     const double amount = c.d("Amount"), sh = c.d("ScalingHorizontal"), sv = c.d("ScalingVertical");
+    if (c.openCl) {         // VEGAS's OpenCL kernel (vfxpolar.h): float, the card's bilinear read; Proportional makes the vertical scaling the horizontal one
+        const bool prop = c.b("ScalingProportional");
+        P::SpherizeOcl q = {p.w, p.h, c.host8 ? 1u : 0u, (float)pcx, (float)pcy, (float)amount, (float)sh, (float)(prop ? sh : sv)};
+        p.add("spherize_ocl", 0, 1, p.w, p.h).setPush(q);
+        return true;
+    }
     if (W <= 0 || H <= 0 || std::fabs((float)amount) <= 1e-6f || std::fabs((float)sh) <= 1e-6f || std::fabs((float)sv) <= 1e-6f) {
         P::CopyPx cp = {p.w, p.h};
         p.add("copy_px", 0, 1, p.w, p.h).setPush(cp);
@@ -78,7 +87,24 @@ bool planSpherize(Ctx& c, Plan& p)
 // Convolution Kernel (convolutionKernelRaw() in builtins_filters2.cpp, read the same way)
 bool planConvolutionKernel(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: vfxlevelsconv.h)
+    if (c.openCl) {         // VEGAS's OpenCL kernel (vfxlevelsconv.h convRows)
+        double w[9];
+        for (int r = 0; r < 3; ++r)
+            for (int col = 0; col < 3; ++col) {
+                char nm[32];
+                std::snprintf(nm, sizeof nm, "Row%dColumn%d", r + 1, col + 1);
+                w[r * 3 + col] = c.d(nm);
+            }
+        const vfxlc::ConvSetup s = vfxlc::convSetup(w, c.d("Rotation"), c.d("Scale"), c.d("Offset"), c.b("AutoNormalize"));
+        std::vector<float> t(s.A, s.A + 9);
+        t.push_back(s.offset);
+        t.push_back(s.alphaPlain ? 1.f : 0.f);
+        P::OConv pc = {p.w, p.h, c.host8 ? 1u : 0u, 0u};
+        Pass& ps = p.add("o_conv", 0, 1, p.w, p.h);
+        ps.table = p.addTable(std::move(t));
+        ps.setPush(pc);
+        return true;
+    }
     if (c.levels) {         // 8-bit: VEGAS's own byte routine (convolutionKernel8() in builtins_filters2.cpp)
         float A[9], off;
         bool alphaPlain;
@@ -126,7 +152,7 @@ bool planConvolutionKernel(Ctx& c, Plan& p)
 // LAB Adjust (builtins_more_colour.cpp)
 bool planLabAdjust(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxcolour.h) runs on the CPU; the shaders draw the older model
+    if (c.openCl) return gpuOclLabAdjust(c, p);
     if (c.levels) {         // 8-bit: VEGAS's byte routine (labAdjust8() in builtins_more_colour.cpp)
         std::vector<float> t8;
         more::labAdjust8GpuTable(t8);
@@ -150,7 +176,33 @@ bool planLabAdjust(Ctx& c, Plan& p)
 // White Balance (builtins_more_colour.cpp): bytes after the YUV shift, then (HasData) the histogram stretch, then the picture
 bool planWhiteBalance(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;     // VEGAS's OpenCL kernels (vfxhslwb.h) run on the CPU; the shaders draw the older model
+    if (c.openCl) {         // VEGAS's OpenCL kernels (vfxhslwb.h): the shift pass in float, with HasData the histogram of its 8-bit picture and the stretch pass
+        vhw::WbShift sh;
+        bool hasData, shifted;
+        more::whiteBalanceClSettings(c, sh, hasData, shifted);
+        const float pi = 3.1415926535897932384f;
+        const float m2 = sh.amount * sh.amount;
+        const float ang = sh.angle * pi / 180.0f;
+        const float du = std::cos(ang) * m2 * 0.5f, dv = std::sin(ang) * m2 * 0.5f;
+        const uint32_t q = c.host8 ? 1u : 0u;
+        const int mid = hasData ? p.addBuf(p.w, p.h, 4) : 1;
+        P::OWbShift ps = {p.w, p.h, q, 0u, sh.bright, du, dv};
+        p.add("o_wb_shift", 0, mid, p.w, p.h).setPush(ps);
+        if (!hasData) return true;
+        const int hist = p.addBuf(768, 1, 1), stats = p.addBuf(8, 1, 1);
+        P::OWbClear cl = {768u, 1u};
+        p.add("o_wb_clear", hist, hist, 768, 1).setPush(cl);
+        const uint32_t npix = (uint32_t)std::min((size_t)vhw::wbHistPixels(shifted), (size_t)p.w * p.h);
+        P::OWbHist ph = {p.w, p.h, npix, 0u};
+        p.add("o_wb_hist", mid, hist, p.w, p.h).setPush(ph);
+        P::OWbStats pst = {3u, 1u};
+        p.add("o_wb_stats", hist, stats, 3, 1).setPush(pst);
+        P::OWbFinal pf = {p.w, p.h, q, 0u};
+        Pass& fin = p.add("o_wb_final", mid, 1, p.w, p.h);
+        fin.in1 = stats;
+        fin.setPush(pf);
+        return true;
+    }
     std::vector<float> tab;
     bool shift, hasData;
     more::whiteBalanceSettings(c, tab, shift, hasData);
@@ -185,13 +237,61 @@ bool planWhiteBalance(Ctx& c, Plan& p)
     return true;
 }
 
+
+// Gradient Map (gradientMap() in builtins_more_light.cpp, vfxgradmap.h): 8-bit frames go through the 256-entry table of bytes and VEGAS's integer steps; float frames read the stops' spline at the grey
+// (its Bezier points per segment are worked out here, the curve is evaluated on the card in the software double)
+bool planGradientMap(Ctx& c, Plan& p)
+{
+    vfxgm::Gradient g;
+    more::gradientMapSettings(c, g);
+    const vfxgm::Curves cv = vfxgm::prepare(g);
+    if (g.stops.empty() || cv.empty()) {
+        P::CopyPx cp = {p.w, p.h};
+        p.add("copy_px", 0, 1, p.w, p.h).setPush(cp);
+        return true;
+    }
+    if (c.levels) {
+        uint8_t lut[256][4];
+        vfxgm::buildTable(cv, lut);
+        std::vector<float> tab((size_t)256 * 4);
+        for (int i = 0; i < 256; ++i)
+            for (int k = 0; k < 4; ++k) tab[(size_t)i * 4 + (size_t)k] = (float)lut[i][k];
+        P::OGm8 pc = {p.w, p.h, g.mode ? 1u : 0u, (int32_t)(g.amount * 16384.0)};
+        Pass& ps = p.add("o_gm8", 0, 1, p.w, p.h);
+        ps.table = p.addTable(std::move(tab));
+        ps.setPush(pc);
+        return true;
+    }
+    const int n = (int)cv.alpha.size();
+    std::vector<float> tab;
+    tab.push_back((float)n);
+    for (int k = 0; k < 9; ++k) pushDouble(tab, k < n ? cv.alpha[(size_t)k].d[0] : 0.0);
+    for (int i = 0; i <= 9; ++i) {
+        // (the segments beyond the last key are never used; their numbers are the last segment's)
+        const int seg = std::min(i, n);
+        vfxgm::Key m1, h1, h2, p0, cm1, ch1, ch2, cp0;
+        vfxgm::segmentPoints(cv.alpha, seg, m1, h1, h2, p0);
+        vfxgm::segmentPoints(cv.colour, seg, cm1, ch1, ch2, cp0);
+        pushDouble(tab, m1.d[0]);
+        pushDouble(tab, p0.d[0] - m1.d[0]);
+        const vfxgm::Key* ks[4][4] = {{&m1, &h1, &h2, &p0}, {&cm1, &ch1, &ch2, &cp0}, {&cm1, &ch1, &ch2, &cp0}, {&cm1, &ch1, &ch2, &cp0}};
+        for (int cmp = 0; cmp < 4; ++cmp)
+            for (int j = 0; j < 4; ++j) pushDouble(tab, ks[cmp][j]->d[cmp == 0 ? 1 : cmp]);
+    }
+    P::OGmf pc = {p.w, p.h, g.mode ? 1u : 0u, (float)g.amount};
+    Pass& ps = p.add("o_gmf", 0, 1, p.w, p.h);
+    ps.table = p.addTable(std::move(tab));
+    ps.setPush(pc);
+    return true;
+}
+
 // Linear Blur has no plan: it draws as VEGAS's OpenCL kernels do (vfxlinblur.h: a turn into a larger canvas, the float Gaussian down the columns with 8-bit pictures between the passes, a turn
 // back), which the CPU does bit for bit; the old plan (shear and Deriche of the CPU code) would draw differently.
 
 // Cookie Cutter (cookieCutter() in builtins_cookie.cpp): the mask by shape, VEGAS's Gaussian over it (feather), the mixed picture
 bool planCookieCutter(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;       // (VEGAS's OpenCL kernels are ported on the CPU only: cookieOpenCl in builtins_cookie.cpp)
+    if (c.openCl) return planCookieCutterOcl(c, p);     // (VEGAS's OpenCL kernels: cookieOpenCl in builtins_cookie.cpp, vkblur.cpp)
     if (p.w == 0 || p.h == 0) return false;
     CookieSetup su;
     cookieSetup(c, (int)p.w, (int)p.h, su);
@@ -217,7 +317,34 @@ bool planCookieCutter(Ctx& c, Plan& p)
 // Chroma Keyer (chromaKeyer() in builtins_filters.cpp): the mask bytes, VEGAS's float recursive blur along the rows then the columns (bottom row first), the keyed bytes
 bool planChromaKeyer(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;     // VEGAS's OpenCL kernel (vfxcolour.h) runs on the CPU; the shaders draw the older model
+    if (c.openCl) {         // VEGAS's OpenCL kernels (vfxcolour.h): the alpha plane, the recursive blur down the columns then along the rows, the keyed pixels
+        ChromaKeyerCl su;
+        chromaKeyerClSetup(c, (int)p.w, (int)p.h, su);
+        const uint32_t q = c.host8 ? 1u : 0u;
+        int m = p.addBuf(p.w, p.h, 1);
+        P::OKeyAlpha pa = {p.w, p.h, q, 0u, su.s.key[0], su.s.key[1], su.s.key[2], su.kh[0], su.kh[1], su.kh[2], su.s.low, su.s.high, su.inv};
+        p.add("o_key_alpha", 0, m, p.w, p.h).setPush(pa);
+        if (su.blur) {
+            for (int axis = 0; axis < 2; ++axis) {
+                const int fwd = p.addBuf(p.w, p.h, 1), bwd = p.addBuf(p.w, p.h, 1), sum = p.addBuf(p.w, p.h, 1);
+                P::OKeyLine pl = {p.w, p.h, (uint32_t)axis, q};
+                Pass& ps = p.add("o_key_line", m, fwd, axis ? p.h : p.w, 1);
+                ps.in1 = bwd;
+                ps.table = p.addTable(std::vector<float>(su.coefs, su.coefs + 25));
+                ps.setPush(pl);
+                P::OKeySum psum = {p.w, p.h};
+                Pass& pj = p.add("o_key_sum", fwd, sum, p.w, p.h);
+                pj.in1 = bwd;
+                pj.setPush(psum);
+                m = sum;
+            }
+        }
+        P::OKeyFinish pf = {p.w, p.h, q, 0u, (uint32_t)su.s.despill, su.blur ? 1u : 0u, su.s.showMask ? 1u : 0u, 0u};
+        Pass& pm = p.add("o_key_finish", 0, 1, p.w, p.h);
+        pm.in1 = m;
+        pm.setPush(pf);
+        return true;
+    }
     ChromaKeyerSetup su;
     chromaKeyerGpuSetup(c, (int)p.w, (int)p.h, su);
     std::vector<float> tab;
@@ -250,7 +377,7 @@ bool planChromaKeyer(Ctx& c, Plan& p)
 // Glow (glow() in builtins_filters.cpp): VEGAS's Deriche Gaussian (8-bit: floats of 0..255 out), then the mix of Color by the blur's mean
 bool planGlow(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // (VEGAS's OpenCL kernels are ported on the CPU only: vfxblurs.h)
+    if (c.openCl) return planGlowOcl(c, p);               // (VEGAS's OpenCL kernels: vfxblurs.h, vkblur.cpp)
     const double pct = clampd(c.d("GlowPercent"), 0, 1);
     const float intensity = (float)c.d("Intensity"), supp = (float)clampd(c.d("Suppression"), 0, 1);
     const Color col = c.color("Color");
@@ -270,7 +397,14 @@ bool planGlow(Ctx& c, Plan& p)
 // Vignette (vignette() in builtins_more_creative.cpp)
 bool planVignette(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // VEGAS's OpenCL kernel (vfxvignette.h) is ported on the CPU only; the shader below is the 8-bit CPU processor
+    if (c.openCl) {         // VEGAS's OpenCL kernel (vfxvignette.h): float, per pixel from the CPU's own setup numbers
+        float k[14];
+        bool inv;
+        more::vignetteOclGpu(c, (int)p.w, (int)p.h, k, inv);
+        P::VignetteOcl q = {p.w, p.h, inv ? 1u : 0u, c.host8 ? 1u : 0u, k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8], k[9], k[10], k[11], k[12]};
+        p.add("vignette_ocl", 0, 1, p.w, p.h).setPush(q);
+        return true;
+    }
     VignetteSetup su;
     more::vignetteSetup(c, (int)p.w, (int)p.h, su);
     P::Vignette pc = {p.w, p.h, su.invert ? 1u : 0u, c.levels ? 1u : 0u, su.cxp, su.cyp, su.cs, su.sn, su.g, su.expo, su.rInner, su.ramp, su.ca, su.cb[0], su.cb[1], su.cb[2],
@@ -282,7 +416,13 @@ bool planVignette(Ctx& c, Plan& p)
 // Picture in Picture (pictureInPicture() in builtins_more_creative.cpp)
 bool planPictureInPicture(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;      // VEGAS's OpenCL kernel (vfxpipcrop.h) runs on the CPU; the shaders below draw the older model
+    if (c.openCl) {         // VEGAS's OpenCL kernel (vfxpipcrop.h): the matrix from the CPU's own setup, the card's bilinear read in the shader
+        float M[9], op;
+        more::pipOpenClGpu(c, (int)p.w, (int)p.h, M, op);
+        P::PipOcl q = {p.w, p.h, c.host8 ? 1u : 0u, 0u, M[0], M[1], M[2], M[3], M[4], M[5], M[6], M[7], M[8], op};
+        p.add("pip_ocl", 0, 1, p.w, p.h).setPush(q);
+        return true;
+    }
     PipSetup su;
     more::pipSetup(c, (int)p.w, (int)p.h, su);
     if (c.levels) {          // VEGAS's fixed-point 8-bit renderer: the sampling matrix in floats
@@ -381,7 +521,7 @@ std::vector<float> bbfPosTable(double cx, double cy, double z, int W, int H)
 // and the source frame's alpha (a plane in all four lanes)
 bool planLayerDimensionality(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;     // the OpenCL kernels are ported on the CPU only (vfxlayerdim.h)
+    if (c.openCl) return planLayerDimensionalityOcl(c, p);      // (VEGAS's OpenCL kernels: vfxlayerdim.h, vkblur.cpp)
     LdSetup su;
     more::ldSetup(c, (int)p.w, (int)p.h, su);
     const bool doGlow = su.glowType != 0;
@@ -450,7 +590,7 @@ bool planLayerDimensionality(Ctx& c, Plan& p)
 // Radial Pixelate (radialPixelate() in builtins_more_creative.cpp): unroll about the centre, block means, roll up again
 bool planRadialPixelate(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // (VEGAS's OpenCL kernels are ported on the CPU only: vfxpolar.h)
+    if (c.openCl) return planRadialPixelateOcl(c, p);   // (VEGAS's OpenCL kernels: vfxpolar.h, vkblur.cpp)
     RpixSetup su;
     more::rpixSetup(c, (int)p.w, (int)p.h, su);
     if (su.pass) {
@@ -497,8 +637,33 @@ bool planAutoLooks(Ctx& c, Plan& p)
     return true;
 }
 
-// Tiny Planet: VEGAS's own (builtins_magix.cpp, "de.magix:stereographicProjectionOCL") has no plan: its kernel reads the source with a linear filter in float, which the CPU does
-// and the table gather this used to be could not. Reno's own (builtins_more.cpp) is below.
+// Lens Correction (lensCorrection() in builtins_mask.cpp, vfxlens.h): the single-precision map and the card's bilinear read
+bool planLensCorrection(Ctx& c, Plan& p)
+{
+    const int W = (int)p.w, H = (int)p.h;
+    double pcx = 0.5, pcy = 0.5;
+    c.xy("DistCenter", pcx, pcy);
+    if (c.i("QueryResult") != 0 || c.b("ShowMesh")) {
+        p.add("copy_px", 0, 1, p.w, p.h).setPush(P::CopyPx{p.w, p.h});
+        return true;
+    }
+    const double p1 = clampd(c.d("RadialDistParam1"), -2, 2), p2 = clampd(c.d("RadialDistParam2"), -2, 2), p3 = clampd(c.d("RadialDistParam3"), -2, 2);
+    const double scale = clampd(c.d("Scale"), 0.05, 20);
+    const LensMapSetup su = lensMapMake(W, H, pcx, pcy, p1, p2, p3, scale);
+    P::LenscorrOcl q = {p.w, p.h, c.host8 ? 1u : 0u, 0u, su.cxp, su.cyp, su.s, su.k1, su.k2, su.k3, su.d, su.invScale};
+    p.add("lenscorr_ocl", 0, 1, p.w, p.h).setPush(q);
+    return true;
+}
+
+// Tiny Planet, VEGAS's own (builtins_magix.cpp, "de.magix:stereographicProjectionOCL", vfxtinyplanet.h): the kernel's float maths per pixel, then the card's linear read
+bool planTinyPlanetVegas(Ctx& c, Plan& p)
+{
+    P::TinyplanetOcl q = {p.w, p.h, c.host8 ? 1u : 0u, (float)std::fmod(c.d("Latitude"), 360.0), (float)std::fmod(c.d("Longitude"), 360.0), (float)c.d("Z")};
+    p.add("tinyplanet_ocl", 0, 1, p.w, p.h).setPush(q);
+    return true;
+}
+
+// Tiny Planet (Reno's own, builtins_more.cpp):
 bool planTinyPlanet(Ctx& c, Plan& p)
 {
     const double tilt = (c.d("Latitude") - 90.0) * kPi / 180.0, lon = c.d("Longitude") * kPi / 180.0, zoom = std::max(0.05, c.d("Z"));
@@ -516,11 +681,11 @@ bool planRadialBlur(Ctx& c, Plan& p)
 {
     RbSetup g;
     more::radialBlurSetup(c, (int)p.w, (int)p.h, g);
-    if (!g.pass && c.openCl) return false;       // (VEGAS's OpenCL kernels are ported on the CPU only: radialBlurOpenCl)
     if (g.pass) {
         p.add("copy_px", 0, 1, p.w, p.h).setPush(P::CopyPx{p.w, p.h});
         return true;
     }
+    if (c.openCl) return planRadialBlurOcl(c, p, g);       // (VEGAS's OpenCL kernels: radialBlurOpenCl, vkblur.cpp)
     static std::mutex m;
     static std::vector<double> key;
     static bool okSteps = false;
@@ -563,7 +728,7 @@ bool planHistogram(Ctx& c, Plan& p)
 {
     const int W = (int)p.w, H = (int)p.h;
     const int type = c.i("Type");
-    if (type > 4 || c.b("LogarithmicScale")) return false;
+    const bool logScale = c.b("LogarithmicScale");
     if (W < 8 || H < 8) {
         p.add("copy_px", 0, 1, p.w, p.h).setPush(P::CopyPx{p.w, p.h});
         return true;
@@ -573,7 +738,12 @@ bool planHistogram(Ctx& c, Plan& p)
     p.add("wb_clear", hist, hist, 128, 1).setPush(P::WbClear{128u, 1u});
     const D2 HD = d2(hdr);
     P::HistCount pc = {p.w, p.h, (uint32_t)type, 0u, HD.h, HD.l};
-    p.add("hist_count", 0, hist, p.w, p.h).setPush(pc);
+    if (type > 4 || type < 0) {         // (Lab's L, a and b: the CPU's own float arithmetic, any other number is Lab's b)
+        P::HistCountlab pl = {p.w, p.h, (uint32_t)type, 0u, HD.h, HD.l};
+        p.add("hist_countlab", 0, hist, p.w, p.h).setPush(pl);
+    } else {
+        p.add("hist_count", 0, hist, p.w, p.h).setPush(pc);
+    }
     double cxn, cyn;
     c.xy("Center", cxn, cyn);
     const int bw = std::max(16, W / 3), bh = std::max(12, H / 4);
@@ -583,7 +753,7 @@ bool planHistogram(Ctx& c, Plan& p)
     const float cg = type == 2 ? 1.f : (type == 1 ? 0.3f : (type == 3 ? 0.3f : 1.f));
     const float cb = type == 3 ? 1.f : (type == 1 ? 0.3f : (type == 2 ? 0.3f : 1.f));
     P::HistDraw pd = {p.w, p.h, x0, y0, bw, bh, back, cr, cg, cb};
-    Pass& ps = p.add("hist_draw", 0, 1, p.w, p.h);
+    Pass& ps = p.add(logScale ? "hist_drawlog" : "hist_draw", 0, 1, p.w, p.h);
     ps.in1 = hist;
     ps.setPush(pd);
     return true;
@@ -657,7 +827,7 @@ bool planDualFishEye(Ctx& c, Plan& p)
 // Fill Light (fillLightVelvet() in builtins_velvet.cpp): the luma's colour as bytes, CoreGraphics' float Gaussian blur, the Add
 bool planFillLight(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // (VEGAS's OpenCL kernels are ported on the CPU only: fillLightOpenCl, vfxfilllight.h)
+    if (c.openCl) return planFillLightOcl(c, p);        // (VEGAS's OpenCL kernels: vfxfilllight.h, vkblur.cpp)
     FillLightSetup su;
     more::fillLightSetup(c, (int)p.w, su);
     if (su.copy) {
@@ -693,12 +863,11 @@ bool planFillLight(Ctx& c, Plan& p)
     return true;
 }
 
-// Soft Contrast (softContrast() in builtins_velvet.cpp); the vignette's blurred exterior (Exterior effect: Blur) stays on the CPU
+// Soft Contrast (softContrast() in builtins_velvet.cpp); the vignette's blurred exterior (Exterior effect: Blur) is the generic Gaussian's float passes (firGaussPasses) of the source
 bool planSoftContrast(Ctx& c, Plan& p)
 {
     ScSetup su;
     more::softContrastSetup(c, (int)p.w, (int)p.h, su);
-    if (su.ext == 1) return false;
     std::vector<float> st(256);
     for (int i = 0; i < 256; ++i) st[(size_t)i] = (float)su.stl[i];
     const int a = p.addBuf(p.w, p.h, 4), g = p.addBuf(p.w, p.h, 4);
@@ -721,20 +890,40 @@ bool planSoftContrast(Ctx& c, Plan& p)
             for (int k = 0; k < 3; ++k) tab[256 + (size_t)k * 256 + i] = (float)su.tl3[i][k];
     if (su.ext != 0) std::copy(su.vmask.begin(), su.vmask.end(), tab.begin() + 1024);
     const uint32_t flags = (su.blur ? 1u : 0u) | (su.trim ? 2u : 0u) | (su.tint ? 4u : 0u) | (su.vscale ? 8u : 0u);
-    Pass& ps = p.add("sc_final", a, 1, p.w, p.h);
+    int fin = a;
+    if (su.ext == 1) {
+        const double bx = c.d("VignetteHorizontalBlur") * 0.05 * (double)p.w, by = c.d("VignetteVerticalBlur") * 0.05 * (double)p.h;
+        const int soft = firGaussPasses(p, 0, p.w, p.h, bx, by);
+        fin = p.addBuf(p.w, p.h, 4);
+        Pass& pe = p.add("sc_ext", a, fin, p.w, p.h);
+        pe.in1 = soft;
+        pe.setPush(P::ScExt{p.w, p.h});
+    }
+    Pass& ps = p.add(su.ext == 1 ? "sc_final_x" : "sc_final", fin, 1, p.w, p.h);
     ps.in1 = g;
     ps.table = p.addTable(tab);
-    ps.setPush(P::ScFinal{p.w, p.h, su.oq, su.ext, su.vq, flags});
+    if (su.ext == 1) ps.setPush(P::ScFinalX{p.w, p.h, su.oq, su.ext, su.vq, flags});
+    else ps.setPush(P::ScFinal{p.w, p.h, su.oq, su.ext, su.vq, flags});
+    return true;
+}
+
+// the Mask only mode of Rays and Glint (maskOnly() in builtins_velvet.cpp): the mask white over opaque black
+static bool planMaskOnly(Plan& p, std::vector<float> mask)
+{
+    if (mask.size() != (size_t)p.w * (size_t)p.h) return false;
+    Pass& ps = p.add("mask_only", 0, 1, p.w, p.h);
+    ps.table = p.addTable(std::move(mask));
+    ps.setPush(P::MaskOnly{p.w, p.h});
     return true;
 }
 
 // Glint (glintVelvet() in builtins_velvet.cpp): the streak planes are byte planes in one stack; streak i shears every plane, blurs plane i across the shear (the float Gaussian)
-// and shears them all back; Screen of the planes in order. The mask-only mode stays on the CPU.
+// and shears them all back; Screen of the planes in order. The Mask only mode is its own small pass.
 bool planGlint(Ctx& c, Plan& p)
 {
     const int W = (int)p.w, H = (int)p.h;
     GlintSetup su;
-    if (!more::glintSetup(c, W, H, su)) return false;
+    if (!more::glintSetup(c, W, H, su)) return c.i("MaskMaskMode") == 3 && planMaskOnly(p, su.mask);
     const size_t limit = (size_t)64 * 1024 * 1024;
     size_t maxShear = (size_t)W * H;
     for (const DbGeom& d : su.streaks)
@@ -824,12 +1013,12 @@ bool planGlint(Ctx& c, Plan& p)
     return true;
 }
 
-// Rays (raysVelvet() in builtins_velvet.cpp): the byte luma (or alpha) through the threshold table, the noise, the blur passes, Screen through the colour table. Mask-only mode stays on the CPU.
+// Rays (raysVelvet() in builtins_velvet.cpp): the byte luma (or alpha) through the threshold table, the noise, the blur passes, Screen through the colour table. The Mask only mode is its own small pass.
 bool planRays(Ctx& c, Plan& p)
 {
     const int W = (int)p.w, H = (int)p.h;
     RaysSetup su;
-    if (!more::raysSetup(c, W, H, su)) return false;
+    if (!more::raysSetup(c, W, H, su)) return c.i("MaskMaskMode") == 3 && planMaskOnly(p, su.mask);
     std::vector<float> mtab = su.mask;
     if (mtab.empty()) mtab.push_back(0.f);
     const uint32_t mode = (uint32_t)su.maskMode;
@@ -949,7 +1138,7 @@ bool planMotionTracker(Ctx& c, Plan& p)
 // Newsprint (vegasNewsprint() in builtins_newsprint.cpp)
 bool planNewsprint(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;       // (VEGAS's OpenCL kernels are ported on the CPU only: newsprintOpenCl in builtins_newsprint.cpp)
+    if (c.openCl) return planNewsprintOcl(c, p);      // (VEGAS's OpenCL kernels: newsprintOpenCl in builtins_newsprint.cpp, vkblur.cpp)
     NewsGeo g;
     newsprintGeometry(c, (int)p.w, (int)p.h, g);
     if (!g.ok && c.i("Type") == 1 && g.dot <= 0.0) return false;      // (Monochrome without dots: the picture's grey, on the CPU)
@@ -1036,7 +1225,7 @@ bool planRank8(Ctx& c, Plan& p, float rank)
 // Median (neighbourhood() in builtins_more_blur.cpp, vegasMedian() in builtins_vegasmedian.cpp)
 bool planMedian(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: medianOpenCl)
+    if (c.openCl) return gpuPlanMedianOcl(c, p, false);
     const int W = (int)p.w, H = (int)p.h;
     const double hr = clampd(c.d("HorizontalRange"), 0, 1), vr = clampd(c.d("VerticalRange"), 0, 1);
     const float big = (float)std::max(W, H);
@@ -1058,6 +1247,23 @@ bool planMedian(Ctx& c, Plan& p)
 }
 
 }  // namespace
+
+// Median and Min and Max as VEGAS's OpenCL kernels draw them (medianOpenCl in builtins_more_blur.cpp): the half-size picture's levels, the rank of every row and channel, the bicubic read back to full size
+bool gpuPlanMedianOcl(Ctx& c, Plan& p, bool minMax)
+{
+    more::MedianOclGpu g;
+    if (!more::medianOclGpuSetup(c, minMax, (int)p.w, (int)p.h, g)) return false;
+    const uint32_t wh = (uint32_t)g.wh, hh = (uint32_t)g.hh;
+    const int lev = p.addBuf(wh, hh, 4);
+    const int rk = p.addBuf(wh, hh, 4);
+    p.add("o_med_levels", 0, lev, wh, hh).setPush(P::OMedLevels{wh, hh, p.w, p.h});
+    P::OMedRank pc = {hh, 4u, wh, (uint32_t)g.nfull, (uint32_t)g.nedge, g.interval ? 1u : 0u, g.rank, 0u};
+    Pass& ps = p.add("o_med_rank", lev, rk, hh, 4);
+    ps.table = p.addTable(std::move(g.tab));
+    ps.setPush(pc);
+    p.add("o_med_up", rk, 1, p.w, p.h).setPush(P::OMedUp{p.w, p.h, wh, hh});
+    return true;
+}
 
 bool gpuPlanMinMax8(Ctx& c, Plan& p)
 {
@@ -1093,13 +1299,17 @@ void gpuAddDeriche(Plan& p, int from, int to, double sigmaX, double sigmaY, bool
     }
 }
 
-const std::vector<FilterGpuEntry>& filterGpuEntries()
+const std::vector<FilterGpuEntry>& filterGpuEntriesBase()
 {
-    static const std::vector<FilterGpuEntry> v = {
+    static const std::vector<FilterGpuEntry> v0 = {
         {"median", planMedian, 0.0,
          {GpuCheckCase("small", PM{{"HorizontalRange", {0.2}}, {"VerticalRange", {0.2}}}), GpuCheckCase("offset", PM{{"HorizontalRange", {0.3}}, {"VerticalRange", {0.1}}, {"Offset", {0.8}}}),
           GpuCheckCase("round", PM{{"HorizontalRange", {0.4}}, {"VerticalRange", {0.4}}, {"CircularAreaProcessing", {1}}, {"Offset", {0.3}}}), GpuCheckCase("flat", PM{{"HorizontalRange", {0.0}}, {"VerticalRange", {0.5}}}),
-          GpuCheckCase("none", PM{{"HorizontalRange", {0.0}}, {"VerticalRange", {0.0}}})}},
+          GpuCheckCase("none", PM{{"HorizontalRange", {0.0}}, {"VerticalRange", {0.0}}}),
+          GpuCheckCase("half", PM{{"HorizontalRange", {0.5}}, {"VerticalRange", {0.5}}, {"Offset", {0.5}}}), GpuCheckCase("offset zero", PM{{"HorizontalRange", {0.6}}, {"VerticalRange", {0.3}}, {"Offset", {0.0}}}),
+          GpuCheckCase("offset one", PM{{"HorizontalRange", {0.3}}, {"VerticalRange", {0.6}}, {"Offset", {1.0}}}), GpuCheckCase("round low", PM{{"HorizontalRange", {0.7}}, {"VerticalRange", {0.9}}, {"CircularAreaProcessing", {1}}, {"Offset", {0.05}}}),
+          GpuCheckCase("round high", PM{{"HorizontalRange", {1.0}}, {"VerticalRange", {0.4}}, {"CircularAreaProcessing", {1}}, {"Offset", {0.95}}}), GpuCheckCase("widest", PM{{"HorizontalRange", {1.0}}, {"VerticalRange", {1.0}}, {"Offset", {0.7}}}),
+          GpuCheckCase("tiny", PM{{"HorizontalRange", {0.05}}, {"VerticalRange", {0.05}}})}},
         {"newsprint", planNewsprint, 0.0,
          {GpuCheckCase("mono", PM{{"DotSize", {0.5}}, {"Type", {0}}}), GpuCheckCase("colour", PM{{"DotSize", {0.3}}, {"Type", {1}}}), GpuCheckCase("offset", PM{{"DotSize", {0.4}}, {"Type", {2}}}),
           GpuCheckCase("fine", PM{{"DotSize", {0.1}}, {"Type", {2}}}), GpuCheckCase("fade", PM{{"DotSize", {0.05}}, {"Type", {0}}}), GpuCheckCase("fade colour", PM{{"DotSize", {0.12}}, {"Type", {1}}}),
@@ -1122,6 +1332,15 @@ const std::vector<FilterGpuEntry>& filterGpuEntries()
         {"autolooks", planAutoLooks, 0.0,
          {GpuCheckCase("look 1", PM{{"autolooksLook", {1}}, {"Gain", {1.0}}}), GpuCheckCase("look 6 half", PM{{"autolooksLook", {6}}, {"Gain", {0.5}}}), GpuCheckCase("look 13", PM{{"autolooksLook", {13}}, {"Gain", {0.83}}}),
           GpuCheckCase("look 21", PM{{"autolooksLook", {21}}, {"Gain", {0.3}}}), GpuCheckCase("zero", PM{{"autolooksLook", {4}}, {"Gain", {0.0}}}), GpuCheckCase("none", PM{{"autolooksLook", {0}}})}},
+        {"de.magix:LensCorrection", planLensCorrection, 0.0,
+         {GpuCheckCase("default", PM{}), GpuCheckCase("barrel", PM{{"RadialDistParam1", {0.1}}, {"RadialDistParam2", {-0.05}}, {"RadialDistParam3", {0.2}}}),
+          GpuCheckCase("pincushion scaled", PM{{"RadialDistParam1", {-0.2}}, {"RadialDistParam3", {-0.15}}, {"Scale", {1.3}}, {"DistCenter", {0.3, 0.6}}}),
+          GpuCheckCase("strong", PM{{"RadialDistParam1", {1.5}}, {"RadialDistParam2", {-1.0}}, {"RadialDistParam3", {0.8}}, {"Scale", {0.6}}}),
+          GpuCheckCase("scale only", PM{{"Scale", {0.5}}}), GpuCheckCase("shown mesh", PM{{"ShowMesh", {1}}, {"RadialDistParam3", {0.3}}}), GpuCheckCase("lens database", PM{{"QueryResult", {1}}, {"RadialDistParam3", {0.3}}})}},
+        {"de.magix:stereographicProjectionOCL", planTinyPlanetVegas, 0.0,
+         {GpuCheckCase("default", PM{}), GpuCheckCase("tilted", PM{{"Latitude", {40}}, {"Longitude", {75}}, {"Z", {1.5}}}), GpuCheckCase("tiny sky", PM{{"Latitude", {180}}}),
+          GpuCheckCase("flat horizon", PM{{"Latitude", {90}}, {"Z", {2}}}), GpuCheckCase("turned", PM{{"Latitude", {-30}}, {"Longitude", {-200}}, {"Z", {8}}}),
+          GpuCheckCase("wrapped", PM{{"Latitude", {400}}, {"Longitude", {500}}, {"Z", {0.5}}}), GpuCheckCase("z zero", PM{{"Z", {0}}})}},
         {"tinyplanet", planTinyPlanet, 0.0,
          {GpuCheckCase("default", PM{}), GpuCheckCase("tilted", PM{{"Latitude", {40}}, {"Longitude", {75}}, {"Z", {1.5}}}), GpuCheckCase("from below", PM{{"Latitude", {150}}, {"Longitude", {-120}}, {"Z", {0.5}}}),
           GpuCheckCase("far", PM{{"Latitude", {90}}, {"Z", {4}}})}},
@@ -1131,8 +1350,10 @@ const std::vector<FilterGpuEntry>& filterGpuEntries()
           GpuCheckCase("edge", PM{{"Type", {1}}, {"Strength", {0.2}}, {"Center", {1.0, 0.4}}}), GpuCheckCase("weak", PM{{"Type", {0}}, {"Strength", {0.02}}}), GpuCheckCase("zero", PM{{"Strength", {0.0}}})}},
         {"histogram", planHistogram, 0.0,
          {GpuCheckCase("luma", PM{{"Type", {0}}}), GpuCheckCase("red", PM{{"Type", {1}}, {"Center", {0.3, 0.7}}, {"Transparency", {0.2}}}), GpuCheckCase("green hdr", PM{{"Type", {2}}, {"HDR", {2.5}}}),
-          GpuCheckCase("blue", PM{{"Type", {3}}, {"Center", {0.9, 0.1}}}), GpuCheckCase("alpha", PM{{"Type", {4}}, {"Transparency", {1.0}}}), GpuCheckCase("lab (float on the CPU)", PM{{"Type", {5}}}),
-          GpuCheckCase("log (float on the CPU)", PM{{"LogarithmicScale", {1}}})}},
+          GpuCheckCase("blue", PM{{"Type", {3}}, {"Center", {0.9, 0.1}}}), GpuCheckCase("alpha", PM{{"Type", {4}}, {"Transparency", {1.0}}}), GpuCheckCase("lab", PM{{"Type", {5}}}),
+          GpuCheckCase("lab a", PM{{"Type", {6}}, {"Center", {0.6, 0.5}}}), GpuCheckCase("lab b hdr", PM{{"Type", {7}}, {"HDR", {1.7}}}), GpuCheckCase("lab beyond", PM{{"Type", {9}}, {"Transparency", {0.5}}}),
+          GpuCheckCase("log", PM{{"LogarithmicScale", {1}}}), GpuCheckCase("log red", PM{{"LogarithmicScale", {1}}, {"Type", {1}}, {"Center", {0.2, 0.2}}}),
+          GpuCheckCase("log lab", PM{{"LogarithmicScale", {1}}, {"Type", {5}}, {"HDR", {3.0}}}), GpuCheckCase("log alpha", PM{{"LogarithmicScale", {1}}, {"Type", {4}}, {"Transparency", {1.0}}})}},
         {"slowmotion", planSlowMotion, 0.0, {GpuCheckCase("defaults", PM{})}},
         {"de.magix:TimeWarp", planSlowMotion, 0.0, {GpuCheckCase("defaults", PM{})}},
         {"bzmasking", planBezierMasking, 0.0,
@@ -1145,14 +1366,14 @@ const std::vector<FilterGpuEntry>& filterGpuEntries()
          {GpuCheckCase("default", PM{}), GpuCheckCase("no vignetting", PM{{"mx.ofx.360.stitch.fisheye.falloff.use", {0}}}), GpuCheckCase("strong vignetting", PM{{"mx.ofx.360.stitch.fisheye.falloff.factor", {80}}, {"mx.ofx.360.stitch.fisheye.falloff.range", {60}}}),
           GpuCheckCase("wide fov", PM{{"mx.ofx.360.stitch.fisheye.fov", {215}}}), GpuCheckCase("narrow fov", PM{{"mx.ofx.360.stitch.fisheye.fov", {185}}}), GpuCheckCase("turned lenses", PM{{"mx.ofx.360.stitch.fisheye.orient.left", {1}}, {"mx.ofx.360.stitch.fisheye.orient.right", {3}}}),
           GpuCheckCase("rotated 180", PM{{"mx.ofx.360.stitch.fisheye.orient.left", {2}}, {"mx.ofx.360.stitch.fisheye.rotation", {40}}}), GpuCheckCase("centre and radius", PM{{"mx.ofx.360.stitch.fisheye.center", {6}}, {"mx.ofx.360.stitch.fisheye.narrowing", {85}}})}},
-        {"Filters.Stereoscopic3DAdjust", nullptr, 0.0,
+        {"Filters.Stereoscopic3DAdjust", planStereo3dAdjust, 0.0,
          {GpuCheckCase("default", PM{}), GpuCheckCase("offset", PM{{"Horizontal", {0.05}}, {"Vertical", {-0.03}}}), GpuCheckCase("zoom", PM{{"Zoom", {0.4}}}), GpuCheckCase("zoom out manual crop", PM{{"Zoom", {-0.3}}, {"AutoCrop", {0}}, {"Crop", {0.1}}}),
           GpuCheckCase("flip h", PM{{"FlipHorizontal", {1}}, {"Horizontal", {0.02}}}), GpuCheckCase("flip both", PM{{"FlipHorizontal", {3}}, {"FlipVertical", {3}}, {"Zoom", {0.2}}}), GpuCheckCase("flip v", PM{{"FlipVertical", {1}}}),
           GpuCheckCase("keystone", PM{{"Keystone", {0.3}}}), GpuCheckCase("rotation", PM{{"Rotation", {8}}}), GpuCheckCase("keystone rotation flip", PM{{"Keystone", {-0.2}}, {"Rotation", {-12}}, {"FlipHorizontal", {1}}, {"Horizontal", {0.04}}}),
           GpuCheckCase("floating window", PM{{"FloatingWindowLeft", {0.13}}}), GpuCheckCase("floating window rotated", PM{{"FloatingWindowLeft", {0.2}}, {"Rotation", {3}}, {"Zoom", {0.1}}}),
           GpuCheckCase("manual crop rotated", PM{{"AutoCrop", {0}}, {"Crop", {0.3}}, {"Rotation", {5}}}), GpuCheckCase("big", PM{{"Zoom", {3}}, {"Horizontal", {0.9}}}), GpuCheckCase("tiny", PM{{"Zoom", {-0.9}}}),
           GpuCheckCase("flip v keystone", PM{{"FlipVertical", {2}}, {"Keystone", {0.5}}, {"Vertical", {0.1}}})}},
-        {"com.vegascreativesoftware:filllightvelvetmatter", planFillLight, 0.0,
+        {"com.vegascreativesoftware:filllightvelvetmatter", planFillLight, 1.2e-38,   /* (the blur tails of the recursion fall below the smallest normal float: the CPU keeps denormals, a driver without denorm preservation flushes them) */
          {GpuCheckCase("default", PM{}), GpuCheckCase("strong", PM{{"Strength", {100}}, {"Softness", {20}}, {"Bias", {40}}}), GpuCheckCase("tinted", PM{{"Hue", {200}}, {"Tint", {70}}, {"Softness", {0.5}}}),
           GpuCheckCase("no blur", PM{{"Softness", {0}}, {"Strength", {80}}}), GpuCheckCase("weak", PM{{"Strength", {0.5}}}), GpuCheckCase("off", PM{{"Strength", {0}}})}},
         {"com.vegascreativesoftware:softcontrastvelvetmatter", planSoftContrast, 0.0,
@@ -1161,20 +1382,23 @@ const std::vector<FilterGpuEntry>& filterGpuEntries()
           GpuCheckCase("weak", PM{{"EffectContrast", {20}}, {"EffectStretchRange", {0}}}), GpuCheckCase("vig black", PM{{"VignetteExteriorEffect", {2}}, {"VignetteStrength", {80}}}),
           GpuCheckCase("vig white", PM{{"VignetteExteriorEffect", {3}}, {"VignetteShape", {1}}, {"VignetteSoftness", {40}}, {"VignettePosition", {0.4, 0.6}}}),
           GpuCheckCase("vig clear", PM{{"VignetteExteriorEffect", {4}}, {"VignetteWidth", {50}}, {"VignetteHeight", {60}}, {"VignetteCornerRadius", {20}}}),
-          GpuCheckCase("vig blur (float on the CPU)", PM{{"VignetteExteriorEffect", {1}}, {"VignetteHorizontalBlur", {1}}, {"VignetteVerticalBlur", {1}}})}},
+          GpuCheckCase("vig blur", PM{{"VignetteExteriorEffect", {1}}, {"VignetteHorizontalBlur", {1}}, {"VignetteVerticalBlur", {1}}}),
+          GpuCheckCase("vig blur horizontal", PM{{"VignetteExteriorEffect", {1}}, {"VignetteHorizontalBlur", {3}}, {"VignetteVerticalBlur", {0}}, {"VignetteStrength", {70}}}),
+          GpuCheckCase("vig blur vertical ellipse", PM{{"VignetteExteriorEffect", {1}}, {"VignetteHorizontalBlur", {0}}, {"VignetteVerticalBlur", {2}}, {"VignetteShape", {1}}, {"VignetteSoftness", {30}}, {"EffectDiffusion", {10}}}),
+          GpuCheckCase("vig blur none", PM{{"VignetteExteriorEffect", {1}}, {"VignetteHorizontalBlur", {0}}, {"VignetteVerticalBlur", {0}}})}},
         {"com.vegascreativesoftware:glintvelvetmatter", planGlint, 0.0,
          {GpuCheckCase("default", PM{{"EffectThreshold", {30}}}), GpuCheckCase("one streak", PM{{"EffectStreaks", {1}}, {"EffectThreshold", {40}}}), GpuCheckCase("two streaks", PM{{"EffectStreaks", {2}}, {"EffectThreshold", {30}}, {"EffectHorizontalRadius", {30}}}),
           GpuCheckCase("six", PM{{"EffectStreaks", {6}}, {"EffectThreshold", {20}}, {"EffectOrientation", {20}}}), GpuCheckCase("flicker", PM{{"EffectReduceFlicker", {1}}, {"EffectThreshold", {30}}}),
           GpuCheckCase("effect only", PM{{"EffectEffectOnly", {1}}, {"EffectThreshold", {30}}, {"EffectBoost", {100}}}), GpuCheckCase("negative boost", PM{{"EffectBoost", {-30}}, {"EffectThreshold", {25}}}),
           GpuCheckCase("five odd", PM{{"EffectStreaks", {5}}, {"EffectThreshold", {25}}, {"EffectOrientation", {37}}, {"EffectVerticalRadius", {40}}}),
           GpuCheckCase("mask rect", PM{{"MaskMaskMode", {1}}, {"MaskMaskType", {0}}, {"EffectThreshold", {30}}}), GpuCheckCase("mask source", PM{{"MaskMaskMode", {2}}, {"MaskMaskType", {3}}, {"EffectThreshold", {30}}}),
-          GpuCheckCase("mask wipe", PM{{"MaskMaskMode", {1}}, {"MaskMaskType", {2}}, {"MaskSoftness", {0.1}}}), GpuCheckCase("mask only (float on the CPU)", PM{{"MaskMaskMode", {3}}})}},
+          GpuCheckCase("mask wipe", PM{{"MaskMaskMode", {1}}, {"MaskMaskType", {2}}, {"MaskSoftness", {0.1}}}), GpuCheckCase("mask only", PM{{"MaskMaskMode", {3}}}), GpuCheckCase("mask only wipe", PM{{"MaskMaskMode", {3}}, {"MaskMaskType", {2}}, {"MaskSoftness", {0.3}}}), GpuCheckCase("mask only ellipse", PM{{"MaskMaskMode", {3}}, {"MaskMaskType", {3}}})}},
         {"com.vegascreativesoftware:raysvelvetmatter", planRays, 0.0,
          {GpuCheckCase("default", PM{}), GpuCheckCase("low threshold", PM{{"EffectThreshold", {20}}, {"EffectAmount", {60}}}), GpuCheckCase("centre off", PM{{"EffectThreshold", {25}}, {"EffectPosition", {0.2, 0.7}}, {"EffectAspect", {1.5}}}),
           GpuCheckCase("noise", PM{{"EffectThreshold", {25}}, {"EffectNoise", {30}}}), GpuCheckCase("alpha", PM{{"EffectKeyAlphaChannel", {1}}, {"EffectThreshold", {10}}}), GpuCheckCase("flicker", PM{{"EffectReduceFlicker", {1}}, {"EffectThreshold", {25}}}),
           GpuCheckCase("effect only", PM{{"EffectEffectOnly", {1}}, {"EffectThreshold", {25}}, {"EffectQuality", {1}}}), GpuCheckCase("no amount", PM{{"EffectAmount", {0}}, {"EffectThreshold", {25}}}), GpuCheckCase("big", PM{{"EffectAmount", {76}}, {"EffectThreshold", {10}}, {"EffectQuality", {0}}}),
           GpuCheckCase("mask effect", PM{{"MaskMaskMode", {1}}, {"MaskMaskType", {1}}, {"EffectThreshold", {25}}}), GpuCheckCase("mask source", PM{{"MaskMaskMode", {2}}, {"MaskMaskType", {3}}, {"EffectThreshold", {25}}}),
-          GpuCheckCase("mask wipe", PM{{"MaskMaskMode", {1}}, {"MaskMaskType", {0}}, {"MaskSoftness", {0.1}}}), GpuCheckCase("mask only (float on the CPU)", PM{{"MaskMaskMode", {3}}})}},
+          GpuCheckCase("mask wipe", PM{{"MaskMaskMode", {1}}, {"MaskMaskType", {0}}, {"MaskSoftness", {0.1}}}), GpuCheckCase("mask only", PM{{"MaskMaskMode", {3}}}), GpuCheckCase("mask only wipe", PM{{"MaskMaskMode", {3}}, {"MaskMaskType", {2}}, {"MaskSoftness", {0.3}}}), GpuCheckCase("mask only ellipse", PM{{"MaskMaskMode", {3}}, {"MaskMaskType", {3}}})}},
         {"com.magixsoftware:panorotation", planSceneRotation, 0.0,
          {GpuCheckCase("yaw", PM{{"mx.ofx.plugin.rotate.y.angle", {40}}}), GpuCheckCase("all", PM{{"mx.ofx.plugin.rotate.x.angle", {15}}, {"mx.ofx.plugin.rotate.y.angle", {-70}}, {"mx.ofx.plugin.rotate.z.angle", {25}}}),
           GpuCheckCase("pitch", PM{{"mx.ofx.plugin.rotate.z.angle", {60}}}), GpuCheckCase("roll", PM{{"mx.ofx.plugin.rotate.x.angle", {90}}}), GpuCheckCase("none", PM{}), GpuCheckCase("all large", PM{{"mx.ofx.plugin.rotate.x.angle", {-120}}, {"mx.ofx.plugin.rotate.y.angle", {200}}, {"mx.ofx.plugin.rotate.z.angle", {80}}}),
@@ -1194,7 +1418,9 @@ const std::vector<FilterGpuEntry>& filterGpuEntries()
           GpuCheckCase("anchor", PM{{"Scale", {0.7}}, {"Anchor", {8}}, {"Location", {0.8, 0.2}}, {"Angle", {-40}}}),
           GpuCheckCase("free shear", PM{{"KeepProportions", {1}}, {"Scale", {0.5}}, {"DistortionScaleY", {0.3}}, {"DistortionShear", {0.4}}, {"Angle", {10}}}),
           GpuCheckCase("free form", PM{{"KeepProportions", {2}}, {"CornerBL", {0.1, 0.1}}, {"CornerBR", {0.9, 0.2}}, {"CornerTR", {0.8, 0.9}}, {"CornerTL", {0.2, 0.7}}}),
-          GpuCheckCase("free form 2", PM{{"KeepProportions", {2}}, {"CornerBL", {0.0, 0.0}}, {"CornerBR", {1.0, 0.1}}, {"CornerTR", {0.7, 0.6}}, {"CornerTL", {0.1, 1.0}}, {"Opacity", {0.8}}})}},
+          GpuCheckCase("free form 2", PM{{"KeepProportions", {2}}, {"CornerBL", {0.0, 0.0}}, {"CornerBR", {1.0, 0.1}}, {"CornerTR", {0.7, 0.6}}, {"CornerTL", {0.1, 1.0}}, {"Opacity", {0.8}}}),
+          GpuCheckCase("free form unsolvable", PM{{"KeepProportions", {2}}, {"CornerBL", {0.5, 0.5}}, {"CornerBR", {0.5, 0.5}}, {"CornerTR", {0.5, 0.5}}, {"CornerTL", {0.5, 0.5}}, {"Scale", {0.8}}}),
+          GpuCheckCase("big and turned", PM{{"Scale", {1.8}}, {"Angle", {33}}, {"Location", {0.6, 0.4}}})}},
         {"vignette", planVignette, 5e-5, {}},          // (powf: the library's last bit)
         {"glow", planGlow, 0.0, {}},
         {"chromakeyer", planChromaKeyer, 0.0, {}},
@@ -1212,6 +1438,18 @@ const std::vector<FilterGpuEntry>& filterGpuEntries()
           GpuCheckCase("a90", PM{{"Angle", {90}}, {"Amount", {0.08}}}), GpuCheckCase("a120", PM{{"Angle", {120}}, {"Amount", {0.12}}}), GpuCheckCase("a150", PM{{"Angle", {150}}, {"Amount", {0.07}}}),
           GpuCheckCase("a200", PM{{"Angle", {200}}, {"Amount", {0.2}}}), GpuCheckCase("a315", PM{{"Angle", {315}}, {"Amount", {0.3}}}), GpuCheckCase("a45", PM{{"Angle", {45}}, {"Amount", {0.02}}}),
           GpuCheckCase("a135", PM{{"Angle", {135}}, {"Amount", {0.4}}}), GpuCheckCase("tiny", PM{{"Angle", {10}}, {"Amount", {0.0}}})}},
+        {"gradientmap", planGradientMap, 0.0,
+         {GpuCheckCase("no stops", PM{}),
+          GpuCheckCase("two stops", PM{}, {{"GradientStops", "0 0 0 0.2 1; 1 1 0.9 0.3 1"}}),
+          GpuCheckCase("three stops alpha", PM{}, {{"GradientStops", "0 0 0 0 0; 0.5 1 0 0 0.5; 1 1 1 1 1"}}),
+          GpuCheckCase("add", PM{{"Mode", {1}}, {"Amount", {0.6}}}, {{"GradientStops", "0 0 0 0.2 1; 0.4 0.9 0.2 0.1 0.8; 1 1 1 0.5 1"}}),
+          GpuCheckCase("amount", PM{{"Amount", {0.3}}}, {{"GradientStops", "0 0.1 0.2 0.9 1; 1 1 0.8 0.1 1"}}),
+          GpuCheckCase("amount zero", PM{{"Amount", {0.0}}}, {{"GradientStops", "0 0.1 0.2 0.9 1; 1 1 0.8 0.1 1"}}),
+          GpuCheckCase("single stop", PM{}, {{"GradientStops", "0.5 0.2 0.8 0.4 1"}}),
+          GpuCheckCase("stops inside", PM{}, {{"GradientStops", "0.25 1 0 0 1; 0.75 0 0 1 1"}}),
+          GpuCheckCase("nine stops", PM{{"Amount", {0.85}}}, {{"GradientStops", "0 0 0 0 1; 0.1 0.9 0.1 0.1 1; 0.2 0.1 0.9 0.1 0.7; 0.3 0.1 0.1 0.9 1; 0.45 1 1 0 0.4; 0.55 0 1 1 1; 0.7 1 0 1 1; 0.85 0.5 0.5 0.5 0.9; 1 1 1 1 1"}}),
+          GpuCheckCase("add alpha", PM{{"Mode", {1}}}, {{"GradientStops", "0 0 0 0 0.2; 1 1 1 1 0.9"}}),
+          GpuCheckCase("same positions", PM{}, {{"GradientStops", "0.5 1 0 0 1; 0.5 0 1 0 1; 1 0 0 1 1"}})}},
         {"sepia", planSepia, 0.0,
          {GpuCheckCase("weak", PM{{"BlendingStrength", {0.2}}}), GpuCheckCase("mid", PM{{"BlendingStrength", {0.5}}, {"Color", {0.8, 0.45, 0.1}}}),
           GpuCheckCase("strong", PM{{"BlendingStrength", {0.9}}, {"BlendingFalloff", {0.4}}}), GpuCheckCase("full", PM{{"BlendingStrength", {1.0}}, {"BlendingFalloff", {1.0}}})}},
@@ -1230,6 +1468,12 @@ const std::vector<FilterGpuEntry>& filterGpuEntries()
           GpuCheckCase("equalize", PM{{"HasData", {1}}}), GpuCheckCase("both", PM{{"AmountOfCorrection", {0.4}}, {"ColorTemperature", {9000}}, {"HasData", {1}}}),
           GpuCheckCase("dark", PM{{"AmountOfCorrection", {0.0}}, {"Brightness", {0.5}}})}},
     };
+    static const std::vector<FilterGpuEntry> v = [] {
+        std::vector<FilterGpuEntry> a = v0;
+        const std::vector<FilterGpuEntry>& g = geomGpuEntries();
+        a.insert(a.end(), g.begin(), g.end());
+        return a;
+    }();
     return v;
 }
 

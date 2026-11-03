@@ -9,6 +9,7 @@
 // Glint: luma through a soft threshold (0 at threshold - 0.05, full at the threshold); each of Streaks streaks (180 / n degrees apart, first
 //        vertical) blurs it along its direction into its own channel (length from the two radii, as a fraction of the width), scaled by
 //        1 + boost (2 boost above 0), coloured by the colour gradient and screened over the picture.
+#include "vkfft.h"
 #include "builtins_more_internal.h"
 #include "../core/base.h"
 #include "builtins_vec.h"
@@ -1422,6 +1423,39 @@ void softContrast(Ctx& c)
 // (the OpenCL kernels boost and clear only the colour channels; the alpha plane goes through the convolution as it is)
 static inline bool v8alphaKept(const Ctx& c, size_t i) { return c.openCl && (i & 3) == 3; }
 
+// Starburst's Soften edges mask: a soft rounded rectangle drawn on a canvas 1.25 times the frame, blurred and cut out; one float per pixel (the picture's order, top row first), held to 0 .. 1.
+static void starburstSoftMask(int W, int H, double softedges, std::vector<float>& mk)
+{
+    const double v2 = 1.0 - 0.1 * softedges;
+    double mw, mh;
+    if (W > H) { mw = v2; mh = 1.0 - W * (1.0 - v2) / H; }
+    else { mh = v2; mw = 1.0 - H * (1.0 - v2) / W; }
+    const double blur = 0.5 * softedges, corner = 0.2 * softedges;
+    const int CW = (int)(W * 1.25), CH = (int)(H * 1.25);
+    std::vector<float> cv((size_t)CW * CH, 0.f);
+    const double cx = CW / 2.0, cy = CH / 2.0, hw = mw * W / 2, hh = mh * H / 2;
+    const double rr = std::min(std::min(hw, hh), corner * H / 3.0);
+    for (int y = 0; y < CH; ++y)
+        for (int x = 0; x < CW; ++x) {
+            int in = 0;
+            for (int j = 0; j < 4; ++j)
+                for (int i = 0; i < 4; ++i) {
+                    const double ax = std::fabs(x + (i + 0.5) / 4 - cx), ay = std::fabs(y + (j + 0.5) / 4 - cy);
+                    if (ax > hw || ay > hh) continue;
+                    const double dx = ax - (hw - rr), dy = ay - (hh - rr);
+                    in += (dx <= 0 || dy <= 0 || dx * dx + dy * dy <= rr * rr);
+                }
+            cv[(size_t)y * CW + x] = in / 16.f;
+        }
+    const double sigma = sigmaForDiameter(blur * CW);
+    lineBlurAll(cv.data(), CH, CW, 1, CW, sigma);
+    lineBlurAll(cv.data(), CW, CH, CW, 1, sigma);
+    const int ox = (CW - W) / 2, oy = (CH - H) / 2;
+    mk.assign((size_t)W * H, 0.f);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) mk[(size_t)y * W + x] = (float)clampd(cv[(size_t)(y + oy) * CW + x + ox], 0.0, 1.0);
+}
+
 // With GPU acceleration on (Ctx::openCl) VEGAS draws Starburst with its OpenCL kernels (Vfx1.ofx; vfxstarburst.h): the same steps (soften mask, flicker blur, threshold, boost, FFT convolution with the
 // star normalised to a sum of 1) but the star (and, with Center burst, the two bursts mixed into it) is what the host draws with GDI+ (its path gradient fills, made by Windows' GDI+ on Windows and by a
 // model of it elsewhere), convolved in planes of the next power of two of the longer side with the picture at their origin, the result added to the picture at Strength (no screen) and stored with the
@@ -1446,34 +1480,11 @@ void starburstVelvet(Ctx& c)
     std::vector<float> img((size_t)W * H * 4);
     for (size_t i = 0; i < img.size(); ++i) img[i] = (float)byteOf(c.src.px[i]);
     if (softedges > 0) {
-        const double v2 = 1.0 - 0.1 * softedges;
-        double mw, mh;
-        if (W > H) { mw = v2; mh = 1.0 - W * (1.0 - v2) / H; }
-        else { mh = v2; mw = 1.0 - H * (1.0 - v2) / W; }
-        const double blur = 0.5 * softedges, corner = 0.2 * softedges;
-        const int CW = (int)(W * 1.25), CH = (int)(H * 1.25);
-        std::vector<float> cv((size_t)CW * CH, 0.f);
-        const double cx = CW / 2.0, cy = CH / 2.0, hw = mw * W / 2, hh = mh * H / 2;
-        const double rr = std::min(std::min(hw, hh), corner * H / 3.0);
-        for (int y = 0; y < CH; ++y)
-            for (int x = 0; x < CW; ++x) {
-                int in = 0;
-                for (int j = 0; j < 4; ++j)
-                    for (int i = 0; i < 4; ++i) {
-                        const double ax = std::fabs(x + (i + 0.5) / 4 - cx), ay = std::fabs(y + (j + 0.5) / 4 - cy);
-                        if (ax > hw || ay > hh) continue;
-                        const double dx = ax - (hw - rr), dy = ay - (hh - rr);
-                        in += (dx <= 0 || dy <= 0 || dx * dx + dy * dy <= rr * rr);
-                    }
-                cv[(size_t)y * CW + x] = in / 16.f;
-            }
-        const double sigma = sigmaForDiameter(blur * CW);
-        lineBlurAll(cv.data(), CH, CW, 1, CW, sigma);
-        lineBlurAll(cv.data(), CW, CH, CW, 1, sigma);
-        const int ox = (CW - W) / 2, oy = (CH - H) / 2;
+        std::vector<float> mk;
+        starburstSoftMask(W, H, softedges, mk);
         for (int y = 0; y < H; ++y)
             for (int x = 0; x < W; ++x) {
-                const double m = clampd(cv[(size_t)(y + oy) * CW + x + ox], 0.0, 1.0);
+                const double m = mk[(size_t)y * W + x];
                 for (int k = 0; k < 4; ++k) {
                     float& v = img[((size_t)y * W + x) * 4 + k];
                     v = (float)std::floor(v * m + 0.5);
@@ -1635,6 +1646,49 @@ void starburstVelvet(Ctx& c)
             }
         }
     });
+}
+
+// What the Vulkan plan needs of the OpenCL path above (the same numbers, from the same code); false when the CPU does not take that path for these settings.
+bool starburstGpuSetup(Ctx& c, int W, int H, StarburstGpuSetup& o)
+{
+    if (W <= 0 || H <= 0 || !c.openCl) return false;
+    const double threshold = c.d("Threshold") / 100.0, brilliance = c.d("Brilliance") / 100.0, strength = c.d("Strength") / 100.0;
+    if (threshold >= 254.0 / 255.0) return false;
+    const double radius = clampd(c.d("Radius") / 100.0, 0.0, 1.0), centerburst = c.d("CenterBurst") / 100.0;
+    const double orientation = c.d("Orientation") / 360.0, softedges = c.d("SoftenEdges") / 100.0;
+    const int points = std::max(2, c.i("Points"));
+    o = StarburstGpuSetup();
+    o.effectOnly = c.b("EffectOnly");
+    if (!(strength >= 0.00392156862745098)) { o.passThrough = true; return true; }      // (the picture is left as it is, or cleared for Effect only)
+    if (softedges > 0) starburstSoftMask(W, H, softedges, o.soft);
+    o.reduceFlicker = c.b("ReduceFlicker");
+    if (threshold > 0) {
+        o.thr = true;
+        o.thrLevel = std::floor((float)threshold * 255.f + 0.5f);
+    }
+    {
+        o.boost = true;
+        const float T = (float)(threshold * 255.0);
+        o.boostT = T;
+        o.boostS = (float)((brilliance * 255.0 - (double)T) / (double)(255.0f - T));
+    }
+    const double rpx = radius * std::max((double)W, (double)H);
+    int N = 1;
+    while (N < std::max(W, H)) N <<= 1;
+    if ((size_t)N * N > (size_t)64 * 1024 * 1024) return false;
+    o.N = N;
+    vfxstar::Kernel sk;
+    if (vfxstar::makeKernel(sk, points, orientation * 360.0, rpx, centerburst)) {
+        o.sn = sk.n;
+        o.starBytes.assign(((size_t)sk.n * sk.n + 3) / 4, 0u);
+        for (size_t i = 0; i < (size_t)sk.n * sk.n; ++i) o.starBytes[i >> 2] |= (uint32_t)sk.bytes[i] << ((i & 3) * 8);
+        o.starScale = sk.scale * 0.00392156862745f;
+    }
+    o.norm = 1.0 / ((double)N * N);
+    o.opacity = clampd(strength, 0.0, 1.0);
+    o.fw = FftTwiddles(N, false).w;
+    o.inv = FftTwiddles(N, true).w;
+    return true;
 }
 
 }  // namespace more

@@ -124,14 +124,13 @@ inline bool shape(int type, float u, float v, float d, float strength, const flo
     }
 }
 
-// Draws the lens' elements onto 'img' (W x H, RGBA floats premultiplied, top row first), in place. 'rows'/'nrows': the lens' table; 'rays': 64 ray lengths; 'store': the 8-bit store the
-// kernels' writes go through (nullptr: floats are kept).
-inline void render(std::vector<float>& img, int W, int H, const Row* rows, int nrows, const Params& P, const float* rays, float (*store)(float))
+// One element's box and colour as the draw works them out (the same numbers the GPU plan hands its kernel): the pixels x in [xa, xb), y in [ya, yb) are drawn.
+struct Elem { int type; float strength, ox, oy, R, Rx; int xa, xb, ya, yb; float col[3]; };
+
+// The elements that draw something, in order (an element whose box is not a sane size is left out, as the draw skips it).
+inline void prepare(std::vector<Elem>& out, int W, int H, const Row* rows, int nrows, const Params& P)
 {
-    if (W < 1 || H < 1 || img.size() < (size_t)W * H * 4) return;
-    static const Hex hex;
-    if (store && nrows > 0)
-        for (size_t i = 0; i < (size_t)W * H * 4; ++i) img[i] = store(img[i]);         // (the first launch writes every pixel)
+    out.clear();
     const float lx = P.lx, ly = -P.ly;
     const float mn = (float)(W < H ? W : H);
     const float sinP = (float)std::sin((double)(-P.perspective) * 1.5707963267948966);
@@ -139,7 +138,6 @@ inline void render(std::vector<float>& img, int W, int H, const Row* rows, int n
     const float Wf = (float)W, Hf = (float)H;
     const float lcol[3] = {P.lightR, P.lightG, P.lightB};
     const float tint = P.tint;
-    const float blend = P.blend, iblend = 1.0f - blend;
     auto sane = [](float v) { return std::isfinite(v) && std::fabs(v) < 1.0e8f; };
     for (int n = 0; n < nrows; ++n) {
         const Row& e = rows[n];
@@ -152,26 +150,50 @@ inline void render(std::vector<float>& img, int W, int H, const Row* rows, int n
         if (!sane(left) || !sane(top) || !sane(rightF) || !sane(botF) || !(R > 0.f) || !(Rx > 0.f)) continue;
         const int ix0 = (int)left, iy0 = (int)top, ix1 = (int)rightF, iy1 = (int)botF;
         const float fx = left - (float)ix0, fy = top - (float)iy0;
-        const float ox = (float)ix0 + fx, oy = (float)iy0 + fy;         // the box's origin with its fraction
+        Elem el;
+        el.type = e.type;
+        el.ox = (float)ix0 + fx;
+        el.oy = (float)iy0 + fy;         // the box's origin with its fraction
+        el.R = R;
+        el.Rx = Rx;
         // the colour: Tint of the way from the element's own to the light's; the table is in blue, green, red order
-        const float cr = (1.0f - tint) * e.c2 + tint * lcol[0];
-        const float cg = tint * lcol[1] + (1.0f - tint) * e.c1;
-        const float cb = tint * lcol[2] + (1.0f - tint) * e.c0;
-        const float col[3] = {cr, cg, cb};
-        const float strength = P.intensity * e.strength;
+        el.col[0] = (1.0f - tint) * e.c2 + tint * lcol[0];
+        el.col[1] = tint * lcol[1] + (1.0f - tint) * e.c1;
+        el.col[2] = tint * lcol[2] + (1.0f - tint) * e.c0;
+        el.strength = P.intensity * e.strength;
         // (the kernel runs over the whole picture and keeps the pixels with ix0 <= x < ix1 and iy0 <= H - row < iy1; here only those)
-        const int xa = ix0 > 0 ? ix0 : 0, xb = ix1 < W ? ix1 : W;
-        int ya = iy0 - 1, yb = iy1 - 1;                                 // (top-down row y has v64 = y + 1)
-        if (ya < 0) ya = 0;
-        if (yb > H) yb = H;
-        for (int y = ya; y < yb; ++y) {
+        el.xa = ix0 > 0 ? ix0 : 0;
+        el.xb = ix1 < W ? ix1 : W;
+        el.ya = iy0 - 1;                                 // (top-down row y has v64 = y + 1)
+        el.yb = iy1 - 1;
+        if (el.ya < 0) el.ya = 0;
+        if (el.yb > H) el.yb = H;
+        out.push_back(el);
+    }
+}
+
+// Draws the lens' elements onto 'img' (W x H, RGBA floats premultiplied, top row first), in place. 'rows'/'nrows': the lens' table; 'rays': 64 ray lengths; 'store': the 8-bit store the
+// kernels' writes go through (nullptr: floats are kept).
+inline void render(std::vector<float>& img, int W, int H, const Row* rows, int nrows, const Params& P, const float* rays, float (*store)(float))
+{
+    if (W < 1 || H < 1 || img.size() < (size_t)W * H * 4) return;
+    static const Hex hex;
+    if (store && nrows > 0)
+        for (size_t i = 0; i < (size_t)W * H * 4; ++i) img[i] = store(img[i]);         // (the first launch writes every pixel)
+    const float blend = P.blend, iblend = 1.0f - blend;
+    std::vector<Elem> els;
+    prepare(els, W, H, rows, nrows, P);
+    for (const Elem& el : els) {
+        const float R = el.R, Rx = el.Rx, ox = el.ox, oy = el.oy, strength = el.strength;
+        const float* col = el.col;
+        for (int y = el.ya; y < el.yb; ++y) {
             const float v64 = (float)(y + 1);
             const float v = 1 - ((v64 - oy) / R);
-            for (int x = xa; x < xb; ++x) {
+            for (int x = el.xa; x < el.xb; ++x) {
                 const float u = 1 - (((float)x - ox) / Rx);
                 const float d = (float)std::sqrt((double)u * (double)u + (double)v * (double)v);        // (hypot, correctly rounded)
                 float eff[3];
-                if (!shape(e.type, u, v, d, strength, col, hex, rays, eff)) continue;
+                if (!shape(el.type, u, v, d, strength, col, hex, rays, eff)) continue;
                 float* p = &img[((size_t)y * W + x) * 4];
                 float c[4] = {p[0], p[1], p[2], p[3]};
                 // the blend helper: out = c (1 - Blend) + (effect + c) Blend, on the colour with the alpha divided out

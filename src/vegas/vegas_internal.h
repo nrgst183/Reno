@@ -180,7 +180,7 @@ private:
     void readAudioTrackSettings(const Chunk& tc, Track& t, const std::string& label, bool automation, const bool* hasEnvelope);
     void readVideoTrackSettings(const Chunk& tc, Track& t, const std::string& label, bool automation, const bool* hasEnvelope);
     bool readEnvelopeList(const Chunk& list, bool track, TrackType type, const std::string& label, Envelopes& out,
-                          std::vector<VegHidden>& hidden);
+                          std::vector<VegHidden>& hidden, const FxChain* chain = nullptr);
     bool readEvent(const Chunk& ev, Track& track, const std::string& where, Event& out);
     void readEventAudioSettings(const Chunk& ev, Event& e, const std::string& where);
     void readEventVideoFx(const Chunk& ev, Event& e, VegEventOrigin& eo, const MediaRec& m, const std::string& where);

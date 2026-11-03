@@ -463,15 +463,21 @@ void vegasLinearBlur(const Buf& src, Buf& out, double angleDeg, double amount, b
             for (int k = 0; k < 4; ++k) out.at(x, y)[k] = (float)(o.at(x, y)[k] / 255.0);
 }
 
-bool vegasLinearBlurOpenCl(const Buf& src, Buf& out, double angleDeg, double amount, bool q)
+double vegasLinearBlurOclAngle(double angleDeg, double& amount)
 {
-    const int W = src.w, H = src.h;
-    if (W < 1 || H < 1) return false;
     if (!(amount == amount) || !(angleDeg == angleDeg)) { angleDeg = 0.0; amount = 0.0; }
     // Angle runs 0..360 in VEGAS; anything else is folded into that
     double a = std::fmod(angleDeg, 360.0);
     if (a < 0) a += 360.0;
     if (angleDeg >= 360.0 && a == 0.0) a = 360.0;
+    return a;
+}
+
+bool vegasLinearBlurOpenCl(const Buf& src, Buf& out, double angleDeg, double amount, bool q)
+{
+    const int W = src.w, H = src.h;
+    if (W < 1 || H < 1) return false;
+    const double a = vegasLinearBlurOclAngle(angleDeg, amount);
     // the kernels' frames lie bottom row first
     std::vector<float> mem((size_t)W * H * 4), res;
     for (int y = 0; y < H; ++y) std::memcpy(&mem[(size_t)y * W * 4], src.at(0, H - 1 - y), (size_t)W * 4 * sizeof(float));

@@ -21,5 +21,13 @@ inline std::function<std::string(TimeDisplaySource)>& midiTimeDisplayText()
     return f;
 }
 
+// The words over the time display in place of the time format's name when it shows MIDI ("MTC Input Not Active"); empty
+// when the format's name is shown.
+inline std::function<std::string(TimeDisplaySource)>& midiTimeDisplayLabel()
+{
+    static std::function<std::string(TimeDisplaySource)> f;
+    return f;
+}
+
 }  // namespace app
 }  // namespace reno

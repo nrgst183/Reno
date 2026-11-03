@@ -48,13 +48,45 @@ struct Sim {
     bool started = false;
 };
 
-// The picture a frame works on; with no buffers the pass only uses up the random numbers (the replay of earlier frames).
+// What a frame does to the picture, written down instead of done (Surf::rec) so that a card can do it: the grey, the generator's number for every pixel's grain, and then in
+// order the tints (the frame's own and the flashes), the jitters and the additions of the scratches, dust and hair (a segment of them between two other steps).
+struct Rec {
+    struct Ev { int x = 0, y = 0, di = 0; float df = 0.f; };
+    struct Op {
+        int kind = 0;                       // 0 tint (c4), 1 jitter (dx, dy), 2 additions (events [first, last))
+        double c4[4] = {0, 0, 0, 0};
+        int dx = 0, dy = 0;
+        size_t first = 0, last = 0;
+    };
+    bool grey = false, grainOn = false;
+    int grainK = 0;
+    float grainAmount = 0.f;
+    std::vector<uint32_t> words;
+    std::vector<Op> ops;
+    std::vector<Ev> events;
+    void add(int x, int y, int di, float df)
+    {
+        if (ops.empty() || ops.back().kind != 2) {
+            Op o;
+            o.kind = 2;
+            o.first = o.last = events.size();
+            ops.push_back(o);
+        }
+        Ev e;
+        e.x = x; e.y = y; e.di = di; e.df = df;
+        events.push_back(e);
+        ops.back().last = events.size();
+    }
+};
+
+// The picture a frame works on; with no buffers the pass only uses up the random numbers (the replay of earlier frames). With 'rec' the passes are written down there.
 struct Surf {
     int W = 0, H = 0;
     bool bytes = true;
     uint8_t* b = nullptr;
     float* f = nullptr;
-    bool live() const { return bytes ? b != nullptr : f != nullptr; }
+    Rec* rec = nullptr;
+    bool live() const { return rec ? true : (bytes ? b != nullptr : f != nullptr); }
     uint8_t* p8(int x, int y) const { return b + ((size_t)y * (size_t)W + (size_t)x) * 4; }
     float* pf(int x, int y) const { return f + ((size_t)y * (size_t)W + (size_t)x) * 4; }
 };
@@ -265,8 +297,21 @@ inline void addF(float* px, float d)
     }
 }
 
+// an addition to a pixel (clamped bytes or float): done, or written down
+inline void put8(const Surf& S, int x, int y, int d)
+{
+    if (S.rec) S.rec->add(x, y, d, 0.f);
+    else if (S.live()) add8(S.p8(x, y), d);
+}
+inline void putF(const Surf& S, int x, int y, float d)
+{
+    if (S.rec) S.rec->add(x, y, 0, d);
+    else if (S.live()) addF(S.pf(x, y), d);
+}
+
 inline void greyscale(Surf& S)
 {
+    if (S.rec) { S.rec->grey = true; return; }
     if (!S.live()) return;
     for (int y = 0; y < S.H; ++y)
         for (int x = 0; x < S.W; ++x) {
@@ -289,6 +334,14 @@ inline void grain(Surf& S, double amount, VegasShiftRandom& rng)
     if (!(amount > 0)) return;
     const int K = (int)(amount * 16384.0);
     const float amountF = (float)amount;
+    if (S.rec) {
+        S.rec->grainOn = true;
+        S.rec->grainK = K;
+        S.rec->grainAmount = amountF;
+        S.rec->words.resize((size_t)S.W * (size_t)S.H);
+        for (size_t i = 0; i < S.rec->words.size(); ++i) S.rec->words[i] = rng.next();
+        return;
+    }
     for (int y = 0; y < S.H; ++y)
         for (int x = 0; x < S.W; ++x) {
             const uint32_t w = rng.next();
@@ -308,6 +361,13 @@ inline void grain(Surf& S, double amount, VegasShiftRandom& rng)
 // tint toward a colour (blue, green, red, then the strength, all 0..1) over the whole picture (0x18025b720)
 inline void tintPass(Surf& S, const double c4[4])
 {
+    if (S.rec) {
+        Rec::Op o;
+        o.kind = 0;
+        for (int k = 0; k < 4; ++k) o.c4[k] = c4[k];
+        S.rec->ops.push_back(o);
+        return;
+    }
     if (!S.live()) return;
     if (S.bytes) {
         int c[3], a;
@@ -368,13 +428,13 @@ inline void drawObj(Surf& S, const Obj& o, VegasShiftRandom& rng)
             const int line = smod(rng.next(), 16) + 0x20;
             for (int y = 0; y < H; ++y) {
                 const int d = smod(rng.next(), 16) + line;
-                if (S.live()) add8(S.p8(x, y), d);
+                put8(S, x, y, d);
             }
         } else {
             const float line = (float)unit(rng.next()) * 0.065f + 0.125f;
             for (int y = 0; y < H; ++y) {
                 const float d = (float)unit(rng.next()) * 0.065f + line;
-                if (S.live()) addF(S.pf(x, y), d);
+                putF(S, x, y, d);
             }
         }
         break;
@@ -388,7 +448,7 @@ inline void drawObj(Surf& S, const Obj& o, VegasShiftRandom& rng)
             const int d = (int)((unit(rng.next()) + 1.0) * 7.0);
             for (int i = 0; i < n; ++i) {
                 const double dx = unit(rng.next()) * 0.97, dy = unit(rng.next());
-                if (S.live()) add8(S.p8(clampIndex(x, W), clampIndex(y, H)), d);
+                put8(S, clampIndex(x, W), clampIndex(y, H), d);
                 x += dx;
                 y += dy;
             }
@@ -396,7 +456,7 @@ inline void drawObj(Surf& S, const Obj& o, VegasShiftRandom& rng)
             const float d = (float)((unit(rng.next()) + 1.0) * 0.027450980392156862);
             for (int i = 0; i < n; ++i) {
                 const double dx = unit(rng.next()) * 0.97, dy = unit(rng.next());
-                if (S.live()) addF(S.pf(clampIndex(x, W), clampIndex(y, H)), d);
+                putF(S, clampIndex(x, W), clampIndex(y, H), d);
                 x += dx;
                 y += dy;
             }
@@ -414,7 +474,7 @@ inline void drawObj(Surf& S, const Obj& o, VegasShiftRandom& rng)
             const int base = (int)((ra + 1.0) * 8.0);
             for (int j = 0; j < n; ++j) {
                 const int d = smod(rng.next(), 8) + base;
-                if (S.live()) add8(S.p8(clampIndex(x, W), clampIndex(y, H)), d);
+                put8(S, clampIndex(x, W), clampIndex(y, H), d);
                 const double wc = unit(rng.next()), wd = unit(rng.next());
                 const double s = std::sin((double)j / (double)n * 3.14 * 2.0 + phase);
                 x += s * (wc * 1.65);
@@ -426,7 +486,7 @@ inline void drawObj(Surf& S, const Obj& o, VegasShiftRandom& rng)
             const float base = (float)((ra + 1.0) * 0.0313725508749485);
             for (int j = 0; j < n; ++j) {
                 const float d = (float)(unit(rng.next()) * 0.0313725508749485) + base;
-                if (S.live()) addF(S.pf(clampIndex(x, W), clampIndex(y, H)), d);
+                putF(S, clampIndex(x, W), clampIndex(y, H), d);
                 const double wc = unit(rng.next()), wd = unit(rng.next());
                 const double s = std::sin((double)j / (double)n * 3.14 * 2.0 + phase);
                 x += s * (wc * 1.65);
@@ -439,6 +499,13 @@ inline void drawObj(Surf& S, const Obj& o, VegasShiftRandom& rng)
         if (0 > o.age) return;
         if (!S.live()) return;
         const int dx = (int)(hw * o.x * 0.1), dy = (int)(hh * o.y * 1.4);
+        if (S.rec) {
+            Rec::Op op;
+            op.kind = 1;
+            op.dx = dx; op.dy = dy;
+            S.rec->ops.push_back(op);
+            break;
+        }
         if (S.bytes) {
             std::vector<uint8_t> src(S.b, S.b + (size_t)W * (size_t)H * 4);
             for (int y = 0; y < H; ++y)

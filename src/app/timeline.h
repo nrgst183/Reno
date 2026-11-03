@@ -290,6 +290,9 @@ private:
 // The time in the project's ruler format (timecode, seconds, frames, samples or measures and beats), counted from the
 // project's ruler start. Used by the timeline and the time readouts around it.
 std::string rulerTime(const Project& p, double seconds);
+// A numbered ruler mark's label when the marks are 'step' frames apart: rulerTime, but in Time & Frames without the frames
+// when the marks are whole seconds apart and they are all zero ("00:00:15", "00:01:00"), as VEGAS's ruler.
+std::string rulerLabelText(const Project& p, double seconds, int64_t step);
 // A time typed in the project's ruler format (or hh:mm:ss;ff, hh:mm:ss.sss, a plain number of seconds...) as seconds
 // from the project's start (the ruler's start taken off). False if it can't be read.
 bool parseRulerTime(const Project& p, const QString& text, double* seconds);

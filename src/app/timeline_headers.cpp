@@ -561,7 +561,7 @@ void TimelineWidget::Impl::paintRuler(QPainter& p, const QRect& clip)
 
     const double f = fps();
     const double labelW = rulerLabelWidth();
-    const int64_t step = rulerStep(pps, f, labelW);
+    const int64_t step = rulerStepNow(pps);
     const int64_t minor = step / rulerDivisions(step, pps, f);
     p.setPen(kRulerText);
     p.setFont(rulerFont);
@@ -573,7 +573,7 @@ void TimelineWidget::Impl::paintRuler(QPainter& p, const QRect& clip)
         if (x > c.right()) break;
         if (frames % step == 0) {
             p.fillRect(QRectF(x, kRulerTop + 4.0, 1.0, kRulerH - 4.0), kRulerText);
-            p.drawText(QPointF(x + 2.0, kRulerTop + 2.0 + rm.ascent()), QString::fromStdString(rulerTime(pr, t)));
+            p.drawText(QPointF(x + 2.0, kRulerTop + 2.0 + rm.ascent()), QString::fromStdString(rulerLabelText(pr, t, step)));
         } else {
             p.fillRect(QRectF(x, kTopH - 4.0, 1.0, 4.0), kRulerText);
         }
@@ -616,15 +616,18 @@ void TimelineWidget::Impl::paintCorners(QPainter& p, const QRect& clip)
         p.fillRect(QRect(0, 0, headerW, 1), kHeaderCurrent);
         p.fillRect(QRect(0, kTopH - 1, headerW, 1), kLine);
         p.fillRect(QRect(headerW - kHeaderGap, 1, kHeaderGap, kTopH), kLine);
-        p.setFont(smallFont);
+        p.setFont(labelFont);
         p.setPen(kText);
         const QRect inner(4, 1, headerW - kHeaderGap - 8, kTopH - 2);
         p.drawText(QRect(inner.left(), 2, inner.width(), 13), Qt::AlignLeft | Qt::AlignVCenter,
-                   elidedFormatName(smallFont, timeFormatName(), inner.width()));
+                   elidedFormatName(labelFont, timeFormatName(), inner.width()));
         for (int gy = 22; gy <= kTopH - 8; gy += 4) p.fillRect(QRect(5, gy, 2, 2), QColor(88, 88, 88));
         QFont f = q->font();
         const QString text = timeDisplayText();
-        f.setPixelSize(fittingPixelSize(q->font(), false, sizingText(text), inner.width() - 6, 21));
+        // over 100 fps a frame number can have three digits: size for them, so the size doesn't change at frame 100
+        QString sizing = sizingText(text);
+        if (fps() > 100.5 && sizing.size() == 11 && (sizing[8] == QChar(':') || sizing[8] == QChar(';'))) sizing += QChar('8');
+        f.setPixelSize(fittingPixelSize(q->font(), false, sizing, inner.width() - 6, vegasPx(20)));
         p.setFont(f);
         p.setPen(timeText.isValid() ? timeText : kTimeText);
         p.drawText(QRect(inner.left(), 15, inner.width() - 2, kTopH - 17), Qt::AlignRight | Qt::AlignVCenter, text);

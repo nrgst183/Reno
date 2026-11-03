@@ -102,10 +102,20 @@ inline float gaussSigmaV(double range, int W, int H)
     // (the host: max(W, H) x Range x pixel aspect / render-scale ratio, as a float, + 1.5f; aspect and ratio are 1)
     return (float)((double)std::max(W, H) * range) + 1.5f;
 }
-inline void gaussianBlur(const std::vector<float>& src, int W, int H, double rangeH, double rangeV, const bool ch[4], StoreFn store, std::vector<float>& out)
+// The coefficients of the two recursions (cy: down the columns, cx: along the rows), shared with the Vulkan plans (vkblur.cpp)
+struct GaussSetup { vfxgauss::Coefsf cx, cy; };
+inline GaussSetup gaussianSetup(int W, int H, double rangeH, double rangeV)
 {
     const float sv = gaussSigmaV(rangeV, W, H), sh = (float)((double)std::max(W, H) * rangeH + 1.5);
-    const vfxgauss::Coefsf cy = vfxgauss::toFloats(vfxgauss::build(sigmaFloat(sv))), cx = vfxgauss::toFloats(vfxgauss::build(sigmaFloat(sh)));
+    GaussSetup g;
+    g.cy = vfxgauss::toFloats(vfxgauss::build(sigmaFloat(sv)));
+    g.cx = vfxgauss::toFloats(vfxgauss::build(sigmaFloat(sh)));
+    return g;
+}
+inline void gaussianBlur(const std::vector<float>& src, int W, int H, double rangeH, double rangeV, const bool ch[4], StoreFn store, std::vector<float>& out)
+{
+    const GaussSetup gs = gaussianSetup(W, H, rangeH, rangeV);
+    const vfxgauss::Coefsf cy = gs.cy, cx = gs.cx;
     std::vector<float> r1, r2;
     blurHalves(src, W, H, cx, cy, store, r1, r2, fusedMad);
     out.resize(src.size());
@@ -118,12 +128,20 @@ inline void gaussianBlur(const std::vector<float>& src, int W, int H, double ran
 
 // ---------------------------------------------------------------------------------------------------- Unsharp Mask
 // Kernel 8: b = r1 + r2; v = s + Amount x (s - b); out = |v - b| > Threshold ? v : s (per channel, alpha too); then the store.
+inline GaussSetup unsharpSetup(int W, int H, double radius)
+{
+    const double big = (double)std::max(W, H);
+    const double sv = big * radius + 1.5, sh = big * radius / 1.0 + 1.5;
+    GaussSetup g;
+    g.cy = vfxgauss::toFloats(vfxgauss::build(sigmaDouble(sv)));
+    g.cx = vfxgauss::toFloats(vfxgauss::build(sigmaDouble(sh)));
+    return g;
+}
 inline void unsharpMask(const std::vector<float>& src, int W, int H, double radius, float amount, float threshold, StoreFn store, std::vector<float>& out)
 {
     RENO_BLUR_NO_FMA
-    const double big = (double)std::max(W, H);
-    const double sv = big * radius + 1.5, sh = big * radius / 1.0 + 1.5;
-    const vfxgauss::Coefsf cy = vfxgauss::toFloats(vfxgauss::build(sigmaDouble(sv))), cx = vfxgauss::toFloats(vfxgauss::build(sigmaDouble(sh)));
+    const GaussSetup gs = unsharpSetup(W, H, radius);
+    const vfxgauss::Coefsf cy = gs.cy, cx = gs.cx;
     std::vector<float> r1, r2;
     blurHalves(src, W, H, cx, cy, store, r1, r2, fusedMad);
     out.resize(src.size());
@@ -138,14 +156,22 @@ inline void unsharpMask(const std::vector<float>& src, int W, int H, double radi
 
 // ---------------------------------------------------------------------------------------------------- Glow
 // Kernel 8: b = r1 + r2; mask = clamp(((b.r + b.g + b.b) / 3 - Suppression) x Intensity, 0, 1); out = mix(s, Colour, mask) (Colour = r, g, b, 1); then the store.
-inline void glow(const std::vector<float>& src, int W, int H, double percent, float intensity, float suppression, const float colour[3], StoreFn store, std::vector<float>& out)
+inline GaussSetup glowSetup(int W, int H, double percent)
 {
-    RENO_BLUR_NO_FMA
     double g = percent;
     if (!(g > 0)) g = 0;           // (the host: 0 > g gives 0, else min(1, g))
     else g = std::min(1.0, g);
     const double sg = (double)std::max(W, H) * g * 0.5;
-    const vfxgauss::Coefsf cy = vfxgauss::toFloats(vfxgauss::build(sigmaDouble(sg))), cx = vfxgauss::toFloats(vfxgauss::build(sigmaDouble(sg)));
+    GaussSetup r;
+    r.cy = vfxgauss::toFloats(vfxgauss::build(sigmaDouble(sg)));
+    r.cx = vfxgauss::toFloats(vfxgauss::build(sigmaDouble(sg)));
+    return r;
+}
+inline void glow(const std::vector<float>& src, int W, int H, double percent, float intensity, float suppression, const float colour[3], StoreFn store, std::vector<float>& out)
+{
+    RENO_BLUR_NO_FMA
+    const GaussSetup gs = glowSetup(W, H, percent);
+    const vfxgauss::Coefsf cy = gs.cy, cx = gs.cx;
     std::vector<float> r1, r2;
     blurHalves(src, W, H, cx, cy, store, r1, r2, fusedMad);
     out.resize(src.size());
@@ -166,11 +192,20 @@ inline void glow(const std::vector<float>& src, int W, int H, double percent, fl
 // ---------------------------------------------------------------------------------------------------- Chroma Blur
 // Kernel 38 turns the picture into Y U V (U, V with 0.5 added; stored, so V above 1 is held at 1), the two Gaussian kernels blur it, kernel 33 takes U and V from the blur and Y and alpha from the
 // converted picture (stored), kernel 39 turns it back (stored).
+inline GaussSetup chromaSetup(double horizontalPixels, double verticalPixels)
+{
+    const float sv = (float)verticalPixels + 1.5f, sh = (float)horizontalPixels + 1.5f;
+    GaussSetup g;
+    g.cy = vfxgauss::toFloats(vfxgauss::build(sigmaFloat(sv)));
+    g.cx = vfxgauss::toFloats(vfxgauss::build(sigmaFloat(sh)));
+    return g;
+}
 inline void chromaBlur(const std::vector<float>& src, int W, int H, double horizontalPixels, double verticalPixels, StoreFn store, std::vector<float>& out)
 {
     RENO_BLUR_NO_FMA
-    const float sv = (float)verticalPixels + 1.5f, sh = (float)horizontalPixels + 1.5f;
-    const vfxgauss::Coefsf cy = vfxgauss::toFloats(vfxgauss::build(sigmaFloat(sv))), cx = vfxgauss::toFloats(vfxgauss::build(sigmaFloat(sh)));
+    (void)W; (void)H;
+    const GaussSetup gs = chromaSetup(horizontalPixels, verticalPixels);
+    const vfxgauss::Coefsf cy = gs.cy, cx = gs.cx;
     std::vector<float> yuv(src.size());
     for (size_t i = 0; i < src.size(); i += 4) {
         const float r = src[i], g = src[i + 1], b = src[i + 2];

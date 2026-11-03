@@ -3008,7 +3008,7 @@ MixerWindow::~MixerWindow() {}
 // with its box at the top; the effects, automation, mute and solo buttons; then from the left the fader (VEGAS's pair of
 // white caps for the left and right channels, locked together), the two meter bars with the scale between them ("- 3 -"
 // every 3 dB, 0 dB at the top of the bars and -60 dB at their foot, 7 pixels a dB at VEGAS's default size), the held
-// peaks over the bars ("-Inf" until something has played) and each channel's fader level under them.
+// peaks over the bars (nothing until something has played) and each channel's fader level under them.
 namespace {
 
 const QColor kMbBg(45, 45, 45), kMbWell(35, 35, 35), kMbText(220, 220, 220), kMbLine(70, 70, 70), kMbFill(132, 132, 132);
@@ -3158,7 +3158,7 @@ protected:
             const QRect r = peakRect(s);
             if (clip) p.fillRect(r.adjusted(2, 1, -2, -1), QColor(200, 30, 30));
             p.setPen(clip ? QColor(255, 255, 255) : kMbText);
-            p.drawText(r, Qt::AlignCenter, peakText(h));
+            if (h > 1e-6f || clip) p.drawText(r, Qt::AlignCenter, peakText(h));   // VEGAS shows nothing until something has played
         }
         const QRect cap = capRect();
         p.fillRect(QRect(kGrooveX, grooveTop(), 1, grooveBottom() - grooveTop() + 1), kMbLine);
@@ -3255,7 +3255,7 @@ protected:
             const QRect r = peakRect(k);
             if (clip) p.fillRect(r.adjusted(2, 1, -2, -1), QColor(200, 30, 30));
             p.setPen(clip ? QColor(255, 255, 255) : kMbText);
-            p.drawText(r, Qt::AlignCenter, peakText(meter.hold[k]));
+            if (meter.hold[k] > 1e-6f || clip) p.drawText(r, Qt::AlignCenter, peakText(meter.hold[k]));   // nothing until something has played
         }
 
         const QRect cap = capRect();

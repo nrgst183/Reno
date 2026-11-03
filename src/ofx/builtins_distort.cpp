@@ -3,6 +3,7 @@
 #include "builtins_impl.h"
 #include "vegas8.h"
 #include "vfxswirl.h"
+#include "vkfilters.h"
 #include "vfxwave.h"
 #include "../core/base.h"
 #include <algorithm>
@@ -150,6 +151,28 @@ void addFiltersDistort(std::vector<Def>& out)
         }
         out.push_back(filter("wave", "Wave", "The picture rippled up and down and side to side (VEGAS: the defaults leave it as it is)", ps, wave));
     }
+}
+
+// ---- for the Vulkan plans (vkgeom.cpp): the numbers the CPU code works out in doubles
+void swirlAreaGpu(Ctx& c, int W, int H, SwirlAreaGpu& o)
+{
+    const vfswirl::Area a = areaOf(c, W, H);
+    o.cx = a.cxPix; o.cy = a.cyPix; o.k13 = a.k13; o.syInv = a.syInv; o.rx = a.rx; o.ry = a.ry; o.amount = a.amount;
+}
+bool waveGpu(Ctx& c, int W, int H, double P[6])
+{
+    if (W < 2 || H < 2) return false;
+    P[0] = clampd(c.d("VerticalWaves"), 0, 1000);
+    P[1] = clampd(c.d("HorizontalWaves"), 0, 1000);
+    P[2] = clampd(c.d("VerticalAmplitude"), -1, 1);
+    P[3] = clampd(c.d("HorizontalAmplitude"), -1, 1);
+    P[4] = c.d("VerticalPhase");
+    P[5] = c.d("HorizontalPhase");
+    return true;
+}
+void waveKernelConstants(const double P[6], int W, int H, double k[4])
+{
+    k[0] = P[0] * vfwave::kPi; k[1] = P[1] * vfwave::kPi; k[2] = (double)W * P[2]; k[3] = (double)H * P[3];
 }
 
 }  // namespace builtin

@@ -10,6 +10,7 @@
 #include "builtins_fast.h"
 #include "builtins_more_internal.h"
 #include "vfxdefocus.h"
+#include "vkfft.h"
 #include "../core/base.h"
 #include <algorithm>
 #include <cmath>
@@ -371,6 +372,45 @@ void defocusRenderGpu(const Buf& src, Buf& out, double radiusPx, int shape, doub
         }
     });
     finish(res);
+}
+
+// The numbers defocusRenderGpu works out before it convolves, for the Vulkan plan (the same code: the mask, the tile grid, the twiddle factors, the scale).
+void defocusGpuSetup(int W, int H, double radiusPx, int shape, double orientDeg, double curvature, double thresh, double strength, DefocusGpuSetup& o)
+{
+    o = DefocusGpuSetup();
+    o.passThrough = true;
+    const double radPx = std::min(radiusPx, 0.25 * (double)std::max(W, H));
+    if (!(radPx >= 1.1)) return;
+    std::vector<uint8_t> mask;
+    int half = 0;
+    vfxdf::maskBytes(radPx, curvature, orientDeg, shape, 1.0, 1.0, mask, half);
+    double total = 0;
+    for (uint8_t b : mask) total += b;
+    if (half < 1 || !(total > 0)) return;
+    o.passThrough = false;
+    o.bloom = thresh < 0.996078431;
+    const float t = o.bloom ? (float)thresh : 0.f;
+    o.bloomT = t;
+    o.bloomK = o.bloom ? (float)((strength - (double)t) / (double)(1.0f - t)) : 1.f;
+    o.half = half;
+    o.mask.assign(mask.begin(), mask.end());
+    int T, ov;
+    bestTile((double)half, W, H, T, ov);
+    while (T - ov < 8 || ov / 2 < half + 1) { ov += 2; if (T - ov < 16) T *= 2; }
+    const int step = T - ov;
+    o.nx = o.ny = 0;
+    for (int x = -ov; x < W; x += step) ++o.nx;
+    for (int y = -ov; y < H; y += step) ++o.ny;
+    o.T = T;
+    o.ov = ov;
+    o.step = step;
+    int N = 1;
+    while (N < std::max(W, H)) N *= 2;
+    o.N = N;
+    o.scale = 1.0 / ((double)T * T * total);
+    const Twiddles fw(T, false), inv(T, true);
+    for (const auto& w : fw.w) { o.fw.push_back(w.real()); o.fw.push_back(w.imag()); }
+    for (const auto& w : inv.w) { o.inv.push_back(w.real()); o.inv.push_back(w.imag()); }
 }
 
 }  // namespace builtin

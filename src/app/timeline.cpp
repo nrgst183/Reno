@@ -124,6 +124,10 @@ TimelineWidget::TimelineWidget(Playback* playback, QWidget* parent) : QWidget(pa
 {
     QSettings st;
     d->timeText = QColor(st.value("timeline/timeDisplayText").toString());
+    {
+        const int src = st.value("timeline/timeDisplaySource", 0).toInt();
+        if (src >= 0 && src <= (int)TimeDisplaySource::ClockOut) timeDisplaySource() = (TimeDisplaySource)src;
+    }
     d->timeBack = QColor(st.value("timeline/timeDisplayBackground").toString());
 }
 
@@ -433,6 +437,18 @@ QRect TimelineWidget::timeDisplayRect() const { return QRect(0, 0, d->headerW, k
 std::string rulerTime(const Project& p, double seconds)
 {
     return formatTime(p.settings, seconds + p.settings.rulerStart, p.settings.rulerFormat);
+}
+
+std::string rulerLabelText(const Project& p, double seconds, int64_t step)
+{
+    std::string text = rulerTime(p, seconds);
+    const double fps = p.settings.fps();
+    const int64_t nominal = std::max<int64_t>(1, std::llround(fps > 0 ? fps : 30.0));
+    if (p.settings.rulerFormat == "timecode" && step >= nominal && step % nominal == 0) {
+        const size_t at = text.rfind(':');
+        if (at != std::string::npos && at + 1 < text.size() && text.find_first_not_of('0', at + 1) == std::string::npos) text.resize(at);
+    }
+    return text;
 }
 
 bool parseRulerTime(const Project& p, const QString& text, double* seconds)

@@ -70,10 +70,9 @@ inline Key bezier(const Key& P0, const Key& P1, const Key& P2, const Key& P3, do
     return f;
 }
 
-// the curve through keys sorted by time, read at t
-inline Key evalCurve(const std::vector<Key>& K, double t)
+// the segment of the curve through keys sorted by time that holds the time t: the index i of the first key later than t (at most n)
+inline int segmentAt(const std::vector<Key>& K, double t)
 {
-    const double tension = 0.5;
     const int n = (int)K.size();
     int lo = 0, hi = n - 1;
     while (hi - lo > 1) {
@@ -82,12 +81,21 @@ inline Key evalCurve(const std::vector<Key>& K, double t)
     }
     int i = lo;
     while (i < n && K[i].d[0] <= t) ++i;
+    return i;
+}
+
+// the Bezier points of segment i: the keys m1 and p0 around it and the handles h1, h2 (the spline's, pulled to the thirds by the keys' weights)
+inline void segmentPoints(const std::vector<Key>& K, int i, Key& m1, Key& h1, Key& h2, Key& p0)
+{
+    const double tension = 0.5;
+    const int n = (int)K.size();
     auto at = [&](int j) -> const Key& { return K[j < 0 ? 0 : (j > n - 1 ? n - 1 : j)]; };
     const Key& m2 = at(i - 2);
-    const Key& m1 = at(i - 1);
-    const Key& p0 = at(i);
+    m1 = at(i - 1);
+    p0 = at(i);
     const Key& p1 = at(i + 1);
-    Key h1 = handle(m2, m1, p0, tension), h2 = handle(p1, p0, m1, tension);
+    h1 = handle(m2, m1, p0, tension);
+    h2 = handle(p1, p0, m1, tension);
     const double third = 1.0 / 3.0;
     const double w1 = m1.d[4], w2 = p0.d[4];
     if (1.0 > w1)
@@ -100,6 +108,14 @@ inline Key evalCurve(const std::vector<Key>& K, double t)
             const double r = (m1.d[k] - p0.d[k]) * third + p0.d[k];
             h2.d[k] = (h2.d[k] - r) * w2 + r;
         }
+}
+
+// the curve through keys sorted by time, read at t
+inline Key evalCurve(const std::vector<Key>& K, double t)
+{
+    const int i = segmentAt(K, t);
+    Key m1, h1, h2, p0;
+    segmentPoints(K, i, m1, h1, h2, p0);
     const double dt = p0.d[0] - m1.d[0];
     double u = 0;
     if (dt > 0) u = (t - m1.d[0]) / dt;

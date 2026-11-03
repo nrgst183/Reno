@@ -1212,6 +1212,7 @@ void pixelate(Ctx& c)
 
 // Linear blur: see vegasLinearBlur() (builtins_deriche.cpp). linearBlurTaps is an older approximation kept for callers.
 }  // namespace
+void pixelateCellsOclHost(int n, int cells, bool vertical, std::vector<std::pair<int, int>>& out) { pixelateCellsOcl(n, cells, vertical, out); }
 void linearBlurTaps(double len, double dx, double dy, int& n, double& sx, double& sy, std::vector<float>& wt)
 {
     const int R = (int)len;
@@ -1247,7 +1248,6 @@ int chromaKeyDespill(const double* key) { return (key[2] > key[1] && key[2] > ke
 // The keyer's blur (VEGAS's own, in single precision): the alpha bytes go through Deriche's recursive Gaussian along the rows (sigma sx) into a float plane (clipped to 0..255), then
 // along its columns (sigma sy); the answer is cut to a whole level. size = the larger side * BlurAmount * 0.25 + 1.5 and sigma = size / sqrt(2 ln 255), all in floats; a sigma of 0.6
 // or less means no blur.
-struct KeyerCoefs { float A[5], B[5], C[5], D[5], E[5]; };
 // VEGAS's coefficient generator for this blur (a second / third order recursive Gaussian, constants and order of operations as in Vfx1.ofx): n (causal), d (feedback), m (anti-causal),
 // bn / bm (the edge terms) in doubles.
 static void keyerCoefsD(double sigma, double* n, double* d, double* m, double* bn, double* bm)
@@ -1425,6 +1425,30 @@ void chromaKeyerGpuSetup(Ctx& c, int W, int H, ChromaKeyerSetup& o)
     o.maskOnly = c.b("ShowMaskOnly");
     o.despill = chromaKeyDespill(key);
 }
+// The same for VEGAS's OpenCL kernels of the keyer (vfxcolour.h): the key's settings, its HSL, the blur's coefficients
+void chromaKeyerClSetup(Ctx& c, int W, int H, ChromaKeyerCl& o)
+{
+    const Color kc = c.color("color");
+    vcol::KeyerSettings& s = o.s;
+    s.key[0] = (float)kc.r; s.key[1] = (float)kc.g; s.key[2] = (float)kc.b;
+    s.low = (float)c.d("LowThreshold");
+    s.high = (float)c.d("HighThreshold");
+    s.despill = (kc.b > kc.g && kc.b > kc.r) ? 2 : ((kc.g > kc.b && kc.g > kc.r) ? 1 : 0);
+    s.showMask = c.b("ShowMaskOnly");
+    vcol::keyerHsl(s.key, o.kh);
+    o.inv = vcol::keyerInvRange(s);
+    const float amount = (float)clampd(c.d("BlurAmount"), 0, 1);
+    const float size = std::max((float)W, (float)H) * amount * 0.25f + 1.5f;
+    const float ln2 = std::log(0.003921568859368563f) + std::log(0.003921568859368563f);
+    const float sigma = std::sqrt(-((size * size) / ln2));
+    o.blur = sigma > 0.6f && W > 1 && H > 1;
+    for (int i = 0; i < 25; ++i) o.coefs[i] = 0.f;
+    if (o.blur) {
+        const KeyerCoefs k = keyerCoefs(sigma);
+        o.k = k;
+        for (int i = 0; i < 5; ++i) { o.coefs[i] = k.A[i]; o.coefs[5 + i] = k.B[i]; o.coefs[10 + i] = k.C[i]; o.coefs[15 + i] = k.D[i]; o.coefs[20 + i] = k.E[i]; }
+    }
+}
 // Border's set-up numbers and the bevel's per-row spans, shared with the Vulkan plan
 static void borderSpans(BorderSpans& s, float d, float extent, const int* fa, const int* fb)
 {
@@ -1523,17 +1547,12 @@ std::vector<uint8_t>& tlLevels() { thread_local std::vector<uint8_t> v; return v
 static float oclStore12Fn(float v) { return more::oclStore12(v); }
 static void chromaKeyerOpenCl(Ctx& c)
 {
-    const Color kc = c.color("color");
-    vcol::KeyerSettings s;
-    s.key[0] = (float)kc.r; s.key[1] = (float)kc.g; s.key[2] = (float)kc.b;
-    s.low = (float)c.d("LowThreshold");
-    s.high = (float)c.d("HighThreshold");
-    s.despill = (kc.b > kc.g && kc.b > kc.r) ? 2 : ((kc.g > kc.b && kc.g > kc.r) ? 1 : 0);
-    s.showMask = c.b("ShowMaskOnly");
     const int W = c.out.w, H = c.out.h;
-    float kh[3];
-    vcol::keyerHsl(s.key, kh);
-    const float inv = vcol::keyerInvRange(s);
+    ChromaKeyerCl su;
+    chromaKeyerClSetup(c, W, H, su);
+    const vcol::KeyerSettings& s = su.s;
+    const float* kh = su.kh;
+    const float inv = su.inv;
     std::vector<float> alpha((size_t)W * H);
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
@@ -1543,13 +1562,9 @@ static void chromaKeyerOpenCl(Ctx& c)
             alpha[(size_t)y * W + x] = vcol::keyerAlpha(s, kh, inv, sp);
         }
     });
-    const float amount = (float)clampd(c.d("BlurAmount"), 0, 1);
-    const float size = std::max((float)W, (float)H) * amount * 0.25f + 1.5f;
-    const float ln2 = std::log(0.003921568859368563f) + std::log(0.003921568859368563f);
-    const float sigma = std::sqrt(-((size * size) / ln2));
-    const bool blur = sigma > 0.6f && W > 1 && H > 1;
+    const bool blur = su.blur;
     if (blur) {
-        const KeyerCoefs k = keyerCoefs(sigma);
+        const KeyerCoefs& k = su.k;
         // (VEGAS's rows run bottom first: the kernels' first row is the bottom row of the picture)
         std::vector<float> plane((size_t)W * H);
         for (int y = 0; y < H; ++y) std::memcpy(&plane[(size_t)(H - 1 - y) * W], &alpha[(size_t)y * W], sizeof(float) * (size_t)W);
@@ -1914,24 +1929,29 @@ struct NoiseR250 {
     }
 };
 
+// Add Noise's settings for VEGAS's OpenCL kernel (shared with the Vulkan plan): with Animate on VEGAS seeds from the C library's rand() of the whole process, which nobody can repeat;
+// Reno takes a number from the frame's time stamp instead, so that preview and render agree and every frame differs. Animate off: seed 0, exactly VEGAS's pictures.
+void addNoiseSettings(Ctx& c, vfxnoise::Params& P)
+{
+    P.level = (float)clampd(c.d("NoiseLevel"), 0, 1);
+    P.mono = c.b("Monochromatic");
+    P.gauss = c.b("GaussianNoise");
+    if (c.b("Animate")) {
+        uint32_t h = (uint32_t)c.legacySeedTime() * 2654435761u;
+        h ^= h >> 15;
+        h *= 2246822519u;
+        h ^= h >> 13;
+        P.seed = (int)(h & 0x7fffu);
+    }
+}
+
 void addNoise(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     if (c.openCl) {
-        // VEGAS with GPU acceleration on: the OpenCL kernel (vfxnoise.h), ranlux per column, noise added with the alpha taken out. No render-scale factor there. With Animate on VEGAS seeds
-        // from the C library's rand() of the whole process, which nobody can repeat; Reno takes a number from the frame's time stamp instead, so that preview and render agree and every
-        // frame differs. Animate off: seed 0, exactly VEGAS's pictures.
+        // VEGAS with GPU acceleration on: the OpenCL kernel (vfxnoise.h), ranlux per column, noise added with the alpha taken out. No render-scale factor there.
         vfxnoise::Params P;
-        P.level = (float)clampd(c.d("NoiseLevel"), 0, 1);
-        P.mono = c.b("Monochromatic");
-        P.gauss = c.b("GaussianNoise");
-        if (c.b("Animate")) {
-            uint32_t h = (uint32_t)c.legacySeedTime() * 2654435761u;
-            h ^= h >> 15;
-            h *= 2246822519u;
-            h ^= h >> 13;
-            P.seed = (int)(h & 0x7fffu);
-        }
+        addNoiseSettings(c, P);
         vfxnoise::render(c.src.px.data(), c.out.px.data(), W, H, P);
         if (c.host8)
             for (float& f : c.out.px) f = more::oclStore12(f);
@@ -1999,6 +2019,8 @@ Def filter(const char* id, const char* label, const char* what, std::vector<PDef
 }
 
 }  // namespace
+
+void addNoiseGpuSettings(Ctx& c, vfxnoise::Params& P) { addNoiseSettings(c, P); }
 
 void addFilters(std::vector<Def>& out)
 {

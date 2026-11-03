@@ -8,6 +8,7 @@
 #include "../../src/ofx/builtins.h"
 #include "../../src/ofx/ofxhost.h"
 #include "../../src/ofx/vfxcredit.h"
+#include "../../src/ofx/vfxlayerdim.h"
 #include "../../src/vegas/vegas.h"
 #include <cstdio>
 #include <cstdlib>
@@ -784,6 +785,34 @@ int main(int argc, char** argv)
             }
         }
         check(crashes == 0, "every built-in survives nonsense settings (huge, negative, not a number, zero)", strfmt("%d failed", crashes));
+    }
+    // ---- Layer Dimensionality on pictures one pixel wide or high (the light kernel's Sobel read a second column that is not there: undefined behaviour)
+    {
+        const double gc[3] = {1, 0.5, 0.2}, gc2[3] = {0.2, 0.5, 1}, lt[3] = {0.3, -0.5, 0.8};
+        const int dims[][2] = {{1, 1}, {1, 9}, {9, 1}, {2, 2}, {1, 2}, {2, 1}};
+        bool finite = true;
+        int runs = 0;
+        for (const auto& d : dims)
+            for (int st = 0; st < 3; ++st)
+                for (int gt = 0; gt < 5; ++gt)
+                    for (double fg : {0.0, 1.0}) {
+                        const ofx::vfxld::Settings ls = ofx::vfxld::makeSettings(st, gt, 0.05, 0.3, 0.7, gc, gc2, 0.3, fg, 0.8, 0.5, lt, 0.5, 0.3, 0.5, 0.9, 1.0);
+                        std::vector<float> in((size_t)d[0] * d[1] * 4), out(in.size());
+                        for (size_t i = 0; i < in.size(); ++i) in[i] = (float)((i * 37) % 11) / 11.f;
+                        ofx::vfxld::render(in.data(), d[0], d[1], ls, out.data());
+                        for (float v : out) if (!std::isfinite(v)) finite = false;
+                        ++runs;
+                    }
+        check(finite, "Layer Dimensionality: 1 pixel wide and high pictures render with finite values", strfmt("%d runs", runs));
+        // a picture of one column lights like the edge column of a wider one whose second column equals the first: the Sobel of the one column has no horizontal gradient
+        const ofx::vfxld::Settings ls = ofx::vfxld::makeSettings(0, 0, 0, 0, 0, gc, gc2, 0, 1.0, 0, 0.5, lt, 0.5, 0.3, 0.5, 1.0, 1.0);
+        std::vector<float> one(7 * 4), two(7 * 2 * 4), o1(one.size()), o2(two.size());
+        for (int y = 0; y < 7; ++y) for (int k = 0; k < 4; ++k) { one[y * 4 + k] = two[(y * 2) * 4 + k] = two[(y * 2 + 1) * 4 + k] = (float)((y * 5 + k * 3) % 8) / 8.f; }
+        ofx::vfxld::render(one.data(), 1, 7, ls, o1.data());
+        ofx::vfxld::render(two.data(), 2, 7, ls, o2.data());
+        bool same = true;
+        for (int y = 0; y < 7; ++y) for (int k = 0; k < 4; ++k) if (o1[y * 4 + k] != o2[(y * 2) * 4 + k]) same = false;
+        check(same, "Layer Dimensionality: a 1 pixel wide picture gives what the first column of the same picture two pixels wide gives");
     }
     // ---- 32-bit projects
     {

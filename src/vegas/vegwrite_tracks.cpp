@@ -34,7 +34,7 @@ OutNode Writer::track(const Track& t, size_t index)
     // envelopes
     if (!t.envelopes.empty() || (o && !o->hiddenEnvelopes.empty())) {
         OutNode el = listNode(G::TrackEnvelopes);
-        envelopes(el, t.envelopes, o ? &o->hiddenEnvelopes : nullptr, true, t.type, nullptr, nullptr, label);
+        envelopes(el, t.envelopes, o ? &o->hiddenEnvelopes : nullptr, true, t.type, nullptr, nullptr, label, &t.fx);
         if (!el.kids.empty()) out.kids.push_back(std::move(el));
     }
 
@@ -330,7 +330,7 @@ OutNode Writer::event(const Event& e, const Track& t)
     // envelopes
     if (!e.envelopes.empty() || (o && !o->hiddenEnvelopes.empty())) {
         OutNode el = listNode(G::EventEnvelopes);
-        envelopes(el, e.envelopes, o ? &o->hiddenEnvelopes : nullptr, false, t.type, &e, o ? &was : nullptr, where);
+        envelopes(el, e.envelopes, o ? &o->hiddenEnvelopes : nullptr, false, t.type, &e, o ? &was : nullptr, where, &e.fx);
         if (!el.kids.empty()) out.kids.push_back(std::move(el));
     }
 

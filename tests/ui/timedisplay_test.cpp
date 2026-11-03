@@ -1,5 +1,5 @@
 // The time display over the track headers and the ruler at frame rates over 100 (src/engine/timefmt.cpp formatTime,
-// src/app/timeline.cpp): Time & Frames writes the frame number with three digits at 120 fps (00:02:06:102, then 00:02:07:006), so
+// src/app/timeline.cpp): Time & Frames writes the frame number with two digits, three from frame 100 on (00:02:06:102, then 00:02:07:06), so
 // the time display's text keeps its size and width from one frame to the next.
 //
 //   timedisplay_test <output folder>
@@ -7,7 +7,9 @@
 // Build: uibuild timedisplay_test tests/ui/timedisplay_test.cpp timeline fxwindow panels mixer editdialogs vegas mainwindow
 // QT_QPA_PLATFORM=offscreen.
 #include "../../src/app/mainwindow.h"
+#include "../../src/app/midisync.h"
 #include "../../src/app/playback.h"
+#include "../../src/app/timesource.h"
 #include "../../src/app/timeline.h"
 #include "uitestlib.h"
 #include <QApplication>
@@ -80,10 +82,36 @@ int main(int argc, char** argv)
         const std::string b = rulerTime(app.project(), app.cursor());
         const auto spanB = textSpan(w);
         uitest::shot(&w, out + QString("/time120_b_%1.png").arg(name));
-        check(a == "00:02:06:102" && b == "00:02:07:006", std::string(name) + ": 120 fps reads 00:02:06:102 then 00:02:07:006", a + " " + b);
-        check(spanA.first >= 0 && spanB.first >= 0 && std::abs((spanA.second - spanA.first) - (spanB.second - spanB.first)) <= 2,
-              std::string(name) + ": the time display's text keeps its width",
+        check(a == "00:02:06:102" && b == "00:02:07:06", std::string(name) + ": 120 fps reads 00:02:06:102 then 00:02:07:06", a + " " + b);
+        // the text is one digit shorter at frame 6 but drawn at the same size: its digits are as wide as the other's
+        const int wa = spanA.second - spanA.first, wb = spanB.second - spanB.first;
+        check(spanA.first >= 0 && spanB.first >= 0 && wa > wb && wa - wb <= wa / 8,
+              std::string(name) + ": the time display's text keeps its size (one digit narrower at frame 6)",
               strfmt("%d..%d and %d..%d", spanA.first, spanA.second, spanB.first, spanB.second));
+    }
+    // VEGAS's ruler leaves the frames off whole-second marks (00:00:15 over 15-second marks), and its time display shows the
+    // cursor's time in the MTC rate with "MTC Input Not Active" over it while no timecode comes in
+    {
+        app.edit("140 fps", [](Project& p) { p.settings.fpsNum = 140; p.settings.fpsDen = 1; p.settings.rulerFormat = "timecode"; p.settings.rulerStart = 0; });
+        const Project& p = app.project();
+        check(rulerLabelText(p, 15.0, 15 * 140) == "00:00:15" && rulerLabelText(p, 60.0, 30 * 140) == "00:01:00",
+              "ruler: whole-second marks have no frames", rulerLabelText(p, 15.0, 15 * 140));
+        check(rulerLabelText(p, 15.0, 70) == "00:00:15:00" && rulerLabelText(p, 15.5, 70) == "00:00:15:70",
+              "ruler: marks closer than a second keep their frames", rulerLabelText(p, 15.0, 70) + " " + rulerLabelText(p, 15.5, 70));
+        app.edit("time", [](Project& p2) { p2.settings.rulerFormat = "time"; });
+        check(rulerLabelText(app.project(), 15.0, 15 * 140) == "00:00:15.000", "ruler: other formats are written as they are",
+              rulerLabelText(app.project(), 15.0, 15 * 140));
+        app.edit("timecode", [](Project& p2) { p2.settings.rulerFormat = "timecode"; });
+        app.setCursor(12.0 + 42.0 / 140.0);
+        check(rulerTime(app.project(), app.cursor()) == "00:00:12:42", "cursor readout: 00:00:12:42 at 140 fps", rulerTime(app.project(), app.cursor()));
+        MidiSync midi(&playback);
+        timeDisplaySource() = TimeDisplaySource::MtcIn;
+        uitest::settle(100);
+        check(midiTimeDisplayText()(TimeDisplaySource::MtcIn) == "00:00:12:09", "MTC input not active: the cursor's time at 30 fps",
+              midiTimeDisplayText()(TimeDisplaySource::MtcIn));
+        check(midiTimeDisplayLabel()(TimeDisplaySource::MtcIn) == "MTC Input Not Active", "MTC input not active: its label");
+        uitest::shot(&w, out + "/mtc_inactive.png");
+        timeDisplaySource() = TimeDisplaySource::Cursor;
     }
     // the ruler, zoomed in to frames: its labels have three-digit frame numbers too, and don't overlap
     app.setCursor(127.0);

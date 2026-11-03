@@ -1,8 +1,11 @@
 // Built-in creative effects (Black Bar Fill, Crop, Picture in Picture, film looks, Vignette, TV Simulator, Timecode, Deform...); see builtins_more.cpp.
 #include "vfxpipcrop.h"
 #include "vfxlayerdim.h"
+#include "vktext.h"
 #include "vkfilters.h"
+#include "vkfx2.h"
 #include <cstring>
+#include <cstdlib>
 #include "builtins_more_internal.h"
 #include "builtins_fast.h"
 #include "builtins_deriche.h"
@@ -417,7 +420,7 @@ void pipSetup(Ctx& c, int W, int H, PipSetup& o)
 
 // Picture in Picture as VEGAS's OpenCL kernel draws it (vfxpipcrop.h): the matrix from the builder (Free Form: the 4-point solver, and when that cannot be solved the
 // parametric matrix), the position tested 0 <= u < W, 0 <= v < H, the card's bilinear read (1/256 weights, transparent beyond the picture), times the opacity.
-static void pictureInPictureOpenCl(Ctx& c, int W, int H)
+vfxpc::PipSetup8 pipOpenClSetup(Ctx& c, int W, int H)
 {
     double lx, ly;
     c.xy("Location", lx, ly);
@@ -434,6 +437,17 @@ static void pictureInPictureOpenCl(Ctx& c, int W, int H)
         done = vfxpc::pipSetupFreeForm(W, H, cr, clampd(c.d("Opacity"), 0, 1), su);
     }
     if (!done) su = vfxpc::pipSetupAffine(W, H, mode, lx, ly, scale, scaleY, c.d("DistortionShear"), c.d("Angle"), clampd(c.d("Opacity"), 0, 1));
+    return su;
+}
+void pipOpenClGpu(Ctx& c, int W, int H, float M[9], float& opacity)       // (for the Vulkan plan, vkfilters.cpp)
+{
+    const vfxpc::PipSetup8 su = pipOpenClSetup(c, W, H);
+    for (int i = 0; i < 9; ++i) M[i] = su.M[i];
+    opacity = su.opacity;
+}
+static void pictureInPictureOpenCl(Ctx& c, int W, int H)
+{
+    const vfxpc::PipSetup8 su = pipOpenClSetup(c, W, H);
     std::vector<float> src((size_t)W * H * 4);                           // rows from the bottom
     for (int y = 0; y < H; ++y) std::memcpy(&src[(size_t)y * W * 4], c.src.at(0, H - 1 - y), (size_t)W * 4 * sizeof(float));
     const float* M = su.M;
@@ -549,16 +563,18 @@ void pictureInPicture(Ctx& c)
 // same down the rows; every row starts again at cell 0. With Chormaticity above 0 the colours take planes 0 (first colour; in memory order blue), 1 and 2 as
 // c x plane + (1 - c) x plane 0; without it all three take plane 0. The picture is multiplied by 1.3 x noise and mixed in by Amount: 8-bit with the weight
 // (int)(Amount x 255) and the noisy value cut to 0..alpha and the integer mix ((d x w + 128) + that >> 8) >> 8; float with the float arithmetic as it comes.
-void filmGrain(Ctx& c)
+// the numbers of one frame (filmGrain() and the Vulkan plan use these)
+void filmGrainSetup(Ctx& c, int W, int H, FilmGrainSetup& g)
 {
-    const double amount = clampd(c.d("Amount"), 0, 1), gran = clampd(c.d("Granularity"), 0, 1), chroma = clampd(c.d("Chormaticity"), 0, 1);
-    const int W = c.out.w, H = c.out.h;
-    if (W <= 0 || H <= 0) return;
+    g.amount = clampd(c.d("Amount"), 0, 1);
+    g.gran = clampd(c.d("Granularity"), 0, 1);
+    g.chroma = clampd(c.d("Chormaticity"), 0, 1);
     // the grain's size is worked from the project's frame, the cells are drawn at this frame's scale
     const double frameH = c.frameH > 0 ? (double)c.frameH : (double)H / c.scale;
-    const double grain = std::max(1.0, (gran * 2 + 1) * frameH / 240.0);
+    const double grain = std::max(1.0, (g.gran * 2 + 1) * frameH / 240.0);
     VegasShiftRandom rng((uint32_t)((int)(grain * 1000.0) + c.legacySeedTime()));
-    std::vector<double> table(12288);
+    g.table.assign(12288, 0.0);
+    std::vector<double>& table = g.table;
     for (int k = 0; k < 12288;) {
         const double u = (double)(rng.next() & 0xffffu) / 65535.0 * 2 - 1.0;
         const double v = (double)(rng.next() & 0xffffu) / 65535.0 * 2 - 1.0;
@@ -566,20 +582,47 @@ void filmGrain(Ctx& c)
         if (q >= 1.0 || q == 0.0) continue;
         table[(size_t)k++] = (std::sqrt(std::log(q) * -2.0 / q) * v + 5.28) / 10.56;
     }
-    const double stepX = 1.0 / (grain * c.scale), stepY = 1.0 / (grain * c.scale);
+    g.stepX = 1.0 / (grain * c.scale);
+    g.stepY = 1.0 / (grain * c.scale);
     // the table rows and the fraction between them at each picture row
-    std::vector<int> rowA((size_t)H), rowB((size_t)H);
-    std::vector<double> frac((size_t)H);
+    g.rowA.assign((size_t)H, 0); g.rowB.assign((size_t)H, 0);
+    g.frac.assign((size_t)H, 0.0);
     {
         int r0 = 0, r1 = 1;
         double fy = 0;
         for (int y = 0; y < H; ++y) {
-            rowA[(size_t)y] = r0; rowB[(size_t)y] = r1; frac[(size_t)y] = fy;
-            fy += stepY;
+            g.rowA[(size_t)y] = r0; g.rowB[(size_t)y] = r1; g.frac[(size_t)y] = fy;
+            fy += g.stepY;
             if (fy >= 1.0) { r0 = r1; fy -= 1.0; r1 = (r1 + 1) & 63; }
         }
     }
-    const int wt = (int)(amount * 255.0) & 0xff;
+    // (every row starts again at cell 0: the columns' cells and fractions are the same in each)
+    g.colA.assign((size_t)W, 0); g.colB.assign((size_t)W, 0);
+    g.colFrac.assign((size_t)W, 0.0);
+    {
+        int c0 = 0, c1 = 1;
+        double fx = 0;
+        for (int x = 0; x < W; ++x) {
+            g.colA[(size_t)x] = c0; g.colB[(size_t)x] = c1; g.colFrac[(size_t)x] = fx;
+            fx += g.stepX;
+            if (fx >= 1.0) { c0 = c1; fx -= 1.0; c1 = (c1 + 1) & 63; }
+        }
+    }
+    g.wt = (int)(g.amount * 255.0) & 0xff;
+}
+
+void filmGrain(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    FilmGrainSetup g;
+    filmGrainSetup(c, W, H, g);
+    const double amount = g.amount, chroma = g.chroma, stepX = g.stepX;
+    const std::vector<double>& table = g.table;
+    const std::vector<int>& rowA = g.rowA;
+    const std::vector<int>& rowB = g.rowB;
+    const std::vector<double>& frac = g.frac;
+    const int wt = g.wt;
     const float amountF = (float)amount;
     const bool colour = chroma > 0;
     forRows(H, W, [&](int y) {
@@ -673,10 +716,10 @@ std::shared_ptr<FilmCache> filmCacheFor(const void* inst)
 }
 }  // namespace
 
-void filmEffects(Ctx& c)
+// One frame of the effect on 'live' (the picture's bytes or floats, or Rec to write the work down for the Vulkan plan): the key, the state kept for the effect and the frames
+// (the unseen one first after a jump).
+static void filmRun(Ctx& c, int W, int H, vfxfilm::Surf& live)
 {
-    const int W = c.out.w, H = c.out.h;
-    if (W <= 0 || H <= 0) return;
     const Color col = c.color("Color");
     FilmKey key;
     key.W = W; key.H = H;
@@ -686,6 +729,42 @@ void filmEffects(Ctx& c)
     // the frame number since the event's start (nonsense times count as the first frame)
     long n = std::isfinite(c.time) ? std::lround(c.time) : 0;
     n = std::max(0L, std::min(n, 100000000L));
+    vfxfilm::Surf dry;
+    dry.W = W; dry.H = H; dry.bytes = true;
+    std::shared_ptr<FilmCache> cp = filmCacheFor(c.instance);
+    FilmCache& fc = *cp;
+    std::lock_guard<std::mutex> lk(fc.mu);
+    if (!fc.valid || !fc.key.same(key)) {
+        fc.key = key; fc.valid = true; fc.last = -1000000; fc.lastJumped = false; fc.cur = vfxfilm::Sim(); fc.before = vfxfilm::Sim();
+    }
+    bool jumped;
+    if (n == fc.last) {                 // the same picture again: from the state it started from
+        fc.cur = fc.before;
+        jumped = fc.lastJumped;
+    } else {
+        fc.before = fc.cur;
+        jumped = n != fc.last + 1;
+    }
+    if (jumped) vfxfilm::frame(fc.cur, key.p, dry, key.dt);
+    vfxfilm::frame(fc.cur, key.p, live, key.dt);
+    fc.last = n;
+    fc.lastJumped = jumped;
+}
+
+// The Vulkan plan's part (vkfx2.cpp): the same frame with the picture work written down in 'rec' (the state stays here on the CPU).
+void filmEffectsGpu(Ctx& c, int W, int H, vfxfilm::Rec& rec, bool& bytes)
+{
+    bytes = c.levels;
+    vfxfilm::Surf live;
+    live.W = W; live.H = H; live.bytes = bytes;
+    live.rec = &rec;
+    if (W > 0 && H > 0) filmRun(c, W, H, live);
+}
+
+void filmEffects(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
     // the picture as VEGAS's bytes (blue first); a float picture is the same bytes' worth of values, premultiplied
     const bool bytes = c.levels;
     std::vector<uint8_t> b8;
@@ -710,28 +789,7 @@ void filmEffects(Ctx& c)
     live.W = W; live.H = H; live.bytes = bytes;
     live.b = bytes ? b8.data() : nullptr;
     live.f = bytes ? nullptr : bf.data();
-    vfxfilm::Surf dry;
-    dry.W = W; dry.H = H; dry.bytes = true;
-    {
-        std::shared_ptr<FilmCache> cp = filmCacheFor(c.instance);
-        FilmCache& fc = *cp;
-        std::lock_guard<std::mutex> lk(fc.mu);
-        if (!fc.valid || !fc.key.same(key)) {
-            fc.key = key; fc.valid = true; fc.last = -1000000; fc.lastJumped = false; fc.cur = vfxfilm::Sim(); fc.before = vfxfilm::Sim();
-        }
-        bool jumped;
-        if (n == fc.last) {                 // the same picture again: from the state it started from
-            fc.cur = fc.before;
-            jumped = fc.lastJumped;
-        } else {
-            fc.before = fc.cur;
-            jumped = n != fc.last + 1;
-        }
-        if (jumped) vfxfilm::frame(fc.cur, key.p, dry, key.dt);
-        vfxfilm::frame(fc.cur, key.p, live, key.dt);
-        fc.last = n;
-        fc.lastJumped = jumped;
-    }
+    filmRun(c, W, H, live);
     for (size_t i = 0; i < npx; ++i) {
         float* o = &c.out.px[i * 4];
         if (bytes) {
@@ -776,13 +834,11 @@ void vignetteSetup(Ctx& c, int W, int H, VignetteSetup& o)
 // With GPU acceleration on VEGAS draws the Vignette with its OpenCL kernel (vfxvignette.h, ported from the decoded kernel): float, the centre and radius measured from the
 // (W - 1) x (H - 1) frame, the rows counted from the bottom, the colour mixed into the premultiplied pixel and the alpha kept. The 8-bit frame gets the float result rounded to
 // the nearest level with exact halves down (vegasTiesDown, vegasDrawsFloat lists the effect).
-static void vignetteOpenCl(Ctx& c)
+static void vignetteOclParams(Ctx& c, int W, int H, vfxvig::Params& p, float cc[3], float& ca)
 {
-    const int W = c.out.w, H = c.out.h;
     double cx, cy;
     c.xy("Center", cx, cy);
     const Color col = c.color("Color");
-    vfxvig::Params p;
     p.w = W; p.h = H;
     p.outer = (float)c.d("Outer"); p.inner = (float)c.d("Inner"); p.aspect = (float)c.d("Aspect");
     p.cx = (float)cx; p.cy = (float)cy;
@@ -790,8 +846,29 @@ static void vignetteOpenCl(Ctx& c)
     const float fe = (float)c.d("Feather") + 0.001f;
     p.exponent = 100.f / (fe * fe);
     p.invert = c.b("Invert");
-    const float cc[3] = {(float)col.r, (float)col.g, (float)col.b};
-    const float ca = (float)col.a;
+    cc[0] = (float)col.r; cc[1] = (float)col.g; cc[2] = (float)col.b;
+    ca = (float)col.a;
+}
+// the kernel's per-frame numbers for the Vulkan plan (vkfilters.cpp): the setup, the outer radius' inner part and the divisor, as the CPU works them out
+void vignetteOclGpu(Ctx& c, int W, int H, float out[14], bool& invert)
+{
+    vfxvig::Params p;
+    float cc[3], ca;
+    vignetteOclParams(c, W, H, p, cc, ca);
+    const vfxvig::Setup u = vfxvig::setup(p);
+    const float big = 0.5f * p.outer * std::hypot(u.w1, u.h1 / p.par);
+    const float inner = p.inner * big;
+    const float den = (std::fabs(big - inner) < 0.000001f) ? 1.0f : big - inner;
+    const float v[14] = {u.h1, u.centreX, u.centreY, u.c, u.s, u.asp, inner, den, p.exponent, ca, cc[0], cc[1], cc[2], 0.f};
+    for (int i = 0; i < 14; ++i) out[i] = v[i];
+    invert = p.invert;
+}
+static void vignetteOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    vfxvig::Params p;
+    float cc[3], ca;
+    vignetteOclParams(c, W, H, p, cc, ca);
     const vfxvig::Setup u = vfxvig::setup(p);
     forRows(H, W, [&](int yt) {
         const int y = H - 1 - yt;
@@ -856,11 +933,8 @@ void vignette(Ctx& c)
 // function as the property page keeps them: Detail zoom 0..1 is the page's 1..4 magnification, the others are used as they are. The picture is VEGAS's 8-bit one
 // (blue, green, red, alpha bytes, premultiplied, rows from the top) and the time stamp the event's 100 ns ticks. A float picture (the project is 32-bit) goes through the
 // same function on the 8-bit levels and comes back as such (the float render function of vfx1.dll is not ported).
-void tvSimulator(Ctx& c)
+static void tvSettings(Ctx& c, double P[8])
 {
-    const int W = c.out.w, H = c.out.h;
-    if (W <= 0 || H <= 0) return;
-    double P[8];
     P[0] = 1.0 + clampd(c.d("DetailZoom"), 0, 1) * 3.0;
     P[1] = clampd(c.d("ApertureGrill"), 0, 1);
     P[2] = clampd(c.d("Interlacing"), 0, 1);
@@ -869,6 +943,22 @@ void tvSimulator(Ctx& c)
     P[5] = clampd(c.d("ScanPhasing"), 0, 1);
     P[6] = clampd(c.d("Phosphorescence"), 0, 1);
     P[7] = clampd(c.d("Static"), 0, 1);
+}
+
+// The per-row numbers of the render for the Vulkan plan (vkfx2.cpp): the per-pixel part runs on the card.
+void tvSimulatorGpu(Ctx& c, int W, int H, vftv::Rows8& o)
+{
+    double P[8];
+    tvSettings(c, P);
+    vftv::prepare8(W, H, P, c.legacySeedTime64(), 1.0, vftv::defaultNoiseTable(), o);
+}
+
+void tvSimulator(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    if (W <= 0 || H <= 0) return;
+    double P[8];
+    tvSettings(c, P);
     std::vector<uint8_t> in((size_t)W * H * 4), out((size_t)W * H * 4, 0);
     for (int y = 0; y < H; ++y) {
         const float* s = c.src.at(0, y);
@@ -1092,11 +1182,10 @@ static bool timecodeGdiFont(int cell, double sx, double sy, vfxtc::Font& F)
 }
 #endif
 
-void timecodeFx(Ctx& c)
+// Timecode's text box for this frame: the string, the font (GDI on Windows) and the layout (false: nothing to draw, the picture goes through as it is)
+static bool timecodeBox(Ctx& c, int W, int H, vfxtc::Layout& L)
 {
-    const int W = c.out.w, H = c.out.h;
-    copyThrough(c);
-    if (W <= 0 || H <= 0) return;
+    if (W <= 0 || H <= 0) return false;
     const double fps = c.fps > 0 && c.fps < 10000 ? c.fps : 30.0;
     // the time since the start of the clip in 100 ns ticks, snapped to the frame grid (all of that is in vfxtc::text)
     const long long ticks = vegasTicks(c.time, fps);
@@ -1110,8 +1199,18 @@ void timecodeFx(Ctx& c)
     have = timecodeGdiFont(cell, sx, sy, font);
 #endif
     if (!have) font = vfxtc::modelFont(cell, sx, sy);
-    const vfxtc::Layout L = vfxtc::layout(font, s, W, H, c.i("HorizontalAlignment"), c.i("VerticalAlignment"));
-    if (!L.ok) return;
+    L = vfxtc::layout(font, s, W, H, c.i("HorizontalAlignment"), c.i("VerticalAlignment"));
+    return L.ok;
+}
+
+bool timecodeGpuLayout(Ctx& c, vfxtc::Layout& L) { return timecodeBox(c, c.frameW, c.frameH, L); }
+
+void timecodeFx(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    copyThrough(c);
+    vfxtc::Layout L;
+    if (!timecodeBox(c, W, H, L)) return;
     // the kernel: inside the bitmap's rectangle (one row and column in from its origin) the output is (g, g, g, 1) with g the bitmap's byte / 255
     const int yTop = std::max(0, H - L.oy - L.hb), yBot = std::min(H - 1, H - L.oy - 2);
     const int xLeft = std::max(0, L.ox + 1), xRight = std::min(W - 1, L.ox + L.wb - 1);
@@ -1171,9 +1270,8 @@ void ldSetup(Ctx& c, int W, int H, LdSetup& o)
 }
 
 // Layer Dimensionality as VEGAS's OpenCL path draws it (vfxlayerdim.h): float maths on the frame, rows bottom first, then the 8-bit store of the host.
-void layerDimensionalityOpenCl(Ctx& c)
+vfxld::Settings ldOclSettings(Ctx& c)
 {
-    const int W = c.out.w, H = c.out.h;
     auto fin = [](double v, double lo, double hi, double dflt) { return (v == v && v >= lo && v <= hi) ? v : (v == v ? (v < lo ? lo : hi) : dflt); };
     const int shadowType = c.i("ShadowType"), glowType = c.i("GlowType");
     const Color g1 = c.color("GlowColor"), g2 = c.color("GlowColor2");
@@ -1182,12 +1280,18 @@ void layerDimensionalityOpenCl(Ctx& c)
     double Lx = 0, Ly = 0, Lz = 1;
     c.xyz("LightLocation", Lx, Ly, Lz);
     const double ll[3] = {fin(Lx, -1e6, 1e6, 0), fin(Ly, -1e6, 1e6, 0), fin(Lz, -1e6, 1e6, 1)};
-    const vfxld::Settings st = vfxld::makeSettings(
+    return vfxld::makeSettings(
         (shadowType == 1 || shadowType == 2) ? shadowType : 0, (glowType >= 1 && glowType <= 4) ? glowType : 0,
         fin(c.d("ShadowHeight"), -1e6, 1e6, 0), fin(c.d("ShadowBlur"), -1e6, 1e6, 0), fin(c.d("ShadowAmount"), -1e6, 1e6, 0), gc1, gc2,
         fin(c.d("GlowAmount"), -1e6, 1e6, 0), fin(c.d("ForegroundAmount"), -1e6, 1e6, 0), fin(c.d("BackgroundAmount"), -1e6, 1e6, 0),
         fin(c.d("EmbossRoundness"), -1e6, 1e6, 0), ll, fin(c.d("LightIntensity"), -1e6, 1e6, 0), fin(c.d("LightAmbience"), -1e6, 1e6, 0),
         fin(c.d("Shininess"), -1e6, 1e6, 0), fin(c.d("ForegroundOpacity"), -1e6, 1e6, 1), 1.0);
+}
+
+void layerDimensionalityOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    const vfxld::Settings st = ldOclSettings(c);
     const size_t row = (size_t)W * 4;
     std::vector<float> in((size_t)W * H * 4), res((size_t)W * H * 4);
     for (int y = 0; y < H; ++y) std::memcpy(&in[(size_t)(H - 1 - y) * row], &c.src.px[(size_t)y * row], row * sizeof(float));
@@ -1310,21 +1414,43 @@ void layerDimensionality(Ctx& c)
 // shear), the result is the box around them (Center image puts the middle of the frame back in the middle), every pixel of the box asks the approximate inverse where it comes
 // from, and takes the average of samples along the two diagonals of its footprint. An 8-bit frame goes through the 8-bit sampler, a float frame through the float one; what is
 // outside the picture is the Background.
+// The settings of Deform, shared by the CPU code and the Vulkan plan (vkgeom.cpp).
+struct DeformSettings {
+    double P[10] = {0};
+    double amount = 0, quality = 0.85;
+    bool centre = false;
+    double br = 0, bg = 0, bb = 0, ba = 0;      // the background, premultiplied
+};
+void deformSettings(Ctx& c, DeformSettings& d)
+{
+    auto setting = [&](const char* name) { const double v = c.d(name); return std::isfinite(v) ? clampd(v, 0.0, 1.0) : 0.0; };
+    // the order of VEGAS's list: shear (horizontal, vertical), squeeze (top, bottom, left, right), curve (top, bottom, left, right)
+    const double P[10] = {setting("ShearHorizontal"), setting("ShearVertical"), setting("SqueezeTop"), setting("SqueezeBottom"), setting("SqueezeLeft"), setting("SqueezeRight"),
+                          setting("CurveTop"), setting("CurveBottom"), setting("CurveLeft"), setting("CurveRight")};
+    for (int i = 0; i < 10; ++i) d.P[i] = P[i];
+    d.amount = setting("Amount");
+    d.quality = 0.85;        // (the host's best render quality: the footprint average; its lower ones are a bilinear and a nearest pixel)
+#ifdef RENO_DEFORM_QUALITY_TEST
+    // (a build for the GPU check only: the other two qualities, which no host setting reaches)
+    if (const char* q = std::getenv("RENO_DEFORM_QUALITY")) d.quality = std::atof(q);
+#endif
+    d.centre = c.b("CenterImage");
+    const Color bgc = c.color("Background");
+    const auto fix = [](double v) { return std::isfinite(v) ? clampd(v, 0.0, 1.0) : 0.0; };
+    d.ba = fix(bgc.a); d.br = fix(bgc.r) * d.ba; d.bg = fix(bgc.g) * d.ba; d.bb = fix(bgc.b) * d.ba;
+}
+
 void deform(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     if (W <= 0 || H <= 0) return;
     if (W < 2 || H < 2) { c.out = c.src; return; }      // (the original divides by W - 1 and H - 1)
-    auto setting = [&](const char* name) { const double v = c.d(name); return std::isfinite(v) ? clampd(v, 0.0, 1.0) : 0.0; };
-    // the order of VEGAS's list: shear (horizontal, vertical), squeeze (top, bottom, left, right), curve (top, bottom, left, right)
-    const double P[10] = {setting("ShearHorizontal"), setting("ShearVertical"), setting("SqueezeTop"), setting("SqueezeBottom"), setting("SqueezeLeft"), setting("SqueezeRight"),
-                          setting("CurveTop"), setting("CurveBottom"), setting("CurveLeft"), setting("CurveRight")};
-    const double amount = setting("Amount");
-    const double quality = 0.85;        // (the host's best render quality: the footprint average; its lower ones are a bilinear and a nearest pixel)
-    const bool centre = c.b("CenterImage");
-    const Color bgc = c.color("Background");
-    const auto fix = [](double v) { return std::isfinite(v) ? clampd(v, 0.0, 1.0) : 0.0; };
-    const double ba = fix(bgc.a), br = fix(bgc.r) * ba, bg = fix(bgc.g) * ba, bb = fix(bgc.b) * ba;
+    DeformSettings ds;
+    deformSettings(c, ds);
+    const double* P = ds.P;
+    const double amount = ds.amount, quality = ds.quality;
+    const bool centre = ds.centre;
+    const double br = ds.br, bg = ds.bg, bb = ds.bb, ba = ds.ba;
     if (!(c.host8 || c.levels)) {
         const float bgf[4] = {(float)br, (float)bg, (float)bb, (float)ba};
         if (!vfdeform::run<float>(c.src.px.data(), W, H, (ptrdiff_t)W * 4, P, amount, quality, centre, bgf, c.out.px.data(), (ptrdiff_t)W * 4))
@@ -1440,6 +1566,35 @@ void bumpMapRender(Ctx& c, const char* srcName, const char* dstName)
 void bumpMap(Ctx& c) { bumpMapRender(c, "LocationSrc", "LocationDst"); }
 
 }  // namespace more
+}  // namespace builtin
+}  // namespace ofx
+}  // namespace reno
+
+namespace reno {
+namespace ofx {
+namespace builtin {
+// for the Vulkan plan (vkgeom.cpp): the same set-up as deform(): the geometry's doubles (as vfdeform holds them), the box and the background
+bool deformGpu(Ctx& c, int W, int H, DeformGpu& o)
+{
+    if (W < 2 || H < 2) return false;
+    more::DeformSettings ds;
+    more::deformSettings(c, ds);
+    vfdeform::Geom g;
+    vfdeform::setup(g, W, H, ds.P, ds.amount, ds.quality);
+    vfdeform::bounds(g, W, H, ds.centre);
+    const double dd[20] = {g.ww, g.hh, g.w2, g.h2, g.sheX, g.sheY, g.sqX0, g.sqXk, g.sqY0, g.sqYk, g.cuY0, g.cuY1, g.cuY0b, g.cuY1b, g.cuX0, g.cuX1, g.cuX0b, g.cuX1b, g.offX, g.offY};
+    o.tab.clear();
+    for (int i = 0; i < 20; ++i) gpuPushDouble(o.tab, dd[i]);
+    o.flags = (g.fShear ? 1u : 0u) | (g.fSqX ? 2u : 0u) | (g.fSqY ? 4u : 0u) | (g.fCuY ? 8u : 0u) | (g.fCuX ? 16u : 0u) | (g.amount != 0.0 ? 32u : 0u);
+    o.mode = !(g.quality < 0.85) ? 2 : (!(0.6 > g.quality) ? 1 : 0);
+    o.bx0 = g.boxX0; o.by0 = g.boxY0; o.ow = g.outW; o.oh = g.outH;
+    // (vfdeform::run gives up on a box too big to make: the frame is then all background)
+    if (g.outW < 0 || g.outH < 0 || (double)g.outW * (double)g.outH > 67108864.0 || (double)g.outW * (double)g.outH > 8.0 * W * H + 4096.0) o.ow = o.oh = 0;
+    o.q8 = c.host8 || c.levels;
+    const double bgd[4] = {ds.br, ds.bg, ds.bb, ds.ba};
+    for (int k = 0; k < 4; ++k) o.bg[k] = o.q8 ? (float)v8::toLevel((float)bgd[k]) : (float)bgd[k];
+    return true;
+}
 }  // namespace builtin
 }  // namespace ofx
 }  // namespace reno

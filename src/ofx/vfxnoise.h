@@ -112,18 +112,16 @@ inline float box(float a, float b, float& cosPart)
     return r * std::sin(ang);
 }
 
-// img: W x H RGBA floats, premultiplied, rows TOP first (as Reno keeps them); out: the same size, may be the same array. The kernel's rows run from the bottom. The result is
-// the float picture; the caller stores it with store12 when the frame is 8-bit.
-inline void render(const float* img, float* out, int W, int H, const Params& P)
+// The state each column's work item starts from, 25 floats per column (24 numbers, the carry), as the kernel reads it. The host fills W columns' states in planes with stride W; the kernel
+// reads plane k of work item g at g + k * G (G: W up to a multiple of 16), which is another column's number when W is not a multiple of 16 (beyond the buffer: zeros here; what the card
+// gives there is not defined).
+inline void columnStates(int W, int seed, std::vector<float>& out)
 {
-    if (W <= 0 || H <= 0) return;
-    // the host fills W columns' states in planes with stride W; the kernel reads plane k of work item g at g + k * G (G: W up to a multiple of 16), which is another column's number
-    // when W is not a multiple of 16 (beyond the buffer: zeros here; what the card gives there is not defined)
     const int G = (W + 15) / 16 * 16;
     std::vector<float> init((size_t)W * 25);        // per column: 24 numbers and the carry
     for (int i = 0; i < W; ++i) {
         float* s = &init[(size_t)i * 25];
-        initColumn(i, W, P.seed, s, &s[24]);
+        initColumn(i, W, seed, s, &s[24]);
     }
     // number comp of plane k as the work item g reads it (plane 6 is the carry, in its x component)
     auto plane = [&](int k, int g, int comp) -> float {
@@ -133,13 +131,24 @@ inline void render(const float* img, float* out, int W, int H, const Params& P)
         if (p == 6) return comp == 0 ? init[col * 25 + 24] : 0.f;
         return init[col * 25 + p * 4 + comp];
     };
+    out.assign((size_t)W * 25, 0.f);
+    for (int x = 0; x < W; ++x) {
+        for (int p = 0; p < 6; ++p)
+            for (int c = 0; c < 4; ++c) out[(size_t)x * 25 + p * 4 + c] = plane(p, x, c);
+        out[(size_t)x * 25 + 24] = plane(6, x, 0);
+    }
+}
+
+// img: W x H RGBA floats, premultiplied, rows TOP first (as Reno keeps them); out: the same size, may be the same array. The kernel's rows run from the bottom. The result is
+// the float picture; the caller stores it with store12 when the frame is 8-bit.
+inline void render(const float* img, float* out, int W, int H, const Params& P)
+{
+    if (W <= 0 || H <= 0) return;
+    std::vector<float> cols;
+    columnStates(W, P.seed, cols);
     for (int x = 0; x < W; ++x) {
         Ranlux R;
-        float st[24];
-        for (int p = 0; p < 6; ++p)
-            for (int c = 0; c < 4; ++c) st[p * 4 + c] = plane(p, x, c);
-        const float carry = plane(6, x, 0);
-        R.load(st, carry);
+        R.load(&cols[(size_t)x * 25], cols[(size_t)x * 25 + 24]);
         R.warmUp();
         for (int j = 0; j < H; ++j) {           // j: the kernel's row, from the bottom
             const int y = H - 1 - j;

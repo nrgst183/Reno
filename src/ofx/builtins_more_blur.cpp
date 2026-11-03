@@ -4,6 +4,7 @@
 #include "builtins_more_internal.h"
 #include "vkfilters.h"
 #include "builtins_deriche.h"
+#include "vkblur.h"
 #include "vfxgauss.h"
 #include "vfxblurs.h"
 #include "builtins_fast.h"
@@ -168,16 +169,27 @@ bool radialBlurSteps(const RbSetup& g, int W, int H, std::vector<uint32_t>& rec,
 // pictures, then their sum). The taps are read as the card's texture unit does (oclLinear4: weights cut to 1/256, pixel coordinates without the half). In an 8-bit project every picture the kernels
 // write (the polar one, the two Gaussian halves and their sum, the recursion's result, the result) is an 8-bit texture with the card's 12-bit store (oclStore12: all 13 captured Radial Blur
 // pictures within one level, 99.9% exact; Gaussian 99.8%).
+void radialBlurOclParams(Ctx& c, int H, RbOclParams& r)
+{
+    const double Hd = H;
+    const double st = c.d("Strength"), k = Hd / 300.0;
+    r.s0 = (float)(std::pow(st, 2.0) + 1.0);
+    r.s1 = (float)(std::pow(st, 1.5) * 0.018 / k);
+    r.w = (float)std::pow(std::pow(st, 1.0 / k), 0.25);
+    double pcx, pcy;
+    c.xy("Center", pcx, pcy);
+    r.v56x = (float)(2 * pcx - 1);
+    r.v56y = (float)(2 * pcy - 1);
+    r.sigma = (float)st * 20.0f;       // (Gaussian: a float multiply, then the builder's double)
+    r.cf = vfxgauss::toFloats(vfxgauss::build((double)r.sigma));
+}
 static void radialBlurOpenCl(Ctx& c, const RbSetup& g, int W, int H)
 {
     const bool q = c.host8;
     const float pi = 3.14159274f, two = 2.828427125f;
-    const double Hd = H;
-    const double st = c.d("Strength"), k = Hd / 300.0;
-    const float s0 = (float)(std::pow(st, 2.0) + 1.0), s1 = (float)(std::pow(st, 1.5) * 0.018 / k), w = (float)std::pow(std::pow(st, 1.0 / k), 0.25);
-    double pcx, pcy;
-    c.xy("Center", pcx, pcy);
-    const float v56x = (float)(2 * pcx - 1), v56y = (float)(2 * pcy - 1);
+    RbOclParams rp;
+    radialBlurOclParams(c, H, rp);
+    const float s0 = rp.s0, s1 = rp.s1, w = rp.w, v56x = rp.v56x, v56y = rp.v56y;
     std::vector<float> src((size_t)W * H * 4), P((size_t)W * H * 4), out((size_t)W * H * 4);
     for (int y = 0; y < H; ++y) std::memcpy(&src[(size_t)y * W * 4], c.src.at(0, H - 1 - y), (size_t)W * 4 * sizeof(float));
     forRows(H, W, [&](int y) {
@@ -194,8 +206,7 @@ static void radialBlurOpenCl(Ctx& c, const RbSetup& g, int W, int H)
     std::vector<float> buf;
     if (g.type == 2) {
         // Gaussian: the five coefficient sets as floats, sigma (float)Strength x 20 (a float multiply, then the builder's double)
-        const float sigma = (float)st * 20.0f;
-        const vfxgauss::Coefsf cf = vfxgauss::toFloats(vfxgauss::build((double)sigma));
+        const vfxgauss::Coefsf cf = rp.cf;
         std::vector<float> A, B;
         vfxgauss::passColumns(cf, P, W, H, A, B, [](float a, float b, float cc) { return a * b + cc; });
         if (q) { for (float& v : A) v = oclStore12(v); for (float& v : B) v = oclStore12(v); }
@@ -584,6 +595,21 @@ static void minMax8(Ctx& c, bool maximum) { rankFilter8(c, maximum ? 1.f : 0.f, 
 // the differences between neighbouring weights (also cut to whole numbers), so the same steps are made here (their roundings stay in the sums). Taps outside the picture count 0.
 // All of it runs on a picture half the size (every second pixel kept, the window's reach halved, kOclReachScale), which is read back to full size with the bicubic read (VEGAS's kernels do the
 // scaling both ways before and after).
+struct MedianEnt { int dx, dy, z; };
+// The window of the OpenCL Median / Min and Max as whole-number weights: every tap of the full window (for the first pixel of a row) and the column of differences added and taken away from one pixel to the next
+static void medianOclEntries(const MinMaxKernel& k, std::vector<MedianEnt>& full, std::vector<MedianEnt>& edge)
+{
+    for (int dy = 1 - k.ny; dy < k.ny; ++dy)
+        for (int dx = 1 - k.nx; dx < k.nx; ++dx) {
+            const float w = k.at(std::abs(dx), std::abs(dy));
+            if ((double)w > 1e-17) full.push_back(MedianEnt{dx, dy, (int)(w * 20000.f)});
+        }
+    for (int dy = 0; dy < k.ny; ++dy)
+        for (int dx = 0; dx < k.nx; ++dx) {
+            const float w = dx + 1 < k.nx ? k.at(dx, dy) - k.at(dx + 1, dy) : k.at(dx, dy);
+            if ((double)w > 1e-17) edge.push_back(MedianEnt{dx, dy, (int)(w * 20000.f)});
+        }
+}
 static void medianOpenCl(Ctx& c, float rank, float rxf, float ryf, bool circle, bool interval)
 {
     const int W = c.out.w, H = c.out.h;
@@ -591,18 +617,9 @@ static void medianOpenCl(Ctx& c, float rank, float rxf, float ryf, bool circle, 
     c.out.ensure(W, H);
     if (Wh < 1 || Hh < 1) { copyThrough(c); return; }
     const MinMaxKernel k = circle ? minMaxCircleKernel(rxf, ryf) : minMaxRectKernel(rxf, ryf);
-    struct Ent { int dx, dy, z; };
-    std::vector<Ent> full, edge;
-    for (int dy = 1 - k.ny; dy < k.ny; ++dy)
-        for (int dx = 1 - k.nx; dx < k.nx; ++dx) {
-            const float w = k.at(std::abs(dx), std::abs(dy));
-            if ((double)w > 1e-17) full.push_back(Ent{dx, dy, (int)(w * 20000.f)});
-        }
-    for (int dy = 0; dy < k.ny; ++dy)
-        for (int dx = 0; dx < k.nx; ++dx) {
-            const float w = dx + 1 < k.nx ? k.at(dx, dy) - k.at(dx + 1, dy) : k.at(dx, dy);
-            if ((double)w > 1e-17) edge.push_back(Ent{dx, dy, (int)(w * 20000.f)});
-        }
+    std::vector<MedianEnt> full, edge;
+    medianOclEntries(k, full, edge);
+    typedef MedianEnt Ent;
     // the half-size picture (every second pixel, counted from the bottom row), as levels (R, G, B, A)
     std::vector<unsigned char> lv((size_t)Wh * Hh * 4);
     for (int y = 0; y < Hh; ++y) {
@@ -741,6 +758,31 @@ void neighbourhood(Ctx& c, bool median, bool maximum)
             for (int k = 0; k < 3; ++k) o[k] = std::min(std::max(o[k], 0.f), o[3]);
         }
     });
+}
+// What the Vulkan plan of the OpenCL Median / Min and Max needs: the weights (table: the full window's taps then the edge's, three numbers each: dx, dy, weight), the half-size picture's
+// size and the rank (see medianOpenCl). False when the frame does not take the OpenCL path (or is too small for the half-size picture).
+bool medianOclGpuSetup(Ctx& c, bool minMax, int W, int H, MedianOclGpu& g)
+{
+    if (!c.openCl || W <= 0 || H <= 0) return false;
+    auto clamp01 = [](double v) { return v < 0 ? 0.0 : std::min(1.0, v); };
+    const float big = (float)std::max(W, H);
+    const float rx = (float)(clamp01(c.d("HorizontalRange")) * kOclReachScale * big * 0.05f);
+    const float ry = (float)(clamp01(c.d("VerticalRange")) * kOclReachScale * big * 0.05f);
+    g.wh = W / 2;
+    g.hh = H / 2;
+    if (g.wh < 1 || g.hh < 1) return false;
+    g.interval = minMax;
+    g.rank = minMax ? (c.i("Operation") != 0 ? 1.f : 0.f) : (float)clampd(c.d("Offset"), 0.001, 0.999);
+    const bool circle = c.b("CircularAreaProcessing");
+    const MinMaxKernel k = circle ? minMaxCircleKernel(rx, ry) : minMaxRectKernel(rx, ry);
+    std::vector<MedianEnt> full, edge;
+    medianOclEntries(k, full, edge);
+    g.nfull = (int)full.size();
+    g.nedge = (int)edge.size();
+    g.tab.clear();
+    for (const MedianEnt& e : full) { g.tab.push_back((float)e.dx); g.tab.push_back((float)e.dy); g.tab.push_back((float)e.z); }
+    for (const MedianEnt& e : edge) { g.tab.push_back((float)e.dx); g.tab.push_back((float)e.dy); g.tab.push_back((float)e.z); }
+    return true;
 }
 void median(Ctx& c)
 {

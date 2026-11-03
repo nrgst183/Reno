@@ -444,13 +444,20 @@ inline void noiseRow(const Noise& k, const unsigned char* perm, const float (*gr
     }
 }
 
+// the styles' constants (kernel 2)
+inline const float (&noiseStyleTable())[7][5]
+{
+    static const float T[7][5] = {{0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0.9f, 0.15f, 0.4f, 1.2f, 0.1f}, {0.05f, 0.9f, 1.3f, 0.0f, 0.0f},
+                                  {0.6f, 0.0f, 0.2f, 0.5f, 0.1f}, {1.0f, 0.0f, 1.5f, 0.5f, 0.05f}, {4.0f, 0.0f, 0.0f, 0.0f, 0.0f}};
+    return T;
+}
+
 // One pixel (kernel 2) from the layers of its row (rows[layer * w + x] as noiseRow made them), its mix value 0..1 between the two colours.
 inline float noiseMixOf(const Noise& k, const NoiseLayers& L, const std::vector<float>& rows, int x, int yk)
 {
     const int W = k.w, H = k.h;
     const bool fold = noiseFolds(k.style);
-    static const float T[7][5] = {{0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0.9f, 0.15f, 0.4f, 1.2f, 0.1f}, {0.05f, 0.9f, 1.3f, 0.0f, 0.0f},
-                                  {0.6f, 0.0f, 0.2f, 0.5f, 0.1f}, {1.0f, 0.0f, 1.5f, 0.5f, 0.05f}, {4.0f, 0.0f, 0.0f, 0.0f, 0.0f}};
+    const float(&T)[7][5] = noiseStyleTable();
     const float lo = k.lo, hi = k.hi, bias = k.bias, amp = k.amp;
     float v44 = (hi <= lo) ? 0.0f : amp * (1.0f / (hi - lo)) * 65536.0f;
     float v45 = (hi <= lo) ? ((lo + hi) / 2.0f * amp + bias) * 65536.0f + 0.5f : -(lo * v44) + bias * 65536.0f + 0.5f;

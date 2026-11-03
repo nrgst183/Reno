@@ -657,6 +657,18 @@ double TimelineWidget::Impl::rulerLabelWidth() const
     return rulerLabelW + rulerLabelWide;
 }
 
+// The ruler's numbered marks as frames apart. In Time & Frames VEGAS leaves the frames off a label on a whole second
+// ("00:00:15", "00:01:00": the 15-second marks of a zoomed-out ruler), and such labels are shorter, so they may be closer.
+int64_t TimelineWidget::Impl::rulerStepNow(double pps) const
+{
+    const double f = fps();
+    const int64_t step = rulerStep(pps, f, rulerLabelWidth());
+    const int64_t nominal = std::max<int64_t>(1, std::llround(f));
+    if (app.project().settings.rulerFormat != "timecode" || step < nominal) return step;
+    const int64_t shorter = rulerStep(pps, f, QFontMetrics(rulerFont).horizontalAdvance(QString("00:00:00")) + 20.0);
+    return shorter >= nominal ? shorter : step;
+}
+
 // A straight fade line from (xa, ya) to (xb, yb), drawn only between clipL and clipR (events can reach a very long way
 // off screen). With 'shade', the space between the line and the level 'shadeTo' is darkened.
 void TimelineWidget::Impl::drawRamp(QPainter& p, double xa, double ya, double xb, double yb, double clipL, double clipR, bool shade, double shadeTo)
@@ -747,7 +759,7 @@ void TimelineWidget::Impl::drawThumbNumber(QPainter& p, const QRectF& target, do
     } else {
         const int nominal = std::max(1, (int)std::lround(fpsM));
         const long long sec = frame / nominal;
-        text = QString::asprintf("%02lld:%02lld:%02lld:%0*lld", sec / 3600, (sec / 60) % 60, sec % 60, frameDigits(nominal), frame % nominal);
+        text = QString::asprintf("%02lld:%02lld:%02lld:%0*lld", sec / 3600, (sec / 60) % 60, sec % 60, 2, frame % nominal);
     }
     const QFontMetrics fm(smallFont);
     const QRectF box(target.left() + 1.0, target.top() + 1.0, std::min(target.width() - 2.0, fm.horizontalAdvance(text) + 6.0), fm.height() + 1.0);

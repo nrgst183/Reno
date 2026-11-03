@@ -18,12 +18,19 @@ namespace reno {
 namespace gpu {
 
 namespace {
+// the wait for a plan's fence: 20 s (RENO_VK_FENCE_S=n: n s, for a software device running the longest test plans)
+static uint64_t fenceTimeoutNs()
+{
+    const char* e = std::getenv("RENO_VK_FENCE_S");
+    const double sec = e ? std::atof(e) : 0.0;
+    return (uint64_t)((sec > 0.0 ? sec : 20.0) * 1e9);
+}
 
 using Clock = std::chrono::steady_clock;
 double msSince(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
 const int kBindings = 4;
-const uint32_t kMaxPasses = 4096;                // passes (and so descriptor sets) in one frame's plan: Radial Blur runs hundreds of small steps                    // in0, in1, out, table
+const uint32_t kMaxPasses = 16384;               // passes (and so descriptor sets) in one frame's plan: Radial Blur runs hundreds of small steps, Light Rays one per diagonal of each quarter                    // in0, in1, out, table
 const uint32_t kMaxPush = 128;
 const size_t kPoolKeepBytes = (size_t)768 << 20;
 const size_t kAlign = 256;
@@ -1296,7 +1303,7 @@ bool runInner(const Plan& plan, FrameIO& io, RunStats* stats)
         if (r == VK_ERROR_DEVICE_LOST) c.lost = true;
         return runFailed("line 1114");
     }
-    r = a.vkWaitForFences(c.dev, 1, &ts->fence, VK_TRUE, (uint64_t)20 * 1000 * 1000 * 1000);
+    r = a.vkWaitForFences(c.dev, 1, &ts->fence, VK_TRUE, fenceTimeoutNs());
     if (r != VK_SUCCESS) {
         // device lost, or a pass that never ends: the card is not trusted any more
         if (!c.lost) logf("Vulkan: device did not finish (%d); built-in effects will render on the CPU", (int)r);
@@ -1457,7 +1464,7 @@ bool materialize(uint64_t serial, uint8_t* dst, size_t rowBytes)
         r = a.vkQueueSubmit(c.queue, 1, &si, ts->fence);
     }
     if (r != VK_SUCCESS) { if (r == VK_ERROR_DEVICE_LOST) c.lost = true; return false; }
-    if (a.vkWaitForFences(c.dev, 1, &ts->fence, VK_TRUE, (uint64_t)20 * 1000 * 1000 * 1000) != VK_SUCCESS) { c.lost = true; return false; }
+    if (a.vkWaitForFences(c.dev, 1, &ts->fence, VK_TRUE, fenceTimeoutNs()) != VK_SUCCESS) { c.lost = true; return false; }
     if (!down.coherent) {
         VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, nullptr, down.mem, 0, VK_WHOLE_SIZE};
         a.vkInvalidateMappedMemoryRanges(c.dev, 1, &mr);

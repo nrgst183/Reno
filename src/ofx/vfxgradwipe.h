@@ -444,9 +444,19 @@ struct Settings {
     bool reverse = false, autoContrast = false, keepAspect = true;
 };
 
+// How stretchMean() reads the source, worked out from the geometry alone (the GPU plan takes it from here instead of the picture): either whole numbers of pixels (n x m of
+// them from (ix, iy), per frame pixel) or, per frame column / row, the first source index and the float weights of the taps; ry0..ry1 the source rows read (empty when ry1 < ry0).
+struct StretchSetup {
+    bool whole = false;
+    int n = 0, m = 0, ix = 0, iy = 0;
+    struct Tap { int first; std::vector<float> w; };
+    std::vector<Tap> tx, ty;
+    int ry0 = 0, ry1 = -1;
+};
+
 // A source rectangle (picture pixels) stretched to W x H bytes: each frame pixel is the mean of the source it covers (whole numbers of pixels: the sum plus half the
-// count, divided by the count; otherwise a coverage-weighted mean rounded to the nearest).
-inline void stretchMean(const std::vector<uint8_t>& src, int sw, int sh, double x0, double y0, double vw, double vh, int W, int H, std::vector<uint8_t>& out)
+// count, divided by the count; otherwise a coverage-weighted mean rounded to the nearest). With 'capture' nothing is stretched: the setup is handed back.
+inline void stretchMean(const std::vector<uint8_t>& src, int sw, int sh, double x0, double y0, double vw, double vh, int W, int H, std::vector<uint8_t>& out, StretchSetup* capture = nullptr)
 {
     out.assign((size_t)W * H, 0);
     const double fx = vw / W, fy = vh / H;
@@ -454,6 +464,11 @@ inline void stretchMean(const std::vector<uint8_t>& src, int sw, int sh, double 
                        std::fabs(fy - std::floor(fy + 0.5)) < 1e-9 && fx >= 1 && fy >= 1;
     if (whole) {
         const int n = (int)std::floor(fx + 0.5), m = (int)std::floor(fy + 0.5), ix = (int)std::floor(x0 + 0.5), iy = (int)std::floor(y0 + 0.5);
+        if (capture) {
+            capture->whole = true;
+            capture->n = n; capture->m = m; capture->ix = ix; capture->iy = iy;
+            return;
+        }
         const unsigned cnt = (unsigned)(n * m);
         for (int y = 0; y < H; ++y)
             for (int x = 0; x < W; ++x) {
@@ -495,6 +510,13 @@ inline void stretchMean(const std::vector<uint8_t>& src, int sw, int sh, double 
     }
     ry0 = std::max(0, ry0);
     ry1 = std::min(sh - 1, ry1);
+    if (capture) {
+        capture->whole = false;
+        capture->ry0 = ry0; capture->ry1 = ry1;
+        for (const Tap& t : tx) capture->tx.push_back(StretchSetup::Tap{t.first, t.w});
+        for (const Tap& t : ty) capture->ty.push_back(StretchSetup::Tap{t.first, t.w});
+        return;
+    }
     if (ry1 < ry0) return;
     std::vector<float> mid((size_t)(ry1 - ry0 + 1) * W);
     for (int y = ry0; y <= ry1; ++y) {
@@ -544,8 +566,17 @@ inline bool radialProfile(const std::vector<uint8_t>& g, int pw, int ph, std::ve
     return true;
 }
 
+// What is stretched to the frame before the threshold is applied to it: the picture after the contrast table, carried on beyond its edges where the frame shows more
+// than it, and the rectangle of it (x0, y0, vw, vh in its pixels) the frame shows.
+struct Canvas {
+    int w = 0, h = 0;
+    std::vector<uint8_t> bytes;
+    double x0 = 0, y0 = 0, vw = 0, vh = 0;
+};
+
 // The frame's mask (W x H bytes, row 0 at the top) for a gradient picture: contrast table, the visible part of the picture, the threshold, the stretch.
-inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::vector<uint8_t>& out, double* visW = nullptr, double* visH = nullptr)
+// With 'capture' the canvas is handed back and nothing else is done (the GPU plan does the threshold and the stretch).
+inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::vector<uint8_t>& out, double* visW = nullptr, double* visH = nullptr, Canvas* capture = nullptr)
 {
     const int pw = pic.w, ph = pic.h;
     // the part of the picture that the frame shows (picture pixels)
@@ -628,6 +659,16 @@ inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::
         canvasH = ch;
         ox = -cx0;
         oy = -cy0;
+    }
+    if (capture) {
+        capture->w = canvasW;
+        capture->h = canvasH;
+        capture->bytes.assign(cv, cv + (size_t)canvasW * canvasH);
+        capture->x0 = vx0 + ox;
+        capture->y0 = vy0 + oy;
+        capture->vw = vw;
+        capture->vh = vh;
+        return;
     }
     uint8_t lut[256];
     maskTable(s.progress, s.blend, s.reverse, lut);

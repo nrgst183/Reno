@@ -79,6 +79,11 @@ extern const char* const OfxEffect;          // the class of an OpenFX effect re
 extern const char* const AudioChain;         // the start of a chain of audio plug-ins
 }  // namespace G
 
+// The ruler's time format as the project header keeps it (word 0x08; see Importer::readHeader): Reno's format id for it
+// ("timecode" for numbers not known), and back (-1 for a format whose number is not known).
+std::string rulerFormatOfHeaderWord(uint32_t word);
+int headerWordOfRulerFormat(const std::string& id);
+
 struct Chunk {
     std::string id;                 // the chunk's GUID ("list" chunks: G::List)
     std::string type;               // lists: what the list holds
@@ -230,15 +235,22 @@ bool readPanCrop(const Bytes& b, PanCropRecord& out);
 // mute, 64.. effect automation, 202 velocity), f32 lowest value, f32 highest, f32 neutral, u32 point count, ...,
 // u32 bytes per point at 0x34 (0x18). A point: i64 time (100 ns; from the event's start for an event's envelope,
 // timeline time for a track's), f32 value, u32 curve (CurveType: 1 linear, 2 fast, -2 slow, 4 smooth, -4 sharp, 0 hold).
+// Type 301 (EnvPlugin) is the automation of one setting of a VST plug-in in the track's effect chain. The bytes between
+// the point count and the point size name the setting: u32 at 0x1c the setting's index, u32 at 0x20 the plug-in's
+// place in the chain (0 = first), 16 bytes at 0x24 the plug-in's CLSID as the chain stores it (the VST id backwards,
+// 4 bytes of VEGAS's own, a fixed tail). Its values are percent: lowest 0, highest 100, neutral the setting's value
+// when the envelope was made (the setting's 0..1 times 100).
 struct EnvelopeRecord {
     uint32_t type = 0;
+    uint32_t plugParam = 0, plugSlot = 0;   // type 301
+    std::string plugClsid;                  // type 301: 16 bytes
     float lowest = 0, highest = 0, neutral = 0;
     struct Point { double time = 0; double value = 0; int32_t curve = 0; };
     std::vector<Point> points;
 };
 enum EnvelopeType : uint32_t {
     EnvVolume = 0, EnvPan = 1, EnvBusA = 3, EnvBusZ = 28, EnvComposite = 29, EnvFadeToColor = 30, EnvMute = 31,
-    EnvFx1 = 64, EnvVelocity = 202,
+    EnvFx1 = 64, EnvVelocity = 202, EnvPlugin = 301,
 };
 bool readEnvelope(const Bytes& b, EnvelopeRecord& out);
 std::string envelopeName(uint32_t type);         // "volume", "pan", "send to Bus B"...

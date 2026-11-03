@@ -869,6 +869,10 @@ void gradientWipe(Ctx& c)
 
 }  // namespace
 
+// The GPU plan's view of Gradient Wipe (vktrans2.cpp): the DLL its pictures come from and the procedural gradient used without one
+std::string gradientWipeDllPath() { return gradientDll(); }
+int gradientWipeShape(int vi) { return kProc[std::max(0, std::min(27, vi))]; }
+
 // The GPU plan's view of 360 Stabilization (rotatePanorama): copy true when the frame goes through, false return when the CPU does it
 bool panoramaSetupGpu(Ctx& c, int W, int H, PanoSetup& o)
 {

@@ -269,6 +269,7 @@ MidiSync::MidiSync(Playback* playback) : pb_(playback)
     timer_->setInterval(2);
     QObject::connect(timer_, &QTimer::timeout, [this] { tick(); });
     midiTimeDisplayText() = [this](TimeDisplaySource src) { return displayText((int)src); };
+    midiTimeDisplayLabel() = [this](TimeDisplaySource src) { return displayLabel((int)src); };
 }
 
 // Preferences > Sync: the send frame rate (-1: the project's) and the one expected coming in.
@@ -302,7 +303,8 @@ std::string MidiSync::displayText(int source) const
     const double at = pb_ && pb_->playing() ? pb_->position() : app.cursor();
     switch ((TimeDisplaySource)source) {
     case TimeDisplaySource::MtcIn:
-        if (!chaseOn_) return "--:--:--:--";
+        // VEGAS keeps showing the cursor's time, in the incoming rate, while no timecode is being followed
+        if (!chaseOn_) return tc(at, code);
         if (chaseTime_ < 0 || QDateTime::currentMSecsSinceEpoch() - lastHeard_ > 500) return "Listening...";
         if (heardRate_ >= 0 && heardRate_ != code) return "Wrong format";
         return tc(chaseTime_, code);
@@ -320,9 +322,17 @@ std::string MidiSync::displayText(int source) const
     }
 }
 
+// The label over the time display: what it shows when MIDI timecode comes in.
+std::string MidiSync::displayLabel(int source) const
+{
+    if (source == (int)TimeDisplaySource::MtcIn) return chaseOn_ ? "MTC Input" : "MTC Input Not Active";
+    return std::string();
+}
+
 MidiSync::~MidiSync()
 {
     midiTimeDisplayText() = nullptr;
+    midiTimeDisplayLabel() = nullptr;
     if (out_ && wasPlaying_ && clockOn_) out_->send({0xFC});
     delete timer_;
     out_.reset();

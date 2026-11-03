@@ -222,6 +222,23 @@ std::vector<const Chunk*> Chunk::children(const char* g) const
     return v;
 }
 
+std::string rulerFormatOfHeaderWord(uint32_t word)
+{
+    switch (word) {
+    case 1: return "time";
+    case 7: return "smpte30";
+    default: return "timecode";   // 3, and the numbers no sample explains
+    }
+}
+
+int headerWordOfRulerFormat(const std::string& id)
+{
+    if (id == "time") return 1;
+    if (id == "timecode") return 3;
+    if (id == "smpte30") return 7;
+    return -1;
+}
+
 bool looksLikeVeg(const Bytes& file)
 {
     if (file.size() < 40) return false;
@@ -714,6 +731,11 @@ bool readEnvelope(const Bytes& b, EnvelopeRecord& out)
     out.lowest = b.f32(0x0c);
     out.highest = b.f32(0x10);
     out.neutral = b.f32(0x14);
+    if (out.type == EnvPlugin && first >= 0x38) {
+        out.plugParam = b.u32(0x1c);
+        out.plugSlot = b.u32(0x20);
+        out.plugClsid = std::string((const char*)b.data() + 0x24, 16);
+    }
     for (uint32_t i = 0; i < count && i < 1000000; ++i) {
         const size_t at = (size_t)first + (size_t)i * step;
         if (!b.has(at, 16)) return false;
@@ -736,6 +758,7 @@ std::string envelopeName(uint32_t type)
     case EnvFadeToColor: return "fade to colour";
     case EnvMute: return "mute";
     case EnvVelocity: return "velocity (speed)";
+    case EnvPlugin: return "plug-in setting";
     default: break;
     }
     if (type >= EnvBusA && type <= EnvBusZ) return strfmt("send to Bus %c", (char)('A' + (type - EnvBusA)));

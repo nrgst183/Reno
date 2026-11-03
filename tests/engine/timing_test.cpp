@@ -250,7 +250,7 @@ int main(int argc, char** argv)
         const int64_t step = rulerStepFrames(800.0, 165.0, 70.0);
         std::string labels;
         for (int64_t f = 17 * 165; f <= 18 * 165; f += step) labels += formatTime(s, (double)f / 165.0, "timecode") + " ";
-        check(step == 15 && labels.find("00:00:17:150 00:00:18:000") != std::string::npos, "165 fps: numbered every 15 frames, 17:150 then 18:000", labels);
+        check(step == 15 && labels.find("00:00:17:150 00:00:18:00") != std::string::npos, "165 fps: numbered every 15 frames, 17:150 then 18:00", labels);
         // the frame numbers are whole frames at 165 and at 29.97 fps, at the mark's exact time
         bool whole = true;
         for (int64_t f = 0; f < 165 * 120; f += 15)
@@ -284,13 +284,13 @@ int main(int argc, char** argv)
 
     // ------------------------------------------------------------------ Time & Frames at 100 fps and over
     {
-        // the frame part has the digits of the counter's last frame: 120 fps counts 000..119, so the text never
-        // changes width (00:02:06:102 then 00:02:07:006, not 00:02:07:06)
+        // the frame part has two digits, three from frame 100 on, as VEGAS writes it (00:00:12:42 at 140 fps; 00:02:06:102
+        // then 00:02:07:06 at 120 fps)
         ProjectSettings s;
         s.fpsNum = 120;
         s.fpsDen = 1;
-        check(formatTime(s, 126.0 + 102.0 / 120.0, "timecode") == "00:02:06:102" && formatTime(s, 127.0 + 6.0 / 120.0, "timecode") == "00:02:07:006",
-              "120 fps: 00:02:06:102 and 00:02:07:006", formatTime(s, 127.0 + 6.0 / 120.0, "timecode"));
+        check(formatTime(s, 126.0 + 102.0 / 120.0, "timecode") == "00:02:06:102" && formatTime(s, 127.0 + 6.0 / 120.0, "timecode") == "00:02:07:06",
+              "120 fps: 00:02:06:102 and 00:02:07:06", formatTime(s, 127.0 + 6.0 / 120.0, "timecode"));
         size_t width = 0;
         bool same = true;
         for (int64_t f = 0; f < 120 * 300; f += 7) {
@@ -298,7 +298,10 @@ int main(int argc, char** argv)
             if (!width) width = t.size();
             if (t.size() != width) same = false;
         }
-        check(same && width == 12, "120 fps: every time is written 12 characters wide");
+        check(!same, "120 fps: frames below 100 have two digits");
+        s.fpsNum = 140;
+        check(formatTime(s, 12.0 + 42.0 / 140.0, "timecode") == "00:00:12:42", "140 fps: 00:00:12:42 (as VEGAS)", formatTime(s, 12.0 + 42.0 / 140.0, "timecode"));
+        s.fpsNum = 120;
         check(frameDigits(24) == 2 && frameDigits(30) == 2 && frameDigits(60) == 2 && frameDigits(100) == 2 && frameDigits(101) == 3 &&
                   frameDigits(120) == 3 && frameDigits(165) == 3 && frameDigits(1000) == 3 && frameDigits(1001) == 4,
               "frameDigits: 2 up to 100 fps, 3 from 101");

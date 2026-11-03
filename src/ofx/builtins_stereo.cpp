@@ -6,6 +6,7 @@
 //   3. the Left floating window: black over that part of the frame's width from the left edge (whole columns checked against VEGAS's pictures; a part of a column is a GUESS).
 #include "builtins_mask_internal.h"
 #include "vfxstereo.h"
+#include "vkfilters.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -64,6 +65,26 @@ void vegasStereo3dAdjust(Ctx& c)
         float* o = c.out.at(0, y);
         for (int i = 0; i < W * 4; ++i) o[i] = r[i] / 255.f;
     }
+}
+
+// for the Vulkan plan (vkgeom.cpp): the same set-up as vegasStereo3dAdjust, the warp's inverse matrix and the floating window's columns
+bool stereoGpu(Ctx& c, int W, int H, StereoGpu& o)
+{
+    if (W <= 1 || H <= 1) return false;
+    const double hz = clampd(c.d("Horizontal"), -1, 1), vt = clampd(c.d("Vertical"), -1, 1), zoom = clampd(c.d("Zoom"), -0.95, 10);
+    const double key = clampd(c.d("Keystone"), -1, 1), rot = clampd(c.d("Rotation"), -180, 180);
+    const int fhc = std::max(0, std::min(3, c.i("FlipHorizontal"))), fvc = std::max(0, std::min(3, c.i("FlipVertical")));
+    const bool autoCrop = c.b("AutoCrop");
+    const double crop = clampd(c.d("Crop"), 0, 0.5);
+    const double fw = clampd(c.d("FloatingWindowLeft"), 0, 0.25);
+    const vfxstereo::StereoMats sm = vfxstereo::stereoMatrix(W, H, hz, vt, zoom, key, rot, fhc, fvc, autoCrop, crop);
+    const vfxstereo::Mat3 Mi = vfxstereo::mInverse(sm.af);
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) o.mi[i * 3 + j] = Mi.m[i][j];
+    const double fcols = fw * W;
+    o.full = (int)fcols;
+    o.part = fcols - o.full;
+    o.levels = c.levels;
+    return true;
 }
 
 }  // namespace builtin

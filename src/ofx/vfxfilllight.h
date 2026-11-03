@@ -200,16 +200,46 @@ inline void cut(std::vector<float>& v, float (*store8)(float))
         for (float& x : v) x = store8(x);
 }
 
+// What the kernels get from the host (shared with the Vulkan plan, vkblur.cpp): copy = the picture passes (the host copies it); the table; the blur's coefficients when Softness is set; the
+// strength factor of the last kernel.
+struct Prep {
+    bool copy = true, blur = false;
+    uint8_t lut[256][4];
+    vfxgauss::Coefsf cx, cy;
+    float k = 0;
+};
+inline void prepare(int W, int H, const Settings& s, Prep& r)
+{
+    RENO_FILLLIGHT_NO_FMA
+    r.copy = true;
+    r.blur = false;
+    if (W <= 0 || H <= 0) return;
+    const double bias = s.bias * 0.01, hue = s.hue / 360.0, tint = s.tint * 0.01, soft = s.softness * 0.002, strength = s.strength * 0.009999997913837433;
+    if (!(strength > 0.0001)) return;
+    r.copy = false;
+    buildTable(bias, hue, tint, r.lut);
+    if (soft > 0.0001) {
+        // the host's sigmas (pixel aspect 1): the square root of the softness times the longer side
+        float sz = std::max((float)W * 1.0f, (float)H * 1.0f);
+        const float sc = (float)soft * sz;
+        const float sigA = std::sqrt(1.0f * sc), sigB = std::sqrt(1.0f * sc);
+        r.cy = vfxgauss::toFloats(vfxgauss::build((double)sigA));
+        r.cx = vfxgauss::toFloats(vfxgauss::build((double)sigB));
+        r.blur = true;
+    }
+    r.k = (float)strength * 0.5f;
+}
+
 // src, out: W x H x 4 floats, bottom row first.
 inline void render(const std::vector<float>& src, std::vector<float>& out, int W, int H, const Settings& s)
 {
     RENO_FILLLIGHT_NO_FMA
     out = src;
     if (W <= 0 || H <= 0) return;
-    const double bias = s.bias * 0.01, hue = s.hue / 360.0, tint = s.tint * 0.01, soft = s.softness * 0.002, strength = s.strength * 0.009999997913837433;
-    if (!(strength > 0.0001)) return;                       // (the host copies the picture)
-    uint8_t lut[256][4];
-    buildTable(bias, hue, tint, lut);
+    Prep pr;
+    prepare(W, H, s, pr);
+    if (pr.copy) return;                                    // (the host copies the picture)
+    uint8_t (*lut)[4] = pr.lut;
     // kernel 588 and 589: the luma picture, then its colour from the table (a float picture)
     std::vector<float> X((size_t)W * H * 4);
     for (size_t i = 0; i < (size_t)W * H; ++i) {
@@ -222,14 +252,10 @@ inline void render(const std::vector<float>& src, std::vector<float>& out, int W
         idx = std::min(std::max(idx, 0), 255);
         for (int k = 0; k < 4; ++k) X[i * 4 + k] = (float)lut[idx][k] / 255.0f;
     }
-    if (soft > 0.0001) {
-        // the host's sigmas (pixel aspect 1): the square root of the softness times the longer side
-        float sz = std::max((float)W * 1.0f, (float)H * 1.0f);
-        const float sc = (float)soft * sz;
-        const float sigA = std::sqrt(1.0f * sc), sigB = std::sqrt(1.0f * sc);
+    if (pr.blur) {
         auto plain = [](float a, float b, float c) { return a * b + c; };
-        const vfxgauss::Coefsf cy = vfxgauss::toFloats(vfxgauss::build((double)sigA));
-        const vfxgauss::Coefsf cx = vfxgauss::toFloats(vfxgauss::build((double)sigB));
+        const vfxgauss::Coefsf cy = pr.cy;
+        const vfxgauss::Coefsf cx = pr.cx;
         std::vector<float> t1, t2;
         vfxgauss::passColumns(cy, X, W, H, t1, t2, plain);
         cut(t1, s.store8);
@@ -252,7 +278,7 @@ inline void render(const std::vector<float>& src, std::vector<float>& out, int W
         for (size_t i = 0; i < X.size(); ++i) X[i] = r1[i] + r2[i];
     }
     // kernel 5810: the picture plus the fill times Strength / 2, kept in 0..1, the alpha untouched
-    const float k = (float)strength * 0.5f;
+    const float k = pr.k;
     for (size_t i = 0; i < (size_t)W * H; ++i) {
         for (int c = 0; c < 3; ++c) {
             float v = X[i * 4 + c] * k + src[i * 4 + c];

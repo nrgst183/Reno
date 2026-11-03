@@ -4,6 +4,10 @@
 #pragma once
 #include "builtins_impl.h"
 #include "vkgpu.h"
+#include "vfxcolour.h"
+#include "vfxnoise.h"
+#include "vfxhslwb.h"
+#include "vfxgradmap.h"
 #include <map>
 #include <string>
 #include <vector>
@@ -37,6 +41,9 @@ bool colorCurves8GpuTables(Ctx& c, std::vector<float>& out);   // (8-bit picture
 // builtins_gen.cpp: what the generators work out in double precision for their kernels
 void solidColorGpu(Ctx& c, float p[4]);
 void checkerboardGpu(Ctx& c, int W, int H, std::vector<float>& tab, float pa[4], float pb[4]);
+struct NoiseGpu { int style = 0, count = 0; bool fold = false; float weight[6] = {0}, sum = 0, freq[2] = {0}, off[2] = {0}, z = 0, lo = 0, hi = 1, bias = 0, amp = 1, t[5] = {0}, a[4] = {0}, b[4] = {0}; };
+bool noiseTextureOclGpu(Ctx& c, int W, int H, NoiseGpu& o, std::vector<float>& tab);      // (the OpenCL kernels' arguments; tab: the 256 permutation values, then 256 gradients)
+void checkerboardOclGpu(Ctx& c, int W, int H, float out[16]);       // (the OpenCL kernel's arguments)
 void checkerboardGpuD(Ctx& c, int W, int H, std::vector<double>& sx, std::vector<double>& sy, double pa[4], double pb[4]);
 bool checkerboard8Gpu(Ctx& c, int W, int H, std::vector<int>& t);
 void testPatternGpu(Ctx& c, int W, int H, int& type, int& barW, std::vector<float>& tab);
@@ -47,12 +54,24 @@ bool lutFilterGpu(Ctx& c, int& n, float dmin[3], float dmax[3], float& gain, boo
 bool colorGradingGpu(Ctx& c, ColorGradingGpu& o);
 bool autoLooksGpu(Ctx& c, int& n, float dmin[3], float dmax[3], float& gain, unsigned& mode, std::vector<float>& tab);      // AutoLooks (builtins_color.cpp)
 int meshWarpGpu(Ctx& c, int& cols, int& rows, std::vector<float>& pts);
+// The settings of VEGAS's OpenCL kernels (vfxcolour.h) as the effects' CPU code reads them, for the Vulkan plans
+void addNoiseGpuSettings(Ctx& c, vfxnoise::Params& P);                             // Add Noise (builtins_filters.cpp)
+void ccOpenClSettings(Ctx& c, vcol::CcKernel& k);                                  // Color Corrector (builtins_filters2.cpp)
+void ccsOpenClSettings(Ctx& c, vcol::CcsKernel& k, bool& passThrough);             // Color Corrector (Secondary)
+namespace more { void whiteBalanceClSettings(Ctx& c, vhw::WbShift& sh, bool& hasData, bool& shifted); }   // White Balance (builtins_more_colour.cpp)
+namespace more { void gradientMapSettings(Ctx& c, vfxgm::Gradient& g); }   // Gradient Map (builtins_more_light.cpp)
+namespace more { void broadcastSettings(Ctx& c, vcol::BroadcastSettings& st, vcol::BroadcastFrame& fr); }   // Broadcast Colors (builtins_more_colour.cpp)
 namespace more { void saturationAdjust8Gpu(Ctx& c, std::vector<float>& t); int lensFlareGpu(Ctx& c, int W, int H, std::vector<float>& tab, int& nflares, float& blend); }
+namespace more { void vignetteOclGpu(Ctx& c, int W, int H, float out[14], bool& invert); void pipOpenClGpu(Ctx& c, int W, int H, float M[9], float& opacity); }
 struct Ccs8Gpu { int mode = 0, flags = 0; bool show = false, inv = false; float tintU = 0, tintV = 0, satF = 1, alphaF = 1, rot[4] = {1, 0, 0, 1}; std::vector<float> tab; };
 void ccs8Gpu(Ctx& c, Ccs8Gpu& o);      // Color Corrector (Secondary), 8-bit (builtins_filters2.cpp)
 int colorCorrector8Gpu(Ctx& c, std::vector<float>& tab);     // (builtins_filters2.cpp: returns the flags)
 struct ColorMatchGpu { std::vector<float> rowsTable, paramTable; };
 bool colorMatchGpu(Ctx& c, int W, int H, ColorMatchGpu& o);
+
+// vkeffects.cpp: the planners of the OpenCL kernels of Sepia and LAB Adjust (registered by vkfilters.cpp)
+bool gpuOclSepia(Ctx& c, gpu::Plan& p);
+bool gpuOclLabAdjust(Ctx& c, gpu::Plan& p);
 
 // VEGAS's Deriche Gaussian as passes (rows into a scratch buffer, then columns into 'to'), for the transition planners (vktrans.cpp); sigmas in pixels, levels for 8-bit pictures.
 void gpuDericheBlur(gpu::Plan& p, int from, int to, double sigmaX, double sigmaY, bool levels);
@@ -79,6 +98,7 @@ struct GpuCheckCase {
     std::string name;
     std::map<std::string, std::vector<double>> params;      // overrides of the defaults
     std::map<std::string, std::string> strings;
+    double time = -1, duration = -1;        // the frame's time and the event's length in frames, when the case needs them (negative: as the context has them)
     GpuCheckCase() {}
     GpuCheckCase(const std::string& n, const std::map<std::string, std::vector<double>>& p) : name(n), params(p) {}
     GpuCheckCase(const std::string& n, const std::map<std::string, std::vector<double>>& p, const std::map<std::string, std::string>& s) : name(n), params(p), strings(s) {}
@@ -88,7 +108,14 @@ struct GpuTestSettings {
     std::map<std::string, std::vector<double>> params;
     std::map<std::string, std::string> strings;
     GpuTestSettings(const Def& d, const GpuCheckCase& cs);
-    void apply(Ctx& c) const { c.testParams = &params; c.testStrings = &strings; }
+    // (a setting named "__time" is the frame time of the Ctx: the effects that run on the event's time stamp are only reached by a time other than 0)
+    void apply(Ctx& c) const
+    {
+        c.testParams = &params;
+        c.testStrings = &strings;
+        const auto it = params.find("__time");
+        if (it != params.end() && !it->second.empty()) c.time = it->second[0];
+    }
 };
 std::vector<GpuCheckCase> gpuCheckCases(const Def& d);
 // The test picture: a frame w x h with colours of every kind (ramps, hard edges, soft and zero alpha, noise), premultiplied,

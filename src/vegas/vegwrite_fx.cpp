@@ -1,5 +1,6 @@
 // Writing the envelopes and the effects (OpenFX, audio plug-in chains) of a .veg.
 #include "vegwrite_internal.h"
+#include "../audiofx/audioplugin.h"
 #include "../audiofx/vegas_trkfx.h"
 #include "../audiofx/vegaspack3.h"
 #include "../audiofx/vegasfx_pack2.h"
@@ -9,6 +10,81 @@ namespace reno {
 namespace vegwrite {
 
 // ---------------------------------------------------------------- envelopes
+// The DirectX effect Reno's built-in audio effect 'uid' is saved as; empty if it has none.
+static std::string builtinDxUid(const std::string& uid)
+{
+    const std::string pack1 = vegpack1::dxForUid(uid);      // sfppack1's effects (vegaspack1.h)
+    if (!pack1.empty()) return pack1;
+    if (const std::string p2 = pack2DxForBuiltin(uid); !p2.empty()) return p2;     // sfppack2 / sfresfilter (vegasfx_pack2.h)
+    const std::string trk = vegtrk::dxUidForBuiltin(uid);      // Volume, Pan, Track EQ... (vegas_trkfx.h)
+    if (!trk.empty()) return trk;
+    if (uid == "reno.distortion") return std::string("dshow:{39224540-6F92-11D0-AEBC-00A0C9053912}");
+    const vegpack3::Entry* e = vegpack3::entryForBuiltin(uid);      // the other sfppack3 effects (vegaspack3.h)
+    return e ? std::string(e->dxUid) : std::string();
+}
+
+static std::string audioClsid(const FxSlot& s, const Chunk* root, const VegProjectOrigin* po);
+
+// Whether Writer::audioChain writes this slot (so it has a place in the saved chain).
+static bool audioSlotWritten(const FxSlot& s)
+{
+    if (s.kind != "audio" || s.audio.format == "VST3") return false;
+    return s.audio.format != "BUILTIN" || !builtinDxUid(s.audio.uid).empty();
+}
+
+// A type 301 envelope (EnvelopeRecord) for the setting e.param of the VST plug-in e.target in 'chain': fills in what the
+// record needs; false if Reno cannot say (no such plug-in, not VST2, the plug-in's CLSID or the setting's index unknown).
+struct PluginEnvTarget {
+    uint32_t param = 0, slot = 0;
+    std::string clsid;
+    float neutral = 50.f;
+};
+static bool pluginEnvTarget(const Envelope& e, const FxChain* chain, const VegEnvelopeOrigin* o, const Chunk* root, const VegProjectOrigin* po,
+                            PluginEnvTarget& out)
+{
+    if (!chain) return false;
+    uint32_t place = 0;
+    const FxSlot* s = nullptr;
+    for (const FxSlot& c : *chain) {
+        if (c.id == e.target) { s = &c; break; }
+        if (audioSlotWritten(c)) ++place;
+    }
+    if (!s || s->kind != "audio" || s->audio.format != "VST2") return false;
+    out.slot = place;
+    // the CLSID: as the chain keeps it
+    if (const auto* fo = vegOriginAs<VegFxOrigin>(s->veg, VegOrigin::FxK))
+        if (fo->entryLen >= 16 && fo->asRead.audio.uid == s->audio.uid) out.clsid = bytesOf(fo->chunk->data.sub(fo->entryOff, 16));
+    if (out.clsid.size() != 16) out.clsid = audioClsid(*s, root, po);
+    if (out.clsid.size() != 16) return false;
+    // the setting's index: as read, a number, or one of Reno's eFX effects' names
+    const bool sameAsRead = o && o->vegType == EnvPlugin && o->asRead.target == e.target && o->asRead.param == e.param;
+    out.neutral = 50.f;
+    if (sameAsRead && o->chunk) {
+        out.param = o->chunk->data.u32(0x1c);
+        out.neutral = o->chunk->data.f32(0x14);
+        return true;
+    }
+    if (!e.param.empty() && std::all_of(e.param.begin(), e.param.end(), [](char ch) { return ch >= '0' && ch <= '9'; }) && e.param.size() < 6) {
+        out.param = (uint32_t)std::atoi(e.param.c_str());
+    } else if (efxReproducedId(s->audio.uid)) {
+        std::string err;
+        std::unique_ptr<AudioPlugin> pl = efxCreate(s->audio, &err);
+        int idx = -1;
+        for (int i = 0, n = pl ? pl->paramCount() : 0; i < n; ++i)
+            if (pl->paramName(i) == e.param) { idx = i; break; }
+        if (idx < 0) return false;
+        out.param = (uint32_t)idx;
+    } else {
+        return false;
+    }
+    if (efxReproducedId(s->audio.uid)) {
+        std::string err;
+        if (std::unique_ptr<AudioPlugin> pl = efxCreate(s->audio, &err))
+            if (out.param < (uint32_t)pl->paramCount()) out.neutral = (float)(100.0 * pl->paramGet((int)out.param));
+    }
+    return true;
+}
+
 // VEGAS's envelope types (vegformat.h) for Reno's kinds; 0xFFFFFFFF: none.
 uint32_t envelopeType(const Envelope& e, bool track, TrackType type, const std::map<uint64_t, uint32_t>& busIndex)
 {
@@ -44,7 +120,7 @@ void envelopeRange(uint32_t type, float& lo, float& hi, float& neutral)
 }
 
 void Writer::envelopes(OutNode& list, const Envelopes& envs, const std::vector<VegHidden>* hidden, bool trackEnv, TrackType ttype, const Event* ev,
-                       const Event* evRead, const std::string& where)
+                       const Event* evRead, const std::string& where, const FxChain* chain)
 {
     const Chunk* tplList = nullptr;
     auto templateList = [&]() -> const Chunk* {
@@ -62,7 +138,12 @@ void Writer::envelopes(OutNode& list, const Envelopes& envs, const std::vector<V
         }
         if (i == envs.size()) break;
         const Envelope& e = envs[i];
-        const uint32_t type = envelopeType(e, trackEnv, ttype, busIndex_);
+        uint32_t type = envelopeType(e, trackEnv, ttype, busIndex_);
+        // a setting of a VST plug-in in the chain (type 301)
+        PluginEnvTarget plug;
+        const bool plugin = type == 0xFFFFFFFFu && e.kind == "fx" && ttype == TrackType::Audio &&
+                            pluginEnvTarget(e, chain, originOf<VegEnvelopeOrigin>(e.veg, VegOrigin::EnvelopeK), root_, po_, plug);
+        if (plugin) type = EnvPlugin;
         if (type == 0xFFFFFFFFu) {
             warn(where + ": its '" + e.kind + "' envelope was not saved (a VEGAS project cannot have one there, or how VEGAS keeps it is not known).");
             continue;
@@ -92,13 +173,23 @@ void Writer::envelopes(OutNode& list, const Envelopes& envs, const std::vector<V
             }
         }
         std::string pd;
-        if (o && samePoints(e, o->asRead) && type == o->vegType) {
+        const bool plugSame = !plugin || (pc->data.u32(0x1c) == plug.param && pc->data.u32(0x20) == plug.slot && pc->data.size() >= 0x34 &&
+                                          std::memcmp(pc->data.data() + 0x24, plug.clsid.data(), 16) == 0 && o && o->asRead.target == e.target &&
+                                          o->asRead.param == e.param);
+        if (o && samePoints(e, o->asRead) && type == o->vegType && plugSame) {
             pd = bytesOf(pc->data);
         } else {
             const uint32_t first = pc->data.u32(0), step = pc->data.u32(0x34);
             pd = bytesOf(pc->data.sub(0, std::max<uint32_t>(0x38, first)));
             setU32(pd, 0x08, type);
-            if (!o || type != o->vegType) {
+            if (plugin) {
+                setF32(pd, 0x0c, 0.f);
+                setF32(pd, 0x10, 100.f);
+                setF32(pd, 0x14, plug.neutral);
+                setU32(pd, 0x1c, plug.param);
+                setU32(pd, 0x20, plug.slot);
+                pd.replace(0x24, 16, plug.clsid);
+            } else if (!o || type != o->vegType) {
                 float lo, hi, neutral;
                 envelopeRange(type, lo, hi, neutral);
                 setF32(pd, 0x0c, lo);
@@ -111,7 +202,7 @@ void Writer::envelopes(OutNode& list, const Envelopes& envs, const std::vector<V
             for (const auto& p : e.points) {
                 std::string pt;
                 addU64(pt, (uint64_t)toTicks(p.time));
-                addF32(pt, (float)p.value);
+                addF32(pt, (float)(plugin ? p.value * 100.0 : p.value));
                 addU32(pt, (uint32_t)curveToVegas(e.kind == "mute" ? CurveHold : p.curve));
                 pt.resize(st, '\0');
                 pd += pt;
@@ -285,16 +376,7 @@ bool Writer::audioChain(const FxChain& chain, const Bytes* original, const char*
         // Reno's reproductions of VEGAS's DirectX effects save as those effects (same settings)
         FxSlot asDx;
         // (builtinaudio.cpp's Distortion: VEGAS Distortion's settings and saved form, vegasdistortion.h)
-        auto dxUidForBuiltin = [](const std::string& uid) {
-            const std::string pack1 = vegpack1::dxForUid(uid);      // sfppack1's effects (vegaspack1.h)
-            if (!pack1.empty()) return pack1;
-            if (const std::string p2 = pack2DxForBuiltin(uid); !p2.empty()) return p2;     // sfppack2 / sfresfilter (vegasfx_pack2.h)
-            const std::string trk = vegtrk::dxUidForBuiltin(uid);      // Volume, Pan, Track EQ... (vegas_trkfx.h)
-            if (!trk.empty()) return trk;
-            if (uid == "reno.distortion") return std::string("dshow:{39224540-6F92-11D0-AEBC-00A0C9053912}");
-            const vegpack3::Entry* e = vegpack3::entryForBuiltin(uid);      // the other sfppack3 effects (vegaspack3.h)
-            return e ? std::string(e->dxUid) : std::string();
-        };
+        auto dxUidForBuiltin = [](const std::string& uid) { return builtinDxUid(uid); };
         const bool reproduced = slot.audio.format == "BUILTIN" && !dxUidForBuiltin(slot.audio.uid).empty();
         if (reproduced) {
             asDx = slot;

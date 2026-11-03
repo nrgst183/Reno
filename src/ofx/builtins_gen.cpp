@@ -3,10 +3,13 @@
 #include "builtins_impl.h"
 #include "builtins_more_internal.h"
 #include "vfxgen.h"
+#include "vkeffects.h"
+#include "vkfx2.h"
 #include "vfxtitles.h"
 #include "vfxtitlerich.h"
 #include "creditgdi.h"
 #include "vfxcredit.h"
+#include "vktext.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -100,22 +103,36 @@ Color stopColor(const std::vector<GradStop>& v, double t)
     return d <= 1e-9 ? q.col : mix(p.col, q.col, (t - p.pos) / d);
 }
 
+// the shape's numbers, worked out once per frame (colorGradient() and the Vulkan plan use these)
+struct GradSetup {
+    int type = 0;
+    std::vector<GradStop> stops;
+    double sx, sy, ex, ey, cx, cy, rx, ry, ca, sa, ddx, ddy, dd;
+};
+void gradSetup(Ctx& c, GradSetup& g)
+{
+    g.type = c.i("GradientType");
+    g.stops = parseStops(c.s("GradientStops"), c.color("Color1"), c.color("Color2"));
+    c.xy("Start", g.sx, g.sy);
+    c.xy("End", g.ex, g.ey);
+    c.xy("Center", g.cx, g.cy);
+    c.xy("Radius", g.rx, g.ry);
+    g.sy = 1 - g.sy; g.ey = 1 - g.ey; g.cy = 1 - g.cy; // the parameters are OFX points (y up); the rows below run from the top
+    g.rx = std::max(1e-4, std::fabs(g.rx));
+    g.ry = std::max(1e-4, std::fabs(g.ry));
+    const double ang = c.d("AspectRatioAngle") * kPi / 180.0;
+    g.ca = std::cos(ang); g.sa = std::sin(ang);
+    g.ddx = g.ex - g.sx; g.ddy = g.ey - g.sy; g.dd = g.ddx * g.ddx + g.ddy * g.ddy;
+}
+
 void colorGradient(Ctx& c)
 {
-    const int type = c.i("GradientType");
-    const std::vector<GradStop> stops = parseStops(c.s("GradientStops"), c.color("Color1"), c.color("Color2"));
-    double sx, sy, ex, ey, cx, cy, rx, ry;
-    c.xy("Start", sx, sy);
-    c.xy("End", ex, ey);
-    c.xy("Center", cx, cy);
-    c.xy("Radius", rx, ry);
-    sy = 1 - sy; ey = 1 - ey; cy = 1 - cy; // the parameters are OFX points (y up); the rows below run from the top
-    rx = std::max(1e-4, std::fabs(rx));
-    ry = std::max(1e-4, std::fabs(ry));
-    const double ang = c.d("AspectRatioAngle") * kPi / 180.0;
-    const double ca = std::cos(ang), sa = std::sin(ang);
+    GradSetup g;
+    gradSetup(c, g);
+    const int type = g.type;
+    const std::vector<GradStop>& stops = g.stops;
+    const double sx = g.sx, sy = g.sy, cx = g.cx, cy = g.cy, rx = g.rx, ry = g.ry, ca = g.ca, sa = g.sa, ddx = g.ddx, ddy = g.ddy, dd = g.dd;
     const int W = c.out.w, H = c.out.h;
-    const double ddx = ex - sx, ddy = ey - sy, dd = ddx * ddx + ddy * ddy;
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const double u = (double)x / W, v = (double)y / H; // row 0 is the top of the picture
@@ -1056,17 +1073,25 @@ void titlesAndTextMoving(Ctx& c)
 }
 
 
-void titlesAndText(Ctx& c)
+// What titlesAndText works out before the picture's own passes: the text layer as the glyph rasteriser leaves it (premultiplied bytes), and the passes that follow it
+// (node blur, glow, drop shadow, the composite over the background). The CPU applies them in titleApply(); the Vulkan plan (vktext.cpp) does the same on the card.
+enum TitleKind { TitleBackground, TitleMoving, TitleLayer };
+struct TitlePrep {
+    vfxtt::Layer L;
+    bool blur = false;
+    double blurSx = 0, blurSy = 0;
+    bool glow = false, glowInner = false;
+    double glowAmount = 0, glowColor[4] = {0, 0, 0, 0};
+    bool shadow = false;
+    double shadowColor[4] = {0, 0, 0, 0}, shadowBlur = 0, shadowDx = 0, shadowDy = 0;
+    double opacity = 1;
+};
+
+TitleKind titleBuild(Ctx& c, TitlePrep& job)
 {
-    const int W = c.out.w, H = c.out.h;
-    const Color bg = c.color("Background");
-    if (bg.a > 0) {
-        float p[4];
-        putGen(p, bg);
-        for (int k = 0; k < W * H; ++k) std::memcpy(&c.out.px[(size_t)k * 4], p, sizeof p);
-    }
+    const int W = c.frameW, H = c.frameH;       // (= the picture's size; the Vulkan plan has no c.out)
     const RichText rt = parseRichText(c.s("Text"));
-    if (rt.text.empty() || W <= 0 || H <= 0) return;
+    if (rt.text.empty() || W <= 0 || H <= 0) return TitleBackground;
     vfxtt::Style S;
     S.text = rt.text;
     S.font = !rt.font.empty() ? rt.font : c.s("FontName");
@@ -1085,7 +1110,7 @@ void titlesAndText(Ctx& c)
     S.fill[0] = cutByte(tc.r); S.fill[1] = cutByte(tc.g); S.fill[2] = cutByte(tc.b); S.fill[3] = cutByte(tc.a);
     S.stroke[0] = cutByte(oc.r); S.stroke[1] = cutByte(oc.g); S.stroke[2] = cutByte(oc.b); S.stroke[3] = cutByte(oc.a);
     std::shared_ptr<TextFace> face = vfxtt::face(S.font, S.bold, S.italic);
-    if (!face) { titlesAndTextMoving(c); return; }           // (no glyph source installed: the older bitmap path, through the plain text rasteriser)
+    if (!face) return TitleMoving;                              // (no glyph source installed: the older bitmap path, through the plain text rasteriser)
 
     // The characters' own formatting (sizes, bold, italic, font changes inside the text) and the animation engine (the animation's data is read from VEGAS's assembly).
     {
@@ -1139,30 +1164,29 @@ void titlesAndText(Ctx& c)
                     if (vfxtt::placeRich(S2, fmt, W, H, R2, &hid) && R2.shape.lines.size() == R.shape.lines.size()) R = R2;
                 }
             } else vfxtt::identityState(R.shape, st);
-            vfxtt::Layer L;
-            const vfxtt::AnimOut ao = vfxtt::drawRich(S, R, st, W, H, L);
+            const vfxtt::AnimOut ao = vfxtt::drawRich(S, R, st, W, H, job.L);
             const vfxta::Sub& ns = st.node;
-            if (ns.blurOn && (ns.hblur > 0 || ns.vblur > 0))
-                vfxtt::blurLayer(L, ns.hblur > 0 ? builtin::more::cgSigmaForDiameter(clampd(ns.hblur, 0, 10) * vfxtt::kBlurRef * W) : 0.0, ns.vblur > 0 ? builtin::more::cgSigmaForDiameter(clampd(ns.vblur, 0, 10) * vfxtt::kBlurRef * H) : 0.0);
-            if (ns.glowOn && ns.glow > 0) vfxtt::glowLayer(L, ns.glow, ns.glowColor, ns.glowInner > 0);
+            if (ns.blurOn && (ns.hblur > 0 || ns.vblur > 0)) {
+                job.blur = true;
+                job.blurSx = ns.hblur > 0 ? builtin::more::cgSigmaForDiameter(clampd(ns.hblur, 0, 10) * vfxtt::kBlurRef * W) : 0.0;
+                job.blurSy = ns.vblur > 0 ? builtin::more::cgSigmaForDiameter(clampd(ns.vblur, 0, 10) * vfxtt::kBlurRef * H) : 0.0;
+            }
+            if (ns.glowOn && ns.glow > 0) {
+                job.glow = true;
+                job.glowAmount = ns.glow;
+                for (int k = 0; k < 4; ++k) job.glowColor[k] = ns.glowColor[k];
+                job.glowInner = ns.glowInner > 0;
+            }
             if (c.b("ShadowEnable")) {
                 const Color sc = c.color("ShadowColor");
-                const double col[4] = {sc.r, sc.g, sc.b, sc.a};
-                vfxtt::dropShadow(L, col, c.d("ShadowBlur") / 10.0, c.d("ShadowOffsetX") / 10.0, c.d("ShadowOffsetY") / 10.0);
+                job.shadow = true;
+                job.shadowColor[0] = sc.r; job.shadowColor[1] = sc.g; job.shadowColor[2] = sc.b; job.shadowColor[3] = sc.a;
+                job.shadowBlur = c.d("ShadowBlur") / 10.0;
+                job.shadowDx = c.d("ShadowOffsetX") / 10.0;
+                job.shadowDy = c.d("ShadowOffsetY") / 10.0;
             }
-            const float op = (float)clampd(ao.opacity, 0, 1);
-            for (int y = 0; y < H; ++y)
-                for (int x = 0; x < W; ++x) {
-                    const uint8_t* s = &L.px[((size_t)y * W + x) * 4];
-                    if (!s[3]) continue;
-                    float* d = c.out.at(x, y);
-                    const float a = s[3] / 255.f * op, ia = 1.f - a;
-                    d[0] = s[2] / 255.f * op + d[0] * ia;
-                    d[1] = s[1] / 255.f * op + d[1] * ia;
-                    d[2] = s[0] / 255.f * op + d[2] * ia;
-                    d[3] = a + d[3] * ia;
-                }
-            return;
+            job.opacity = (double)(float)clampd(ao.opacity, 0, 1);
+            return TitleLayer;
         }
     }
 
@@ -1178,23 +1202,34 @@ void titlesAndText(Ctx& c)
         const std::string key = animationKey(anim);
         if (!key.empty() && key != "none") {
             vfxtt::Placed rest;
-            if (!vfxtt::place(*face, S, W, H, vfxtt::Move(), rest)) return;
+            if (!vfxtt::place(*face, S, W, H, vfxtt::Move(), rest)) return TitleBackground;
             mo = textMotion(anim, secs, W, H, rest.bx, rest.by, rest.bw, rest.bh);
             mv.dx = mo.dx; mv.dy = mo.dy; mv.sx = mo.sx; mv.sy = mo.sy;
-            if (mo.dx != 0 || mo.dy != 0 || mo.sx != 1 || mo.sy != 1 || mo.opacity != 1) {
-                titlesAndTextMoving(c);
-                return;
-            }
+            if (mo.dx != 0 || mo.dy != 0 || mo.sx != 1 || mo.sy != 1 || mo.opacity != 1) return TitleMoving;
         }
     }
-    vfxtt::Layer L;
-    if (!vfxtt::draw(*face, S, W, H, mv, L)) return;
+    if (!vfxtt::draw(*face, S, W, H, mv, job.L)) return TitleBackground;
     if (c.b("ShadowEnable")) {
         const Color sc = c.color("ShadowColor");
-        const double col[4] = {sc.r, sc.g, sc.b, sc.a};
-        vfxtt::dropShadow(L, col, c.d("ShadowBlur") / 10.0, c.d("ShadowOffsetX") / 10.0, c.d("ShadowOffsetY") / 10.0);
+        job.shadow = true;
+        job.shadowColor[0] = sc.r; job.shadowColor[1] = sc.g; job.shadowColor[2] = sc.b; job.shadowColor[3] = sc.a;
+        job.shadowBlur = c.d("ShadowBlur") / 10.0;
+        job.shadowDx = c.d("ShadowOffsetX") / 10.0;
+        job.shadowDy = c.d("ShadowOffsetY") / 10.0;
     }
-    const float op = (float)clampd(mo.opacity, 0, 1);
+    job.opacity = (double)(float)clampd(mo.opacity, 0, 1);
+    return TitleLayer;
+}
+
+// The passes after the glyphs, on the CPU: the node blur, the glow, the drop shadow, then the layer over the background in c.out.
+void titleApply(Ctx& c, TitlePrep& j)
+{
+    const int W = c.out.w, H = c.out.h;
+    vfxtt::Layer& L = j.L;
+    if (j.blur) vfxtt::blurLayer(L, j.blurSx, j.blurSy);
+    if (j.glow) vfxtt::glowLayer(L, j.glowAmount, j.glowColor, j.glowInner);
+    if (j.shadow) vfxtt::dropShadow(L, j.shadowColor, j.shadowBlur, j.shadowDx, j.shadowDy);
+    const float op = (float)j.opacity;
     for (int y = 0; y < H; ++y)
         for (int x = 0; x < W; ++x) {
             const uint8_t* s = &L.px[((size_t)y * W + x) * 4];
@@ -1208,6 +1243,41 @@ void titlesAndText(Ctx& c)
         }
 }
 
+void titlesAndText(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    const Color bg = c.color("Background");
+    if (bg.a > 0) {
+        float p[4];
+        putGen(p, bg);
+        for (int k = 0; k < W * H; ++k) std::memcpy(&c.out.px[(size_t)k * 4], p, sizeof p);
+    }
+    TitlePrep job;
+    const TitleKind kind = titleBuild(c, job);
+    if (kind == TitleMoving) titlesAndTextMoving(c);
+    else if (kind == TitleLayer) titleApply(c, job);
+}
+
+// For the Vulkan plan (vktext.cpp): the same preparation; the glyphs stay on the CPU, the layer goes up as a table. False: the CPU draws the whole picture (the moving older path).
+bool titlesAndTextGpuImpl(Ctx& c, TitleGpu& g)
+{
+    TitlePrep job;
+    const TitleKind kind = titleBuild(c, job);
+    if (kind == TitleMoving) return false;
+    const Color bg = c.color("Background");
+    g.bg[0] = g.bg[1] = g.bg[2] = g.bg[3] = 0.f;
+    if (bg.a > 0) putGen(g.bg, bg);
+    g.layer = kind == TitleLayer;
+    if (!g.layer) return true;
+    g.w = job.L.w; g.h = job.L.h;
+    g.bytes.swap(job.L.px);
+    g.blur = job.blur; g.blurSx = job.blurSx; g.blurSy = job.blurSy;
+    g.glow = job.glow; g.glowInner = job.glowInner; g.glowAmount = job.glowAmount;
+    for (int k = 0; k < 4; ++k) { g.glowColor[k] = job.glowColor[k]; g.shadowColor[k] = job.shadowColor[k]; }
+    g.shadow = job.shadow; g.shadowBlur = job.shadowBlur; g.shadowDx = job.shadowDx; g.shadowDy = job.shadowDy;
+    g.opacity = job.opacity;
+    return true;
+}
 
 // ------------------------------------------------------------------ Credit Roll
 // VEGAS's Credit Roll, ported from its code (sftrans1.dll, notes/vegas_code/Credit_Roll.md; the arithmetic is in vfxcredit.h). Five text styles (title, sub-item, the
@@ -1331,11 +1401,40 @@ CRect cIntersect(const CRect& a, const CRect& c)
     return o.empty() ? CRect() : o;
 }
 
+// The Vulkan plan (vktext.cpp) plays the same code with a recorder set: the text blits are noted, not drawn, and the card draws them in the same order.
+struct CreditBlit {
+    int x0 = 0, y0 = 0, w = 0, h = 0;               // the mask's place in the frame (its first pixel)
+    int l = 0, t = 0, r = 0, b = 0;                 // the clip (right and bottom excluded)
+    float col[4] = {0, 0, 0, 0};
+    std::vector<uint8_t> a;                         // coverage, w x h
+};
+struct CreditPost {
+    int kind = 0;                                   // 0 none, 1 zoom, 2 wipe
+    vfxcredit::Box box;
+    double t = 0;                                   // zoom: the shrink; wipe: the edge's place
+    bool vertical = false, clearFirst = false;
+};
+struct CreditJob {
+    std::vector<CreditBlit> blits;
+    CreditPost post;
+    float bg[4] = {0, 0, 0, 0};
+};
+thread_local CreditJob* gCreditJob = nullptr;
+
 // text colour over what is in the frame (straight colour; coverage 0..255 times the colour's alpha); only inside 'clip' (VEGAS copies the text's picture to the
 // frame only where its clip rectangle and the frame overlap)
 void creditBlit(Buf& out, const CreditRun& r, double x, double y, const float col[4], const CRect& clip)
 {
     const int X0 = (int)std::lround(x) - r.ox, Y0 = (int)std::lround(y) - r.oy;
+    if (gCreditJob) {
+        CreditBlit b;
+        b.x0 = X0; b.y0 = Y0; b.w = r.w; b.h = r.h;
+        b.l = clip.l; b.t = clip.t; b.r = clip.r; b.b = clip.b;
+        for (int k = 0; k < 4; ++k) b.col[k] = col[k];
+        b.a = r.a;
+        gCreditJob->blits.push_back(std::move(b));
+        return;
+    }
     for (int yy = 0; yy < r.h; ++yy) {
         const int fy = Y0 + yy;
         if (fy < 0 || fy >= out.h || fy < clip.t || fy >= clip.b) continue;
@@ -1480,14 +1579,16 @@ void creditLine(Buf& out, const vfxcredit::Line& ln, const CreditCfg& cfg, float
     }
 }
 
-void creditRoll(Ctx& c)
+// The whole effect. 'out' is the picture (c.out); with a job it is only a size (w, h) and the blits and the last pass are recorded in the job instead of drawn.
+void creditPlay(Ctx& c, Buf& out, CreditJob* job)
 {
-    const int W = c.out.w, H = c.out.h;
+    const int W = out.w, H = out.h;
     if (W <= 0 || H <= 0) return;
     const CreditCfg cfg = creditConfig(c);
     float bgp[4];
     putGen(bgp, cfg.bg);                                // (VEGAS fills with the premultiplied 8-bit colour)
-    for (int k = 0; k < W * H; ++k) std::memcpy(&c.out.px[(size_t)k * 4], bgp, sizeof bgp);
+    if (job) std::memcpy(job->bg, bgp, sizeof bgp);
+    else for (int k = 0; k < W * H; ++k) std::memcpy(&out.px[(size_t)k * 4], bgp, sizeof bgp);
     const std::vector<vfxcredit::Line> lines = vfxcredit::parse(cfg.text);
     if (lines.empty()) return;
     double h[5], before[3], after[3];
@@ -1505,7 +1606,7 @@ void creditRoll(Ctx& c)
         const double off = total * (cfg.back ? 1.0 - p : p);
         for (size_t i = 0; i < lines.size(); ++i) {
             if (!(pl[i].y0 < off + H && pl[i].y1 > off)) continue;
-            creditLine(c.out, lines[i], cfg, base, h, pl[i].y0 - off, 0, Lpx, Rpx, Lpx, Rpx, nullptr);
+            creditLine(out, lines[i], cfg, base, h, pl[i].y0 - off, 0, Lpx, Rpx, Lpx, Rpx, nullptr);
         }
         return;
     }
@@ -1543,11 +1644,21 @@ void creditRoll(Ctx& c)
     vfxcredit::Box box;
     for (size_t i = 0; i < lines.size(); ++i) {
         if (pg[i] != cur) continue;
-        creditLine(c.out, lines[i], cfg, cols, h, (double)yOff + pl[i].y0, dx, Lpx, Rpx, Lpx + clipShift, Rpx + clipShift, &box);
+        creditLine(out, lines[i], cfg, cols, h, (double)yOff + pl[i].y0, dx, Lpx, Rpx, Lpx + clipShift, Rpx + clipShift, &box);
     }
     box.clip(W, H);                                     // (the engine only reports what it drew on the frame)
     if (act && post && !box.empty()) {
-        float* px = c.out.px.data();
+        if (job) {
+            CreditPost& cp = job->post;
+            cp.box = box;
+            if (kind == vfxcredit::FxZoom) { cp.kind = 1; cp.t = in ? 1.0 - t : t; }
+            else if (kind == vfxcredit::FxWipeHR) { cp.kind = 2; cp.vertical = false; cp.clearFirst = in; cp.t = 1.0 - t; }
+            else if (kind == vfxcredit::FxWipeH) { cp.kind = 2; cp.vertical = false; cp.clearFirst = !in; cp.t = t; }
+            else if (kind == vfxcredit::FxWipeVR) { cp.kind = 2; cp.vertical = true; cp.clearFirst = in; cp.t = 1.0 - t; }
+            else if (kind == vfxcredit::FxWipeV) { cp.kind = 2; cp.vertical = true; cp.clearFirst = !in; cp.t = t; }
+            return;
+        }
+        float* px = out.px.data();
         if (kind == vfxcredit::FxZoom) vfxcredit::zoomBox(px, W, H, box, in ? 1.0 - t : t, bgp);
         else if (kind == vfxcredit::FxWipeHR) vfxcredit::wipe(px, W, H, box, false, in, 1.0 - t, bgp);
         else if (kind == vfxcredit::FxWipeH) vfxcredit::wipe(px, W, H, box, false, !in, t, bgp);
@@ -1556,7 +1667,49 @@ void creditRoll(Ctx& c)
     }
 }
 
+void creditRoll(Ctx& c) { creditPlay(c, c.out, nullptr); }
+
+// For the Vulkan plan: the text blits in the order the CPU draws them, and the last pass (zoom / wipe), recorded by playing the effect without a picture.
+bool creditRollGpuImpl(Ctx& c, CreditGpu& g)
+{
+    Buf size;
+    size.w = c.frameW; size.h = c.frameH;
+    if (size.w <= 0 || size.h <= 0) return false;
+    CreditJob job;
+    gCreditJob = &job;
+    try { creditPlay(c, size, &job); } catch (...) { gCreditJob = nullptr; throw; }
+    gCreditJob = nullptr;
+    for (int k = 0; k < 4; ++k) g.bg[k] = job.bg[k];
+    for (CreditBlit& b : job.blits) {
+        CreditGpu::Blit o;
+        o.x0 = b.x0; o.y0 = b.y0; o.w = b.w; o.h = b.h; o.l = b.l; o.t = b.t; o.r = b.r; o.b = b.b;
+        for (int k = 0; k < 4; ++k) o.col[k] = b.col[k];
+        o.a.swap(b.a);
+        g.blits.push_back(std::move(o));
+    }
+    g.postKind = job.post.kind;
+    g.bx0 = job.post.box.x0; g.by0 = job.post.box.y0; g.bx1 = job.post.box.x1; g.by1 = job.post.box.y1;
+    g.t = job.post.t; g.vertical = job.post.vertical; g.clearFirst = job.post.clearFirst;
+    return true;
+}
+
 }  // namespace
+
+bool titlesAndTextGpu(Ctx& c, TitleGpu& g) { return titlesAndTextGpuImpl(c, g); }
+bool creditRollGpu(Ctx& c, CreditGpu& g) { return creditRollGpuImpl(c, g); }
+// Color Gradient's numbers for the Vulkan plan (vkfx2.cpp): the shape and the stops (position, r, g, b, a each) as doubles.
+void colorGradientGpu(Ctx& c, ColorGradientGpu& o)
+{
+    GradSetup g;
+    gradSetup(c, g);
+    o.type = g.type;
+    o.stops.clear();
+    for (const GradStop& s : g.stops) {
+        o.stops.push_back(s.pos);
+        o.stops.push_back(s.col.r); o.stops.push_back(s.col.g); o.stops.push_back(s.col.b); o.stops.push_back(s.col.a);
+    }
+    o.v[0] = g.sx; o.v[1] = g.sy; o.v[2] = g.ddx; o.v[3] = g.ddy; o.v[4] = g.dd; o.v[5] = g.cx; o.v[6] = g.cy; o.v[7] = g.rx; o.v[8] = g.ry; o.v[9] = g.ca; o.v[10] = g.sa;
+}
 
 void addGenerators(std::vector<Def>& out)
 {
@@ -1737,7 +1890,56 @@ void addGenerators(std::vector<Def>& out)
 // Solid Color's premultiplied levels.
 void solidColorGpu(Ctx& c, float p[4])
 {
+    if (c.openCl) {         // (the OpenCL kernel's colour, through the card's store into an 8-bit frame: a constant, so the host works it out)
+        const Color col = c.color("Color");
+        const double rgba[4] = {col.r, col.g, col.b, col.a};
+        float v[4];
+        vfxgen::solidColor(rgba, v);
+        genPut(c, p, v);
+        return;
+    }
     putGen(p, c.color("Color"));
+}
+
+// Noise Texture as VEGAS's OpenCL kernels draw it (noiseTextureOpenCl): the arguments of the row kernel and the mixing kernel (false: nothing to draw on the card)
+bool noiseTextureOclGpu(Ctx& c, int W, int H, NoiseGpu& o, std::vector<float>& tab)
+{
+    if (!c.openCl || W <= 0 || H <= 0) return false;
+    const Color c1 = c.color("Color1"), c2 = c.color("Color2");
+    const double col1[4] = {c1.r, c1.g, c1.b, c1.a}, col2[4] = {c2.r, c2.g, c2.b, c2.a};
+    const vfxgen::Noise k = vfxgen::noiseHost(W, H, c.i("NoiseStyle"), c.b("Swapcolors"), c.d("FrequencyX"), c.d("FrequencyY"), c.d("NumberOfLayers"), c.d("OffsetX"),
+                                              c.d("OffsetY"), c.d("OffsetprogressinDegrees"), c.d("NoiseParametersGrainAmplitudeFalloff"), c.d("NoiseParametersMin"),
+                                              c.d("NoiseParametersMax"), c.d("NoiseParametersBias"), c.d("NoiseParametersAmplitude"), col1, col2);
+    const vfxgen::NoiseLayers L = vfxgen::noiseLayers(k);
+    o.style = k.style;
+    o.fold = vfxgen::noiseFolds(k.style);
+    o.count = L.count;
+    for (int i = 0; i < 6; ++i) o.weight[i] = L.weight[i];
+    o.sum = L.sum;
+    for (int i = 0; i < 2; ++i) { o.freq[i] = k.freq[i]; o.off[i] = k.off[i]; }
+    o.z = k.z;
+    o.lo = k.lo; o.hi = k.hi; o.bias = k.bias; o.amp = k.amp;
+    for (int i = 0; i < 5; ++i) o.t[i] = vfxgen::noiseStyleTable()[k.style][i];
+    const float* ca = k.swap ? k.c2 : k.c1;
+    const float* cb = k.swap ? k.c1 : k.c2;
+    for (int i = 0; i < 4; ++i) { o.a[i] = ca[i]; o.b[i] = cb[i]; }
+    tab.clear();
+    for (int i = 0; i < 256; ++i) tab.push_back((float)kNtPerm[i]);
+    for (int i = 0; i < 256; ++i) for (int j = 0; j < 3; ++j) tab.push_back(kNtGrad[i][j]);
+    return true;
+}
+
+// Checkerboard as VEGAS's OpenCL kernel draws it (checkerboardOpenCl): what the kernel gets, tile (2), half edge (2), 0.5 / half edge (2), offset (2), Color 2 (4), Color 1 (4)
+void checkerboardOclGpu(Ctx& c, int W, int H, float out[16])
+{
+    const Color a = c.color("Color1"), b = c.color("Color2");
+    const double col1[4] = {a.r, a.g, a.b, a.a}, col2[4] = {b.r, b.g, b.b, b.a};
+    const double eh = c.d("EdgeBlendingHorizontal");
+    const double ev = c.b("EdgeBlendingProportional") ? eh : c.d("EdgeBlendingVertical");
+    const vfxgen::Checker k = vfxgen::checkerHost(W, H, c.d("TileDimensionsWidth"), c.d("TileDimensionsHeight"), c.b("TileDimensionsSquare"), eh, ev, c.d("GridOffsetX"),
+                                                  c.d("GridOffsetY"), col1, col2, 1.0f);
+    for (int i = 0; i < 2; ++i) { out[i] = k.tile[i]; out[2 + i] = k.hh[i]; out[4 + i] = k.inv[i]; out[6 + i] = k.off[i]; }
+    for (int i = 0; i < 4; ++i) { out[8 + i] = k.c2[i]; out[12 + i] = k.c1[i]; }
 }
 
 // Checkerboard: the horizontal wave of each column, then the vertical wave of each row (as checkerboard() works them out), and the two premultiplied colours.

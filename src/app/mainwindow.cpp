@@ -164,6 +164,7 @@
 #include <QHash>
 #include <QIcon>
 #include <QProxyStyle>
+#include "uifont.h"
 #include <QPushButton>
 #include <QProgressDialog>
 #include <QStyleOption>
@@ -228,6 +229,13 @@ public:
         // VEGAS keeps a dragged scroll box with the mouse however far it goes; Windows' hint would snap it back
         if (m == PM_MaximumDragDistance) return -1;
         return QProxyStyle::pixelMetric(m, o, w);
+    }
+
+    // VEGAS's menus (Windows') show the underlined access letters only once Alt is pressed; Fusion always draws them.
+    int styleHint(StyleHint h, const QStyleOption* o, const QWidget* w, QStyleHintReturn* r) const override
+    {
+        if (h == SH_UnderlineShortcut && (qobject_cast<const QMenuBar*>(w) || qobject_cast<const QMenu*>(w))) return 0;
+        return QProxyStyle::styleHint(h, o, w, r);
     }
 
     // Fusion reads and decodes the title bar button pictures of a dock (close, float) from Qt's resources every time a dock
@@ -364,13 +372,13 @@ void applyTheme()
         p.setColor(QPalette::Disabled, r, QColor(118, 118, 118));
     QApplication::setPalette(p);
     installDialogLook();   // dialogs shown from now on are light, as VEGAS's older ones (dialoglook.h)
-    // VEGAS text is Segoe UI 8 pt (a sans-serif of the same widths elsewhere)
+    // VEGAS's window text is Tahoma 8.25 pt (11 px at 96 dpi); see uifont.h (a sans-serif of about the same widths elsewhere)
     QFont f = QApplication::font();
 #ifdef _WIN32
-    f.setFamily("Segoe UI");
+    f.setFamilies(QStringList() << "Tahoma" << "Segoe UI");
     f.setPointSizeF(8.25);
 #else
-    f.setPixelSize(10);
+    f.setPixelSize(vegasPx(11));
 #endif
     QApplication::setFont(f);
     // Menus are dark (VEGAS 18 leaves them to Windows, which draws them light), at the system menu text size.
@@ -382,7 +390,7 @@ void applyTheme()
     qApp->setStyleSheet(
         "QToolTip { color: #e6e6e6; background-color: #2d2d2d; border: 1px solid #6e6e6e; padding: 1px; }"
         "QMenuBar { background: #2d2d2d; color: #dcdcdc; border: none; padding: 2px 0px 3px 0px; " + menuFont + " }"
-        "QMenuBar::item { padding: 2px 5px; background: transparent; color: #dcdcdc; }"
+        "QMenuBar::item { padding: 2px 4px; background: transparent; color: #dcdcdc; }"
         "QMenuBar::item:selected { background: #464646; }"
         "QMenuBar::item:pressed { background: #1284d6; color: #ffffff; }"
         "QMenu { background: #2d2d2d; color: #dcdcdc; border: 1px solid #5a5a5a; padding: 2px; " + menuFont + " }"

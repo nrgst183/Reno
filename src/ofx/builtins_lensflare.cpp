@@ -215,12 +215,10 @@ bool shape(int type, float u, float v, float d, float I, const float* col, const
 
 }  // namespace
 
-// With GPU acceleration on VEGAS draws the flares with its OpenCL kernels (vfxflare.h): one launch per element, 8-bit pictures between them, the card's 12-bit store.
-static void lensFlareOpenCl(Ctx& c)
+// The settings of the OpenCL draw: false when the light position is not a number (nothing is drawn).
+bool lensFlareOclSetup(Ctx& c, vfxflare::Params& P, const vfxflare::Row*& rows, int& nrows, float* ray)
 {
-    const int W = c.out.w, H = c.out.h;
     static const RayTable rays;
-    float ray[64];
     for (int i = 0; i < 64; ++i) ray[i] = (float)rays.t[i];
     static const Flare* const lists[5] = {kLens0, kLens1, kLens2, kLens3, kLens4};
     static const int counts[5] = {(int)(sizeof(kLens0) / sizeof(Flare)), (int)(sizeof(kLens1) / sizeof(Flare)), (int)(sizeof(kLens2) / sizeof(Flare)),
@@ -229,14 +227,26 @@ static void lensFlareOpenCl(Ctx& c)
     const Color lc = c.color("LightColor");
     double lpx, lpy;
     c.xy("LightPosition", lpx, lpy);
-    vfxflare::Params P;
     P.lightR = (float)lc.r; P.lightG = (float)lc.g; P.lightB = (float)lc.b;
     P.lx = (float)lpx; P.ly = (float)lpy;
     P.tint = (float)c.d("Tint"); P.intensity = (float)c.d("Intensity"); P.blend = (float)c.d("Blend");
     P.size = (float)c.d("Size"); P.perspective = (float)c.d("Perspective");
-    if (!std::isfinite(P.lx) || !std::isfinite(P.ly)) return;
+    rows = lists[lens];
+    nrows = counts[lens];
+    return std::isfinite(P.lx) && std::isfinite(P.ly);
+}
+
+// With GPU acceleration on VEGAS draws the flares with its OpenCL kernels (vfxflare.h): one launch per element, 8-bit pictures between them, the card's 12-bit store.
+static void lensFlareOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    float ray[64];
+    vfxflare::Params P;
+    const vfxflare::Row* rows;
+    int nrows;
+    if (!lensFlareOclSetup(c, P, rows, nrows, ray)) return;
     std::vector<float> img(c.src.px);
-    vfxflare::render(img, W, H, lists[lens], counts[lens], P, ray, c.host8 ? oclStore12 : nullptr);
+    vfxflare::render(img, W, H, rows, nrows, P, ray, c.host8 ? oclStore12 : nullptr);
     c.out.px.swap(img);
 }
 

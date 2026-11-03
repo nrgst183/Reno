@@ -467,6 +467,211 @@ inline int render8(uint8_t* dst, int dstPitch, int W, int H, const uint8_t* src,
     return 0;
 }
 
+
+// ---- the same render split for a card: everything that is done once per row (the roll, the sideways move's numbers, the scanline brightness, the mask pixels and the static
+// noise's 129 values) is worked out here exactly as render8() does it, and the per-pixel part (all whole-number maths on the levels) is left to the card's kernels
+// (tools/gpukernels_fx2.py, vkfx2.cpp). Row k of 'rows' holds kRowInts numbers:
+//   0 the source row, 1 the scanline brightness (14-bit), 2 the move's step, 3 and 4 the two start positions, 5 the weight of the two-tap mix (-1: one tap),
+//   6 and 7 the rows above and below the source row, 8..22 the mask pixels (5 x blue, green, red), 23..151 the static noise (129 values).
+const int kRowInts = 152;
+struct Rows8 {
+    int mix14 = 0, xStart = 0, xStep = 0;
+    bool phos = false, staticOn = false, jitter = false;
+    std::vector<int32_t> rows;
+    uint8_t lut[256][4];
+};
+inline void prepare8(int W, int H, const double* P, int64_t stamp, double aspect, const double* T, Rows8& o)
+{
+    std::memset(o.lut, 0, sizeof(o.lut));
+    o.rows.assign((size_t)std::max(H, 0) * kRowInts, 0);
+    const double seconds = (double)stamp / 10000000.0;
+    const double xH = (double)H;
+    double m = (0.001 > P[4]) ? 0.001 : P[4];
+    double t0 = 1.0 / m;
+    t0 = t0 - 1.0;
+    t0 = t0 * P[0];
+    t0 = t0 * (xH * seconds);
+    const int64_t rollOff = H != 0 ? cvt64(t0) % (int64_t)H : 0;
+    const bool phos = P[6] > 0.0;
+    builtin::VegasShiftRandom rng((uint32_t)stamp);
+    if (phos) {
+        const int r8 = rem32((int)rng.next(), 1024);
+        const double p6 = P[6];
+        const double x0 = p6 * 0.6, x1 = p6 * 0.5;
+        double n = (double)r8;
+        n = n * 0.0009765625;
+        n = n * 0.05;
+        n = n * p6;
+        const double x3 = p6 * 0.15000000000000002;
+        double g0 = 1.0 - x0, g1 = 1.0 - x1, g2 = 1.0 - x3;
+        g0 = g0 + n; g1 = g1 + n; g2 = g2 + n;
+        g0 = (g0 < 1.0) ? g0 : 1.0;
+        g1 = (g1 < 1.0) ? g1 : 1.0;
+        g2 = (g2 < 1.0) ? g2 : 1.0;
+        for (int i = 0; i < 256; ++i) {
+            const double base = (double)i / 255.0;
+            o.lut[i][0] = (uint8_t)cvt32(std::pow(base, g0) * 255.0);
+            o.lut[i][1] = (uint8_t)cvt32(std::pow(base, g1) * 255.0);
+            o.lut[i][2] = (uint8_t)cvt32(std::pow(base, g2) * 255.0);
+            o.lut[i][3] = 0;
+        }
+    }
+    double mm = (P[1] > P[7]) ? P[1] : P[7];
+    const int mix14 = cvt32(mm * 12288.0);
+    const double xmm7 = xH * 0.011127083333333334;
+    double lineFreq = 10.0 / (xmm7 + xmm7);
+    const double zdiv = xH / P[0];
+    lineFreq = lineFreq / P[0];
+    double phase = xH - zdiv;
+    phase = phase * 0.5;
+    double bandH = 0.0, yTop = 0.0, yBot = 0.0;
+    if (P[5] > 0.0001) {
+        const double s3 = P[5] * 3.0;
+        bandH = (xH * 0.35) * P[0];
+        const double sec2 = seconds / (1.0 / s3);
+        const double fr = std::fmod(sec2, 1.0);
+        double hh = xH * 0.5;
+        double y1 = fr * xH;
+        double xm8 = xH * P[0];
+        y1 = y1 * P[0];
+        xm8 = xm8 * 0.5;
+        hh = hh - xm8;
+        y1 = y1 + hh;
+        y1 = y1 - bandH * 0.5;
+        yTop = y1;
+        yBot = y1 + bandH;
+    }
+    int yPos = cvt32(phase * 16384.0);
+    const double xW = (double)W;
+    double q2 = xW * 0.00667625;
+    const double Wz = xW / P[0];
+    q2 = q2 / aspect;
+    double xs = xW - Wz;
+    const double rcp = 16384.0 / P[0];
+    xs = xs * aspect;
+    xs = xs * 0.5;
+    xs = xs * 16384.0;
+    const int xStart = cvt32(xs);
+    double r5 = rcp * 5.0;
+    double r4 = rcp * 4.0;
+    r4 = r4 / q2;
+    r5 = r5 / xmm7;
+    const int xStep = cvt32(r4);
+    const int yStep = cvt32(r5);
+    o.mix14 = mix14;
+    o.xStart = xStart;
+    o.xStep = xStep;
+    o.phos = phos;
+    o.jitter = 1.0 > P[3];
+    o.staticOn = P[7] > 0.0;
+    if (H <= 0) return;
+    double prevJ = 0.0;
+    int twoY = mul32(yPos, 2);
+    int yPosRow = yPos;
+    for (int row = 0; row < H; ++row) {
+        int32_t* R = &o.rows[(size_t)row * kRowInts];
+        const int sr = rem32(add32((int)rollOff, row), H);
+        R[0] = sr;
+        R[5] = -1;
+        if (o.jitter) {
+            const double amp = (1.0 - P[3]) / aspect;
+            const double curJ = fractalNoise(T, W, H, amp, 4.567 / P[0], 6.213, 5, sr + 1, stamp);
+            // shiftRow8()'s numbers
+            const double delta = curJ - prevJ;
+            R[6] = (sr - 1 >= 0) ? sr - 1 : 0;
+            R[7] = std::min(H - 1, sr + 1);
+            double x0 = (double)W + delta;
+            x0 = x0 - 1.0;
+            double x1 = (double)(W - 1);
+            x1 = x1 / x0;
+            x1 = x1 * 16384.0;
+            const int step = cvt32(x1);
+            const double stepd = (double)step;
+            const double ad = std::fabs(delta);
+            double x1b = delta * 0.5;
+            x1b = x1b + prevJ;
+            x1b = x1b * stepd;
+            R[2] = step;
+            R[4] = cvt32(x1b);
+            R[3] = cvt32(stepd * curJ);
+            if (ad > 1.4) {
+                double e = ad - 1.4;
+                e = e * 16384.0;
+                const int ecx = sub32(0x18000, cvt32(e));
+                const int edx = (int)(((int64_t)0x2aaaaaab * (int64_t)ecx) >> 32);
+                int r8 = add32(add32((int)((unsigned)edx >> 31), 0x1555), edx);
+                R[5] = r8 < 0 ? 0 : (r8 > 0x4000 ? 0x4000 : r8);
+            }
+            prevJ = curJ;
+        }
+        double fm = std::fmod(phase, 10.0);
+        const int fi = cvt32(fm);
+        const double ff = fm - (double)fi;
+        const unsigned ci = (unsigned)(fi + 1) % 10u;
+        double sv = (1.0 - ff) * scanTable()[(unsigned)fi % 10u];
+        sv = sv + ff * scanTable()[ci];
+        const double qi = 1.0 - P[2];
+        sv = sv * P[2];
+        sv = sv + qi;
+        sv = sv * 16384.0;
+        int scanMul = cvt32(sv);
+        if (bandH != 0.0) {
+            const double rd = (double)row;
+            if (!(rd < yTop) && !(yBot < rd)) {
+                double t = rd - yTop;
+                t = t / bandH;
+                t = t * 4.0;
+                const int bi = cvt32(t);
+                unsigned bj = (unsigned)(bi + 1);
+                if (bj > 4u) bj = 4u;
+                const double bf = t - (double)bi;
+                double w = (1.0 - bf) * bandTable()[(unsigned)bi % 5u];
+                w = w + bf * bandTable()[bj];
+                w = w * (double)scanMul;
+                scanMul = cvt32(w);
+            }
+        }
+        R[1] = scanMul;
+        const int yFrac = rem32(yPosRow, 16384);
+        const int yInt = div14(yPosRow);
+        const int rem5 = rem32(yInt, 5);
+        if (o.staticOn) {
+            int T1[129];
+            const int hi = (int)(((int64_t)0x66666667 * (int64_t)twoY) >> 32);
+            int es = hi >> 15;
+            es = add32(es, (int)((unsigned)es >> 31));
+            int ed = hi >> 1;
+            ed = add32(ed, (int)((unsigned)ed >> 31));
+            ed = rem32(ed, 16384);
+            const int seedBase = add32((int)(uint32_t)stamp, 0x4fde5b);
+            {
+                builtin::VegasShiftRandom r1((uint32_t)mul32(seedBase, es));
+                for (int k = 0; k < 128; ++k) T1[k] = staticValue(rem32((int)r1.next(), 65536), P[7]);
+            }
+            {
+                builtin::VegasShiftRandom r2((uint32_t)mul32(add32(es, 1), seedBase));
+                const int w0 = 0x4000 - ed;
+                for (int k = 0; k < 128; ++k) {
+                    const int v2 = staticValue(rem32((int)r2.next(), 65536), P[7]);
+                    const int a = mul32(w0, T1[k]);
+                    const int b = mul32(v2, ed);
+                    T1[k] = div14(add32(b, a));
+                }
+            }
+            T1[128] = T1[0];
+            for (int k = 0; k < 129; ++k) R[23 + k] = T1[k];
+        }
+        uint8_t cur5[5][4], prev5[5][4];
+        maskRow(rem5, cur5);
+        maskRow(rem5 - 1, prev5);
+        for (int j = 0; j < 5; ++j)
+            for (int c = 0; c < 3; ++c) R[8 + j * 3 + c] = (uint8_t)div14(add32(mul32(prev5[j][c], 0x4000 - yFrac), mul32(cur5[j][c], yFrac)));
+        phase = phase + lineFreq;
+        yPosRow = add32(yPosRow, yStep);
+        twoY = add32(twoY, mul32(yStep, 2));
+    }
+}
+
 }
 }
 }

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace reno {
@@ -189,6 +190,20 @@ inline bool planStretch(Plan& c, int dW, int dH, int sW, int sH, IRect DR, IRect
 // Mixing modes: Lerp (the picture by its alpha) and Over (a premultiplied pixel over what is there: the border).
 enum class Mix { Lerp, Over };
 
+// One stretch as the drawing does it, worked out but not drawn (for the GPU, which draws the list of them in order, every pixel on its own): what stretch() takes from
+// planStretch and its row / column counters. A pixel (x, y) of [px0, px1) x [py0, py1) takes the source row syf (the first row: sy0; the last: none, the source's last row;
+// the others syStart + (y - py0 - 1) * ystep) and column sxf (the first: sx0; the others sx0 + step1 + (x - px0 - 1) * xstep), scaled by the coverage of its row / column.
+struct Op {
+    int mix;                    // 0: Lerp, 1: Over
+    int src;                    // 0: the outgoing picture, 1: the incoming one, 2: a single pixel (cpx)
+    int px0, px1, py0, py1;
+    int firstRowCov, lastRowCov, firstColCov, lastColCov;
+    int sx0, sy0, xstep, ystep, step1, syStart;
+    int sw1, sh1;
+    int alpha14;
+    uint8_t cpx[4];
+};
+
 inline void mixPixel(Mix mode, uint8_t* d, const uint8_t* s, int a)
 {
     if (mode == Mix::Over) {
@@ -235,7 +250,9 @@ inline void bilinear(uint8_t* out, const uint8_t* p00, const uint8_t* p10, const
 }
 
 // Stretches the rectangle SR of the source picture (4 bytes a pixel) into the rectangle DR of the destination, both in 14-bit fixed point pixels.
-inline bool stretch(Mix mode, uint8_t* dst, int dW, int dH, int dpitch, const uint8_t* src, int sW, int sH, int spitch, IRect DR, IRect SR, float alpha)
+// 'rec' (with the source's number 'srcId'): the stretch is not drawn but put in the list, as an Op.
+inline bool stretch(Mix mode, uint8_t* dst, int dW, int dH, int dpitch, const uint8_t* src, int sW, int sH, int spitch, IRect DR, IRect SR, float alpha,
+                    std::vector<Op>* rec = nullptr, int srcId = 0)
 {
     Plan c;
     if (!planStretch(c, dW, dH, sW, sH, DR, SR)) return false;
@@ -250,6 +267,22 @@ inline bool stretch(Mix mode, uint8_t* dst, int dW, int dH, int dpitch, const ui
     const int lastColCov = D.x1 - (px1 << 14) + 0x4000;
     const int alpha14 = (int)(alpha * 16384.0f);
     const double C = 1.0 / 16384.0;
+    if (rec) {
+        Op o;
+        std::memset(&o, 0, sizeof(o));
+        o.mix = mode == Mix::Over ? 1 : 0;
+        o.src = srcId;
+        o.px0 = px0; o.px1 = px1; o.py0 = py0; o.py1 = py1;
+        o.firstRowCov = firstRowCov; o.lastRowCov = lastRowCov; o.firstColCov = firstColCov; o.lastColCov = lastColCov;
+        o.sx0 = S.x0; o.sy0 = S.y0; o.xstep = c.xstep; o.ystep = c.ystep;
+        o.step1 = (int)((double)c.xstep * (double)firstColCov * C);
+        o.syStart = S.y0 + (int)((double)c.ystep * (double)firstRowCov * C);
+        o.sw1 = sw1; o.sh1 = sh1;
+        o.alpha14 = alpha14;
+        if (srcId == 2) std::memcpy(o.cpx, src, 4);
+        rec->push_back(o);
+        return true;
+    }
     auto doRow = [&](int row, int syf, bool lastRow, int rowCov) {
         int iy = syf >> 14;
         const int fy = lastRow ? 0 : (syf & 0x3fff);
@@ -300,18 +333,18 @@ inline int floorPx(int v)
 inline int ceilFix(int v) { return ((v - 1) | 0x3fff) + 1; }
 inline uint8_t roundEven(float p) { return (uint8_t)(long long)std::nearbyint((double)p + 1.5e-8); }
 
-inline void strips(uint8_t* dst, int W, int H, int pitch, IRect A, IRect B, const uint8_t px[4], bool shift)
+inline void strips(uint8_t* dst, int W, int H, int pitch, IRect A, IRect B, const uint8_t px[4], bool shift, std::vector<Op>* rec = nullptr)
 {
     if (shift) {
         A = IRect{A.x0 << 14, A.y0 << 14, A.x1 << 14, A.y1 << 14};
         B = IRect{B.x0 << 14, B.y0 << 14, B.x1 << 14, B.y1 << 14};
     }
     const IRect s[4] = {{B.x0, B.y0, B.x1, A.y0}, {B.x0, A.y1, B.x1, B.y1}, {B.x0, A.y0, A.x0, A.y1}, {A.x1, A.y0, B.x1, A.y1}};
-    for (int i = 0; i < 4; ++i) stretch(Mix::Over, dst, W, H, pitch, px, 1, 1, 0, s[i], IRect{0, 0, 1 << 14, 1 << 14}, 1.0f);
+    for (int i = 0; i < 4; ++i) stretch(Mix::Over, dst, W, H, pitch, px, 1, 1, 0, s[i], IRect{0, 0, 1 << 14, 1 << 14}, 1.0f, rec, 2);
 }
 
 // r: the rectangle (14-bit fixed point), bx / by: the border's width / height in pixels, col: the colour and the alpha
-inline void border(uint8_t* dst, int W, int H, int pitch, IRect r, float bx, float by, const float col[4])
+inline void border(uint8_t* dst, int W, int H, int pitch, IRect r, float bx, float by, const float col[4], std::vector<Op>* rec = nullptr)
 {
     const int ix = (int)(bx * 16384.0f), iy = (int)(by * 16384.0f);
     const IRect O = {r.x0 - ix, r.y0 - iy, r.x1 + ix, r.y1 + iy};
@@ -322,19 +355,20 @@ inline void border(uint8_t* dst, int W, int H, int pitch, IRect r, float bx, flo
     px[3] = roundEven(col[3] * 255.0f);
     const IRect R1 = {ceilPx(O.x0), ceilPx(O.y0), floorPx(O.x1), floorPx(O.y1)};
     const IRect R2 = {floorPx(r.x0), floorPx(r.y0), ceilPx(r.x1), ceilPx(r.y1)};
-    strips(dst, W, H, pitch, R2, R1, px, true);
+    strips(dst, W, H, pitch, R2, R1, px, true, rec);
     const IRect A2 = {ceilFix(O.x0), ceilFix(O.y0), O.x1 & ~0x3fff, O.y1 & ~0x3fff};
-    strips(dst, W, H, pitch, A2, O, px, false);
+    strips(dst, W, H, pitch, A2, O, px, false, rec);
     const IRect B3 = {r.x0 & ~0x3fff, r.y0 & ~0x3fff, ceilFix(r.x1), ceilFix(r.y1)};
-    strips(dst, W, H, pitch, r, B3, px, false);
+    strips(dst, W, H, pitch, r, B3, px, false, rec);
 }
 
 // The whole picture. outgoing / incoming / out: W * H * 4 bytes, top row first (the same order for all three; the border colour is in that order too).
-inline void render(const Props& p, double progress, double aspect, const uint8_t* outgoing, const uint8_t* incoming, int W, int H, uint8_t* out)
+// With 'rec' nothing is drawn (the three pictures may be null): the stretches are put in the list in drawing order.
+inline void render(const Props& p, double progress, double aspect, const uint8_t* outgoing, const uint8_t* incoming, int W, int H, uint8_t* out, std::vector<Op>* rec = nullptr)
 {
-    std::fill(out, out + (size_t)W * H * 4, (uint8_t)0);
+    if (!rec) std::fill(out, out + (size_t)W * H * 4, (uint8_t)0);
     if (p.squares < 0 || W < 1 || H < 1) {
-        std::copy(outgoing, outgoing + (size_t)W * H * 4, out);
+        if (!rec) std::copy(outgoing, outgoing + (size_t)W * H * 4, out);
         return;
     }
     const std::vector<Item> items = layout(p, progress, aspect);
@@ -347,9 +381,9 @@ inline void render(const Props& p, double progress, double aspect, const uint8_t
         const IRect R2 = {fix(it.r2[0], W), fix(it.r2[1], H), fix(it.r2[2], W), fix(it.r2[3], H)};
         if (!it.noBorder && bx != 0 && by != 0) {
             const float col[4] = {p.borderColor[0], p.borderColor[1], p.borderColor[2], it.alpha};
-            border(out, W, H, W * 4, R, bx, by, col);
+            border(out, W, H, W * 4, R, bx, by, col, rec);
         }
-        stretch(Mix::Lerp, out, W, H, W * 4, it.incoming ? incoming : outgoing, W, H, W * 4, R, R2, it.alpha);
+        stretch(Mix::Lerp, out, W, H, W * 4, it.incoming ? incoming : outgoing, W, H, W * 4, R, R2, it.alpha, rec, it.incoming ? 1 : 0);
     }
 }
 

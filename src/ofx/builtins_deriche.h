@@ -28,6 +28,8 @@ bool vegasLinearBlurParams(int W, int H, double angleDeg, double amount, LinearB
 void vegasLinearBlur(const Buf& src, Buf& out, double angleDeg, double amount, bool levels);
 // The same as VEGAS's OpenCL kernels draw it (GPU acceleration on; vfxlinblur.h): the frame turned into a larger canvas, the recursive Gaussian down its columns, turned back. q: the 8-bit
 // pictures the kernels keep between their passes (with the card's 12-bit store). false: nothing was drawn (a canvas too small to blur), the caller draws the CPU version.
+// The angle (folded into 0..360) the OpenCL kernels get; a setting that is not a number makes the amount 0.
+double vegasLinearBlurOclAngle(double angleDeg, double& amount);
 bool vegasLinearBlurOpenCl(const Buf& src, Buf& out, double angleDeg, double amount, bool q);
 // VEGAS's Median (builtins_vegasmedian.cpp): every channel (alpha too) of the 8-bit frame; the window reaches rx / ry pixels each way (rx = HorizontalRange * the larger side * 0.05),
 // edge pixels weighted by the fraction inside (round: the share inside the ellipse (rx + 0.5, ry + 0.5)), in 14-bit weights; pixels outside the frame are left out. The result is

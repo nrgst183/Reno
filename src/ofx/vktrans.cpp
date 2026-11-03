@@ -10,7 +10,11 @@
 #include <map>
 #include <mutex>
 #include "vkeffects.h"
+#include "vktransocl.h"
+#include "vktrans2.h"
+#include "vk3d.h"
 #include "transrec.h"
+#include "vktext.h"
 #include "builtins_deriche.h"
 #include "vkshaders/push_layouts.h"
 
@@ -54,7 +58,7 @@ struct Words {
 // ---------------------------------------------------------------------------------------------------- Dissolve (dissolve() / dis::run() in builtins_trans.cpp)
 bool planDissolve(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: dissolveOpenCl, vfxdissolve.h)
+    if (c.openCl) return planOclDissolve(c, p);     // (VEGAS's OpenCL kernel: dissolveOpenCl, vfxdissolve.h)
     const int t = toTable(c, p);
     if (t < 0) return false;
     const int type = c.i("Type");
@@ -248,7 +252,6 @@ bool planLinearWipe(Ctx& c, Plan& p)
     return true;
 }
 
-// (Portals has no GPU plan: it is drawn by the CPU code that reads sfpagepeel.dll's layout, 14-bit stretch and border, vfxportals.h.)
 
 // the incoming frame as a table, then doubles after it (the kernels read them with ld_sf)
 int toTableDoubles(Ctx& c, Plan& p, const std::vector<double>& ds)
@@ -271,11 +274,9 @@ int toTableDoubles(Ctx& c, Plan& p, const std::vector<double>& ds)
     return p.addTable(std::move(t));
 }
 
-// (3D Shuffle, Blinds, Cascade and Fly In/Out have no GPU plan: VEGAS draws them with a CPU 8-bit polygon rasteriser, vfx3dfx.h, and a shader would not give the same pixels.)
-
 bool planIris(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // VEGAS's kernels measure the distances their own way (vfxiris.h); the GPU plan would draw something else
+    if (c.openCl) return planOclIris(c, p);     // (VEGAS's OpenCL kernel: vfxiris.h)
     const int W = p.w, H = p.h;
     if (W < 2 || H < 2) return false;
     const int t = toTable(c, p);
@@ -358,7 +359,7 @@ struct StarCache {
 
 bool planStarWipe(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // (VEGAS's OpenCL kernel is ported on the CPU only: vfxstarwipe.h)
+    if (c.openCl) return planOclStarWipe(c, p);     // (VEGAS's OpenCL kernel: vfxstarwipe.h)
     static StarCache cache;
     const int W = p.w, H = p.h;
     if (!c.src2Bytes && c.src2.px.size() != (size_t)W * H * 4) return false;
@@ -455,7 +456,7 @@ bool planStarWipe(Ctx& c, Plan& p)
 // kernels), then the light is the same on every pixel.
 bool planFlash(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;         // (VEGAS's OpenCL kernels are ported on the CPU only: flashOpenCl, vfxflash.h)
+    if (c.openCl) return planOclFlash(c, p);     // (VEGAS's OpenCL kernels: flashOpenCl, vfxflash.h)
     const int W = p.w, H = p.h;
     if (c.levels) {
         float pf = (float)c.progress;
@@ -525,7 +526,7 @@ int crossTrunc(float v) { return (int)v; }
 
 bool planCrossEffect(Ctx& c, Plan& p)
 {
-    if (c.openCl) return false;     // (VEGAS's OpenCL kernels are ported on the CPU only: vfxcross.h)
+    if (c.openCl) return planOclCrossEffect(c, p);     // (VEGAS's OpenCL kernels: vfxcross.h)
     const int W = p.w, H = p.h;
     const int type = c.i("EffectType"), apply = c.i("ApplyTo");
     const float pf = std::min(1.0f, std::max(0.0f, (float)c.progress));
@@ -663,6 +664,13 @@ bool planCrossEffect(Ctx& c, Plan& p)
 bool planCheckerboardExact(Ctx& c, Plan& p)
 {
     const int W = p.w, H = p.h;
+    if (c.openCl) {         // VEGAS's OpenCL kernel (vfxgen.h): float tile maths, the card's 8-bit store
+        float k[16];
+        checkerboardOclGpu(c, W, H, k);
+        P::GenChecker pc = {p.w, p.h, c.host8 ? 1u : 0u, 0u, k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8], k[9], k[10], k[11], k[12], k[13], k[14], k[15]};
+        p.add("gen_checker", 0, 1, p.w, p.h).setPush(pc);
+        return true;
+    }
     std::vector<int> t8;
     if (c.levels && checkerboard8Gpu(c, W, H, t8)) {
         P::Checker8 pc = {p.w, p.h};
@@ -951,21 +959,24 @@ bool planZoomF(Ctx& c, Plan& p)
     return true;
 }
 
-bool planPush(Ctx& c, Plan& p) { return c.openCl ? false : c.levels ? planBlit8(c, p, "push") : planPushF(c, p); }
-bool planSwap(Ctx& c, Plan& p) { return c.openCl ? false : c.levels ? planBlit8(c, p, "swap") : planSwapF(c, p); }
-bool planSqueeze(Ctx& c, Plan& p) { return c.openCl ? false : c.levels ? planBlit8(c, p, "squeeze") : planSqueezeF(c, p); }
-bool planZoom(Ctx& c, Plan& p) { return c.openCl ? false : c.levels ? planBlit8(c, p, "zoom") : planZoomF(c, p); }
-bool planBarndoor(Ctx& c, Plan& p) { return c.openCl ? false : c.levels ? planBlit8(c, p, "barndoor") : planBarndoorF(c, p); }
-bool planSlide(Ctx& c, Plan& p) { return c.openCl ? false : planBlit8(c, p, "slide"); }   // (the CPU code has only the 8-bit drawing: float pictures go through it too)
-bool planSpiral(Ctx& c, Plan& p) { return c.openCl ? false : planBlit8(c, p, "spiral"); }   // (the CPU code has only the 8-bit drawing: float pictures go through it too)
-bool planSplit(Ctx& c, Plan& p) { return c.openCl ? false : planBlit8(c, p, "split"); }   // (the CPU code has only the 8-bit drawing: float pictures go through it too)
+bool planPush(Ctx& c, Plan& p) { return c.openCl ? planOclPush(c, p) : c.levels ? planBlit8(c, p, "push") : planPushF(c, p); }
+bool planSwap(Ctx& c, Plan& p) { return c.openCl ? planOclSwap(c, p) : c.levels ? planBlit8(c, p, "swap") : planSwapF(c, p); }
+bool planSqueeze(Ctx& c, Plan& p) { return c.openCl ? planOclSqueeze(c, p) : c.levels ? planBlit8(c, p, "squeeze") : planSqueezeF(c, p); }
+bool planZoom(Ctx& c, Plan& p) { return c.openCl ? planOclZoom(c, p) : c.levels ? planBlit8(c, p, "zoom") : planZoomF(c, p); }
+bool planBarndoor(Ctx& c, Plan& p) { return c.openCl ? planOclBarndoor(c, p) : c.levels ? planBlit8(c, p, "barndoor") : planBarndoorF(c, p); }
+bool planSlide(Ctx& c, Plan& p) { return c.openCl ? planOclSlide(c, p) : planBlit8(c, p, "slide"); }   // (the CPU code has only the 8-bit drawing: float pictures go through it too)
+bool planSpiral(Ctx& c, Plan& p) { return c.openCl ? planOclSpiral(c, p) : planBlit8(c, p, "spiral"); }   // (the CPU code has only the 8-bit drawing: float pictures go through it too)
+bool planSplit(Ctx& c, Plan& p) { return c.openCl ? planOclSplit(c, p) : planBlit8(c, p, "split"); }   // (the CPU code has only the 8-bit drawing: float pictures go through it too)
 
 const ExtraGpuEntry kExtra[] = {
     {"push", planPush}, {"swap", planSwap}, {"squeeze", planSqueeze}, {"zoom", planZoom}, {"barndoor", planBarndoor},
     {"iris", planIris}, {"checkerboard", planCheckerboardExact}, {"crosseffect", planCrossEffect}, {"flash", planFlash}, {"starwipe", planStarWipe}, {"slide", planSlide}, {"spiral", planSpiral}, {"split", planSplit},
     {"dissolve", planDissolve},
+    {"pagepeel", planOclPagePeel}, {"pageloop", planOclPageLoop}, {"pageroll", planOclPageRoll},
     {"linearwipe", planLinearWipe},
     {"clockwipe", planClockWipe},
+    {"titlesandtext", planTitlesAndText}, {"timecode", planTimecode}, {"creditroll", planCreditRoll},
+    {"venetianblinds", planVenetian}, {"portals", planPortals}, {"gradientwipe", planGradientWipe},
 };
 
 struct CaseSet { const char* id; std::vector<GpuCheckCase> cases; };
@@ -1037,7 +1048,7 @@ const std::vector<CaseSet>& caseSets()
                 s.cases.push_back(GpuCheckCase("repeat shape" + std::to_string(sh), PM{{"Shape", {(double)sh}}, {"Transition", {0.5}}, {"Feather", {0.2}}, {"Border", {0.1}}, {"RepeatX", {3}}, {"RepeatY", {2}}, {"Center", {0.7, 0.2}}}));
             }
             for (int sh : {0, 6, 9, 11})                      // (the centre on the frame's edge: the largest distance also counts at the reflected edge rows / columns)
-                for (const double* cc : {(const double[]){0.5, 1.0}, (const double[]){0.0, 0.5}, (const double[]){1.0, 0.0}})
+                for (const std::vector<double>& cc : std::vector<std::vector<double>>{{0.5, 1.0}, {0.0, 0.5}, {1.0, 0.0}})
                     s.cases.push_back(GpuCheckCase("edge centre shape" + std::to_string(sh) + " " + std::to_string(cc[0]) + "," + std::to_string(cc[1]), PM{{"Shape", {(double)sh}}, {"Transition", {0.5}}, {"Feather", {0.1}}, {"Border", {0.1}}, {"Center", {cc[0], cc[1]}}}));
             s.cases.push_back(GpuCheckCase("one column", PM{{"Shape", {11}}, {"Transition", {0.5}}, {"RepeatX", {1}}, {"RepeatY", {4}}, {"Center", {0.0, 0.0}}}));
             s.cases.push_back(GpuCheckCase("many", PM{{"Shape", {1}}, {"Transition", {0.5}}, {"RepeatX", {10}}, {"RepeatY", {10}}, {"Feather", {0.1}}, {"Border", {0.1}}}));
@@ -1101,6 +1112,32 @@ const std::vector<CaseSet>& caseSets()
             v.push_back(s);
         }
         {
+            const std::vector<double> gold = {1.0, 0.8, 0.2, 1.0};
+            for (const char* id : {"pagepeel", "pageloop", "pageroll"}) {
+                const std::string ang = !std::strcmp(id, "pagepeel") ? "PeelAngle" : !std::strcmp(id, "pageloop") ? "PaperAngle" : "RollAngle";
+                const std::string op = !std::strcmp(id, "pagepeel") ? "PeelOpacity" : !std::strcmp(id, "pageloop") ? "PaperOpacity" : "RollOpacity";
+                const bool loop = !std::strcmp(id, "pageloop");
+                CaseSet s{id, {}};
+                for (double pr : {0.0, 0.15, 0.4, 0.65, 0.9, 1.0}) s.cases.push_back(GpuCheckCase("p" + std::to_string(pr), PM{{"Transition", {pr}}}));
+                for (double an : {0.0, 30.0, 90.0, 135.0, 180.0, 225.0, 270.0, 330.0})
+                    s.cases.push_back(GpuCheckCase("angle" + std::to_string((int)an), PM{{"Transition", {0.45}}, {ang, {an}}}));
+                s.cases.push_back(GpuCheckCase("opacity", PM{{"Transition", {0.4}}, {op, {0.3}}}));
+                s.cases.push_back(GpuCheckCase("opaque", PM{{"Transition", {0.4}}, {op, {1.0}}}));
+                s.cases.push_back(GpuCheckCase("perspective", PM{{"Transition", {0.5}}, {"Perspective", {1.0}}, {ang, {60}}}));
+                s.cases.push_back(GpuCheckCase("light", PM{{"Transition", {0.5}}, {"LightColor", gold}, {"Perspective", {0.5}}}));
+                if (loop) {
+                    s.cases.push_back(GpuCheckCase("position", PM{{"Transition", {0.3}}, {"LoopPosition", {0.8}}, {"LoopRadius", {0.2}}}));
+                    s.cases.push_back(GpuCheckCase("big loop", PM{{"Transition", {0.6}}, {"LoopPosition", {0.1}}, {"LoopRadius", {0.6}}, {ang, {200}}}));
+                    s.cases.push_back(GpuCheckCase("tiny loop", PM{{"Transition", {0.5}}, {"LoopRadius", {0.0}}}));
+                } else {
+                    s.cases.push_back(GpuCheckCase("fold", PM{{"Transition", {0.5}}, {"FoldRadius", {0.5}}, {"SlideAmount", {0.5}}}));
+                    s.cases.push_back(GpuCheckCase("small fold", PM{{"Transition", {0.3}}, {"FoldRadius", {0.05}}, {"SlideAmount", {0.0}}, {ang, {20}}}));
+                    s.cases.push_back(GpuCheckCase("no fold", PM{{"Transition", {0.5}}, {"FoldRadius", {0.0}}}));
+                }
+                v.push_back(s);
+            }
+        }
+        {
             CaseSet s{"barndoor", {}};
             for (int o = 0; o < 2; ++o)
                 for (int d = 0; d < 2; ++d)
@@ -1144,7 +1181,11 @@ const std::vector<CaseSet>& caseSets()
 
 const std::vector<ExtraGpuEntry>& extraGpuEntries()
 {
-    static const std::vector<ExtraGpuEntry> v(std::begin(kExtra), std::end(kExtra));
+    static const std::vector<ExtraGpuEntry> v = [] {
+        std::vector<ExtraGpuEntry> r(std::begin(kExtra), std::end(kExtra));
+        for (const ExtraGpuEntry& e : threeDGpuEntries()) r.push_back(e);      // (3D Shuffle, Blinds, Fly In/Out and Cascade: vk3d.cpp)
+        return r;
+    }();
     return v;
 }
 
@@ -1152,6 +1193,9 @@ void extraGpuCases(const std::string& id, std::vector<GpuCheckCase>& out)
 {
     for (const CaseSet& s : caseSets())
         if (id == fullId(s.id)) out.insert(out.end(), s.cases.begin(), s.cases.end());
+    textGpuCases(id, out);
+    trans2Cases(id, out);
+    threeDGpuCases(id, out);
 }
 
 // Float tolerance: 0 unless the CPU result depends on libm (listed here with the id).
@@ -1171,10 +1215,19 @@ bool extraGpuFloatTolerance(const std::string& id, double& tol)
         {"crosseffect", 0.0},
         {"flash", 0.0},
         {"starwipe", 0.0},
+        {"slide", 0.0},
+        {"spiral", 0.0},
+        {"split", 0.0},
+        {"pagepeel", 0.0},
+        {"pageloop", 0.0},
+        {"pageroll", 0.0},
+        {"titlesandtext", 0.0},
+        {"timecode", 0.0},
+        {"creditroll", 0.0},
     };
     for (const auto& k : known)
         if (id == fullId(k.id)) { tol = k.tol; return true; }
-    return false;
+    return trans2FloatTolerance(id, tol) || threeDGpuFloatTolerance(id, tol);
 }
 
 }  // namespace builtin

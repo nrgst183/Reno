@@ -117,8 +117,9 @@ bool Importer::run(Project& p, std::string& error)
 // settings folder, one more) and three 0x358-byte video settings blocks: u32 size, u32 width, u32 height, ...,
 // f64 frame rate at 0x38, f64 pixel aspect at 0x40. The first block is the project's; the other two are unknown.
 // Render quality (+0x1c) and deinterlacing (+0xf4) are in the first block. Field order, pixel format, motion blur
-// and the ruler are in there somewhere, but no sample shows where, so Reno's defaults are kept. The header word at
-// 0x08 is not the ruler.
+// are in there somewhere, but no sample shows where, so Reno's defaults are kept. The header word at 0x08 is the ruler's
+// time format (VEGAS's own numbering, not the scripting API's; checked against VEGAS's export of 20 projects: 1 is Time,
+// 3 Time & Frames, 7 SMPTE 30; 0 and 8 also occur and are not known, so they leave Reno's Time & Frames).
 void Importer::readHeader(const Chunk& c)
 {
     const Bytes& b = c.data;
@@ -139,6 +140,7 @@ void Importer::readHeader(const Chunk& c)
     }
     const double tempo = b.f64(0x18);
     if (std::isfinite(tempo) && tempo >= 10 && tempo <= 1000) s.tempo = tempo;
+    s.rulerFormat = rulerFormatOfHeaderWord(b.u32(0x08));
     const uint16_t bpm = b.u16(0x28);
     if (bpm >= 1 && bpm <= 32) s.beatsPerMeasure = bpm;
     po_->lastEventId = b.u64(0x48);

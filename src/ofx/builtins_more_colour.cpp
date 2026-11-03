@@ -252,17 +252,23 @@ void whiteBalanceSettings(Ctx& c, std::vector<float>& tab, bool& shift, bool& ha
 
 // VEGAS with GPU acceleration on draws White Balance with its OpenCL kernels (vfxhslwb.h, prog47): the shift pass in float on the straight colour; with HasData its picture is an 8-bit
 // one, whose truncated bytes are counted into 256-bin histograms per channel, and a second pass stretches that picture. The result goes into an 8-bit frame by the 12-bit store.
-static void whiteBalanceOpenCl(Ctx& c)
+void whiteBalanceClSettings(Ctx& c, vhw::WbShift& sh, bool& hasData, bool& shifted)
 {
-    const int W = c.out.w, H = c.out.h;
     const double amount = clampd(c.d("AmountOfCorrection"), 0, 1), bright = c.d("Brightness");
-    const bool hasData = c.b("HasData");
-    vhw::WbShift sh;
+    hasData = c.b("HasData");
     double angDeg, amtDraw;
     wbDrawSettings(c, angDeg, amtDraw);
     sh.angle = (float)angDeg;
     sh.amount = (float)amount;
     sh.bright = (float)bright;
+    shifted = amount != 0.0 || bright != 1.0;
+}
+static void whiteBalanceOpenCl(Ctx& c)
+{
+    const int W = c.out.w, H = c.out.h;
+    vhw::WbShift sh;
+    bool hasData, shifted;
+    whiteBalanceClSettings(c, sh, hasData, shifted);
     const bool q8 = c.host8;
     vhw::WbStretch st;
     for (int k = 0; k < 3; ++k) { st.gain[k] = 1.f; st.off[k] = 0.f; }
@@ -282,7 +288,6 @@ static void whiteBalanceOpenCl(Ctx& c)
         }
     });
     if (!hasData) return;
-    const bool shifted = amount != 0.0 || bright != 1.0;
     const size_t n = std::min((size_t)vhw::wbHistPixels(shifted), (size_t)W * H);
     std::vector<int> counts((size_t)3 * 256, 0);
     for (size_t i = 0; i < n; ++i) {                // the kernel's order: rows from the bottom
@@ -1064,10 +1069,9 @@ void broadcastColors8GpuTable(Ctx& c, std::vector<float>& t)
     for (int i = 0; i < 241; ++i) put(T.td[i]);
     for (int i = 0; i < 241; ++i) put(T.te[i]);
 }
-void broadcastColors(Ctx& c)
+void broadcastSettings(Ctx& c, vcol::BroadcastSettings& st, vcol::BroadcastFrame& fr)
 {
-    if (oclUsable(c)) {
-        vcol::BroadcastSettings st;
+    {
         st.lumaMin = (float)c.d("LumaMin"); st.lumaMinSmooth = (float)c.d("LumaMinSmoothness");
         st.lumaMax = (float)c.d("LumaMax"); st.lumaMaxSmooth = (float)c.d("LumaMaxSmoothness");
         st.chromaMax = (float)c.d("ChromaMax"); st.chromaSmooth = (float)c.d("ChromaSmoothness");
@@ -1075,8 +1079,15 @@ void broadcastColors(Ctx& c)
         st.compMax = (float)c.d("CompositeMax"); st.compMaxSmooth = (float)c.d("CompositeMaxSmoothness");
         st.setup75 = c.b("75IREsetup") ? 1 : 0;
         st.studio = c.b("StudioRGB16To135") ? 1 : 0;
-        vcol::BroadcastFrame fr;
         vcol::broadcastPrepare(st, fr);
+    }
+}
+void broadcastColors(Ctx& c)
+{
+    if (oclUsable(c)) {
+        vcol::BroadcastSettings st;
+        vcol::BroadcastFrame fr;
+        broadcastSettings(c, st, fr);
         oclPixels(c, [st, fr](const float* p, float* o) { vcol::broadcastPx(st, fr, p, o); });
         return;
     }

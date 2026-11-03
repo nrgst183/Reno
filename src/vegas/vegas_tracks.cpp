@@ -1,5 +1,6 @@
 // Reads the tracks, events and envelopes of a VEGAS Pro project (.veg); see vegas.cpp.
 #include "vegas_internal.h"
+#include "../audiofx/audioplugin.h"
 
 namespace reno {
 namespace vegread {
@@ -24,8 +25,33 @@ int curveFromVegas(int32_t c, bool* known)
 
 // A list of envelopes (header chunk and points chunk each). Kinds Reno has become Envelopes; the rest (effect
 // automation etc.) go to 'hidden' and are written back unchanged.
+// The slot of a type 301 envelope (see EnvelopeRecord): the plug-in its CLSID names, preferably at the place the
+// envelope says; null if the chain has no such VST plug-in. Also gives the setting's name.
+static const FxSlot* pluginOfEnvelope(const FxChain& chain, const EnvelopeRecord& e, std::string& paramName)
+{
+    const FxSlot* found = nullptr;
+    for (size_t i = 0; i < chain.size(); ++i) {
+        const FxSlot& s = chain[i];
+        const auto* o = vegOriginAs<VegFxOrigin>(s.veg, VegOrigin::FxK);
+        if (s.kind != "audio" || s.audio.format != "VST2" || !o || o->entryLen < 16) continue;
+        if (o->chunk->data.sub(o->entryOff, 16).size() != 16 || std::memcmp(o->chunk->data.data() + o->entryOff, e.plugClsid.data(), 16) != 0) continue;
+        if (!found || i == e.plugSlot) found = &s;
+    }
+    if (!found) return nullptr;
+    paramName = strfmt("%u", e.plugParam);
+    // Reno's own eFX effects know their settings' names (the real ones are the same ones)
+    if (efxReproducedId(found->audio.uid)) {
+        std::string err;
+        if (auto pl = efxCreate(found->audio, &err)) {
+            const std::string n = pl->paramName((int)e.plugParam);
+            if (!n.empty() && e.plugParam < (uint32_t)pl->paramCount()) paramName = n;
+        }
+    }
+    return found;
+}
+
 bool Importer::readEnvelopeList(const Chunk& list, bool track, TrackType type, const std::string& label, Envelopes& out,
-                                std::vector<VegHidden>& hidden)
+                                std::vector<VegHidden>& hidden, const FxChain* chain)
 {
     const Chunk* header = nullptr;
     for (const auto& k : list.kids) {
@@ -62,6 +88,17 @@ bool Importer::readEnvelopeList(const Chunk& list, bool track, TrackType type, c
                 target = it->second;
             }
         }
+        // a VST plug-in's setting in this track's chain (percent in VEGAS, 0..1 in Reno)
+        double scale = 1.0;
+        if (env.kind.empty() && e.type == EnvPlugin && chain && track && type == TrackType::Audio) {
+            std::string pn;
+            if (const FxSlot* s = pluginOfEnvelope(*chain, e, pn)) {
+                env.kind = "fx";
+                target = s->id;
+                env.param = pn;
+                scale = 0.01;
+            }
+        }
         if (env.kind.empty()) {
             notes_.add(strfmt("%s: its %s envelope (%zu point%s) is not used by Reno (it is kept in the file).", label.c_str(),
                               envelopeName(e.type).c_str(), e.points.size(), e.points.size() == 1 ? "" : "s"));
@@ -73,7 +110,7 @@ bool Importer::readEnvelopeList(const Chunk& list, bool track, TrackType type, c
         for (const auto& p : e.points) {
             EnvPoint pt;
             pt.time = p.time;
-            pt.value = p.value;
+            pt.value = p.value * scale;
             bool known = true;
             pt.curve = curveFromVegas(p.curve, &known);
             allKnown = allKnown && known;
@@ -282,7 +319,7 @@ void Importer::readTrack(const Chunk& tc, int index)
             }
         }
     }
-    if (const Chunk* env = childList(tc, G::TrackEnvelopes)) readEnvelopeList(*env, true, t.type, label, t.envelopes, to->hiddenEnvelopes);
+    if (const Chunk* env = childList(tc, G::TrackEnvelopes)) readEnvelopeList(*env, true, t.type, label, t.envelopes, to->hiddenEnvelopes, &t.fx);
     for (const auto& k : tc.kids) {
         if (!k.isList && k.id == G::TrackHeader) continue;
         if (k.isList && (k.type == G::Events || k.type == G::AudioTrackList || k.type == G::VideoTrackList || k.type == G::TrackFx ||

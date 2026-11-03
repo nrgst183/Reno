@@ -200,8 +200,8 @@ std::string formatTime(const ProjectSettings& s, double shown, const std::string
         long long frames = (long long)std::floor(shown * c.rate + 1e-6);
         if (c.drop) frames = dropFrameDisplay(frames);
         const long long ff = frames % c.nominal, sec = frames / c.nominal;
-        return strfmt("%s%02lld:%02lld:%02lld%c%0*lld", sign, sec / 3600, (sec / 60) % 60, sec % 60, c.drop ? ';' : ':',
-                      frameDigits(c.nominal), ff);
+        // the frame number has two digits, three from frame 100 on (VEGAS shows 00:00:12:42 at 140 fps, not :042)
+        return strfmt("%s%02lld:%02lld:%02lld%c%02lld", sign, sec / 3600, (sec / 60) % 60, sec % 60, c.drop ? ';' : ':', ff);
     }
     return strfmt("%s%.3f", sign, shown);
 }

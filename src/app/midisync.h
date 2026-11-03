@@ -59,6 +59,7 @@ public:
     // at a different frame rate),
     // outgoing timecode, outgoing MIDI clock (measure.beat.clock).
     std::string displayText(int source) const;
+    std::string displayLabel(int source) const;
 
     // MTC pieces. Frame-rate code for a project rate (0 24, 1 25, 2 29.97 drop-frame, 3 30).
     // The code Preferences > Sync gives for the send rate, and the rate expected coming in (the project's if "Use

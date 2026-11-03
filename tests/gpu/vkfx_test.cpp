@@ -3,12 +3,19 @@
 // pictures must agree within one level per channel, float ones within 1e-4. Skips (with a message) when there is no
 // Vulkan driver; set VK_ICD_FILENAMES to SwiftShader's json and RENO_VK_ALLOW_SOFTWARE=1 to run it on a CPU implementation.
 #include "../../src/ofx/vkeffects.h"
+#include "../../src/ofx/builtins.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+#ifdef VKFX_QT
+// built with -DVKFX_QT and Qt's Gui: the text effects then rasterise with the application's fonts (run with QT_QPA_PLATFORM=offscreen QT_QPA_FONTDIR=<a font folder>); without it
+// they have no glyph source and draw their backgrounds only
+#include <QGuiApplication>
+#include "../../src/app/builtintext.h"
+#endif
 
 using namespace reno;
 using namespace reno::ofx::builtin;
@@ -21,9 +28,14 @@ static int gStrict8 = 0;  // 8-bit pictures must be identical (VKTOL8=n loosens 
 int main(int argc, char** argv)
 {
     std::string only;
+#ifdef VKFX_QT
+    QGuiApplication qtApp(argc, argv);
+    app::installBuiltinTextRasterizer();
+#endif
     if (const char* t = std::getenv("VKTOL8")) gStrict8 = std::atoi(t);
     if (const char* t = std::getenv("VKTOLF")) gFloatTol = std::atof(t);
     for (int k = 1; k < argc; ++k) if (!std::strcmp(argv[k], "--only") && k + 1 < argc) only = argv[++k];
+    if (std::getenv("VKNOCL")) setVegasGpuAcceleration(false);      // VKNOCL=1: VEGAS's GPU acceleration off (the older CPU models, no OpenCL kernels)
     gpu::setEnabled(true);
     std::string why;
     if (!gpu::ready(&why)) {
@@ -35,15 +47,27 @@ int main(int argc, char** argv)
         const gpu::DeviceInfo cur = gpu::currentDevice();
         std::printf("float controls (RoundingModeRTE + DenormPreserve, 32-bit) in the kernels: %s (driver reports: known %d, RTE %d, denorm preserve %d)\n", cur.floatControlsUsed ? "on" : "off", cur.fcKnown ? 1 : 0, cur.fcRteF32 ? 1 : 0, cur.fcDenormPreserveF32 ? 1 : 0);
     }
-    const int sizes[][2] = {{160, 90}, {97, 61}};
+    int baseSizes[][2] = {{160, 90}, {97, 61}};
+    // VKSIZE=WxH: a bigger (or other) picture size (and one a few pixels smaller) instead of the two, for the effects whose sums grow with the picture (3D transitions' summed-area tables)
+    if (const char* t = std::getenv("VKSIZE")) { int sw = 0, sh = 0; if (std::sscanf(t, "%dx%d", &sw, &sh) == 2 && sw > 0 && sh > 0) { baseSizes[0][0] = sw; baseSizes[0][1] = sh; baseSizes[1][0] = sw > 8 ? sw - 3 : sw; baseSizes[1][1] = sh > 8 ? sh - 5 : sh; } }
+    // one pixel wide / high pictures (the windows of a neighbourhood effect reach past the edge there) for the effects that must stay safe on them
+    const int thinSizes[][2] = {{160, 90}, {97, 61}, {1, 29}, {23, 1}, {1, 1}};
     for (const std::string& id : gpuEffectIds()) {
         if (!only.empty() && id.find(only) == std::string::npos) continue;
+#ifndef VKFX_QT
+        // (without a glyph source Titles & Text takes Reno's older bitmap path, which the CPU draws whole: nothing to compare. Build with -DVKFX_QT and Qt's Gui for it.)
+        if (id.find("titlesandtext") != std::string::npos) { std::printf("  %s skipped: built without Qt (no fonts)\n", id.c_str()); continue; }
+#endif
+        const bool thin = id == "layerdimensionality";
+        const int (*sizes)[2] = thin ? thinSizes : baseSizes;
+        const int nSizes = thin ? 5 : 2;
         const Def* d = findDef(id);
         if (!d || !d->gpu) { std::printf("FAIL %s: no Def with a GPU plan\n", id.c_str()); ++gFail; continue; }
         for (const GpuCheckCase& cs : gpuCheckCases(*d)) {
             if (std::getenv("VKCASE") && cs.name != std::getenv("VKCASE")) continue;
             // (the size is the outer loop: the 8-bit and the float run of the same settings and size follow one another, which finds a cache that forgets the format)
-            for (const auto& sz : sizes) {
+            for (int si = 0; si < nSizes; ++si) {
+                const int* sz = sizes[si];
                 for (int mode = 0; mode < 3; ++mode) {            // 8-bit BGRA, 8-bit RGBA, float
                     const bool isFloat = mode == 2, bgra = mode != 1;
                     const int w = sz[0], h = sz[1];
@@ -55,6 +79,8 @@ int main(int argc, char** argv)
                     set.apply(c1);
                     set.apply(c2);
                     c1.fps = c2.fps = 25;
+                    if (cs.time >= 0) c1.time = c2.time = cs.time;
+                    if (cs.duration >= 0) c1.duration = c2.duration = cs.duration;
                     ++gChecks;
                     if (!renderFrameCpu(*d, c1, w, h, isFloat, bgra, in.data(), stride, a.data(), stride)) { std::printf("FAIL %s/%s: CPU render failed\n", id.c_str(), cs.name.c_str()); ++gFail; continue; }
                     gpu::RunStats st;
