@@ -363,14 +363,14 @@
             const double lo = std::log(20.0), hi = std::log(20000.0);
             auto xAt = [&](double hz) { return pl.left() + (std::log(hz) - lo) / (hi - lo) * pl.width(); };
             auto yAt = [&](double db) { return pl.bottom() - (db + 15.0) / 30.0 * pl.height(); };
-            p.setPen(QColor(210, 210, 210));
+            p.setPen(pageSoftInk(210));
             const double marks[] = {20, 40, 80, 160, 320, 640, 1280, 2560, 5120, 10240, 20000};
             const char* names[] = {"20", "40", "80", "160", "320", "640", "1.2k", "2.6k", "5.1k", "10k", "20k"};
             for (double f : marks) p.drawLine(QPointF(xAt(f), pl.top()), QPointF(xAt(f), pl.bottom()));
             for (double d : {-15.0, -7.5, 0.0, 7.5, 15.0}) p.drawLine(QPointF(pl.left(), yAt(d)), QPointF(pl.right(), yAt(d)));
-            p.setPen(QColor(150, 150, 150));
+            p.setPen(pageSoftInk(150));
             p.drawLine(QPointF(pl.left(), yAt(0)), QPointF(pl.right(), yAt(0)));
-            p.setPen(Qt::black);
+            p.setPen(pageInk());
             QFont small = p.font();
             small.setPointSizeF(std::max(6.0, small.pointSizeF() - 1.5));
             p.setFont(small);
@@ -399,10 +399,10 @@
             for (int b = 0; b < 4; ++b) {
                 const QPointF c(xAt(s.freq[b]), yAt(std::max(-15.0, std::min(15.0, s.gain[b] / 10.0))));
                 const bool on = s.enable[b] != 0;
-                p.setPen(QPen(on ? QColor(180, 0, 0) : QColor(130, 130, 130), 1));
-                p.setBrush(b == eqSel_ ? (on ? QColor(180, 0, 0) : QColor(130, 130, 130)) : QColor(Qt::white));
+                p.setPen(QPen(on ? pageCurve(QColor(180, 0, 0)) : QColor(130, 130, 130), 1));
+                p.setBrush(b == eqSel_ ? (on ? pageCurve(QColor(180, 0, 0)) : QColor(130, 130, 130)) : pagePlot());
                 p.drawRect(QRectF(c.x() - 3.5, c.y() - 3.5, 7, 7));
-                p.setPen(Qt::black);
+                p.setPen(pageInk());
                 p.drawText(QRectF(c.x() + 5, c.y() - 14, 12, 12), Qt::AlignLeft | Qt::AlignVCenter, QString::number(b + 1));
             }
         };

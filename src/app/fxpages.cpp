@@ -5,6 +5,7 @@
 #include "../audiofx/vegas_trkfx.h"
 #include "../audiofx/vegaspack3_all.h"
 #include "../audiofx/vegasfx_pack2.h"
+#include "dialoglook.h"
 #include "fxcurvegraph.h"
 #include <QApplication>
 #include <QButtonGroup>
@@ -59,7 +60,8 @@ public:
         setFocusPolicy(Qt::StrongFocus);
         setTickPosition(QSlider::NoTicks);
         const bool horizontal = o == Qt::Horizontal;
-        setStyleSheet(horizontal
+        const bool light = lightDialogsOn();
+        if (light) setStyleSheet(horizontal
                           ? "QSlider::groove:horizontal { height: 2px; background: #9a9a9a; border: 1px solid #c8c8c8; border-top-color: #7a7a7a; border-left-color: #7a7a7a; }"
                             "QSlider::handle:horizontal { background: #f0f0f0; border: 1px solid #6c6c6c; border-bottom-color: #3c3c3c; border-right-color: #3c3c3c; width: 7px; margin: -7px 0; }"
                             "QSlider::handle:horizontal:hover { background: #ffffff; }"
@@ -70,6 +72,17 @@ public:
                             "QSlider::handle:vertical:hover { background: #ffffff; }"
                             "QSlider::groove:vertical:disabled { background: #cfcfcf; border-color: #dcdcdc; }"
                             "QSlider::handle:vertical:disabled { background: #e6e6e6; border-color: #b4b4b4; }");
+        else setStyleSheet(horizontal
+                          ? "QSlider::groove:horizontal { height: 2px; background: #5a5a5a; border: 1px solid #3a3a3a; border-top-color: #2a2a2a; border-left-color: #2a2a2a; }"
+                            "QSlider::handle:horizontal { background: #a8a8a8; border: 1px solid #d0d0d0; border-bottom-color: #7a7a7a; border-right-color: #7a7a7a; width: 7px; margin: -7px 0; }"
+                            "QSlider::handle:horizontal:hover { background: #e6e6e6; }"
+                            "QSlider::groove:horizontal:disabled { background: #444444; border-color: #3a3a3a; }"
+                            "QSlider::handle:horizontal:disabled { background: #666666; border-color: #555555; }"
+                          : "QSlider::groove:vertical { width: 2px; background: #5a5a5a; border: 1px solid #3a3a3a; border-top-color: #2a2a2a; border-left-color: #2a2a2a; }"
+                            "QSlider::handle:vertical { background: #a8a8a8; border: 1px solid #d0d0d0; border-bottom-color: #7a7a7a; border-right-color: #7a7a7a; height: 18px; margin: 0 -6px; }"
+                            "QSlider::handle:vertical:hover { background: #e6e6e6; }"
+                            "QSlider::groove:vertical:disabled { background: #444444; border-color: #3a3a3a; }"
+                            "QSlider::handle:vertical:disabled { background: #666666; border-color: #555555; }");
     }
 
 protected:
@@ -92,11 +105,11 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, false);
-        p.fillRect(rect(), QColor(240, 240, 240));    // (the page's own face: the application style sheet would give the palette the dark theme)
+        p.fillRect(rect(), pageFace());    // (the page's own face: light like VEGAS's, or the dark scheme)
         const QRectF pl = plot();
-        p.fillRect(pl, Qt::white);
+        p.fillRect(pl, pagePlot());
         p.setFont(font());
-        p.setPen(Qt::black);
+        p.setPen(pageInk());
         if (draw) draw(p, pl);
     }
     void mousePressEvent(QMouseEvent* e) override
@@ -185,18 +198,18 @@ protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
-        p.fillRect(rect(), QColor(240, 240, 240));    // (the page's own face: the application style sheet would give the palette the dark theme)
+        p.fillRect(rect(), pageFace());    // (the page's own face: light like VEGAS's, or the dark scheme)
         const QRectF pl = plot();
-        p.fillRect(pl, Qt::white);
+        p.fillRect(pl, pagePlot());
         auto X = [&](double v) { return pl.left() + (v + 84) / 84 * pl.width(); };
         auto Y = [&](double v) { return pl.bottom() - (v + 84) / 84 * pl.height(); };
-        p.setPen(QPen(QColor(70, 70, 70), 1));
+        p.setPen(QPen(pageSoftInk(70), 1));
         for (int k = 0; k <= 7; ++k) {
             const double v = -84 + k * 12;
             p.drawLine(QPointF(std::round(X(v)) + 0.5, pl.top()), QPointF(std::round(X(v)) + 0.5, pl.bottom()));
             p.drawLine(QPointF(pl.left(), std::round(Y(v)) + 0.5), QPointF(pl.right(), std::round(Y(v)) + 0.5));
         }
-        p.setPen(Qt::black);
+        p.setPen(pageInk());
         for (int k = 0; k <= 7; ++k) {
             const double v = -84 + k * 12;
             const QString t = k == 0 ? QString("-Inf.") : QString::number((int)v);
@@ -205,12 +218,12 @@ protected:
         }
         p.setClipRect(pl.adjusted(-4, -4, 4, 4));
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(Qt::black, 1));
+        p.setPen(QPen(pageInk(), 1));
         for (size_t k = 0; k + 1 < pts.size(); ++k) p.drawLine(at(pts[k]), at(pts[k + 1]));
         p.setRenderHint(QPainter::Antialiasing, false);
         for (size_t k = 0; k < pts.size(); ++k) {
             const QPointF c = at(pts[k]);
-            p.setBrush((int)k == drag_ ? Qt::black : Qt::white);
+            p.setBrush((int)k == drag_ ? pageInk() : pagePlot());
             p.drawRect(QRectF(std::round(c.x()) - 2.5, std::round(c.y()) - 2.5, 5, 5));
         }
     }
@@ -481,6 +494,8 @@ public:
     {
         setObjectName("fxDxPage");
         setAutoFillBackground(true);
+        // VEGAS's DirectX pages are Windows-classic (light); with the option off they keep the application's dark scheme instead
+        if (lightDialogsOn()) {
         QPalette pal;
         const QColor face(240, 240, 240);
         pal.setColor(QPalette::Window, face);
@@ -508,6 +523,7 @@ public:
         // The application's dark look sets text colours by style sheet, which would override the palette: set them again here.
         setStyleSheet(QString("QLabel { background: transparent; } QLabel, QCheckBox, QRadioButton { color: black; } QLabel:disabled, QCheckBox:disabled, QRadioButton:disabled { color: #6d6d6d; } "
                       "QRadioButton::indicator { width: 11px; height: 11px; border-radius: 6px; border: 1px solid #333333; background: white; } QRadioButton::indicator:checked { background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 black, stop:0.45 black, stop:0.5 white, stop:1 white); } QRadioButton::indicator:disabled { border-color: #aaaaaa; background: #f0f0f0; } QCheckBox::indicator { width: 11px; height: 11px; border: 1px solid #333333; background: white; } QCheckBox::indicator:checked { image: url(%1); } QCheckBox::indicator:disabled { border-color: #aaaaaa; background: #f0f0f0; } QLineEdit { background: white; color: black; border: 1px solid #7a7a7a; selection-background-color: #0078d7; selection-color: white; } QLineEdit:disabled { background: #f0f0f0; color: #6d6d6d; border-color: #bcbcbc; }").arg(checkImage()));
+        }
         QFont f = QApplication::font();
 #ifdef _WIN32
         f.setFamily("Segoe UI");
@@ -1629,9 +1645,9 @@ private:
         graphs_.push_back(g);
         put(g, 84, 151, 190, 56);
         g->draw = [this](QPainter& p, const QRectF& pl) {
-            p.setPen(QColor(200, 200, 200));
+            p.setPen(pageSoftInk(200));
             p.drawLine(QPointF(pl.left(), pl.center().y()), QPointF(pl.right(), pl.center().y()));
-            p.setPen(QColor(140, 140, 140));
+            p.setPen(pageSoftInk(140));
             p.drawRect(pl.adjusted(0, 0, -1, -1));
             const int n = (int)std::lround(get(8));
             const double span = kTapRes[std::max(0, std::min(3, tapRes_))];
@@ -1843,19 +1859,19 @@ private:
         auto fx = [](const QRectF& pl, double hz) { return pl.left() + std::log(hz / 20.0) / std::log(1000.0) * pl.width(); };
         auto gy = [](const QRectF& pl, double db) { return pl.center().y() - db / 24.0 * (pl.height() / 2); };
         g->draw = [this, fx, gy](QPainter& p, const QRectF& pl) {
-            p.setPen(QColor(205, 205, 205));
+            p.setPen(pageSoftInk(205));
             for (int db = -24; db <= 24; db += 6) p.drawLine(QPointF(pl.left(), std::round(gy(pl, db)) + 0.5), QPointF(pl.right(), std::round(gy(pl, db)) + 0.5));
             static const double marks[] = {20, 30, 40, 50, 60, 70, 80, 90, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 4000, 5000,
                                            6000, 7000, 8000, 9000, 10000, 20000};
             for (double hz : marks) p.drawLine(QPointF(std::round(fx(pl, hz)) + 0.5, pl.top()), QPointF(std::round(fx(pl, hz)) + 0.5, pl.bottom()));
-            p.setPen(QColor(110, 110, 110));
+            p.setPen(pageSoftInk(110));
             for (int db : {-24, -12, 0, 12, 24}) p.drawLine(QPointF(pl.left(), std::round(gy(pl, db)) + 0.5), QPointF(pl.right(), std::round(gy(pl, db)) + 0.5));
             for (double hz : {100.0, 1000.0, 10000.0}) p.drawLine(QPointF(std::round(fx(pl, hz)) + 0.5, pl.top()), QPointF(std::round(fx(pl, hz)) + 0.5, pl.bottom()));
-            p.setPen(Qt::black);
+            p.setPen(pageInk());
             for (int db : {-24, -12, 0, 12, 24}) p.drawText(QRectF(0, gy(pl, db) - 7, pl.left() - 3, 14), Qt::AlignRight | Qt::AlignVCenter, QString::number(db));
             for (const auto& m : {std::make_pair(20.0, "20"), std::make_pair(100.0, "100"), std::make_pair(1000.0, "1k"), std::make_pair(10000.0, "10k"), std::make_pair(20000.0, "20k")})
                 p.drawText(QRectF(fx(pl, m.first) - 20, pl.bottom() + 1, 40, 14), Qt::AlignHCenter | Qt::AlignTop, m.second);
-            p.setPen(QColor(60, 60, 60));
+            p.setPen(pageSoftInk(60));
             p.setBrush(Qt::NoBrush);
             p.drawRect(pl.adjusted(0.5, 0.5, -0.5, -0.5));
             const double scale = get(56) / 100.0;
@@ -1872,7 +1888,7 @@ private:
             }
             p.setClipRect(pl.adjusted(1, 1, -1, -1));
             p.setRenderHint(QPainter::Antialiasing, true);
-            p.setPen(QPen(QColor(0, 110, 210), 1.6));
+            p.setPen(QPen(pageCurve(QColor(0, 110, 210)), 1.6));
             p.drawPath(path);
             p.setClipping(false);
             for (int b = 0; b < 8; ++b) {
@@ -1880,10 +1896,10 @@ private:
                 const int type = (int)std::lround(get(b * 7 + 1));
                 const bool hasGain = type == 2 || type == 3 || type == 5;
                 const QPointF c(fx(pl, std::max(20.0, std::min(20000.0, get(b * 7 + 2)))), gy(pl, hasGain ? std::max(-24.0, std::min(24.0, get(b * 7 + 3) * scale)) : 0.0));
-                p.setPen(QPen(Qt::black, b == band_ ? 2 : 1));
-                p.setBrush(b == band_ ? QColor(255, 214, 90) : QColor(255, 255, 255));
+                p.setPen(QPen(pageInk(), b == band_ ? 2 : 1));
+                p.setBrush(b == band_ ? QColor(255, 214, 90) : pagePlot());
                 p.drawEllipse(dot(c, 7.5));
-                p.setPen(Qt::black);
+                p.setPen(b == band_ ? QColor(0, 0, 0) : pageInk());
                 p.drawText(dot(c, 7.5), Qt::AlignCenter, QString::number(b + 1));
             }
         };

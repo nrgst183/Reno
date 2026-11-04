@@ -68,10 +68,10 @@ protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
-        p.fillRect(rect(), QColor(240, 240, 240));    // (the page's own face: the application style sheet would give the palette the dark theme)
+        p.fillRect(rect(), pageFace());    // (the page's own face: light like VEGAS's, or the dark scheme)
         const QRectF pl = plot();
-        p.fillRect(pl, Qt::white);
-        p.setPen(QPen(QColor(160, 160, 160), 1));
+        p.fillRect(pl, pagePlot());
+        p.setPen(QPen(pageSoftInk(160), 1));
         for (int k = 1; k < gridX; ++k) {
             const double x = std::round(pl.left() + pl.width() * k / gridX) + 0.5;
             p.drawLine(QPointF(x, pl.top()), QPointF(x, pl.bottom()));
@@ -80,17 +80,17 @@ protected:
             const double y = std::round(pl.top() + pl.height() * k / gridY) + 0.5;
             p.drawLine(QPointF(pl.left(), y), QPointF(pl.right(), y));
         }
-        p.setPen(QPen(QColor(70, 70, 70), 1));
+        p.setPen(QPen(pageSoftInk(70), 1));
         p.drawRect(pl.adjusted(0.5, 0.5, -0.5, -0.5));
         if (decorate) decorate(p, pl);
         p.setClipRect(pl.adjusted(-4, -4, 4, 4));
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(Qt::black, 1));
+        p.setPen(QPen(pageInk(), 1));
         for (size_t k = 0; k + 1 < pts.size(); ++k) p.drawLine(at(pts[k]), at(pts[k + 1]));
         p.setRenderHint(QPainter::Antialiasing, false);
         for (size_t k = 0; k < pts.size(); ++k) {
             const QPointF c = at(pts[k]);
-            p.setBrush((int)k == drag_ ? Qt::black : Qt::white);
+            p.setBrush((int)k == drag_ ? pageInk() : pagePlot());
             p.drawRect(QRectF(std::round(c.x()) - 2.5, std::round(c.y()) - 2.5, 5, 5));
         }
     }

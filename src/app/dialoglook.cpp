@@ -1,5 +1,6 @@
 // The light dialog look (see dialoglook.h): Windows 10's palette and flat controls for the dialogs VEGAS draws that way.
 #include "dialoglook.h"
+#include "vprefs.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -44,6 +45,28 @@ const char* const kLightSheet =
     "QToolButton:checked { background: #cce4f7; border-color: #005499; }"
     "QToolButton:disabled { color: #6d6d6d; }";
 
+// The same sheet in the dark scheme: the metrics (borders, paddings, margins) are those of the light sheet above so that a dialog
+// keeps its layout whichever look it has; only the colours are the main window's.
+QString darkSheet()
+{
+    const QColor win = QApplication::palette().color(QPalette::Window);
+    const QString face = win.name(), tabOff = win.darker(125).name();
+    return QString(
+               "QTabBar { background: transparent; }"
+               "QTabBar::tab { background: %1; color: #b4b4b4; border: 1px solid #5a5a5a; border-bottom: none; padding: 2px 6px 2px 6px; margin: 0px; }"
+               "QTabBar::tab:selected { background: %2; color: #e6e6e6; }"
+               "QTabBar::tab:hover:!selected { background: #383838; color: #e6e6e6; }"
+               "QTabBar::tab:disabled { color: #787878; }"
+               "QTabWidget::pane { border: 1px solid #5a5a5a; background: %2; }"
+               "QHeaderView::section { background: #3c3c3c; color: #d6d6d6; border: none; border-right: 1px solid #2d2d2d; border-bottom: 1px solid #2d2d2d; padding: 2px 5px; }"
+               "QToolButton { border: 1px solid transparent; border-radius: 0px; padding: 2px; color: #dcdcdc; background: transparent; }"
+               "QToolButton:hover { background: #5a5a5a; border-color: #6e6e6e; }"
+               "QToolButton:pressed { background: #2e8fd6; }"
+               "QToolButton:checked { background: #12b0ff; border-color: #12b0ff; }"
+               "QToolButton:disabled { color: #787878; }")
+        .arg(tabOff, face);
+}
+
 // The top-level window a widget belongs to, following parents through popups (a combo box's list belongs to its dialog).
 QWidget* topOf(QWidget* w)
 {
@@ -61,6 +84,14 @@ public:
         if (e->type() != QEvent::Polish || !o->isWidgetType()) return false;
         QWidget* w = static_cast<QWidget*>(o);
         QWidget* top = topOf(w);
+        if (!lightDialogsOn()) {
+            // Preferences > Display: off by default. The dialogs keep the dark scheme, with the light look's metrics
+            if (w == top && qobject_cast<QDialog*>(top) && !top->property(kDarkProperty).toBool() && !w->property("renoDarkSheet").toBool()) {
+                w->setProperty("renoDarkSheet", true);
+                w->setStyleSheet(darkSheet() + w->styleSheet());
+            }
+            return false;
+        }
         if (!qobject_cast<QDialog*>(top) || top->property(kDarkProperty).toBool()) return false;
         if (w == top) {
             if (w->property("renoLight").toBool()) return false;

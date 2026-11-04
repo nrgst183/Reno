@@ -2,12 +2,15 @@
 // row, framed page with title bar) and the hand-built pages of Reno's built-in audio effects (src/app/fxpages.cpp): every control
 // changes the setting it stands for and follows preset changes. Saves pictures of the window and every page.
 //
-//   fxlook_test <output folder>
+//   fxlook_test <output folder> [--light]
+// (--light turns on Preferences > Display's "Use light dialogs like VEGAS": the pages are then Windows-classic light grey; by default
+// they follow Reno's dark scheme.)
 // Prints PASS / FAIL lines and a summary; exits non-zero on failure.
 #include "../../src/audiofx/vegasvibrato.h"
 #include "../../src/app/fxwindow.h"
 #include "../../src/app/mainwindow.h"
 #include "../../src/app/playback.h"
+#include "../../src/app/vprefs.h"
 #include "../../src/engine/catalog.h"
 #include "uitestlib.h"
 #include "../../src/audiofx/vegasdistortion.h"
@@ -127,6 +130,8 @@ int main(int argc, char** argv)
     applyTheme();
     const QStringList args = QApplication::arguments();
     gOut = args.size() > 1 ? args[1] : QString("fxlook_out");
+    const bool lightOn = args.contains("--light");
+    vprefs::set("prefs/lightDialogs", lightOn);
     QDir().mkpath(gOut);
     uitest::setup({}, {});
 
@@ -261,7 +266,8 @@ int main(int argc, char** argv)
         check(tn && tn->text() == k.name, std::string(k.name) + ": the title bar", tn ? tn->text().toStdString() : "none");
         if (QWidget* page = one<QWidget>("fxDxPage")) {
             uitest::shot(w, gOut + "/fxlook_" + QString(k.uid).mid(5) + ".png");
-            check(page->palette().color(QPalette::Window) == QColor(240, 240, 240), std::string(k.name) + ": the page is light grey");
+            if (lightOn) check(page->palette().color(QPalette::Window) == QColor(240, 240, 240), std::string(k.name) + ": the page is light grey (the light dialogs option)");
+            else check(page->palette().color(QPalette::Window).lightness() < 100, std::string(k.name) + ": the page is dark (the default)");
         }
         const int n = plugin->paramCount();
         const bool eq = std::string(k.uid) == "reno.moderneq";

@@ -1,5 +1,6 @@
 // Project Properties, the plug-in scan dialog and About.
 #include "panels_internal.h"
+#include "dialoglook.h"
 #include "vprefs.h"
 #include "audiotools.h"
 #include "../engine/colormgmt.h"
@@ -478,7 +479,9 @@ void showAbout(QWidget* parent)
     at(tabs, 7, 38, 518, 22);
     QFrame* pane = new QFrame(&dlg);
     pane->setObjectName("aboutPane");
-    pane->setStyleSheet("QFrame#aboutPane { background: #ffffff; border: 1px solid #d9d9d9; }");
+    pane->setStyleSheet(lightDialogsOn() ? QString("QFrame#aboutPane { background: #ffffff; border: 1px solid #d9d9d9; }")
+                                         : QString("QFrame#aboutPane { background: %1; border: 1px solid #5a5a5a; }")
+                                               .arg(QApplication::palette().color(QPalette::Window).name()));
     at(pane, 7, 59, 518, 288);
     std::vector<QWidget*> pages;
     for (int i = 0; i < 5; ++i) {
@@ -501,10 +504,16 @@ void showAbout(QWidget* parent)
         e->setReadOnly(true);
         e->setFrame(false);
         on(page, e, x, y, cw, ch);
-        QPalette pl = e->palette();
-        pl.setColor(QPalette::Base, Qt::white);
-        e->setPalette(pl);
-        e->setStyleSheet("QLineEdit { background: #ffffff; color: #000000; border: none; selection-background-color: #0078d7; }");
+        if (lightDialogsOn()) {
+            QPalette pl = e->palette();
+            pl.setColor(QPalette::Base, Qt::white);
+            e->setPalette(pl);
+            e->setStyleSheet("QLineEdit { background: #ffffff; color: #000000; border: none; selection-background-color: #0078d7; }");
+        } else {
+            // the pane's own colour, so the text sits on the page like a label
+            e->setStyleSheet(QString("QLineEdit { background: %1; color: %2; border: none; selection-background-color: #1284d6; }")
+                                 .arg(QApplication::palette().color(QPalette::Window).name(), QApplication::palette().color(QPalette::WindowText).name()));
+        }
         return e;
     };
     auto box = [&](int page, const QString& caption, const QString& text) {

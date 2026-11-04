@@ -141,7 +141,7 @@
         };
         pg->leave = resting;
         pg->decorate = [](QPainter& p, const QRectF& pl) {
-            p.setPen(Qt::black);
+            p.setPen(pageInk());
             p.drawText(QRectF(0, pl.top() - 6, pl.left() - 3, 12), Qt::AlignRight | Qt::AlignVCenter, "+24");
             p.drawText(QRectF(0, pl.center().y() - 6, pl.left() - 3, 12), Qt::AlignRight | Qt::AlignVCenter, "0");
             p.drawText(QRectF(0, pl.bottom() - 6, pl.left() - 3, 12), Qt::AlignRight | Qt::AlignVCenter, "-24");
@@ -246,7 +246,7 @@
         };
         pg->leave = resting;
         pg->decorate = [](QPainter& p, const QRectF& pl) {
-            p.setPen(Qt::black);
+            p.setPen(pageInk());
             p.drawText(QRectF(0, pl.top() - 6, pl.left() - 3, 12), Qt::AlignRight | Qt::AlignVCenter, "0");
             p.drawText(QRectF(0, pl.center().y() - 6, pl.left() - 3, 12), Qt::AlignRight | Qt::AlignVCenter, "-45");
             p.drawText(QRectF(0, pl.bottom() - 6, pl.left() - 3, 12), Qt::AlignRight | Qt::AlignVCenter, "-Inf.");

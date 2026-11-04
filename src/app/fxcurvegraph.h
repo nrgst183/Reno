@@ -4,6 +4,7 @@
 // The data are integers in the effect's own units (Graphic EQ: x in 1/1000 octaves above 20 Hz, y a slider position);
 // the page says how they are drawn (a function that paints the grid and labels behind the line) and how they read.
 #pragma once
+#include "dialoglook.h"
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
@@ -82,16 +83,16 @@ protected:
         QPainter p(this);
         p.fillRect(rect(), palette().color(QPalette::Window));
         const QRectF pl = plot();
-        p.fillRect(pl, Qt::white);
+        p.fillRect(pl, pagePlot());
         if (paintGrid) paintGrid(p, *this);
         p.setClipRect(pl.adjusted(-4, -4, 4, 4));
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(Qt::black, 1));
+        p.setPen(QPen(pageInk(), 1));
         for (size_t k = 0; k + 1 < pts.size(); ++k) p.drawLine(at(pts[k].x, pts[k].y), at(pts[k + 1].x, pts[k + 1].y));
         p.setRenderHint(QPainter::Antialiasing, false);
         for (size_t k = 0; k < pts.size(); ++k) {
             const QPointF c = at(pts[k].x, pts[k].y);
-            p.setBrush((int)k == drag_ ? Qt::black : Qt::white);
+            p.setBrush((int)k == drag_ ? pageInk() : pagePlot());
             p.drawRect(QRectF(std::round(c.x()) - 2.5, std::round(c.y()) - 2.5, 5, 5));
         }
     }

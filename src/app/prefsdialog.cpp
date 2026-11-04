@@ -12,6 +12,7 @@
 #include "panels.h"
 #include "midisync.h"
 #include "playback.h"
+#include "dialoglook.h"
 #include "vprefs.h"
 #include "../engine/catalog.h"
 #include "strconv.h"
@@ -618,7 +619,7 @@ protected:
             // Windows 10's tabs when the dialog is light: grey, white for the selected one, light blue under the mouse
             const bool lightLook = palette().color(QPalette::Window).lightness() > 160;
             const bool hot = !sel && lightLook && r.contains(mapFromGlobal(QCursor::pos())) && underMouse();
-            p.fillRect(r, sel ? palette().color(QPalette::Base) : hot ? QColor(216, 234, 249) : lightLook ? QColor(240, 240, 240) : palette().color(QPalette::Button));
+            p.fillRect(r, sel ? (lightLook ? palette().color(QPalette::Base) : palette().color(QPalette::Window)) : hot ? QColor(216, 234, 249) : lightLook ? QColor(240, 240, 240) : palette().color(QPalette::Window).darker(125));
             p.setPen(lightLook ? QColor(217, 217, 217) : palette().color(QPalette::Mid));
             p.drawRect(r.adjusted(0, 0, -1, sel ? 0 : -1));
             p.setPen(palette().color(QPalette::ButtonText));
@@ -782,7 +783,9 @@ public:
         tabs_->setObjectName("tabs");
         tabs_->setGeometry(7 - kFrameX, 38 - kFrameY, 421, 611);
         tabs_->setDocumentMode(false);
-        tabs_->setStyleSheet("QTabWidget::pane { border: 1px solid #d9d9d9; margin: 0px; padding: 0px; background: #ffffff; }");
+        tabs_->setStyleSheet(lightDialogsOn() ? QString("QTabWidget::pane { border: 1px solid #d9d9d9; margin: 0px; padding: 0px; background: #ffffff; }")
+                                              : QString("QTabWidget::pane { border: 1px solid #5a5a5a; margin: 0px; padding: 0px; background: %1; }")
+                                                    .arg(QApplication::palette().color(QPalette::Window).name()));
         renoPage();
 
         buildGeneral();
@@ -1773,6 +1776,10 @@ private:
         box("Use Alternate HighDPI Settings", "prefs/altHighDpi", "altHighDpi");
         p.finish();
         extra("Display")->addRow(note("The High DPI settings are read when Reno starts.", renoBody_));
+        // Reno's own: the dialogs follow the dark window by default; VEGAS draws its older ones light (dialoglook.h)
+        QCheckBox* lightDlg = check(renoBody_, "Use light dialogs like VEGAS", "prefs/lightDialogs", "lightDialogs");
+        extra("Display")->addRow(lightDlg);
+        extra("Display")->addRow(note("Light dialogs apply to the dialogs opened after this.", renoBody_));
     }
 
     // CD Settings: Reno has no CD burning, so the page only shows VEGAS's controls.

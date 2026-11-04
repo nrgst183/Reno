@@ -212,12 +212,12 @@ private:
             static const int ys[10] = {400, 300, 200, 100, 0, -100, -200, -300, -400, -500};
             static const char* const yl[10] = {"+24", "+12", "+6", "+3", "dB 0", "-3", "-6", "-12", "-24", "-Inf."};
             static const char* const xl[11] = {"20", "40", "80", "160", "320", "640", "1.3k", "2.5k", "5.1k", "10k", "20k"};
-            p.setPen(QPen(QColor(150, 150, 150), 1));
+            p.setPen(QPen(pageSoftInk(150), 1));
             for (int k = 0; k < 10; ++k) {
                 const double y = std::round(gr.at(0, ys[k]).y()) + 0.5;
                 p.drawLine(QPointF(pl.left(), y), QPointF(pl.right(), y));
             }
-            p.setPen(Qt::black);
+            p.setPen(pageInk());
             for (int k = 0; k < 10; ++k) {
                 const double y = gr.at(0, ys[k]).y();
                 p.drawText(QRectF(0, y - 7, pl.left() - 3, 14), Qt::AlignRight | Qt::AlignVCenter, yl[k]);
@@ -292,12 +292,12 @@ private:
         std::vector<double> m((size_t)n, 1.0);
         vegpm::design(m.data(), n, rate, st);
         auto Y = [&](double db) { return pl.bottom() - (std::max(-60.0, std::min(20.0, db)) + 60.0) / 80.0 * pl.height(); };
-        p.setPen(QPen(QColor(190, 190, 190), 1));
+        p.setPen(QPen(pageSoftInk(190), 1));
         for (int k = 0; k < 5; ++k) {
             const double y = std::round(Y(-60.0 + 20.0 * k)) + 0.5;
             p.drawLine(QPointF(pl.left(), y), QPointF(pl.right(), y));
         }
-        p.setPen(QPen(QColor(110, 110, 110), 1));
+        p.setPen(QPen(pageSoftInk(110), 1));
         const double y0 = std::round(Y(0)) + 0.5;
         p.drawLine(QPointF(pl.left(), y0), QPointF(pl.right(), y0));
         QPainterPath path;
@@ -311,7 +311,7 @@ private:
             if (x == 0) path.moveTo(pt);
             else path.lineTo(pt);
         }
-        p.setPen(QPen(QColor(0, 0, 160), 1));
+        p.setPen(QPen(pageCurve(QColor(0, 0, 160)), 1));
         p.drawPath(path);
     }
 
@@ -438,12 +438,12 @@ private:
         d.setSettings(st);
         auto Y = [&](double db) { return pl.bottom() - (std::max(-25.0, std::min(25.0, db)) + 25.0) / 50.0 * pl.height(); };
         auto X = [&](double f) { return pl.left() + std::log(f / 20.0) / std::log(2.0) / 10.0 * pl.width(); };
-        p.setPen(QPen(QColor(200, 200, 200), 1));
+        p.setPen(QPen(pageSoftInk(200), 1));
         for (int k = 1; k < 10; ++k) {
             const double x = std::round(X(20.0 * std::pow(2.0, k))) + 0.5;
             p.drawLine(QPointF(x, pl.top()), QPointF(x, pl.bottom()));
         }
-        p.setPen(QPen(QColor(150, 150, 150), 1));
+        p.setPen(QPen(pageSoftInk(150), 1));
         for (double db : {25.0, 0.0, -25.0}) {
             const double y = std::round(Y(db)) + 0.5;
             p.drawLine(QPointF(pl.left(), y), QPointF(pl.right(), y));
@@ -456,9 +456,9 @@ private:
             if (x == 0) path.moveTo(pt);
             else path.lineTo(pt);
         }
-        p.setPen(QPen(QColor(0, 0, 160), 1));
+        p.setPen(QPen(pageCurve(QColor(0, 0, 160)), 1));
         p.drawPath(path);
-        p.setPen(Qt::black);
+        p.setPen(pageInk());
         p.drawText(QRectF(0, Y(25) - 7, pl.left() - 3, 14), Qt::AlignRight | Qt::AlignVCenter, "+25");
         p.drawText(QRectF(0, Y(0) - 7, pl.left() - 3, 14), Qt::AlignRight | Qt::AlignVCenter, "dB 0");
         p.drawText(QRectF(0, Y(-25) - 7, pl.left() - 3, 14), Qt::AlignRight | Qt::AlignVCenter, "-25");
