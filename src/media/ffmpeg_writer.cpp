@@ -446,6 +446,7 @@ public:
 
     bool writeVideo(const Image& frame) override;
     bool writeAudio(const float* left, const float* right, int frames) override;
+    void clipForEncoder(AVFrame* c, int count);
     bool writeAudioChannels(const float* const* ch, int channels, int frames) override;
     int inChannels_ = 2;            // what the caller gives: 2, or 6 (5.1)
     bool finish(std::string* error) override;
@@ -1516,6 +1517,31 @@ void FFWriter::toLinearFloat(const AVFrame& bgra, AVFrame* out)
     }
 }
 
+// VEGAS hands its encoders 16-bit (or 24-bit) integer sound, so anything over 0 dBFS is clipped off there. Reno's sound is
+// float, and encoders that take float (AAC, Opus, Vorbis, MP3...) keep samples above 1.0, which players then play as loud
+// distortion or refuse. Clip float samples to -1..1 for every encoder except the float PCM ones (32/64-bit float WAV keeps
+// overs, as VEGAS's does). Integer formats are already clipped by the converter.
+void FFWriter::clipForEncoder(AVFrame* c, int count)
+{
+    const AVSampleFormat f = (AVSampleFormat)c->format;
+    const AVCodecID id = aenc_->codec_id;
+    if (id == AV_CODEC_ID_PCM_F32LE || id == AV_CODEC_ID_PCM_F32BE || id == AV_CODEC_ID_PCM_F64LE || id == AV_CODEC_ID_PCM_F64BE)
+        return;
+    const int chans = c->ch_layout.nb_channels;
+    const bool planar = av_sample_fmt_is_planar(f) != 0;
+    const int planes = planar ? chans : 1;
+    const int per = planar ? count : count * chans;
+    for (int p = 0; p < planes; ++p) {
+        if (f == AV_SAMPLE_FMT_FLT || f == AV_SAMPLE_FMT_FLTP) {
+            float* d = (float*)c->extended_data[p];
+            for (int i = 0; i < per; ++i) d[i] = d[i] > 1.f ? 1.f : d[i] < -1.f ? -1.f : d[i];   // NaN stays NaN only if the mix made one
+        } else if (f == AV_SAMPLE_FMT_DBL || f == AV_SAMPLE_FMT_DBLP) {
+            double* d = (double*)c->extended_data[p];
+            for (int i = 0; i < per; ++i) d[i] = d[i] > 1.0 ? 1.0 : d[i] < -1.0 ? -1.0 : d[i];
+        }
+    }
+}
+
 // Converts 'count' samples of the caller's sound ('in' null: what the converter is still holding)
 // and adds the result to the queue for the encoder.
 bool FFWriter::queueAudio(const uint8_t** in, int count)
@@ -1539,6 +1565,7 @@ bool FFWriter::queueAudio(const uint8_t** in, int count)
     }
     const int got = swr_convert(swr_.get(), c->extended_data, aconvRoom_, in, in ? count : 0);
     if (got < 0) return fail("Could not convert the audio for the encoder.", got);
+    if (got > 0) clipForEncoder(c, got);
     if (got > 0 && av_audio_fifo_write(fifo_.get(), (void**)c->extended_data, got) < got) return fail("Out of memory");
     return true;
 }
