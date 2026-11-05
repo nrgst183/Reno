@@ -113,13 +113,6 @@ inline void oclBicubic4(const std::vector<float>& img, int W, int H, float px, f
 
 inline void copyThrough(Ctx& c) { c.out.px = c.src.px; }
 
-// out = src + (effect - src) x k
-inline void blendOver(Ctx& c, const Buf& effect, float k)
-{
-    if (k >= 0.999f) { c.out.px = effect.px; return; }
-    for (size_t i = 0; i < c.out.px.size(); ++i) c.out.px[i] = c.src.px[i] + (effect.px[i] - c.src.px[i]) * k;
-}
-
 inline void rgbToHsl(float r, float g, float b, float& h, float& s, float& l)
 {
     const float mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b));
@@ -162,20 +155,9 @@ inline void rgbToLab(float r, float g, float b, float& L, float& A, float& B)
     X = f(X); Y = f(Y); Z = f(Z);
     L = 116.f * Y - 16.f; A = 500.f * (X - Y); B = 200.f * (Y - Z);
 }
-inline void labToRgb(float L, float A, float B, float& r, float& g, float& b)
-{
-    float Y = (L + 16.f) / 116.f, X = Y + A / 500.f, Z = Y - B / 200.f;
-    auto fi = [](float t) { const float t3 = t * t * t; return t3 > 0.008856f ? t3 : (t - 16.f / 116.f) / 7.787f; };
-    X = fi(X) * 0.95047f; Y = fi(Y); Z = fi(Z) * 1.08883f;
-    const float lr = 3.2406f * X - 1.5372f * Y - 0.4986f * Z, lg = -0.9689f * X + 1.8758f * Y + 0.0415f * Z, lb = 0.0557f * X - 0.2040f * Y + 1.0570f * Z;
-    r = linToSrgb(lr); g = linToSrgb(lg); b = linToSrgb(lb);
-}
 
 // The frame's scale against 1080 lines: sizes given for an HD frame stay in proportion at other sizes.
 inline double frameScale(const Ctx& c) { return std::max(1, c.out.h) / 1080.0; }
-// The same for the full-size frame (a smaller preview's size divided by its scale): for sizes in full-size pixels that are
-// then scaled by hand (rounded to whole pixels at the full size first, or pixel patterns).
-inline double frameScaleFull(const Ctx& c) { return std::max(1, c.out.h) / c.scale / 1080.0; }
 // ------------------------------------------------------------------ the effects (each in the file of its topic)
 // builtins_more_blur.cpp
 void quickBlur(Ctx& c);

@@ -939,17 +939,6 @@ bool planSolidColor(Ctx& c, Plan& p)
     return true;
 }
 
-// a double as two table words (the bits of its halves, held in floats): the kernels read them with ld_sf
-void tabD(std::vector<float>& t, double d)
-{
-    const D2 b = d2(d);
-    float f[2];
-    std::memcpy(&f[0], &b.h, 4);
-    std::memcpy(&f[1], &b.l, 4);
-    t.push_back(f[0]);
-    t.push_back(f[1]);
-}
-
 bool planCheckerboard(Ctx& c, Plan& p)
 {
     std::vector<float> tab;

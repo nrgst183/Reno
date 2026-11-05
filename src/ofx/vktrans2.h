@@ -1,5 +1,5 @@
-// The GPU versions of the older (DirectX-era) VEGAS transitions that the CPU code draws as VEGAS's own code does: Venetian Blinds, Portals, Gradient Wipe and the four 3D
-// transitions (the kernels are tools/gpukernels_trans2.py's, the planners vktrans2.cpp's). vktrans.cpp lists them (extraGpuEntries) and asks here for their GPU check cases.
+// The GPU versions of the older (DirectX-era) VEGAS transitions that the CPU code draws as VEGAS's own code does: Venetian Blinds, Portals and Gradient Wipe
+// (the kernels are tools/gpukernels_trans2.py's, the planners vktrans2.cpp's; the 3D transitions are in vk3d.h). vktrans.cpp lists them (extraGpuEntries) and asks here for their GPU check cases.
 // false from a planner: the CPU draws this frame.
 #pragma once
 #include <string>

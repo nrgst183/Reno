@@ -120,7 +120,8 @@ std::vector<OfxPreset> parsePresets(const std::string& xml)
             } else if (inValue && n == "OfxParamValue") {
                 const QString text = r.readElementText();
                 if (isNumberType(val.type)) {
-                    for (const QString& w : text.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts)) {
+                    static const QRegularExpression blanks("\\s+");
+                    for (const QString& w : text.split(blanks, Qt::SkipEmptyParts)) {
                         bool ok = false;
                         const double d = w.toDouble(&ok);
                         val.numbers.push_back(ok && std::isfinite(d) ? d : 0.0);

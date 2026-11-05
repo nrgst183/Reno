@@ -40,32 +40,6 @@ struct Preset {
     std::vector<double> values;     // in parameter order (fewer: the rest at their defaults)
 };
 
-// A ring buffer read at fractional delays (linear interpolation).
-struct DelayLine {
-    std::vector<float> buf;
-    size_t pos = 0;
-    void resize(size_t n) { buf.assign(std::max<size_t>(n, 4), 0.f); pos = 0; }
-    void clear() { std::fill(buf.begin(), buf.end(), 0.f); }
-    void push(float v)
-    {
-        buf[pos] = v;
-        if (++pos >= buf.size()) pos = 0;
-    }
-    // the sample written 'd' samples ago (1 = the latest), interpolated for fractional d
-    float at(double d) const
-    {
-        const size_t n = buf.size();
-        d = std::max(1.0, std::min(d, (double)n - 2));
-        const double r = (double)pos - d;
-        double rf = std::floor(r);
-        const double frac = r - rf;
-        long i0 = (long)rf;
-        while (i0 < 0) i0 += (long)n;
-        const size_t a = (size_t)i0 % n, b = (a + 1) % n;
-        return (float)(buf[a] * (1 - frac) + buf[b] * frac);
-    }
-};
-
 class BuiltinAudio : public AudioPlugin {
 public:
     BuiltinAudio(std::vector<Param> params, std::vector<Preset> presets) : params_(std::move(params)), presets_(std::move(presets)), values_(params_.size())

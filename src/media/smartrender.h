@@ -52,7 +52,4 @@ std::vector<std::string> smartHeaderSets(int codecId, const uint8_t* data, int s
 // packet as it is) when the source already has start codes or the codec is another.
 bool smartPacketToAnnexB(int codecId, const std::vector<uint8_t>& extradata, const uint8_t* in, int size, std::vector<uint8_t>* out);
 
-// Forgets what analyzeSmartSource kept.
-void forgetSmartSources();
-
 }  // namespace reno

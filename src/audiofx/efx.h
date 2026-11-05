@@ -66,7 +66,6 @@ struct ParamDef {
     const char* fixed = "";             // Fixed: the wording that is always shown
 };
 
-ParamDef pUnused();
 ParamDef pLin(const char* name, float def, double lo, double hi, Fmt fmt);
 ParamDef pRat(const char* name, float def, double lo, double hi, double a, Fmt fmt);
 ParamDef pPow(const char* name, float def, double lo, double hi, double p, Fmt fmt);
@@ -93,7 +92,6 @@ std::vector<ParamDef> vocalStripDefs();
 
 // ---- small DSP parts ----------------------------------------------------------------------------------------
 inline double dbToLin(double db) { return std::pow(10.0, db / 20.0); }
-inline double linToDb(double lin) { return 20.0 * std::log10(lin > 1e-12 ? lin : 1e-12); }
 inline float flushDenormal(float v) { return std::fabs(v) < 1e-20f ? 0.f : v; }
 
 // A second-order filter (RBJ's cookbook shapes), one channel's state per object.

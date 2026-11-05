@@ -1,5 +1,5 @@
-"""The older (DirectX-era) VEGAS transitions that the CPU draws as VEGAS's own code does (src/ofx/vfxvenetian.h, vfxportals.h, vfxgradwipe.h, vfx3d.h): Venetian Blinds,
-Portals, Gradient Wipe, the 3D transitions. The planners are in src/ofx/vktrans2.cpp. Imported by gpukernels.py (see its header).
+"""The older (DirectX-era) VEGAS transitions that the CPU draws as VEGAS's own code does (src/ofx/vfxvenetian.h, vfxportals.h, vfxgradwipe.h): Venetian Blinds,
+Portals, Gradient Wipe. The 3D transitions are in gpukernels_3d.py. The planners are in src/ofx/vktrans2.cpp. Imported by gpukernels.py (see its header).
 
 Conventions as gpukernels_trans.py: the outgoing frame is buffer 0 (in0), the incoming one the first w * h * 4 floats of the table (to_px), top row first; what the
 planner works out on the CPU (a profile, a layout, a list of rectangles - numbers that do not depend on the pictures) follows the frame in the table, integers as the

@@ -81,7 +81,6 @@ public:
     // replaces what was there on those tracks.
     std::vector<uint64_t> fitToFill();
     void setTimelineOverwrite(bool on);
-    bool timelineOverwrite() const;
     bool selectParentMedia();
     bool openParentMedia(uint64_t mediaId);
     bool copySnapshot();

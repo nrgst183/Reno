@@ -123,7 +123,6 @@ public:
     bool useProxies() const { return useProxies_.load(); }
     // Playing (the preview's pool; renders and exports never do).
     void setShareFrames(bool on, size_t bytes = 96u * 1024u * 1024u);
-    bool shareFrames() const { return share_ != nullptr; }
 
 private:
     // One open reader. Readers aren't tied to one user. An event takes the reader of its media that has the frame (or

@@ -20,12 +20,15 @@
 #include "vfxvenetian.h"
 #include "vfxwipes.h"
 #include "vfx3dfx.h"
-#include "builtins_more_internal.h"
+#include "../core/base.h"
+#include "../core/pixrows.h"
 #include <algorithm>
 #include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <vector>
 
 namespace reno {
@@ -79,6 +82,70 @@ Px colorPx(const Color& col, double a = 1.0)
     return p;
 }
 
+// n floats to bytes the way the transitions' 8-bit pictures are made: not finite: 0, else cut to 0..1, times 255, rounded half up (roundNonNeg). Four at a time with SSE2 where
+// there is any: the same operations on each value as the plain loop.
+static void floatsToBytes(const float* s, uint8_t* d, size_t n)
+{
+    size_t k = 0;
+#ifdef RENO_PIXROWS_SSE2
+    const __m128 zero = _mm_setzero_ps(), one = _mm_set1_ps(1.f), k255 = _mm_set1_ps(255.f), half = _mm_set1_ps(0.5f);
+    const __m128 inf = _mm_castsi128_ps(_mm_set1_epi32(0x7F800000)), absMask = _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF));
+    auto four = [&](const float* q) -> __m128i {
+        const __m128 v = _mm_loadu_ps(q);
+        __m128 c = _mm_min_ps(_mm_max_ps(v, zero), one);                    // (not a number: 0)
+        c = _mm_and_ps(c, _mm_cmplt_ps(_mm_and_ps(v, absMask), inf));       // (not finite: 0)
+        const __m128 m = _mm_mul_ps(c, k255);
+        const __m128i i = _mm_cvttps_epi32(m);
+        const __m128 up = _mm_cmpge_ps(_mm_sub_ps(m, _mm_cvtepi32_ps(i)), half);
+        return _mm_sub_epi32(i, _mm_castps_si128(up));
+    };
+    for (; k + 16 <= n; k += 16) {
+        const __m128i a = _mm_packs_epi32(four(s + k), four(s + k + 4)), b = _mm_packs_epi32(four(s + k + 8), four(s + k + 12));
+        _mm_storeu_si128((__m128i*)(d + k), _mm_packus_epi16(a, b));
+    }
+#endif
+    for (; k < n; ++k) {
+        const float v = std::isfinite(s[k]) ? std::min(std::max(s[k], 0.f), 1.f) : 0.f;
+        d[k] = (uint8_t)roundNonNeg(v * 255.f);
+    }
+}
+
+// n bytes to floats, value / 255 (what the 8-bit transitions hand back), sixteen at a time with SSE2 where there is any
+static void bytesToFloats(const uint8_t* s, float* d, size_t n)
+{
+    size_t k = 0;
+#ifdef RENO_PIXROWS_SSE2
+    const __m128 inv = _mm_set1_ps(1.f / 255.f);
+    const __m128i zero = _mm_setzero_si128();
+    for (; k + 16 <= n; k += 16) {
+        const __m128i v = _mm_loadu_si128((const __m128i*)(s + k));
+        const __m128i lo = _mm_unpacklo_epi8(v, zero), hi = _mm_unpackhi_epi8(v, zero);
+        _mm_storeu_ps(d + k, _mm_mul_ps(_mm_cvtepi32_ps(_mm_unpacklo_epi16(lo, zero)), inv));
+        _mm_storeu_ps(d + k + 4, _mm_mul_ps(_mm_cvtepi32_ps(_mm_unpackhi_epi16(lo, zero)), inv));
+        _mm_storeu_ps(d + k + 8, _mm_mul_ps(_mm_cvtepi32_ps(_mm_unpacklo_epi16(hi, zero)), inv));
+        _mm_storeu_ps(d + k + 12, _mm_mul_ps(_mm_cvtepi32_ps(_mm_unpackhi_epi16(hi, zero)), inv));
+    }
+#endif
+    for (; k < n; ++k) d[k] = s[k] * (1.f / 255.f);
+}
+// The two over a whole picture, in bands on the row threads (every value on its own)
+static void floatsToBytesAll(const float* s, uint8_t* d, size_t n)
+{
+    const size_t band = 16384;
+    parallelRows((int)((n + band - 1) / band), band, [&](int a, int b) {
+        const size_t k0 = (size_t)a * band, k1 = std::min(n, (size_t)b * band);
+        if (k0 < k1) floatsToBytes(s + k0, d + k0, k1 - k0);
+    });
+}
+static void bytesToFloatsAll(const uint8_t* s, float* d, size_t n)
+{
+    const size_t band = 16384;
+    parallelRows((int)((n + band - 1) / band), band, [&](int a, int b) {
+        const size_t k0 = (size_t)a * band, k1 = std::min(n, (size_t)b * band);
+        if (k0 < k1) bytesToFloats(s + k0, d + k0, k1 - k0);
+    });
+}
+
 // Wipe driven by s (0..1 per pixel): the incoming frame shows where s < edge, with a soft edge (feather) and border, as fractions of the run.
 template <class S>
 void wipe(Ctx& c, S s, double feather, double border, const Color& bc)
@@ -98,8 +165,6 @@ void wipe(Ctx& c, S s, double feather, double border, const Color& bc)
         }
     });
 }
-
-double borderOf(const Ctx& c) { return clampd(c.d("BorderSize"), 0, 1) * 0.25; }
 
 // ------------------------------------------------------------------ dissolves
 // VEGAS's 8-bit Dissolve (Vfx1.ofx dissolveProcessor<unsigned char>), decoded: whole-number maths on the four bytes of each premultiplied pixel
@@ -391,18 +456,23 @@ void crossEffect(Ctx& c)
     const size_t n = (size_t)W * H * 4;
     std::vector<uint8_t> A(n), B(n), O(n);
     auto toBytes = [&](const Buf& s, std::vector<uint8_t>& d) {
-        for (int y = 0; y < H; ++y) {
+        forRows(H, W, [&](int y) {
             const float* row = s.at(0, y);
             uint8_t* dst = &d[(size_t)(H - 1 - y) * W * 4];
             for (int i = 0; i < W * 4; ++i) {
                 const float v = row[i] * 255.0f + 0.5f;
                 dst[i] = (uint8_t)(v < 0.f ? 0 : v > 255.f ? 255 : (int)v);
             }
-        }
+        });
     };
     toBytes(c.src, A);
     toBytes(c.src2, B);
     auto mix8 = [&](int a, int b) { return (uint8_t)(a + ((b - a) * t8) / 256); };
+    auto mixAll = [&]() {
+        parallelRows(H, (size_t)W * 4, [&](int y0, int y1) {
+            for (size_t k = (size_t)y0 * W * 4, e = (size_t)y1 * W * 4; k < e; ++k) O[k] = mix8(A[k], B[k]);
+        });
+    };
 
     if (type == 2) {
         // the number of cells and their sizes (floats, as VEGAS)
@@ -478,18 +548,18 @@ void crossEffect(Ctx& c)
         const bool doBlur = sz > 0.0f;
         if (doBlur && apply == 0) blur8(A);
         if (doBlur && apply == 1) blur8(B);
-        for (size_t k = 0; k < n; ++k) O[k] = mix8(A[k], B[k]);
+        mixAll();
         if (doBlur && apply == 2) blur8(O);
     } else if (type == 1) {
         crossZoom8(c, A, B, O, apply, pf, t8);
     } else {
-        for (size_t k = 0; k < n; ++k) O[k] = mix8(A[k], B[k]);
+        mixAll();
     }
-    for (int y = 0; y < H; ++y) {
+    forRows(H, W, [&](int y) {
         const uint8_t* src = &O[(size_t)(H - 1 - y) * W * 4];
         float* o = c.out.at(0, y);
         for (int i = 0; i < W * 4; ++i) o[i] = (float)(src[i] / 255.0);
-    }
+    });
 }
 
 // ------------------------------------------------------------------ wipes
@@ -509,14 +579,44 @@ void clockWipe8(Ctx& c)
     const bool done = p >= 1.0f;
     const float root2 = 1.4142135381698608f;
     auto to8 = [](float v) { const float x = v * 255.0f + 0.5f; return (int)(x < 0.f ? 0 : x > 255.f ? 255 : (int)x); };
+    // The angle of every pixel round the centre does not depend on the progress or the feather: the last map made is kept for the next frame of the same size and direction.
+    struct AngleKey { int W, H; bool ccw; };
+    static std::mutex angMu;
+    static bool angHave = false;
+    static AngleKey angKey;
+    static std::shared_ptr<const std::vector<float>> angMap;
+    std::shared_ptr<const std::vector<float>> angles;
+    {
+        std::lock_guard<std::mutex> lock(angMu);
+        if (angHave && angKey.W == W && angKey.H == H && angKey.ccw == ccw) angles = angMap;
+    }
+    if (!angles) {
+        auto made = std::make_shared<std::vector<float>>((size_t)W * H);
+        forRows(H, W, [&](int y) {
+            const float Y = (cy + 0.5f) - (float)y;
+            float xs = ccw ? cx : -cx;
+            const float step = ccw ? -1.0f : 1.0f;
+            float* row = &(*made)[(size_t)y * W];
+            for (int x = 0; x < W; ++x, xs += step) {
+                float a = (float)std::atan2((double)xs, (double)Y);
+                if (a < 0.0f) a += twoPi;
+                row[x] = a;
+            }
+        });
+        angles = made;
+        std::lock_guard<std::mutex> lock(angMu);
+        angKey = AngleKey{W, H, ccw};
+        angMap = angles;
+        angHave = true;
+    }
     forRows(H, W, [&](int y) {
         float Y = (cy + 0.5f) - (float)y;
         float xs = ccw ? cx : -cx;
         const float step = ccw ? -1.0f : 1.0f;
+        const float* arow = &(*angles)[(size_t)y * W];
         for (int x = 0; x < W; ++x, xs += step) {
             const float X = xs;
-            float a = (float)std::atan2((double)X, (double)Y);
-            if (a < 0.0f) a += twoPi;
+            const float a = arow[x];
             const float* fa = c.src.at(x, y);
             const float* fb = c.src2.at(x, y);
             float* o = c.out.at(x, y);
@@ -1451,48 +1551,70 @@ void irisFx(Ctx& c)
     const float B = (float)border * 0.05f;
     const uint16_t window = irisWindowMask(shape);
 
-    std::vector<float> map((size_t)W * H);                                  // row j counts from the bottom, as VEGAS's rows do
-    forRows(H, W, [&](int y) {
-        const int j = H - 1 - y;
-        float* mrow = &map[(size_t)j * W];
-        int iy;
-        if (cyf > (float)j) iy = -1;
-        else iy = std::min((int)((float)j - cyf) / ch, ny - 1);
-        for (int x = 0; x < W; ++x) {
-            int ix;
-            if (cxf > (float)x) ix = -1;
-            else ix = std::min((int)((float)x - cxf) / cw, nx - 1);
-            float best = 0;
-            bool have = false;
-            auto cand = [&](int kx, int ky) {
-                const float d = irisDistance(x, j, (float)(kx * cw) + cxf, (float)(ky * ch) + cyf, shape, A, sx, sy);
-                best = have ? std::min(d, best) : d;
-                have = true;
-            };
-            for (int dx = -1; dx <= 2; ++dx)
-                for (int dy = -1; dy <= 2; ++dy) {
-                    if (!(window >> ((dx + 1) * 4 + (dy + 1)) & 1)) continue;
-                    const int kx = ix + dx, ky = iy + dy;
-                    if (kx < 0 || kx >= nx || ky < 0 || ky >= ny) continue;
-                    if (shape == 11 && ix == -1 && iy >= 0 && iy + 2 < ny && kx == 0 && ky == iy + 2) continue;       // (VEGAS leaves this one out)
-                    cand(kx, ky);
-                }
-            if (shape == 11 && ix == -1 && iy >= 0 && iy + 2 < ny && nx == 1) cand(1, iy + 2);                          // (and with one column asks for a cell that is not there)
-            if (!have) cand(std::max(ix, 0), std::max(iy, 0));
-            mrow[x] = best;
-        }
-    });
-    float mx = 1.0f;
-    for (int j = 0; j < H; ++j) {
-        const float* mrow = &map[(size_t)j * W];
-        if (j == 0 || j == H - 1) { for (int x = 0; x < W; ++x) mx = std::max(mx, mrow[x]); }
-        else { mx = std::max(mx, mrow[0]); mx = std::max(mx, mrow[W - 1]); }
+    // The distance map (and its largest value) depends on the shape, the cells and the centre only, not on the progress, the feather or the border: the last one made is kept for
+    // the next frame of the same transition.
+    struct MapKey { int W, H, shape, nx, ny; double cxn, cyn; };
+    struct MapVal { std::shared_ptr<const std::vector<float>> map; float mx = 1.0f; };
+    static std::mutex mapMu;
+    static bool mapHave = false;
+    static MapKey mapKey;
+    static MapVal mapVal;
+    MapVal mv;
+    {
+        std::lock_guard<std::mutex> lock(mapMu);
+        if (mapHave && mapKey.W == W && mapKey.H == H && mapKey.shape == shape && mapKey.nx == nx && mapKey.ny == ny && mapKey.cxn == cxn && mapKey.cyn == cyn) mv = mapVal;
     }
-    mx = std::max(mx, irisReflectedMax(W, H, nx, ny, cxn, cyn, cxf, cyf, shape, A, sx, sy));
-    // (VEGAS fills the top row from a pointer that has only moved one row up: its two end pixels land in the second row)
-    map[(size_t)W] = map[(size_t)(H - 1) * W];
-    map[(size_t)W + W - 1] = map[(size_t)(H - 1) * W + W - 1];
-    const float inv = 1.0f / mx;
+    if (!mv.map) {
+        std::vector<float> map((size_t)W * H);                                  // row j counts from the bottom, as VEGAS's rows do
+        forRows(H, W, [&](int y) {
+            const int j = H - 1 - y;
+            float* mrow = &map[(size_t)j * W];
+            int iy;
+            if (cyf > (float)j) iy = -1;
+            else iy = std::min((int)((float)j - cyf) / ch, ny - 1);
+            for (int x = 0; x < W; ++x) {
+                int ix;
+                if (cxf > (float)x) ix = -1;
+                else ix = std::min((int)((float)x - cxf) / cw, nx - 1);
+                float best = 0;
+                bool have = false;
+                auto cand = [&](int kx, int ky) {
+                    const float d = irisDistance(x, j, (float)(kx * cw) + cxf, (float)(ky * ch) + cyf, shape, A, sx, sy);
+                    best = have ? std::min(d, best) : d;
+                    have = true;
+                };
+                for (int dx = -1; dx <= 2; ++dx)
+                    for (int dy = -1; dy <= 2; ++dy) {
+                        if (!(window >> ((dx + 1) * 4 + (dy + 1)) & 1)) continue;
+                        const int kx = ix + dx, ky = iy + dy;
+                        if (kx < 0 || kx >= nx || ky < 0 || ky >= ny) continue;
+                        if (shape == 11 && ix == -1 && iy >= 0 && iy + 2 < ny && kx == 0 && ky == iy + 2) continue;       // (VEGAS leaves this one out)
+                        cand(kx, ky);
+                    }
+                if (shape == 11 && ix == -1 && iy >= 0 && iy + 2 < ny && nx == 1) cand(1, iy + 2);                          // (and with one column asks for a cell that is not there)
+                if (!have) cand(std::max(ix, 0), std::max(iy, 0));
+                mrow[x] = best;
+            }
+        });
+        float mx = 1.0f;
+        for (int j = 0; j < H; ++j) {
+            const float* mrow = &map[(size_t)j * W];
+            if (j == 0 || j == H - 1) { for (int x = 0; x < W; ++x) mx = std::max(mx, mrow[x]); }
+            else { mx = std::max(mx, mrow[0]); mx = std::max(mx, mrow[W - 1]); }
+        }
+        mx = std::max(mx, irisReflectedMax(W, H, nx, ny, cxn, cyn, cxf, cyf, shape, A, sx, sy));
+        // (VEGAS fills the top row from a pointer that has only moved one row up: its two end pixels land in the second row)
+        map[(size_t)W] = map[(size_t)(H - 1) * W];
+        map[(size_t)W + W - 1] = map[(size_t)(H - 1) * W + W - 1];
+        mv.map = std::make_shared<const std::vector<float>>(std::move(map));
+        mv.mx = mx;
+        std::lock_guard<std::mutex> lock(mapMu);
+        mapKey = MapKey{W, H, shape, nx, ny, cxn, cyn};
+        mapVal = mv;
+        mapHave = true;
+    }
+    const std::vector<float>& map = *mv.map;
+    const float inv = 1.0f / mv.mx;
     float p = (float)clampd(c.progress, 0, 1);
     const bool swapSrc = !dirOn;
     if (swapSrc) p = 1.0f - p;
@@ -1501,15 +1623,17 @@ void irisFx(Ctx& c)
     const uint8_t bc[4] = {bR, bG, bB, 255};
     const bool hardF = F < 1e-6f, noBorder = B < 1e-6f;
 
-    auto byteOf = [](float v) { return (uint8_t)roundNonNeg(std::min(std::max(std::isfinite(v) ? v : 0.f, 0.f), 1.f) * 255.f); };
     forRows(H, W, [&](int y) {
         const int j = H - 1 - y;
+        thread_local std::vector<uint8_t> rowA, rowB;       // the row's two pictures as levels
+        rowA.resize((size_t)W * 4);
+        rowB.resize((size_t)W * 4);
+        floatsToBytes(c.src.at(0, y), rowA.data(), (size_t)W * 4);
+        floatsToBytes(c.src2.at(0, y), rowB.data(), (size_t)W * 4);
         for (int x = 0; x < W; ++x) {
             const float d = inv * map[(size_t)j * W + x];
-            const float* pa = c.src.at(x, y);
-            const float* pb = c.src2.at(x, y);
-            uint8_t a8[4], b8[4];
-            for (int k = 0; k < 4; ++k) { a8[k] = byteOf(pa[k]); b8[k] = byteOf(pb[k]); }
+            const uint8_t* a8 = &rowA[(size_t)x * 4];
+            const uint8_t* b8 = &rowB[(size_t)x * 4];
             const uint8_t* S0 = swapSrc ? b8 : a8;
             const uint8_t* S1 = swapSrc ? a8 : b8;                          // the one inside
             uint8_t o[4];
@@ -1993,7 +2117,7 @@ void portalsFx(Ctx& c)
     p.borderColor[1] = (float)clampd(bc.g, 0, 1);
     p.borderColor[2] = (float)clampd(bc.b, 0, 1);
     vfxportals::render(p, clampd(c.progress, 0, 1), 1.0, from.data(), to.data(), W, H, res.data());
-    for (size_t i = 0; i < n; ++i) c.out.px[i] = (float)res[i] * (1.0f / 255.0f);
+    bytesToFloatsAll(res.data(), c.out.px.data(), n);
 }
 
 // ------------------------------------------------------------------ 3D and page transitions, drawn flat
@@ -2012,10 +2136,8 @@ void draw3d(Ctx& c, Draw draw)
         return;
     }
     std::vector<uint8_t> A((size_t)W * H * 4), B((size_t)W * H * 4), out((size_t)W * H * 4, 0);
-    for (size_t k = 0; k < A.size(); ++k) {
-        A[k] = (uint8_t)roundNonNeg(std::min(std::max(std::isfinite(c.src.px[k]) ? c.src.px[k] : 0.f, 0.f), 1.f) * 255.f);
-        B[k] = (uint8_t)roundNonNeg(std::min(std::max(std::isfinite(c.src2.px[k]) ? c.src2.px[k] : 0.f, 0.f), 1.f) * 255.f);
-    }
+    floatsToBytesAll(c.src.px.data(), A.data(), A.size());
+    floatsToBytesAll(c.src2.px.data(), B.data(), B.size());
     fx::Frame f;
     f.w = W;
     f.h = H;
@@ -2024,7 +2146,7 @@ void draw3d(Ctx& c, Draw draw)
     f.b = B.data();
     f.out = out.data();
     draw(f, finiteIn(c.progress, 0.0, 1.0));
-    for (size_t k = 0; k < out.size(); ++k) c.out.px[k] = out[k] * (1.f / 255.f);
+    bytesToFloatsAll(out.data(), c.out.px.data(), out.size());
 }
 
 void blinds3d(Ctx& c)
@@ -2087,14 +2209,9 @@ Img8 toBytes(const Buf& b)
     r.w = b.w;
     r.h = b.h;
     r.px.resize((size_t)b.w * b.h * 4);
-    for (int y = 0; y < b.h; ++y) {
-        const float* s = b.at(0, b.h - 1 - y);
-        uint8_t* d = r.at(0, y);
-        for (int k = 0; k < b.w * 4; ++k) {
-            const float v = std::isfinite(s[k]) ? std::min(std::max(s[k], 0.f), 1.f) : 0.f;
-            d[k] = (uint8_t)roundNonNeg(v * 255.f);
-        }
-    }
+    forRows(b.h, b.w, [&](int y) {
+        floatsToBytes(b.at(0, b.h - 1 - y), r.at(0, y), (size_t)b.w * 4);
+    });
     return r;
 }
 
@@ -2203,7 +2320,6 @@ void render(const Img8& paper, const Img8& bg, Img8& out, int layers, float ang,
             }
         }
     });
-    Img8 fin = out;
     auto m = [&](int r, int x) { return mask[(size_t)std::min(r, h - 1) * w + std::min(x, w - 1)]; };
     forRows(h, w, [&](int r) {
         for (int x = 0; x < w; ++x) {
@@ -2243,11 +2359,10 @@ void render(const Img8& paper, const Img8& bg, Img8& out, int layers, float ang,
                     }
                     for (int k = 0; k < 4; ++k) acc[k] += px[k];
                 }
-            uint8_t* o = fin.at(x, r);
+            uint8_t* o = out.at(x, r);
             for (int k = 0; k < 4; ++k) o[k] = (uint8_t)(int)((float)acc[k] * 0.25f);
         }
     });
-    out.px.swap(fin.px);
 }
 
 // VEGAS with GPU acceleration on draws Page Peel / Loop / Roll with its float OpenCL kernels (Ctx::openCl, see vegasUsesOpenCl and vfxpage.h). The kernels' pictures are
@@ -2300,11 +2415,9 @@ void pageKernel(Ctx& c, int which, const char* angleName, const char* opacityNam
 void store(Ctx& c, const Img8& img)
 {
     const int W = c.out.w, H = c.out.h;
-    for (int y = 0; y < H && y < img.h; ++y) {
-        const uint8_t* s = img.at(0, H - 1 - y);
-        float* d = c.out.at(0, y);
-        for (int k = 0; k < std::min(W, img.w) * 4; ++k) d[k] = s[k] * (1.f / 255.f);
-    }
+    forRows(std::min(H, img.h), W, [&](int y) {
+        bytesToFloats(img.at(0, H - 1 - y), c.out.at(0, y), (size_t)std::min(W, img.w) * 4);
+    });
 }
 
 // How far the frame reaches along the direction of travel (W cos + H sin, angle folded into 0..90), computed as each processor does
@@ -2558,10 +2671,7 @@ Img8 toBytesTop(const Buf& b)
     r.w = b.w;
     r.h = b.h;
     r.px.resize((size_t)b.w * b.h * 4);
-    for (size_t k = 0; k < r.px.size(); ++k) {
-        const float v = std::isfinite(b.px[k]) ? std::min(std::max(b.px[k], 0.f), 1.f) : 0.f;
-        r.px[k] = (uint8_t)roundNonNeg(v * 255.f);
-    }
+    floatsToBytesAll(b.px.data(), r.px.data(), r.px.size());
     return r;
 }
 
@@ -2576,8 +2686,7 @@ void clearDst(Img8& dst, int w, int h)
 void storeTop(Ctx& c, const Img8& img)
 {
     if (gRec) { gRec->finalDst = img.dstId; return; }
-    const size_t n = std::min(c.out.px.size(), img.px.size());
-    for (size_t k = 0; k < n; ++k) c.out.px[k] = img.px[k] * (1.f / 255.f);
+    bytesToFloatsAll(img.px.data(), c.out.px.data(), std::min(c.out.px.size(), img.px.size()));
 }
 
 Rect isect(const Rect& a, const Rect& b)
@@ -2606,6 +2715,23 @@ inline void bilSse(const uint8_t* r0, const uint8_t* r1, int i0, int i1, int fx,
 {
     const unsigned A = (unsigned)((0x3fff - fy) << 2) & 0xffff, F = (unsigned)(fy << 2) & 0xffff, a = (unsigned)(0x3fff - fx);
     const int w00 = (int)((a * A) >> 16), w01 = (int)(((unsigned)fx * A) >> 16), w10 = (int)((a * F) >> 16), w11 = (int)(((unsigned)fx * F) >> 16);
+#ifdef RENO_PIXROWS_SSE2
+    // the four channels together, in 16-bit lanes: mh(v, w) = ((v << 5) * w) >> 16 is the high half of the 16-bit product; the weights are below 0x4000 and a value is at
+    // most 255, so the sum of the four terms and 4 stays far below 65535 and the scalar code's cuts at 65535 never act
+    const __m128i zero = _mm_setzero_si128();
+    auto px = [&](const uint8_t* p) {
+        int v;
+        std::memcpy(&v, p, 4);
+        return _mm_slli_epi16(_mm_unpacklo_epi8(_mm_cvtsi32_si128(v), zero), 5);
+    };
+    auto mh = [&](const uint8_t* p, int w) { return _mm_mulhi_epu16(px(p), _mm_set1_epi16((short)w)); };
+    __m128i s = _mm_add_epi16(mh(r1 + i0 * 4, w10), _mm_set1_epi16(4));
+    s = _mm_add_epi16(s, mh(r1 + i1 * 4, w11));
+    s = _mm_add_epi16(s, _mm_add_epi16(mh(r0 + i1 * 4, w01), mh(r0 + i0 * 4, w00)));
+    s = _mm_min_epi16(_mm_srli_epi16(s, 3), _mm_set1_epi16(255));
+    const int o = _mm_cvtsi128_si32(_mm_packus_epi16(s, s));
+    std::memcpy(out, &o, 4);
+#else
     for (int k = 0; k < 4; ++k) {
         auto mh = [](int v, int w) { return ((v << 5) * w) >> 16; };
         int s = std::min(mh(r1[i0 * 4 + k], w10) + 4, 65535);
@@ -2614,6 +2740,7 @@ inline void bilSse(const uint8_t* r0, const uint8_t* r1, int i0, int i1, int fx,
         s = std::min(s + t, 65535);
         out[k] = (uint8_t)std::min(s >> 3, 255);
     }
+#endif
 }
 
 inline void mixInto(uint8_t* d, const uint8_t* p, int alpha)
@@ -2776,7 +2903,13 @@ void blit(Img8& dst, const Img8& src, const Rect& D, const Rect& Sr, int filt = 
     const int fs = dtoi(frc * (double)sy * k14);
     if (py1 - 1 > py0 + 1) {
         const int n = py1 - 1 - (py0 + 1);
-        forRows(n, std::max(1, px1 - px0), [&](int k) { midRow(py0 + 1 + k, k * sy + fs + S.y0); });
+        // (gBilBias is per thread: the helper threads take the caller's value for these rows, and give theirs back)
+        const unsigned bias = gBilBias;
+        forRows(n, std::max(1, px1 - px0), [&](int k) {
+            struct Restore { unsigned old; ~Restore() { gBilBias = old; } } restore{gBilBias};
+            gBilBias = bias;
+            midRow(py0 + 1 + k, k * sy + fs + S.y0);
+        });
     }
     if (nrows > 1) {
         int y = (nrows - 2) * sy + fs + S.y0;
@@ -3522,8 +3655,8 @@ struct Metric {
 };
 
 // 0x180616800: the mask (one float per pixel, 0..1) and the amplitude of its wave
-std::vector<float> makeMask(int w, int h, int arms, int cycles, float ratio, float angle, float cxp, float cyp, bool dir, bool hflip,
-                            bool vflip, bool hmir, bool vmir, bool tri, float& amp)
+std::vector<float> makeMaskRaw(int w, int h, int arms, int cycles, float ratio, float angle, float cxp, float cyp, bool dir, bool hflip,
+                               bool vflip, bool hmir, bool vmir, bool tri, float& amp)
 {
     amp = 1.0f;
     std::vector<float> m((size_t)w * h, 0.0f);
@@ -3575,26 +3708,32 @@ std::vector<float> makeMask(int w, int h, int arms, int cycles, float ratio, flo
         return clamp01(v);
     };
     if (!hmir && !vmir) {
-        for (int y = 0; y < h; ++y)
+        forRows(h, w, [&](int y) {
             for (int x = 0; x < w; ++x) {
                 float v = f * M.at(x, y);
                 while (v > 1.0f) v += -1.0f;
                 m[(size_t)y * w + x] = wave(v);
             }
+        });
         return m;
     }
     int y0 = 0, cw = w;
     if (hmir) y0 = h / 2;
     if (vmir) cw = w / 2;
     float mn = 1.0f, mxv = 0.0f;
-    for (int y = y0; y < h; ++y)
+    forRows(h - y0, cw, [&](int k) {                       // (every value on its own; the running smallest and largest follow, in the order of the loop)
+        const int y = y0 + k;
         for (int x = 0; x < cw; ++x) {
             float v = f * M.at(x, y);
             if (v > 1.0f) v -= (float)(int)v;
-            const float r = wave(v);
+            m[(size_t)y * w + x] = wave(v);
+        }
+    });
+    for (int y = y0; y < h; ++y)
+        for (int x = 0; x < cw; ++x) {
+            const float r = m[(size_t)y * w + x];
             if (mn > r) mn = r;
             else mxv = r > mxv ? r : mxv;
-            m[(size_t)y * w + x] = r;
         }
     float d = mxv - mn;
     float scale = 1.0f;
@@ -3614,6 +3753,40 @@ std::vector<float> makeMask(int w, int h, int arms, int cycles, float ratio, flo
             std::memcpy(&m[(size_t)dstRow * w], &m[(size_t)(h / 2 + kk) * w], (size_t)w * 4);
         }
     }
+    return m;
+}
+
+// The mask depends on the settings and the frame size, not on the progress: the last one made is kept for the next frame of the same transition.
+std::vector<float> makeMask(int w, int h, int arms, int cycles, float ratio, float angle, float cxp, float cyp, bool dir, bool hflip,
+                            bool vflip, bool hmir, bool vmir, bool tri, float& amp)
+{
+    struct Key {
+        int w, h, arms, cycles;
+        float ratio, angle, cxp, cyp;
+        bool dir, hflip, vflip, hmir, vmir, tri;
+        bool operator==(const Key& o) const
+        {
+            return w == o.w && h == o.h && arms == o.arms && cycles == o.cycles && std::memcmp(&ratio, &o.ratio, 4) == 0 && std::memcmp(&angle, &o.angle, 4) == 0 &&
+                   std::memcmp(&cxp, &o.cxp, 4) == 0 && std::memcmp(&cyp, &o.cyp, 4) == 0 && dir == o.dir && hflip == o.hflip && vflip == o.vflip && hmir == o.hmir &&
+                   vmir == o.vmir && tri == o.tri;
+        }
+    };
+    static std::mutex mu;
+    static bool have = false;
+    static Key lastKey;
+    static std::vector<float> lastMask;
+    static float lastAmp = 1.0f;
+    Key key;
+    key.w = w; key.h = h; key.arms = arms; key.cycles = cycles;
+    key.ratio = ratio; key.angle = angle; key.cxp = cxp; key.cyp = cyp;
+    key.dir = dir; key.hflip = hflip; key.vflip = vflip; key.hmir = hmir; key.vmir = vmir; key.tri = tri;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (have && lastKey == key) { amp = lastAmp; return lastMask; }
+    }
+    std::vector<float> m = makeMaskRaw(w, h, arms, cycles, ratio, angle, cxp, cyp, dir, hflip, vflip, hmir, vmir, tri, amp);
+    std::lock_guard<std::mutex> lock(mu);
+    lastKey = key; lastMask = m; lastAmp = amp; have = true;
     return m;
 }
 
@@ -3670,7 +3843,7 @@ void starWipeFx8(Ctx& c)
         inv13 = 1.0f / (x11 - x10);
         inv12 = 1.0f / (x9 - x8);
     }
-    for (int y = 0; y < h; ++y) {
+    forRows(h, w, [&](int y) {
         const int row = h - 1 - y;
         for (int x = 0; x < w; ++x) {
             const float m = mask[(size_t)y * w + x];
@@ -3712,7 +3885,7 @@ void starWipeFx8(Ctx& c)
                 }
             }
         }
-    }
+    });
     storeTop(c, dst);
 }
 

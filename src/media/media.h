@@ -249,7 +249,7 @@ public:
     // ---- smart rendering (smartrender.h): stretches of a source's video copied as they are instead of encoded again.
     // Whether packets of 'src' can go into this file's video stream as they are: the same codec, size, picture format and
     // frame rate, the same codec header, and a container that takes them. False with *why otherwise (and by default).
-    virtual bool smartCompatible(const SmartSource& src, std::string* why) { if (why) *why = "this writer cannot copy frames"; return false; }
+    virtual bool smartCompatible(const SmartSource& /*src*/, std::string* why) { if (why) *why = "this writer cannot copy frames"; return false; }
     // Called once, before the first frame, when frames are going to be copied: 'copyDelay' is the largest SmartGop::delay of
     // the groups that will be. From then on the video packets get time stamps worked out here.
     virtual void beginSmart(int copyDelay) { (void)copyDelay; }

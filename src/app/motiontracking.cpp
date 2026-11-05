@@ -475,7 +475,6 @@ void MotionTrackingWindow::setBox(double cx, double cy, double w, double h)
     d->show();
 }
 
-bool MotionTrackingWindow::hasBox() const { return d->view->box; }
 
 int MotionTrackingWindow::track(int direction, const std::function<bool(double)>& progress, bool* lost)
 {

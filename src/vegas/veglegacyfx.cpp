@@ -371,7 +371,7 @@ std::vector<double> blockWith(const Effect& fx, const std::vector<double>& base,
 
 }  // namespace
 
-bool legacyFxWith(const LegacyFxRecord& orig, const Json& state, double fps, LegacyFxRecord& out, std::vector<std::string>& warnings)
+bool legacyFxWith(const LegacyFxRecord& orig, const Json& state, double fps, LegacyFxRecord& out, std::vector<std::string>& /*warnings*/)
 {
     const Effect* fx = effectOfGuid(orig.classGuid);
     if (!fx || !(fps > 0)) return false;

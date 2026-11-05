@@ -94,12 +94,6 @@ inline const std::vector<Preset>& presets()
     return list;
 }
 
-inline const char* styleName(int s)
-{
-    static const char* const n[4] = {"Low-frequency shelf", "High-frequency shelf", "Band-pass", "Band-notch/boost"};
-    return n[std::max(0, std::min(3, s))];
-}
-
 // The filter's magnitude response over n bins from 0 Hz to half the rate (the plug-in's design function, 0x1800140d0):
 // m[0..n) is filled; returns the gain for the output (1: the output gain is in the response).
 inline double design(double* m, int n, int rate, const Settings& s)

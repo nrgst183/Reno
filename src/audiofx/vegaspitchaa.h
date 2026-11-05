@@ -3694,7 +3694,7 @@ public:
         std::memcpy(&e_[0x90], &w, 8);
         alignas(16) static thread_local uint8_t stack[0x1000];
         Regs R;
-        std::memset(&R, 0, sizeof R);
+        std::memset((void*)&R, 0, sizeof R);
         R.g[1] = (uint64_t)(uintptr_t)e_.data();
         R.g[4] = (uint64_t)(uintptr_t)(stack + 0xe00) - 8;
         R.x[1].d[0] = x;

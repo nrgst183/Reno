@@ -19,10 +19,6 @@ from gpukernels_trans2 import ti
 SPAN = 21
 
 
-def tfl(S, tab, k):
-    return tab.load(k)
-
-
 # ---------------------------------------------------------------------------------------------------------- the pictures as levels, the tables
 @kernel("d3_lev", WH, [PIC_IN, PIC_OUT, TABLE])
 def d3_lev(S):

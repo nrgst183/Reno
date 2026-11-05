@@ -66,7 +66,7 @@ struct Host {
     double P;
 };
 
-inline Host host(int W, int H, double dot, double pa, double s88, double s90, const Opts& o)
+inline Host host(int W, int H, double dot, double pa, double s88, double s90, const Opts& /*o*/)
 {
     Host h;
     const double P = (double)std::max(W, H) * dot / 20.0 + 3.0;

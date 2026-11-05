@@ -38,7 +38,6 @@ void TimelineWidget::insertMarker() {}
 void TimelineWidget::insertRegion() {}
 void TimelineWidget::goToMarker(int) {}
 void TimelineWidget::cursorToMarker(int) {}
-void TimelineWidget::cursorToEventEdge(int) {}
 void TimelineWidget::cursorToEditPoint(int) {}
 void TimelineWidget::cursorToSelectedEdge(int) {}
 void TimelineWidget::timeSelectSelectedEvent(int) {}

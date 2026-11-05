@@ -1,5 +1,5 @@
 // The older (DirectX-era) VEGAS transitions on the GPU: for each, the planner works out on the CPU what does not depend on the pictures exactly as the CPU code does
-// (builtins_trans.cpp, vfxvenetian.h, vfxportals.h, vfxgradwipe.h, vfx3d.h: the same functions are called) and hands it to the kernel (tools/gpukernels_trans2.py), which
+// (builtins_trans.cpp, vfxvenetian.h, vfxportals.h, vfxgradwipe.h: the same functions are called) and hands it to the kernel (tools/gpukernels_trans2.py), which
 // does the per-pixel part. The frame's result is identical to the CPU's in 8-bit and float pictures.
 #include <algorithm>
 #include <cmath>

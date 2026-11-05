@@ -97,9 +97,6 @@ inline const Entry* entryForBuiltin(const std::string& uid)
     return nullptr;
 }
 
-// a value in tenths of a dB as the gain the effects use: 10 ^ (v / 200)
-inline double tenthsToGain(int32_t v) { return std::pow(10.0, (double)v / 200.0); }
-
 
 // ---- tempo sync (Amplitude Modulation, Flange/Wah-wah): what the plug-ins are told about the project's tempo, and the length of
 // one cycle that follows from a note length ----

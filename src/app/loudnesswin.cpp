@@ -454,7 +454,6 @@ void LoudnessWindow::setTarget(double lufs)
 
 double LoudnessWindow::target() const { return d->target(); }
 
-void LoudnessWindow::setResetOnPlay(bool on) { d->resetOnPlay = on; }
 
 bool LoudnessWindow::listening() const { return d->listening; }
 
@@ -465,7 +464,6 @@ bool LoudnessWindow::wideScale() const { return d->opt.wide; }
 void LoudnessWindow::setAbsolute(bool on) { d->opt.absolute = on; d->optionsChanged(); }
 bool LoudnessWindow::absolute() const { return d->opt.absolute; }
 void LoudnessWindow::setShowTruePeak(bool on) { d->opt.truePeak = on; d->optionsChanged(); }
-bool LoudnessWindow::showTruePeak() const { return d->opt.truePeak; }
 void LoudnessWindow::setPeakBlocking(bool on) { d->opt.blocking = on; d->optionsChanged(); }
 bool LoudnessWindow::peakBlocking() const { return d->opt.blocking; }
 bool LoudnessWindow::integratedOver() const { return d->iOver->on; }

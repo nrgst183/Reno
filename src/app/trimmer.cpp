@@ -1265,7 +1265,6 @@ void TrimmerWindow::setTimelineOverwrite(bool on)
     if (d->overwriteBtn && d->overwriteBtn->isChecked() != on) d->overwriteBtn->setChecked(on);
 }
 
-bool TrimmerWindow::timelineOverwrite() const { return d->overwrite; }
 
 bool TrimmerWindow::openParentMedia(uint64_t mediaId)
 {

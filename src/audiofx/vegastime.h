@@ -54,7 +54,6 @@ public:
     }
     double ratio() const { return fa0_; }
     int frameSamples() const { return fd0_; }
-    int hopOut() const { return fd4_; }
 
     // 0x180007ea0. mode: 0 first block after a discontinuity, 1 a following block, 2 end of the stream (call until it says
     // it is done). inCnt: frames available in / frames used; outCnt: room for output / frames made. Result as the plug-in's

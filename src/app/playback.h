@@ -228,7 +228,6 @@ public:
     // The preview at Best quality: frames with motion blur, supersampling and interlaced fields as a render has them
     // (FrameOptions::subFrames). Several renders per frame, so slower.
     void setFullQuality(bool on);
-    bool fullQuality() const { return fullQuality_; }
 
     // The size the preview shows frames at (Preview Quality and size, PictureView::previewSize; 0 x 0: the project's)
     // and whether it is Auto. While playing, frames are rendered at that size instead of the project's

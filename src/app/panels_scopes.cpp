@@ -574,7 +574,6 @@ void VideoScopes::setWaveformComposite(bool on)
     d->fillMode();
     d->view->update();
 }
-bool VideoScopes::waveformComposite() const { return d->view->composite; }
 
 void VideoScopes::setHistogramType(HistogramType t)
 {
@@ -583,7 +582,6 @@ void VideoScopes::setHistogramType(HistogramType t)
     d->fillMode();
     d->view->update();
 }
-VideoScopes::HistogramType VideoScopes::histogramType() const { return (HistogramType)d->view->histogram; }
 
 void VideoScopes::setDisplaySettings(bool setup75, bool studioRgb)
 {

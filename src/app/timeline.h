@@ -137,10 +137,9 @@ public:
     void insertMarker();
     void insertRegion();
     void goToMarker(int number);
-    // The cursor to the previous (-1) or next (+1): marker or region end; event edge; edit point (event edges and
+    // The cursor to the previous (-1) or next (+1): marker or region end; edit point (event edges and
     // fade ends); edge of a selected event. Each falls back to the project's start or end.
     void cursorToMarker(int dir);
-    void cursorToEventEdge(int dir);
     void cursorToEditPoint(int dir);
     void cursorToSelectedEdge(int dir);
     void timeSelectSelectedEvent(int dir);

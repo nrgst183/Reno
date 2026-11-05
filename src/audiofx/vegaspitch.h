@@ -57,7 +57,6 @@ public:
     }
     double ratio() const { double r; std::memcpy(&r, S_ + 6, 8); return r; }
     int frameSamples() const { return N_; }
-    int halfFrame() const { return half_; }
     int hop() const { return H_; }
     double stepRatio() const { return f1e8_; }
     bool preserving() const { return f0b0_ != 0; }

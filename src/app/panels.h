@@ -87,7 +87,6 @@ public:
     void set360Mode(bool on);
     bool mode360() const;
     void set360View(double yaw, double pitch, double fov);
-    QStringList visibleTransportButtons() const;
     void setVisibleTransportButtons(const QStringList& set);
     int channel() const;
     // Split-Screen View: part of the image (fractions from the top left; drag to choose) shows the frame without effects
@@ -133,10 +132,8 @@ public:
     // Waveform Composite (luma with the chroma's swing) or Luminance; the histogram chart; the Settings dialog's 7.5 IRE
     // Setup and Studio RGB (16 to 235), which change the waveform's IRE of an 8-bit level.
     void setWaveformComposite(bool on);
-    bool waveformComposite() const;
     enum HistogramType { HistLuminance, HistRed, HistGreen, HistBlue, HistAlpha, HistLuminanceRGB, HistLab };
     void setHistogramType(HistogramType t);
-    HistogramType histogramType() const;
     void setDisplaySettings(bool setup75, bool studioRgb);
     bool setup75() const;
     bool studioRgb() const;

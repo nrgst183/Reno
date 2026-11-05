@@ -156,10 +156,6 @@ public:
     std::function<void()> onChanged;
     // The files of the last recording (one per input), and the events and takes it made on the last stop().
     const std::vector<std::string>& lastFiles() const { return lastFiles_; }
-    // Sound for armed tracks that monitor their input (Record Input > Input Monitoring) and for input busses: the
-    // Recorder installs these on the Playback it was made with.
-    // Tests: input sound as a card would give it (the same as the hub's push).
-    void feedInput(const std::string& device, const float* interleaved, int channels, int frames) { inputHub().push(device, interleaved, channels, frames); }
 
 private:
     std::vector<std::pair<std::string, int>> wantedInputs() const;

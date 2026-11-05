@@ -253,26 +253,6 @@ bool planLinearWipe(Ctx& c, Plan& p)
 }
 
 
-// the incoming frame as a table, then doubles after it (the kernels read them with ld_sf)
-int toTableDoubles(Ctx& c, Plan& p, const std::vector<double>& ds)
-{
-    std::vector<float> t;
-    if (!c.src2Bytes) {
-        if (c.src2.px.size() != (size_t)p.w * p.h * 4) return -1;
-        t = std::move(c.src2.px);
-    }
-    for (double d : ds) {
-        uint64_t b;
-        std::memcpy(&b, &d, 8);
-        const uint32_t hl[2] = {(uint32_t)(b >> 32), (uint32_t)b};
-        float f[2];
-        std::memcpy(f, hl, 8);
-        t.push_back(f[0]);
-        t.push_back(f[1]);
-    }
-    if (c.src2Bytes) return p.addFrameTable(c.src2Bytes, c.src2RowBytes, c.src2Bgra, std::move(t));
-    return p.addTable(std::move(t));
-}
 
 bool planIris(Ctx& c, Plan& p)
 {

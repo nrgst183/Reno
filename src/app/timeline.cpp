@@ -178,7 +178,6 @@ void TimelineWidget::insertMarker() { d->insertMarker(); }
 void TimelineWidget::insertRegion() { d->insertRegion(); }
 void TimelineWidget::goToMarker(int number) { d->goToMarker(number); }
 void TimelineWidget::cursorToMarker(int dir) { d->cursorToEdge(dir, Impl::EdgeKind::Markers); }
-void TimelineWidget::cursorToEventEdge(int dir) { d->cursorToEdge(dir, Impl::EdgeKind::Events); }
 void TimelineWidget::cursorToEditPoint(int dir) { d->cursorToEdge(dir, Impl::EdgeKind::EditPoints); }
 void TimelineWidget::cursorToSelectedEdge(int dir)
 {

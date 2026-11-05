@@ -1908,8 +1908,10 @@ int renderJob(AppState& app, const Job& job)
     auto lastLine = std::chrono::steady_clock::now() - std::chrono::seconds(10);
     int lastPercent = -1;
     while (!sh->done.load()) {
+        // The render thread hands the making of nested projects' plug-in instances to this thread piece by piece (each
+        // piece posts the next), so every pause here is time the render waits: look again after a millisecond.
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         ExportProgress pr;
         bool have;
         {

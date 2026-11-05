@@ -18,7 +18,6 @@ public:
 
     enum Tile { Timecode, FrameRate, MasterPeak, ProjectInfo, Recording, Disk, TileCount };
     void setTileShown(Tile t, bool on);
-    bool tileShown(Tile t) const;
     // For tests: the text a tile shows now, and the measured frame rate.
     QString tileText(Tile t) const;
     double measuredFps() const;

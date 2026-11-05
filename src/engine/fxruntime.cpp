@@ -146,7 +146,6 @@ void FxRuntime::freeRetired()
 
 static thread_local int tLane = 0;
 void FxRuntime::setThreadLane(int lane) { tLane = std::max(0, std::min(kLanes - 1, lane)); }
-int FxRuntime::threadLane() { return tLane; }
 
 ofx::Instance* FxRuntime::video(uint64_t id) const
 {

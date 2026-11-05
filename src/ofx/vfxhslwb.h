@@ -291,14 +291,4 @@ inline bool rgbToTempTint(const double* rgb, double& kelvin, double& tint)
     return kelvin == kelvin && tint == tint;
 }
 
-// (angle in degrees, 'mag' = the length of the correction's U, V on the 0..255 scale); the amount VEGAS stores is min(1, sqrt(mag)).
-inline void tempTintAngle(double kelvin, double tint, double& angle, double& mag)
-{
-    double rgb[3];
-    tempTintToRgb(kelvin, tint, rgb);
-    double amount;
-    rgbToAngleAmount(rgb, angle, amount);
-    mag = amount * amount;
-}
-
 }  // namespace vhw

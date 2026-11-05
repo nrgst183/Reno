@@ -54,8 +54,5 @@ private:
     std::mutex writeMutex_;
 };
 
-// Path of the bridge program for this installation (beside the running program); "" if none.
-std::string serverPath();
-
 }  // namespace vst32
 }  // namespace reno

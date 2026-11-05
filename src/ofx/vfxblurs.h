@@ -58,7 +58,6 @@ inline double sigmaDouble(double x)
 
 // The card fuses a multiply and the add after it (one rounding) in the recursions; the captures of the four effects fit that better than two roundings (Gaussian Blur 98.0% of the values
 // exact against 97.8%, Glow and Unsharp Mask likewise). The little kernels after them (mix, unsharp, the colour matrices) came out the same either way.
-inline float plainMad(float a, float b, float c) { return a * b + c; }
 inline float fusedMad(float a, float b, float c) { return std::fmaf(a, b, c); }
 
 inline void applyStore(std::vector<float>& v, StoreFn store)

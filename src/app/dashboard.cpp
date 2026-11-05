@@ -344,7 +344,6 @@ void Dashboard::setTileShown(Tile t, bool on)
     d->layout();
 }
 
-bool Dashboard::tileShown(Tile t) const { return t >= 0 && t < TileCount && d->shown[t]; }
 
 QString Dashboard::tileText(Tile t) const
 {

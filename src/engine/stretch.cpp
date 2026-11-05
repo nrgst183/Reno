@@ -50,7 +50,6 @@ public:
     }
     const float* l(int64_t i) const { return l_.data() + off_ + (size_t)(i - base_); }
     const float* r(int64_t i) const { return r_.data() + off_ + (size_t)(i - base_); }
-    int64_t end() const { return end_; }
 
 private:
     static constexpr int kFetch = 2048;

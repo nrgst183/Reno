@@ -92,15 +92,6 @@ inline const std::vector<Preset>& presets()
     return list;
 }
 
-// "-20.0 dB" / "-Inf." as the page's threshold label
-inline std::string thresholdText(int tenths)
-{
-    if (tenths <= -800) return "-Inf.";
-    char b[32];
-    std::snprintf(b, sizeof b, "%.1f dB", tenths / 10.0);
-    return b;
-}
-
 // The processing, in the plug-in's own order of operations and its own arithmetic (double inside, float samples).
 class Dsp {
 public:
@@ -159,8 +150,8 @@ public:
         if (dirty_ || !prepared_) prepare();
     }
 
-    // One frame in. Returns true once a block is complete and processed: its samples are then in out(c, 0..n-1),
-    // to be taken with outFrame(); the next push starts the next block.
+    // One frame in. Returns true once a block is complete and processed: its samples are then in out(c, 0..n-1);
+    // the next push starts the next block.
     bool push(const float* frame)
     {
         if (!ready_) return false;

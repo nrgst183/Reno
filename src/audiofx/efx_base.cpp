@@ -12,7 +12,6 @@ const char* const kEfxVendor = "Reno (reproduction of MAGIX eFX)";
 namespace efx {
 
 // ---------------------------------------------------------------------------------------------------- settings
-ParamDef pUnused() { return ParamDef(); }
 
 ParamDef pLin(const char* name, float def, double lo, double hi, Fmt fmt)
 {

@@ -22,7 +22,6 @@ public:
     uint64_t trackedEvent() const;          // event being tracked (the selected video event), 0 for none
     // The box to follow at the cursor, in fractions of the media's image (centre and size).
     void setBox(double cx, double cy, double w, double h);
-    bool hasBox() const;
 
     struct Point {
         int64_t frame = 0;                  // project frame

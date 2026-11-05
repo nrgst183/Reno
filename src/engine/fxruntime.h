@@ -33,7 +33,6 @@ public:
     // instance's settings and updated whenever they change (video() does that when the thread asks).
     static constexpr int kLanes = 16;
     static void setThreadLane(int lane);                // this thread's lane (0: none)
-    static int threadLane();
     // Makes the lane instances (lanes 1 .. lanes-1) of the video effects the project shows from 'from' for 'span'
     // seconds (track, event, transition, generator and project effects), until about 'budgetMs' milliseconds have
     // gone.

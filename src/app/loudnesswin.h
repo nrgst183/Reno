@@ -33,7 +33,6 @@ public:
     bool measure(double from, double to, const std::function<bool(double)>& progress = nullptr);
     void setTarget(double lufs);            // target (-23 EBU R 128, -24 ATSC A/85: setting one chooses that mode)
     double target() const;
-    void setResetOnPlay(bool on);
     bool listening() const;                 // listening to the master output now
 
     // VEGAS's options (kept between runs; same as Options > Loudness Meters)
@@ -44,7 +43,6 @@ public:
     void setAbsolute(bool on);              // Absolute (-23 LUFS): LUFS, not LU
     bool absolute() const;
     void setShowTruePeak(bool on);          // Show True Peak Meter
-    bool showTruePeak() const;
     void setPeakBlocking(bool on);          // True Peak Blocking Filter
     bool peakBlocking() const;
     bool integratedOver() const;            // over-target indicators

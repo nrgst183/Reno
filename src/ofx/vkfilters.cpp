@@ -508,15 +508,6 @@ int firGaussPasses(Plan& p, int from, uint32_t w, uint32_t h, double sigmaX, dou
     return cur;
 }
 
-std::vector<float> bbfPosTable(double cx, double cy, double z, int W, int H)
-{
-    std::vector<float> tab;
-    pushDouble(tab, cx * W);
-    pushDouble(tab, cy * H);
-    pushDouble(tab, z);
-    return tab;
-}
-
 // Layer Dimensionality (layerDimensionality() in builtins_more_creative.cpp): the shadow stage, then glow, then emboss, each reading the picture the last left
 // and the source frame's alpha (a plane in all four lanes)
 bool planLayerDimensionality(Ctx& c, Plan& p)

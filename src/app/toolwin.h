@@ -2,6 +2,7 @@
 // a liveness flag, a self-removing listener, string conversions and VEGAS's dark colours.
 #pragma once
 #include "appstate.h"
+#include "strconv.h"
 #include <QColor>
 #include <QString>
 #include <atomic>
@@ -22,8 +23,9 @@ struct Listener {
     Listener& operator=(const Listener&) = delete;
 };
 
-inline QString qs(const std::string& s) { return QString::fromStdString(s); }
-inline std::string ss(const QString& s) { return s.toStdString(); }
+using app::qs;      // (strconv.h)
+using app::s8;
+inline std::string ss(const QString& s) { return s8(s); }
 
 inline QColor gap() { return QColor(35, 35, 35); }
 inline QColor dark() { return QColor(45, 45, 45); }

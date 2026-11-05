@@ -37,16 +37,6 @@ struct MaskOverlayGL {
 void maskOverlayUseGL(const MaskOverlayGL* g);
 #endif
 
-// A point (a Double2D parameter in the frame's own fractions, 0..1 from the bottom left) as a place in the frame's pixels
-// (x across, y down from the top row, as Buf has it).
-inline void pointInBuf(const Ctx& c, const char* name, double defX, double defY, double& px, double& py)
-{
-    double x = defX, y = defY;
-    c.xy(name, x, y);
-    px = x * c.out.w;
-    py = (1.0 - y) * c.out.h;
-}
-
 // ------------------------------------------------------------------ Bezier masks
 // VEGAS's names for a mask's settings: the setting's name and _ and the mask's number, 0..4 ("Width_0").
 inline std::string maskParam(const char* base, int i) { return std::string(base) + "_" + std::to_string(i); }

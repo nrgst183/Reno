@@ -2140,7 +2140,6 @@ void PreviewWidget::set360View(double yaw, double pitch, double fov)
     d->view->fov360 = std::max(20.0, std::min(140.0, fov));
     d->view->update();
 }
-QStringList PreviewWidget::visibleTransportButtons() const { return d->transportSet; }
 void PreviewWidget::setVisibleTransportButtons(const QStringList& set) { d->setTransportSet(set); }
 
 PreviewWidget::~PreviewWidget()

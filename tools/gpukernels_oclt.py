@@ -19,14 +19,6 @@ Q8 = [('q8', 'u')]
 
 
 # ---------------------------------------------------------------------------------------------------------- shared pieces
-def fmin_(S, a, b):
-    return S.min(a, b)
-
-
-def fmax_(S, a, b):
-    return S.max(a, b)
-
-
 def clampf(S, v, lo, hi):
     """clampf of vfxwipes.h: fmin(fmax(v, lo), hi)"""
     return S.min(S.max(v, lo), hi)
@@ -115,11 +107,6 @@ class Px:
         self.yi = self.H - 1 - S.to_i(S.gy)
         self.x = S.to_f(self.xi)
         self.y = S.to_f(self.yi)
-
-
-def mixvar(S, v):
-    """a vec4 variable"""
-    return S.var('v4', v)
 
 
 # ---------------------------------------------------------------------------------------------------------- Dissolve (dissolvek::pixel)

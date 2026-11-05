@@ -92,7 +92,6 @@ inline PipSetup8 pipSetupAffine(int W, int H, int mode, double lx, double ly, do
 // Corner order TL, TR, BL, BR -> source (0, H), (W, H), (0, 0), (W, 0). Returns false when the system cannot be solved.
 inline bool solve8(double A[8][8], double b[8], double x[8])
 {
-    int piv[8];
     for (int c = 0; c < 8; ++c) {
         int best = c;
         for (int r = c + 1; r < 8; ++r)
@@ -102,7 +101,6 @@ inline bool solve8(double A[8][8], double b[8], double x[8])
             for (int k = 0; k < 8; ++k) std::swap(A[c][k], A[best][k]);
             std::swap(b[c], b[best]);
         }
-        piv[c] = best;
         for (int r = c + 1; r < 8; ++r) {
             const double f = A[r][c] / A[c][c];
             for (int k = c; k < 8; ++k) A[r][k] -= f * A[c][k];

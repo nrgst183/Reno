@@ -326,12 +326,6 @@ bool analyzeSmartSource(const std::string& path, std::shared_ptr<const SmartSour
     return c.source != nullptr;
 }
 
-void forgetSmartSources()
-{
-    std::lock_guard<std::mutex> lk(gCacheMutex);
-    gCache.clear();
-}
-
 std::vector<std::string> smartHeaderSets(int codecId, const uint8_t* d, int n)
 {
     std::vector<std::string> out;

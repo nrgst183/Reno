@@ -7,13 +7,6 @@ namespace reno {
 namespace efx {
 namespace {
 
-
-// Deterministic noise for the slow drifts (same on every run, so renders repeat).
-struct Noise {
-    uint32_t s = 12345u;
-    float next() { s = s * 1664525u + 1013904223u; return (float)((s >> 8) & 0xFFFF) / 32768.f - 1.f; }
-};
-
 // A Schroeder all-pass: passes every frequency at the same level and smears the sound in time (diffusion).
 struct AllPass {
     Delay d;

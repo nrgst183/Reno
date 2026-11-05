@@ -7,7 +7,6 @@
 #include <QAction>
 #include <QMenu>
 #include <QMenuBar>
-#include <QRegularExpression>
 #include <deque>
 #include <map>
 #include <memory>
@@ -38,7 +37,12 @@ QString key(QString t)
     t = t.split('\t')[0];
     t.replace("&&", "and");
     t.remove('&');
-    return t.toLower().remove(QRegularExpression("[^a-z0-9]"));
+    t = t.toLower();
+    QString out;
+    out.reserve(t.size());
+    for (const QChar c : t)
+        if ((c >= QLatin1Char('a') && c <= QLatin1Char('z')) || (c >= QLatin1Char('0') && c <= QLatin1Char('9'))) out += c;
+    return out;
 }
 
 std::vector<Node> specTree()
