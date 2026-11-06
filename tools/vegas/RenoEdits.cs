@@ -628,9 +628,30 @@ public class EditRunner
     // section the editing commands want is not documented, so it is tried out the first time. VEGAS may only post the command
     // to its window, which acts on it when the message loop runs: so after each try the script pumps messages for a while.
     // If nothing works the command is done through the scripting API where there is an equivalent (the op then says viaApi).
-    static string[] Sections = new string[] { "TrackView", "Global", "TrackList", "", "Edit" };
-    string uiSection = null;
-    bool uiShort = false;
+    // The first run found Edit.Split working in TrackView and then only tried TrackView for every other command (the others did
+    // nothing there). Now each command finds its own section (remembered per command), and a command no section takes is tried as
+    // the keyboard shortcut VEGAS has for it (SendKeys to the VEGAS window) before the scripting-API equivalent is used.
+    static string[] Sections = new string[] { "TrackView", "Global", "TrackList", "EditDetails", "Trimmer", "Explorer", "Mixer", "TrackMotion", "" };
+    Dictionary<string, string> cmdSection = new Dictionary<string, string>();
+    Dictionary<string, bool> cmdShort = new Dictionary<string, bool>();
+    Dictionary<string, string> cmdKeys = null;
+
+    // VEGAS Pro's default keyboard map for the commands the program uses (SendKeys notation)
+    string KeysFor(string cmd)
+    {
+        if (cmdKeys == null)
+        {
+            cmdKeys = new Dictionary<string, string>();
+            cmdKeys["Edit.Delete"] = "{DELETE}";
+            cmdKeys["Edit.Cut"] = "^x";
+            cmdKeys["Edit.Copy"] = "^c";
+            cmdKeys["Edit.Paste"] = "^v";
+            cmdKeys["Edit.PasteInsert"] = "^+v";
+            cmdKeys["Edit.Split"] = "s";
+        }
+        string k;
+        return cmdKeys.TryGetValue(cmd, out k) ? k : null;
+    }
 
     void Pump(int ms)
     {
@@ -677,13 +698,16 @@ public class EditRunner
         string shortName = cmd.Contains(".") ? cmd.Substring(cmd.IndexOf('.') + 1) : cmd;
         string tried = "";
         FocusTimeline();
+        string known;
+        bool haveKnown = cmdSection.TryGetValue(cmd, out known);
         for (int si = 0; si < Sections.Length; si++)
         {
-            if (uiSection != null && Sections[si] != uiSection) continue;
-            if (!changes && uiSection == null && si > 0) break;
+            if (haveKnown && Sections[si] != known) continue;
+            if (!changes && !haveKnown && si > 0) break;
             for (int ni = 0; ni < 2; ni++)
             {
-                if (uiSection != null && (ni == 1) != uiShort) continue;
+                bool wantShort;
+                if (haveKnown && cmdShort.TryGetValue(cmd, out wantShort) && (ni == 1) != wantShort) continue;
                 string nm = ni == 0 ? cmd : shortName;
                 try
                 {
@@ -695,17 +719,33 @@ public class EditRunner
                     continue;
                 }
                 if (!changes) { Pump(150); return true; }
-                for (int w = 0; w < 12; w++)
+                for (int w = 0; w < 10; w++)
                 {
                     Pump(120);
                     if (Signature() != before)
                     {
-                        if (uiSection == null) { uiSection = Sections[si]; uiShort = ni == 1; Log("  InvokeCommand works as section='" + uiSection + "' name='" + nm + "'"); }
+                        if (!haveKnown) { cmdSection[cmd] = Sections[si]; cmdShort[cmd] = ni == 1; Log("  InvokeCommand works for " + cmd + " as section='" + Sections[si] + "' name='" + nm + "'"); }
                         return true;
                     }
                 }
                 tried += " [" + Sections[si] + "|" + nm + ": nothing changed]";
             }
+        }
+        string keys = KeysFor(cmd);
+        if (changes && keys != null)
+        {
+            try
+            {
+                FocusTimeline();
+                SendKeys.SendWait(keys);
+                for (int w = 0; w < 10; w++)
+                {
+                    Pump(120);
+                    if (Signature() != before) { Log("  " + cmd + " worked as the key " + keys); return true; }
+                }
+                tried += " [key " + keys + ": nothing changed]";
+            }
+            catch (Exception e) { tried += " [key " + keys + ": " + e.Message + "]"; }
         }
         throw new Exception("VEGAS command " + cmd + " did nothing or failed:" + tried);
     }
@@ -1081,6 +1121,24 @@ public class EditRunner
             c.Snapshot("after");
         });
 
+        Add("loop_split_extend", delegate(EditRunner c)
+        {
+            c.Begin("Looping events split and then lengthened: does the take's length (the media after the offset, cut to the left half) limit the loop of a half that is made longer again", 0, 2);
+            AudioEvent a = c.Audio(0, 0, 30, 0, "ext");
+            a.Loop = true;
+            AudioEvent b = c.Audio(1, 0, 30, 5, "ext5");
+            b.Loop = true;
+            c.Snapshot("before");
+            c.SplitApi(0, 0, 8);           // left half 8 s: take length cut to 8 s
+            c.SplitApi(1, 0, 8);
+            c.Snapshot("mid");
+            c.AdjustApi(0, 0, 0, 45, true);        // the left half longer than the file again
+            c.AdjustApi(1, 0, 0, 45, true);
+            c.AdjustApi(0, 1, 8, 5, true);         // the right half shorter, then
+            c.AdjustApi(1, 1, 8, 60, true);        // much longer
+            c.Snapshot("after");
+        });
+
         Add("loop_split_rate", delegate(EditRunner c)
         {
             c.Begin("Split of looping events with a playback rate: rate 2 (the file lasts 10 s on the timeline) and rate 0.5 (40 s), at and after the loop point", 0, 4);
@@ -1250,7 +1308,7 @@ public class EditRunner
             VideoEvent v = c.Video(0, 2, 8, 1, "keys");
             c.AddMotionKeys(v, new double[] { 0, 3, 6 }, new double[] { 1.0, 0.5, 0.8 });
             c.AddEnvelopePoints(v.Envelopes, EnvelopeType.Velocity, new double[] { 0, 4, 8 }, new double[] { 1.0, 2.0, 0.5 }, CurveType.Linear);
-            c.AddEnvelopePoints(v.Envelopes, EnvelopeType.Composite, new double[] { 1, 5 }, new double[] { 1.0, 0.3 }, CurveType.Smooth);
+            c.AddEnvelopePoints(v.Track.Envelopes, EnvelopeType.Composite, new double[] { 1, 5 }, new double[] { 1.0, 0.3 }, CurveType.Smooth);
             try
             {
                 PlugInNode node = c.vegas.VideoFX.GetChildByName("VEGAS Invert");
@@ -1342,7 +1400,7 @@ public class EditRunner
             c.Begin("AdjustStartLength on a video event with Pan/Crop keys and envelopes: do keys and points move with the start edge", 1, 0);
             VideoEvent v = c.Video(0, 2, 8, 2, "keys");
             c.AddMotionKeys(v, new double[] { 0, 3, 6 }, new double[] { 1.0, 0.5, 0.8 });
-            c.AddEnvelopePoints(v.Envelopes, EnvelopeType.Composite, new double[] { 1, 5 }, new double[] { 1.0, 0.3 }, CurveType.Smooth);
+            c.AddEnvelopePoints(v.Track.Envelopes, EnvelopeType.Composite, new double[] { 1, 5 }, new double[] { 1.0, 0.3 }, CurveType.Smooth);
             c.AddEnvelopePoints(v.Envelopes, EnvelopeType.Velocity, new double[] { 0, 4, 8 }, new double[] { 1.0, 2.0, 0.5 }, CurveType.Linear);
             c.Snapshot("before");
             c.AdjustApi(0, 0, 4, 6, true);          // trim the start by 2 s
@@ -1521,7 +1579,7 @@ public class EditRunner
             VideoEvent v = c.Video(0, 2, 8, 1, "V");
             c.SetFades(v, 2, CurveType.Smooth, 2, CurveType.Smooth);
             c.AddMotionKeys(v, new double[] { 0, 3, 6 }, new double[] { 1.0, 0.5, 0.8 });
-            c.AddEnvelopePoints(v.Envelopes, EnvelopeType.Composite, new double[] { 1, 5 }, new double[] { 1.0, 0.3 }, CurveType.Smooth);
+            c.AddEnvelopePoints(v.Track.Envelopes, EnvelopeType.Composite, new double[] { 1, 5 }, new double[] { 1.0, 0.3 }, CurveType.Smooth);
             AudioEvent a = c.Audio(1, 2, 8, 1, "inFadeIn");
             c.SetFades(a, 2, CurveType.Fast, 2, CurveType.Slow);
             AudioEvent b = c.Audio(2, 2, 8, 1, "inFadeOut");

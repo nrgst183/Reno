@@ -181,7 +181,11 @@ int main()
         Event n = make(p, 0.0, 30.0, 0.0, 1.0, false, false);
         n.loop = false;
         Event nr = splitEventAt(p, n, 25.0);
-        check(std::fabs(nr.offset - 25.0) < 1e-12, "loop off: the right half's offset is not wrapped", num(nr.offset));
+        check(std::fabs(nr.offset - (20.0 - 1e-7)) < 1e-12, "loop off: the right half's offset is not wrapped but held one tick before the end (VEGAS loop_off)", num(nr.offset));
+        Event n2 = make(p, 0.0, 30.0, 5.0, 1.0, false, false);
+        n2.loop = false;
+        Event n2r = splitEventAt(p, n2, 10.0);
+        check(std::fabs(n2r.offset - 15.0) < 1e-12, "loop off: a right half that starts inside the file keeps the plain offset", num(n2r.offset));
         // reversed: the left half's offset is the one that moves; it is kept inside the media too
         Event rv = make(p, 0.0, 30.0, 0.0, 1.0, true, false);
         rv.loop = true;
@@ -194,6 +198,64 @@ int main()
             same = std::fabs(eventMediaTime(rvo, p.findMedia(1), t) - eventMediaTime(h, p.findMedia(1), t)) < 1e-9;
         }
         check(same && rv.offset >= 0 && rv.offset < 20.0, "loop split: reversed looping event keeps its media and the offset inside the file", num(rv.offset));
+    }
+
+    // The velocity envelope is cut at the split (VEGAS split_video_velocity: 1 -> 3 -> 0.5 at 0, 4, 8 s split at 3 s gives the left half
+    // 1 -> 2.5 and the right half 2.5 -> 3 -> 0.5 from its own start)
+    {
+        Project p;
+        Event e = make(p, 0.0, 8.0, 2.0, 1.0, false, false);
+        Envelope v;
+        v.kind = "velocity";
+        v.points = {{0.0, 1.0, CurveLinear}, {4.0, 3.0, CurveLinear}, {8.0, 0.5, CurveLinear}};
+        e.envelopes = {v};
+        const Event orig = e;
+        Event r = splitEventAt(p, e, 3.0);
+        const Envelope* le = findEnvelope(e.envelopes, "velocity");
+        const Envelope* re = findEnvelope(r.envelopes, "velocity");
+        check(le && le->points.size() == 2 && std::fabs(le->points[1].time - 3.0) < 1e-9 && std::fabs(le->points[1].value - 2.5) < 1e-9,
+              "velocity split: the left half ends with a point at the cut", le ? num(le->points.back().value) : "none");
+        check(re && re->points.size() == 3 && std::fabs(re->points[0].time) < 1e-9 && std::fabs(re->points[0].value - 2.5) < 1e-9 &&
+                  std::fabs(re->points[1].time - 1.0) < 1e-9 && std::fabs(re->points[2].time - 5.0) < 1e-9,
+              "velocity split: the right half starts with a point at its start and keeps the later ones", re ? std::to_string(re->points.size()) : "none");
+        check(std::fabs(r.offset - 7.25) < 1e-9, "velocity split: the right half's offset is 7.25 s", num(r.offset));
+        std::string why;
+        check(sameMedia(orig, e, 40, &why) && sameMedia(orig, r, 40, &why), "velocity split: both halves show the media the event showed", why);
+        // a curved segment is not cut (the pieces would play another shape): the whole envelope stays on both, shifted
+        Event c = make(p, 0.0, 8.0, 0.0, 1.0, false, false);
+        Envelope cv;
+        cv.kind = "velocity";
+        cv.points = {{0.0, 1.0, CurveSmooth}, {8.0, 3.0, CurveLinear}};
+        c.envelopes = {cv};
+        const Event co = c;
+        Event cr = splitEventAt(p, c, 3.0);
+        check(findEnvelope(c.envelopes, "velocity")->points.size() == 2 && findEnvelope(cr.envelopes, "velocity")->points.size() == 2 &&
+                  sameMedia(co, cr, 40, &why),
+              "velocity split inside a curved segment: the envelope stays whole and the media continues", why);
+    }
+
+    // The right half goes into the track right after the left half, so halves that start together keep their order
+    // (VEGAS split_video_crossfade: two overlapping events split at the same time)
+    {
+        Project p;
+        Track tr;
+        Event a = make(p, 0.0, 5.0, 0.0, 1.0, false, false);
+        Event b = make(p, 4.0, 6.0, 0.0, 1.0, false, false);
+        a.fadeOut = 1.0;
+        b.fadeIn = 1.0;
+        tr.events.push_back(a);
+        tr.events.push_back(b);
+        const uint64_t aid = a.id, bid = b.id;
+        Event br = splitEventAt(p, tr.events.mut()[1], 4.5);
+        check(std::fabs(tr.events.at(1).fadeIn - 0.5) < 1e-12 && br.fadeIn == 0, "cross-fade split: the left half's fade-in is cut to its length");
+        addSplitHalf(tr, bid, br);
+        Event ar = splitEventAt(p, tr.events.mut()[0], 4.5);
+        addSplitHalf(tr, aid, ar);
+        check(tr.events.size() == 4 && tr.events.at(2).id == ar.id && tr.events.at(3).id == br.id && tr.events.at(2).start == 4.5 && tr.events.at(3).start == 4.5,
+              "split halves: the right halves that start together keep the order of the left ones");
+        // and the later one's fade-in is the cross-fade that is left (VEGAS: 0.5 s)
+        check(std::fabs(tr.events.at(3).fadeIn - 0.5) < 1e-12 && std::fabs(tr.events.at(2).fadeOut - 0.5) < 1e-12 && tr.events.at(2).fadeIn == 0,
+              "split halves: the right half of the later event gets the remaining overlap as its fade-in", num(tr.events.at(3).fadeIn));
     }
 
     std::printf("SUMMARY %d passed, %d failed\n", gPass, gFail);

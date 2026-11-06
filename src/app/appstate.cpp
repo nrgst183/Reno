@@ -1283,20 +1283,28 @@ static void eraseEventsWhere(Project& p, Want want)
 void AppState::splitAtCursor()
 {
     // VEGAS's Edit > Split: at the cursor; with a time selection, at both of its ends. The selected events are split, and
-    // with none selected every event under the cut, on all tracks.
+    // with none selected every event under the cut, on all tracks. From the VEGAS results (RenoEdits ui_split_*): the cut is
+    // at the cursor as it is (no rounding to a frame: clicking the ruler already did that), the other members of a selected
+    // event's group are split with it and the right halves form a new group, and afterwards the right halves are the ones
+    // selected.
     std::vector<double> cuts;
     if (loopEnd > loopStart + 1e-9) {
-        cuts.push_back(project_.quantize(loopStart));
-        cuts.push_back(project_.quantize(loopEnd));
+        cuts.push_back(loopStart);
+        cuts.push_back(loopEnd);
     } else {
-        cuts.push_back(project_.quantize(cursor_));
+        cuts.push_back(cursor_);
     }
     const bool all = selection_.empty();
     auto targets = [&](const Project& p, double t, const std::set<uint64_t>& sel) {
+        std::set<uint64_t> selGroups;
+        for (const auto& tr : p.tracks)
+            for (const auto& e : tr.events)
+                if (e.group && sel.count(e.id)) selGroups.insert(e.group);
         std::vector<uint64_t> ids;
         for (const auto& tr : p.tracks)
             for (const auto& e : tr.events)
-                if (e.start < t - 1e-9 && e.end() > t + 1e-9 && (all || sel.count(e.id)) && !e.locked) ids.push_back(e.id);
+                if (e.start < t - 1e-9 && e.end() > t + 1e-9 && (all || sel.count(e.id) || (e.group && selGroups.count(e.group))) && !e.locked)
+                    ids.push_back(e.id);
         return ids;
     };
     bool any = false;
@@ -1305,13 +1313,19 @@ void AppState::splitAtCursor()
     std::set<uint64_t> newSel = selection_;
     edit("Split", [&](Project& p) {
         fx.captureStates(p);
-        std::set<Track*> touched;
         for (double t : cuts) {
             std::map<uint64_t, uint64_t> groups;
+            std::set<uint64_t> selGroups;
+            for (const auto& tr : p.tracks)
+                for (const auto& ev : tr.events)
+                    if (ev.group && newSel.count(ev.id)) selGroups.insert(ev.group);
+            // the halves are put into the tracks after all of the cut's events are split: the pointers stay valid
+            std::vector<std::pair<Track*, std::pair<uint64_t, Event>>> made;
             for (uint64_t id : targets(p, t, newSel)) {
                 Track* tr = nullptr;
                 Event* e = p.findEvent(id, &tr);
                 if (!e || !tr) continue;
+                const bool wasSelected = newSel.count(id) != 0 || (e->group && selGroups.count(e->group) != 0);
                 Event right = splitEventAt(p, *e, t);
                 if (!right.id) continue;
                 if (e->group) {
@@ -1319,12 +1333,10 @@ void AppState::splitAtCursor()
                     if (it == groups.end()) it = groups.emplace(e->group, p.newId()).first;
                     right.group = it->second;
                 }
-                if (newSel.count(id)) newSel.insert(right.id);
-                tr->events.push_back(right);
-                touched.insert(tr);
+                if (wasSelected) { newSel.erase(id); newSel.insert(right.id); }
+                made.push_back(std::make_pair(tr, std::make_pair(id, right)));
             }
-            // once per cut and track: the second cut finds the first one's halves in order
-            for (Track* tr : touched) tr->sortEvents();
+            for (auto& m : made) addSplitHalf(*m.first, m.second.first, m.second.second, p.autoCrossfades);
         }
     });
     setSelection(newSel);

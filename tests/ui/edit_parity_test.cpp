@@ -167,6 +167,34 @@ int main(int argc, char** argv)
         check(g1 && g2 && g1 != g2 && nth(ids.a1, 0).group == g1 && nth(ids.a1, 1).group == g2, "split halves of a group form a group each: left with left, right with right");
     }
     {
+        // VEGAS ui_split_group / ui_split_selected / ui_split_quantize: one selected event of a group splits the whole group, the
+        // right halves are afterwards the selected ones (and form the new group), and the cut is at the cursor, not at a frame
+        build();
+        st().edit("Add", [&](Project& p) {
+            const uint64_t g = p.newId();
+            addEvent(p, ids.v1, ids.clip, 1.0, 6.0, 0, g);
+            addEvent(p, ids.a1, ids.snd, 1.0, 6.0, 0, g);
+            addEvent(p, ids.a2, ids.snd, 1.0, 6.0);
+        });
+        st().setSelection({nth(ids.v1, 0).id});
+        const double fps = st().project().settings.fps();
+        const double cut = 3.0 + 0.4 / fps;                 // between two frames
+        st().setCursor(cut);
+        st().splitAtCursor();
+        check(count(ids.v1) == 2 && count(ids.a1) == 2 && count(ids.a2) == 1, "Split with one event of a group selected splits the group's other events too, not others",
+              spans(ids.v1) + spans(ids.a1) + spans(ids.a2));
+        check(count(ids.v1) == 2 && near(nth(ids.v1, 1).start, cut, 1e-9), "Split cuts at the cursor as it is (VEGAS ui_split_quantize)", num(nth(ids.v1, 1).start));
+        const uint64_t g1 = nth(ids.v1, 0).group, g2 = nth(ids.v1, 1).group;
+        check(g1 && g2 && g1 != g2 && nth(ids.a1, 0).group == g1 && nth(ids.a1, 1).group == g2, "... and the right halves form the new group");
+        const std::set<uint64_t> want = {nth(ids.v1, 1).id, nth(ids.a1, 1).id};
+        check(st().selection() == want, "afterwards the right halves are selected, the left ones not", std::to_string(st().selection().size()));
+        // nothing selected before: nothing selected after (VEGAS ui_split_none_selected)
+        st().setSelection(std::set<uint64_t>());
+        st().setCursor(5.0);
+        st().splitAtCursor();
+        check(st().selection().empty(), "Split with nothing selected leaves nothing selected");
+    }
+    {
         // the media each half plays: reversed and velocity
         build();
         st().edit("Add", [&](Project& p) {
@@ -213,7 +241,7 @@ int main(int argc, char** argv)
         st().splitAtCursor();
         check(count(ids.a1) == 2 && near(nth(ids.a1, 1).offset, dur * 0.25, 1e-6), "loop: Split past the loop point gives the right half a take offset inside the file",
               num(nth(ids.a1, 1).offset));
-        check(count(ids.a2) == 2 && near(nth(ids.a2, 1).offset, dur * 1.25, 1e-6), "loop off: Split past the end of the file keeps the plain offset", num(nth(ids.a2, 1).offset));
+        check(count(ids.a2) == 2 && near(nth(ids.a2, 1).offset, dur - 1e-7, 1e-9), "loop off: Split past the end of the file holds the offset one tick before the end (VEGAS loop_off)", num(nth(ids.a2, 1).offset));
         // both halves still show what the event showed
         {
             const MediaItem* m = st().project().findMedia(ids.snd);

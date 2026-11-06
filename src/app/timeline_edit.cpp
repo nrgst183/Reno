@@ -1113,8 +1113,7 @@ uint64_t TimelineWidget::Impl::splitIn(Project& p, uint64_t id, double t, std::m
         right.group = it->second;
     }
     const uint64_t rid = right.id;
-    tr->events.push_back(right);
-    tr->sortEvents();
+    addSplitHalf(*tr, id, right, p.autoCrossfades);
     return rid;
 }
 

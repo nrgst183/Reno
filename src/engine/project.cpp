@@ -355,9 +355,11 @@ Event splitEventAt(Project& p, Event& e, double t)
     // loop point starts at the media position modulo the media's length (split_audio_loop: a 30 s looping event of a 20 s
     // file split at 25 s gives a right half whose take starts 5 s in, not 25 s). The picture shown is the same either way.
     auto inMedia = [&](double off, uint64_t mediaId) {
-        if (!e.loop) return off;
         const MediaItem* m = p.findMedia(mediaId);
         const double dur = (m && !m->info.isStill && !m->generated) ? m->info.duration : 0.0;
+        // Without Loop a half that starts at or past the end of the file starts one tick (100 ns) before the end, where it holds
+        // the last frame (RenoEdits loop_off: a 30 s event of a 20 s file split at 25 s, offset 19.9999999 s).
+        if (!e.loop) return dur > 0 && off >= dur ? dur - 1e-7 : off;
         if (!(dur > 0)) return off;
         off = std::fmod(off, dur);
         return off < 0 ? off + dur : off;
@@ -371,8 +373,31 @@ Event splitEventAt(Project& p, Event& e, double t)
         e.offset = inMedia(e.offset + restMedia, e.mediaId);
         for (Take& k : e.takes) if (!k.reverse) k.offset = inMedia(k.offset + restMedia, k.mediaId);
     }
-    // points and keys stay where they are on the timeline: counted from the right half's own start
-    for (Envelope& env : right.envelopes) for (EnvPoint& pt : env.points) pt.time -= u;
+    // Points and keys stay where they are on the timeline: counted from the right half's own start. VEGAS cuts a velocity
+    // envelope at the split (RenoEdits split_video_velocity): the left half keeps the points before the cut and gets a last one
+    // at the cut, the right half gets a first one at its start with the value there and the points after it. That is exact where
+    // the segment is straight (linear or held); across a curved segment the pieces would play a different shape, so there the
+    // whole envelope stays on both halves (the right one shifted) and the media shown stays continuous.
+    for (size_t ei = 0; ei < right.envelopes.size() && ei < e.envelopes.size(); ++ei) {
+        Envelope& le = e.envelopes[ei];
+        Envelope& re = right.envelopes[ei];
+        const std::vector<EnvPoint> pts = le.points;
+        size_t seg = pts.size();
+        if (le.kind == "velocity" && pts.size() >= 2 && u >= pts.front().time - 1e-9 && u <= pts.back().time + 1e-9)
+            for (size_t k = 0; k + 1 < pts.size(); ++k)
+                if (pts[k].time <= u + 1e-9 && u < pts[k + 1].time - 1e-9) { seg = k; break; }
+        const bool cut = seg < pts.size() && (pts[seg].curve == CurveLinear || pts[seg].curve == CurveHold);
+        if (!cut) { for (EnvPoint& pt : re.points) pt.time -= u; continue; }
+        const double v = le.valueAt(u, pts[seg].value);
+        const int curve = pts[seg].curve;
+        le.points.clear();
+        re.points.clear();
+        for (const EnvPoint& pt : pts) if (pt.time < u - 1e-9) le.points.push_back(pt);
+        if (std::fabs(pts[seg].time - u) <= 1e-9) le.points.push_back(pts[seg]);
+        else le.points.push_back({u, v, curve});
+        re.points.push_back({0.0, v, curve});
+        for (const EnvPoint& pt : pts) if (pt.time > u + 1e-9) re.points.push_back({pt.time - u, pt.value, pt.curve});
+    }
     for (PanCropKey& k : right.panCrop) k.time -= u;
     for (MaskKey& k : right.mask) k.time -= u;
     right.fadeIn = 0;
@@ -385,6 +410,44 @@ Event splitEventAt(Project& p, Event& e, double t)
     e.fadeIn = std::min(e.fadeIn, e.length);
     right.fadeOut = std::min(right.fadeOut, right.length);
     return right;
+}
+
+void autoCrossfadeFadeIns(Track& tr, uint64_t id)
+{
+    // Which events begin a cross-fade: the event itself (it overlaps the end of an earlier one) and the events that begin inside it
+    // and end after it (they overlap its end). 'Earlier' is the order of the track's list: events that start together keep it.
+    std::vector<Event>& v = tr.events.mut();
+    size_t me = v.size();
+    for (size_t k = 0; k < v.size(); ++k) if (v[k].id == id) me = k;
+    if (me == v.size()) return;
+    auto overlapWith = [&](size_t later, size_t earlier) {
+        const Event& a = v[earlier];
+        const Event& b = v[later];
+        if (a.start > b.start + 1e-9 || a.end() <= b.start + 1e-9 || a.end() >= b.end() - 1e-9) return 0.0;
+        return a.end() - b.start;
+    };
+    for (size_t k = 0; k < v.size(); ++k) {
+        if (k == me) continue;
+        const double ov = k < me ? overlapWith(me, k) : overlapWith(k, me);
+        if (ov > 0) {
+            Event& later = v[k < me ? me : k];
+            later.fadeIn = std::min(ov, later.length);
+        }
+    }
+}
+
+Event* addSplitHalf(Track& tr, uint64_t leftId, const Event& right, bool autoCrossfades)
+{
+    // VEGAS lists the right half right after the left one, so halves that start together (the right halves of two events
+    // split at the same time) keep the order their left halves had (RenoEdits split_video_crossfade)
+    size_t at = tr.events.size();
+    for (size_t k = 0; k < tr.events.size(); ++k)
+        if (tr.events.at(k).id == leftId) { at = k + 1; break; }
+    tr.events.insert(tr.events.begin() + at, right);
+    tr.sortEvents();
+    if (autoCrossfades) autoCrossfadeFadeIns(tr, right.id);
+    for (Event& e : tr.events) if (e.id == right.id) return &e;
+    return nullptr;
 }
 
 double eventMediaTime(const Event& e, const MediaItem* m, double t)

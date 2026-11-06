@@ -798,13 +798,19 @@ int ScriptSession::eventProp(const Desc& d, int prop, int64_t* oi, double* ox, s
         // numbers
         if (sx && !std::isfinite(*sx)) return fail("not a number");
         switch (prop) {
-        case RP_START:
+        case RP_START: {
             if (!sx) { *ox = e->start; return RS_OK; }
             if (e->locked) return fail("the event is locked");
             e->start = std::max(0.0, *sx);
+            // Moving an event so that it overlaps the end of an earlier one makes VEGAS (with Automatic Crossfades on) store the
+            // cross-fade as an explicit fade-in as long as the overlap (RenoEdits set_start_length: moved 2 s onto another, fade-in
+            // 2 s). The engine takes the overlap for the fade-in there (it never applies both), so storing it changes nothing heard.
+            const uint64_t movedId = e->id;
             tr->sortEvents();
+            if (project.autoCrossfades) autoCrossfadeFadeIns(*tr, movedId);
             touch();
             return RS_OK;
+        }
         case RP_LENGTH:
             if (!sx) { *ox = e->length; return RS_OK; }
             if (*sx <= 0) return fail("an event's length must be more than 0");
@@ -2280,9 +2286,8 @@ int ScriptSession::call(uint64_t h, int op, const std::vector<int64_t>& ia, cons
             right.veg = nullptr;
             // the right part is in the same group as the left.
             if (selection.count(e->id)) selection.insert(right.id);
-            const uint64_t rid = right.id;
-            tr->events.push_back(right);
-            tr->sortEvents();
+            const uint64_t rid = right.id, lid = e->id;
+            addSplitHalf(*tr, lid, right, project.autoCrossfades);
             touch();
             *out = eventHandle(rid);
             return RS_OK;
@@ -2314,7 +2319,15 @@ int ScriptSession::call(uint64_t h, int op, const std::vector<int64_t>& ia, cons
             const double start = D(0, e->start), len = D(1, e->length);
             if (!(len > 0)) return fail("an event's length must be more than 0");
             if (e->locked) return fail("the event is locked");
+            // VEGAS's AdjustStartLength knows nothing of the velocity envelope (RenoEdits ui_trim_start_reversed): the take offset moves
+            // by the timeline distance times the rate and the envelope's points stay where they are in the event. (The program's own
+            // trims keep the picture where it was; this is what a script gets.)
+            std::vector<Envelope> velocity;
+            if (I(0) != 0)
+                for (size_t k = e->envelopes.size(); k-- > 0;)
+                    if (e->envelopes[k].kind == "velocity") { velocity.push_back(e->envelopes[k]); e->envelopes.erase(e->envelopes.begin() + k); }
             adjustEventEdges(*e, start, len, I(0) != 0);
+            for (const Envelope& v : velocity) e->envelopes.push_back(v);
             e->start = std::max(0.0, e->start);
             keepOffsetInLoop(*e);
             keepFadesInside(*e);

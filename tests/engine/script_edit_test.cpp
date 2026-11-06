@@ -108,6 +108,36 @@ int main()
         check(evs.size() == 4 && near(evs[1].start, 25.0) && near(evs[1].offset, 5.0), "Script Split of a looping event: right half's offset is 5 s (VEGAS split_audio_loop)", num(evs[1].offset));
         check(near(evs[3].start, 50.0) && near(evs[3].offset, 15.0), "... and 15 s when the split is before the loop point of a take that starts at 5 s", num(evs[3].offset));
     }
+    // Moving an event onto the end of an earlier one stores the cross-fade as an explicit fade-in as long as the overlap
+    // (VEGAS set_start_length / overlap_crossfade); an event that does not overlap, or sits wholly inside the other, gets none
+    {
+        Rig r;
+        r.add(2, 6, 1);          // 2..8
+        r.add(10, 6, 1);         // moved to 6: overlap 2 s
+        r.add(20, 2, 1);         // moved to 3: inside the first one
+        ScriptSession s(r.p, r.host);
+        const std::vector<uint64_t> ev = events(s, r.track);
+        s.setD(ev[1], RP_START, 6.0);
+        s.setD(ev[2], RP_START, 3.0);
+        const auto& evs = s.project.findTrack(r.track)->events;
+        check(evs.size() == 3 && near(evs[2].start, 6.0) && near(evs[2].fadeIn, 2.0), "Start setter onto an earlier event: explicit fade-in as long as the overlap", evs.size() == 3 ? num(evs[2].fadeIn) : "?");
+        check(evs.size() == 3 && near(evs[1].start, 3.0) && near(evs[1].fadeIn, 0.0), "Start setter inside an earlier event: no fade-in");
+    }
+    // AdjustStartLength on an event with a velocity envelope: plain offset change, points stay (VEGAS ui_trim_start_reversed)
+    {
+        Rig r;
+        const uint64_t id = r.add(2, 8, 2, 1.0, false);
+        Envelope v;
+        v.kind = "velocity";
+        v.points = {{0.0, 1.0, CurveLinear}, {4.0, 3.0, CurveLinear}, {8.0, 0.5, CurveLinear}};
+        for (Event& e : r.p.findTrack(r.track)->events) if (e.id == id) e.envelopes = {v};
+        ScriptSession s(r.p, r.host);
+        const std::vector<uint64_t> ev = events(s, r.track);
+        op(s, ev[0], RO_ADJUST_START_LENGTH, {1}, {5.0, 5.0});
+        const Event& e = s.project.findTrack(r.track)->events[0];
+        check(near(e.start, 5.0) && near(e.offset, 5.0) && e.envelopes.size() == 1 && near(e.envelopes[0].points[1].time, 4.0),
+              "AdjustStartLength of an event with a velocity envelope: offset +3 s, envelope points unmoved", num(e.offset));
+    }
     // AdjustStartLength: extending the start of a looping event before the media wraps the offset; fades stay inside
     {
         Rig r;

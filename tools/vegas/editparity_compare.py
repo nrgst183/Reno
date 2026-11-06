@@ -30,6 +30,7 @@ def load(path):
 class Diff:
     def __init__(self):
         self.items = []
+        self.standin = False    # VEGAS's side was done by the script through the API, not by VEGAS's own command
         self.na = None          # why VEGAS's side cannot be compared (the scenario or one of its commands failed in VEGAS)
 
     def add(self, where, field, a, b):
@@ -127,6 +128,11 @@ def compare_event(d, where, a, b, tol, strict_rev):
                 if not close(x['offset'], y['offset'], tol):
                     d.add(where, 'take %d offset' % i, x['offset'], y['offset'])
     ka, kb = a.get('panCrop', []), b.get('panCrop', [])
+    # a video event always has one key at 0 in VEGAS (the unmoved picture); Reno lists no key for it
+    if len(ka) == 1 and ka[0].get('position') == 0 and not kb:
+        ka = []
+    if len(kb) == 1 and kb[0].get('position') == 0 and not ka:
+        kb = []
     if len(ka) != len(kb):
         d.add(where, 'pan/crop key count', [k['position'] for k in ka], [k['position'] for k in kb])
     else:
@@ -182,8 +188,10 @@ def compare_scenario(name, ra, rb, tol, strict_rev):
         d.add(name, 'VEGAS scenario error', ra['error'].splitlines()[0], None)
     if rb.get('error'):
         d.add(name, 'Reno scenario error', None, str(rb['error']).splitlines()[0])
+    uiOps = COMPARE_SELECTION[0]
     for snap in ('before', 'mid', 'after'):
         a, b = ra.get(snap), rb.get(snap)
+        COMPARE_SELECTION[0] = uiOps and snap != 'before'      # (the program selected the events after 'before' was taken)
         if isinstance(a, dict) and isinstance(b, dict):
             compare_project(d, '%s/%s' % (name, snap), a, b, tol, strict_rev)
         elif (a is None) != (b is None):
@@ -194,6 +202,7 @@ def compare_scenario(name, ra, rb, tol, strict_rev):
     for i, (p, q) in enumerate(zip(oa, ob)):
         if p.get('ok') != q.get('ok'):
             d.add('%s op %d (%s)' % (name, i, p.get('op')), 'worked', '%s %s' % (p.get('ok'), p.get('error') or ''), '%s %s' % (q.get('ok'), q.get('error') or ''))
+    d.standin = any(o.get('viaApi') for o in ra.get('ops', []))
     return d
 
 
@@ -203,6 +212,7 @@ def run(a_dir, b_dir, tol, only, show_same, strict_rev, out_json):
         names = [n for n in names if n in only]
     failed = 0
     na = 0
+    standin = 0
     report = {}
     for n in names:
         pb = os.path.join(b_dir, n, 'result.json')
@@ -217,6 +227,13 @@ def run(a_dir, b_dir, tol, only, show_same, strict_rev, out_json):
             print('N/A  %s: %s' % (n, d.na))
             report[n] = ['n/a: ' + d.na]
             continue
+        if d.items and d.standin:
+            standin += 1
+            print('STAND-IN %s: %d difference(s), but VEGAS did not run the command (the script did it through the API)' % (n, len(d.items)))
+            for where, field, x, y in d.items:
+                print('   %s %s: vegas=%s reno=%s' % (where, field, x, y))
+            report[n] = ['stand-in: %s %s: vegas=%s reno=%s' % i for i in d.items]
+            continue
         if d.items:
             failed += 1
             print('DIFF %s: %d difference(s)' % (n, len(d.items)))
@@ -225,7 +242,7 @@ def run(a_dir, b_dir, tol, only, show_same, strict_rev, out_json):
         elif show_same:
             print('SAME %s' % n)
         report[n] = ['%s %s: vegas=%s reno=%s' % i for i in d.items]
-    print('%d scenario(s): %d compared and differ, %d N/A (VEGAS could not run them)' % (len(names), failed, na))
+    print('%d scenario(s): %d compared and differ, %d N/A (VEGAS could not run them), %d differ only from a stand-in' % (len(names), failed, na, standin))
     if out_json:
         with open(out_json, 'w') as f:
             json.dump(report, f, indent=1)

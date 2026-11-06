@@ -24,6 +24,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSettings>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -339,6 +340,74 @@ std::string apiOp(const std::string& op, const Json& a)
     return std::string();
 }
 
+// A "ui" operation the script could not get VEGAS to run ("viaApi": true) was done by RenoEdits.cs through the scripting API
+// (ApiEquivalent: Split / TrimStart / TrimEnd / Trim / Delete on the selected events, or on the ones under the cursor when none is
+// selected). The same is done here, so what the two programs' APIs do is compared rather than VEGAS's API against Reno's command.
+std::string standInOp(const std::string& op, const Json& a)
+{
+    AppState& app = st();
+    applyView(a);
+    const double cur = app.cursor();
+    const double ss = app.loopStart, sl = std::max(0.0, app.loopEnd - app.loopStart);
+    auto targets = [&](double at) {
+        std::vector<std::pair<int, int>> sel, under;
+        const Project& p = app.project();
+        for (size_t t = 0; t < p.tracks.size(); ++t)
+            for (size_t k = 0; k < p.tracks[t].events.size(); ++k) {
+                const Event& e = p.tracks[t].events[k];
+                if (app.selection().count(e.id)) sel.push_back({(int)t, (int)k});
+                else if (!e.locked && e.start < at - 1e-9 && e.end() > at + 1e-9) under.push_back({(int)t, (int)k});
+            }
+        std::vector<std::pair<int, int>> r = sel.empty() ? under : sel;
+        std::sort(r.begin(), r.end(), [](const std::pair<int, int>& x, const std::pair<int, int>& y) { return x.first != y.first ? x.first < y.first : x.second > y.second; });
+        return r;
+    };
+    auto args = [&](int t, int k) { Json j = Json::object(); j["track"] = t; j["index"] = k; return j; };
+    if (op == "Edit.Split") {
+        std::vector<double> points;
+        if (sl > 0) { points.push_back(ss); points.push_back(ss + sl); } else points.push_back(cur);
+        for (double pt : points)
+            for (const auto& tk : targets(pt)) {
+                const Event& e = app.project().tracks[(size_t)tk.first].events[(size_t)tk.second];
+                if (!(pt > e.start && pt < e.end())) continue;
+                Json j = args(tk.first, tk.second);
+                j["offset"] = ticks(pt - e.start);
+                const std::string f = apiOp("split", j);
+                if (!f.empty()) return f;
+            }
+        return std::string();
+    }
+    if (op == "Edit.Trim.Start" || op == "Edit.Trim.End" || (op == "Edit.Trim" && sl > 0)) {
+        const double at = op == "Edit.Trim" ? ss : cur;
+        for (const auto& tk : targets(at)) {
+            const Event e = app.project().tracks[(size_t)tk.first].events[(size_t)tk.second];
+            double a0 = 0, b0 = 0;
+            if (op == "Edit.Trim") { a0 = std::max(e.start, ss); b0 = std::min(e.end(), ss + sl); if (!(b0 > a0)) continue; }
+            else {
+                if (!(cur > e.start && cur < e.end())) continue;
+                if (op == "Edit.Trim.Start") { a0 = cur; b0 = e.end(); } else { a0 = e.start; b0 = cur; }
+            }
+            Json j = args(tk.first, tk.second);
+            j["start"] = ticks(a0);
+            j["length"] = ticks(b0 - a0);
+            j["adjustTakes"] = true;
+            const std::string f = apiOp("adjustStartLength", j);
+            if (!f.empty()) return f;
+        }
+        return std::string();
+    }
+    if (op == "Edit.Delete" && sl <= 0) {
+        for (const auto& tk : targets(cur)) {
+            const Event& e = app.project().tracks[(size_t)tk.first].events[(size_t)tk.second];
+            if (!app.selection().count(e.id)) continue;
+            const std::string f = apiOp("remove", args(tk.first, tk.second));
+            if (!f.empty()) return f;
+        }
+        return std::string();
+    }
+    return "no API stand-in for " + op;
+}
+
 bool readFile(const std::string& path, std::string* text)
 {
     std::ifstream f(path, std::ios::binary);
@@ -408,7 +477,7 @@ bool replay(TimelineWidget& tl, const std::string& inDir, const std::string& out
         o["op"] = what;
         std::string failure;
         if (kind == "snapshot") result[what] = dumpProject();
-        else if (kind == "ui") failure = uiOp(tl, what, op.get("args"));
+        else if (kind == "ui") failure = op.get("viaApi").asBool(false) ? standInOp(what, op.get("args")) : uiOp(tl, what, op.get("args"));
         else if (kind == "api") failure = apiOp(what, op.get("args"));
         // (what VEGAS refused is not tried: the project is as VEGAS's was)
         if (kind != "snapshot" && !op.get("ok").asBool(true)) failure = "VEGAS refused this operation: " + op.get("error").asString();

@@ -661,6 +661,14 @@ void adjustEventEdges(Event& e, double newStart, double newLength, bool keepMedi
 // reversed event's right half plays the earlier media, so the left half's offset moves up); envelope and Pan/Crop keys
 // stay where they are on the timeline. Does nothing (returns id 0) unless e.start < t < e.end().
 Event splitEventAt(Project& p, Event& e, double t);
+// Puts the right half splitEventAt made into the track right after the left half (events that start together stay in the
+// order their left halves had); returns it in the track (the pointers to other events of the track are invalid afterwards).
+Event* addSplitHalf(Track& tr, uint64_t leftId, const Event& right, bool autoCrossfades = true);
+// With Automatic Crossfades on VEGAS makes the cross-fade where events overlap an explicit fade-in of the later event, as long as
+// the overlap (RenoEdits set_start_length, split_video_crossfade). This sets it for the event 'id' (against the earlier events it
+// overlaps the end of) and for the events that begin inside it and end after it. The engine never applies both the overlap and
+// a fade-in that is that cross-fade, so storing it changes nothing heard.
+void autoCrossfadeFadeIns(Track& tr, uint64_t id);
 std::string eventFxResample(const Event& e);
 // VEGAS's sample grid: the sample a timeline time falls on at 'rate' is the nearest one, so an event
 // plays the samples [timeToSample(start), timeToSample(end)) and starts reading its media at its offset rounded to a
