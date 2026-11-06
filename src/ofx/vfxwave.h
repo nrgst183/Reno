@@ -6,6 +6,7 @@
 // there is no half-pixel offset, and the position is held to 0 .. (W - 2) and 0 .. (H - 2) so the last column and row are never the left/top of the 2x2 taken.
 // The 8-bit picture is mixed with weights of 14 bits (each product shifted down 4 on its own, +0x800000, >> 24); the float picture with single precision weights.
 #pragma once
+#include "../core/rmath.h"
 #include <climits>
 #include <cmath>
 #include <cstddef>
@@ -51,10 +52,10 @@ inline void render(uint8_t* dst, int dstPitch, int W, int H, const uint8_t* src,
     const double ky = P[0] * kPi, kx = P[1] * kPi, ampX = (double)W * P[2], ampY = (double)H * P[3];
     const int limX = shl14(W - 2), limY = shl14(H - 2);
     for (int y = 0; y < H; ++y) {
-        int bx = cvt32(std::sin((double)y / (double)H * ky + P[4]) * ampX * 16384.0);
+        int bx = cvt32(rm::sin((double)y / (double)H * ky + P[4]) * ampX * 16384.0);
         uint8_t* d = dst + (ptrdiff_t)y * dstPitch;
         for (int x = 0; x < W; ++x, d += bpp, bx = add32(bx, 0x4000)) {
-            int dy = cvt32((std::sin((double)x / (double)W * kx + P[5]) * ampY + (double)y) * 16384.0);
+            int dy = cvt32((rm::sin((double)x / (double)W * kx + P[5]) * ampY + (double)y) * 16384.0);
             const int sx = bx < 0 ? 0 : (bx > limX ? limX : bx);
             const int sy = dy < 0 ? 0 : (dy > limY ? limY : dy);
             const int ix = sx >> 14, fx = sx & 0x3fff, iy = sy >> 14, fy = sy & 0x3fff;

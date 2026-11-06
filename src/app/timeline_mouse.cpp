@@ -1623,17 +1623,9 @@ void TimelineWidget::Impl::updateEdge(const QPointF& pos, Qt::KeyboardModifiers 
             if (!e) continue;
             switch (kind) {
             case Drag::TrimLeft:
-                e->start = m.start + delta;
-                shiftEventEnvelopes(*e, delta);
-                e->length = m.length - delta;
-                e->offset = m.offset + delta * m.rate;
-                if (m.loop && m.mediaLength > 0) {
-                    e->offset = std::fmod(e->offset, m.mediaLength);
-                    if (e->offset < 0) e->offset += m.mediaLength;
-                }
-                shiftTakes(*e, delta * m.rate);
+                trimLeftBy(*e, m, delta);
                 break;
-            case Drag::TrimRight: e->length = m.length + delta; break;
+            case Drag::TrimRight: trimRightBy(*e, m, delta); break;
             case Drag::StretchLeft:
                 e->length = m.length * factor;
                 e->start = m.end() - e->length;

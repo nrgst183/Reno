@@ -180,6 +180,9 @@ private:
     int eventProp(const Desc& d, int prop, int64_t* i, double* x, std::string* s, const int64_t* si, const double* sx, const std::string* ss);
     int takeOp(Event& e, int op, const std::vector<int64_t>& ia, const std::string& s, uint64_t* out);
     uint64_t addFx(FxChain& chain, int pluginIndex, int at, bool video);
+    void keepOffsetInLoop(Event& e) const;
+    void keepFadesInside(Event& e) const;
+    void changeRate(Event& e, double rate, bool sameMediaPlace) const;
     double takeOffset(const Event& e, const MediaItem* m) const;
     void setTakeOffset(Event& e, const MediaItem* m, double vegasOffset);
     double mediaLength(const MediaItem& m) const;

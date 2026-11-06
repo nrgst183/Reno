@@ -10,6 +10,7 @@
 // x Strength weight >> 16), so bright parts keep their own colour. Noise (the 16-bit generator seed x 0x6255 + 0x3619) moves the original's colour a little first. A last pass multiplies the colour by the
 // tint and mixes the original back in by Blend and its alpha.
 #pragma once
+#include "../core/rmath.h"
 #include <cmath>
 #include <cstdint>
 #include <climits>
@@ -44,9 +45,9 @@ inline void render(const Params& pr, int W, int H, int pitch, const uint8_t* src
     const double scale = (double)std::min(W, H) / 300.0;
     int lx = cvt32((double)W * pr.lightX), ly = cvt32((double)H * pr.lightY);
     // Strength: the curve is flattened by the frame size, softened above 0.8 in preview, then a fourth root, as 16.16
-    double st = std::pow(pr.strength, 1.0 / scale);
+    double st = rm::pow(pr.strength, 1.0 / scale);
     if (!highQuality && st > 0.8) st = st * 0.5 + 0.4;
-    const int sensQ = (int)cvt64(std::pow(st, 0.25) * 65536.0);
+    const int sensQ = (int)cvt64(rm::pow(st, 0.25) * 65536.0);
     const double rW = (double)W * pr.radiusX, rH = (double)H * pr.radiusY;
     const double inner = 1.0 - pr.feather;
     const double invRW = 1.0 / (1.0 > rW ? 1.0 : rW), invRH = 1.0 / (1.0 > rH ? 1.0 : rH);
@@ -230,8 +231,8 @@ inline void prepare(const Params& pr, int W, int H, int32_t seed, Setup& o)
 {
     const double scale = (double)std::min(W, H) / 300.0;
     int lx = cvt32((double)W * pr.lightX), ly = cvt32((double)H * pr.lightY);
-    double st = std::pow(pr.strength, 1.0 / scale);
-    o.sensQ = (int)cvt64(std::pow(st, 0.25) * 65536.0);
+    double st = rm::pow(pr.strength, 1.0 / scale);
+    o.sensQ = (int)cvt64(rm::pow(st, 0.25) * 65536.0);
     const double rW = (double)W * pr.radiusX, rH = (double)H * pr.radiusY;
     o.inner = 1.0 - pr.feather;
     o.invRW = 1.0 / (1.0 > rW ? 1.0 : rW);

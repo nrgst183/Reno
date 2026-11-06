@@ -2,6 +2,7 @@
 // pixel values, one pixel at a time, nothing cut to whole levels between the steps. Re-implemented from the kernels' arithmetic (notes: HSL_Adjust.md, White_Balance.md).
 // No Reno types in here, so the standalone tests can include it.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -118,7 +119,7 @@ inline void wbPixel(const WbShift& sh, bool stretch, const WbStretch& st, const 
     float v = (0.877f) * (r - y);
     const float m2 = sh.amount * sh.amount;
     const float ang = sh.angle * 3.1415926535897932384f / 180.0f;
-    const float du = std::cos(ang) * m2 * 0.5f, dv = std::sin(ang) * m2 * 0.5f;
+    const float du = reno::rm::cos(ang) * m2 * 0.5f, dv = reno::rm::sin(ang) * m2 * 0.5f;
     if (sh.bright != 1.0f) {
         // f0(y, 1, 100, 0, 1): in the linear part (|y| below 100) y * 1, then the brightness
         y = y * 1.0f;
@@ -245,7 +246,7 @@ inline void rgbToAngleAmount(const double* rgb, double& angle, double& amount)
     double ang;
     if (-U == 0.0) ang = (-V >= 0.0) ? 90.0 : 270.0;
     else {
-        ang = std::atan2(-V, -U) * 57.29577951308232;
+        ang = reno::rm::atan2(-V, -U) * 57.29577951308232;
         if (ang < 0.0) ang += 360.0;
     }
     angle = ang;

@@ -9,6 +9,7 @@
 #include "vfxwipes.h"
 #include <climits>
 #include <vector>
+#include "../core/rmath.h"
 
 namespace reno {
 namespace ofx {
@@ -145,7 +146,7 @@ struct Split {
         const float v18 = std::fmin(std::fabs(y - v7), std::fabs(y - v13));
         float v19 = std::fmin(v17, v18);
         if (v8 <= x && x <= v10 && v7 <= y && y <= v13)
-            v19 = std::fmin(std::fmin(std::hypot(v8 - x, v7 - y), std::hypot(v10 - x, v13 - y)), std::fmin(std::hypot(v8 - x, v13 - y), std::hypot(v10 - x, v7 - y)));
+            v19 = std::fmin(std::fmin(rm::hypot(v8 - x, v7 - y), rm::hypot(v10 - x, v13 - y)), std::fmin(rm::hypot(v8 - x, v13 - y), rm::hypot(v10 - x, v7 - y)));
         else if (v8 < x && x < v10) v19 = v17;
         else if (v7 < y && y < v13) v19 = v18;
         return v19;

@@ -1,5 +1,6 @@
 // Built-in stand-ins for the VEGAS Pro 18 stock video effects, with VEGAS's identifiers and parameter names, for when
 // VEGAS's plug-ins are not installed. The output approximates VEGAS's. See builtins.h.
+#include "../core/rmath.h"
 #include <mutex>
 #include "builtins_impl.h"
 #include "builtins_more_internal.h"
@@ -557,16 +558,16 @@ double levelsCurve(double t, double gamma)
 {
     const double G = 1.0 / gamma;
     if (std::fabs(gamma - 1.0) < 1e-6) return t;
-    const double k0 = std::pow(1.0 / G, -0.9418051973077521) * 0.03818376618407356;
-    const double slope = std::pow(1.0 / G, 1.8836103946155043);
+    const double k0 = rm::pow(1.0 / G, -0.9418051973077521) * 0.03818376618407356;
+    const double slope = rm::pow(1.0 / G, 1.8836103946155043);
     if (G < 1.0) {
-        const double t1 = std::pow(k0, G);
+        const double t1 = rm::pow(k0, G);
         const double a = (slope * k0 - t1) / (t1 - 1.0);
-        return t >= k0 ? std::pow(t, G) * (a + 1.0) - a : t * slope;
+        return t >= k0 ? rm::pow(t, G) * (a + 1.0) - a : t * slope;
     }
-    const double u = slope * k0, w = std::pow(u, 1.0 / G);
+    const double u = slope * k0, w = rm::pow(u, 1.0 / G);
     const double a = (k0 - w) / (w - 1.0), inv = 1.0 / (a + 1.0);
-    return t >= k0 ? std::pow((a + t) * inv, G) : t * slope;
+    return t >= k0 ? rm::pow((a + t) * inv, G) : t * slope;
 }
 
 // levelsCurve() with what it works out from the gamma alone (four pow calls) done once: the same values, so the same results.
@@ -578,13 +579,13 @@ struct LevelsCurveFixed {
         G = 1.0 / gamma;
         if (std::fabs(gamma - 1.0) < 1e-6) return;
         identity = false;
-        k0 = std::pow(1.0 / G, -0.9418051973077521) * 0.03818376618407356;
-        slope = std::pow(1.0 / G, 1.8836103946155043);
+        k0 = rm::pow(1.0 / G, -0.9418051973077521) * 0.03818376618407356;
+        slope = rm::pow(1.0 / G, 1.8836103946155043);
         if (G < 1.0) {
-            t1 = std::pow(k0, G);
+            t1 = rm::pow(k0, G);
             a = (slope * k0 - t1) / (t1 - 1.0);
         } else {
-            const double u = slope * k0, w = std::pow(u, 1.0 / G);
+            const double u = slope * k0, w = rm::pow(u, 1.0 / G);
             a = (k0 - w) / (w - 1.0);
             inv = 1.0 / (a + 1.0);
         }
@@ -592,8 +593,8 @@ struct LevelsCurveFixed {
     double operator()(double t) const
     {
         if (identity) return t;
-        if (G < 1.0) return t >= k0 ? std::pow(t, G) * (a + 1.0) - a : t * slope;
-        return t >= k0 ? std::pow((a + t) * inv, G) : t * slope;
+        if (G < 1.0) return t >= k0 ? rm::pow(t, G) * (a + 1.0) - a : t * slope;
+        return t >= k0 ? rm::pow((a + t) * inv, G) : t * slope;
     }
 };
 
@@ -804,7 +805,7 @@ static void mirror8General(Ctx& c, float theta, double cx, double cy)
     const float sx = (float)c.scale, sy = (float)c.scale;
     const float cxp = (float)(cx * (double)(W - 1)), cyp = (float)((1.0 - cy) * (double)(H - 1));
     const float u = (theta > 0.f ? 3.14159274101257f : -3.14159274101257f) - theta;
-    const float t = (float)std::tan((double)u);
+    const float t = (float)rm::tan((double)u);
     const float isx = 1.0f / sx, isy = 1.0f / sy;
     const float cxs = cxp * isx, cys = cyp * isy;
     const float m1t = -1.0f / t;
@@ -930,7 +931,7 @@ static void mirrorOpenCl(Ctx& c, double cxn, double cyn)
         const float v7 = th;
         const float sx = 1.f, sy = 1.f;
         const float v5g = v5 / sx, v6g = v6 / sy;
-        const float v22 = -std::tan(v7), v23 = -1.0f / v22;
+        const float v22 = -rm::tan(v7), v23 = -1.0f / v22;
         for (int y = 0; y < H; ++y) {
             const float v24 = (float)y / sy;
             const float v25 = std::fma(v6g - v24, v23, v5g) * sx;
@@ -992,7 +993,7 @@ void mirror(Ctx& c)
         if (!axis && std::isfinite(th)) { mirror8General(c, th, cx, cy); return; }
     }
     const double a = c.d("Angle") * kPi / 180.0;
-    const double kx = -std::sin(a), ky = -std::cos(a);
+    const double kx = -rm::sin(a), ky = -rm::cos(a);
     const double px0 = cx * W, py0 = (1 - cy) * H;
     const double ex = 0.4 * c.scale * kx * std::fabs(ky), ey = 0.4 * c.scale * ky * std::fabs(kx);
     const bool straight = std::fabs(kx) < 1e-9 || std::fabs(ky) < 1e-9;
@@ -1222,7 +1223,7 @@ void linearBlurTaps(double len, double dx, double dy, int& n, double& sx, double
     wt.assign((size_t)n + 1, 0.f);
     double sum = 0;
     for (int k = 0; k <= n; ++k) {
-        const double w = std::exp(-0.5 * (double)k * stride * k * stride / (sg * sg));
+        const double w = rm::exp(-0.5 * (double)k * stride * k * stride / (sg * sg));
         wt[(size_t)k] = (float)w;
         sum += (k ? 2 : 1) * w;
     }
@@ -1256,10 +1257,10 @@ static void keyerCoefsD(double sigma, double* n, double* d, double* m, double* b
     for (int i = 0; i < 5; ++i) n[i] = d[i] = m[i] = bn[i] = bm[i] = 0.0;
     if (!(s > 100.0)) {
         const double a = 1.475 / s;
-        const double sn = std::sin(a) * 1.021;
-        const double e1 = std::exp(-1.512 / s);
-        const double co = std::cos(a);
-        const double e2 = std::exp(-1.556 / s);
+        const double sn = rm::sin(a) * 1.021;
+        const double e1 = rm::exp(-1.512 / s);
+        const double co = rm::cos(a);
+        const double e2 = rm::exp(-1.556 / s);
         double t1 = co * 3.796;
         double x11 = e1 * sn;
         const double t6 = co * 0.8929;
@@ -1269,8 +1270,8 @@ static void keyerCoefsD(double sigma, double* n, double* d, double* m, double* b
         const double t0 = e1 * t6;
         x11 = x11 + t1b;
         x11 = x11 + t0;
-        const double e3 = std::exp(-3.024 / s);
-        const double e4 = std::exp(-3.068 / s);
+        const double e3 = rm::exp(-3.024 / s);
+        const double e4 = rm::exp(-3.068 / s);
         const double u0 = e4 * sn;
         const double u1 = e4 * t6;
         double x3 = e2 + e2;
@@ -1299,16 +1300,16 @@ static void keyerCoefsD(double sigma, double* n, double* d, double* m, double* b
         d[0] = 0.0; d[1] = x4; d[2] = x3; d[3] = x12; d[4] = 0.0;
     } else {
         const double a = 0.8448 / s;
-        const double co = std::cos(a);
-        const double e = std::exp(-1.26 / s);
+        const double co = rm::cos(a);
+        const double e = rm::exp(-1.26 / s);
         double x9 = co * 0.9629;
         x9 = x9 * e;
-        double x0 = std::sin(a) * 1.942;
+        double x0 = rm::sin(a) * 1.942;
         x0 = x0 * e;
         double x10 = co + co;
         x10 = x10 * e;
         x9 = x9 - x0;
-        const double e2 = std::exp(-2.52 / s);
+        const double e2 = rm::exp(-2.52 / s);
         x9 = -x9;
         x10 = -x10;
         double x2 = x9 + 0.9629;
@@ -1415,7 +1416,7 @@ void chromaKeyerGpuSetup(Ctx& c, int W, int H, ChromaKeyerSetup& o)
     { const float diff = highF - lowF; const float ad = (float)std::fabs((double)diff); if (!(1e-6f > ad)) o.invRange = 1.0f / diff; }
     const float amount = (float)clampd(c.d("BlurAmount"), 0, 1);
     const float size = std::max((float)W, (float)H) * amount * 0.25f + 1.5f;
-    const float ln2 = std::log(0.003921568859368563f) + std::log(0.003921568859368563f);
+    const float ln2 = rm::log(0.003921568859368563f) + rm::log(0.003921568859368563f);
     const float sigma = std::sqrt(-((size * size) / ln2));
     o.blur = sigma > 0.6f;
     if (o.blur) {
@@ -1439,7 +1440,7 @@ void chromaKeyerClSetup(Ctx& c, int W, int H, ChromaKeyerCl& o)
     o.inv = vcol::keyerInvRange(s);
     const float amount = (float)clampd(c.d("BlurAmount"), 0, 1);
     const float size = std::max((float)W, (float)H) * amount * 0.25f + 1.5f;
-    const float ln2 = std::log(0.003921568859368563f) + std::log(0.003921568859368563f);
+    const float ln2 = rm::log(0.003921568859368563f) + rm::log(0.003921568859368563f);
     const float sigma = std::sqrt(-((size * size) / ln2));
     o.blur = sigma > 0.6f && W > 1 && H > 1;
     for (int i = 0; i < 25; ++i) o.coefs[i] = 0.f;
@@ -1486,7 +1487,7 @@ void borderGeometry(Ctx& c, int W, int H, BorderGeo& g)
         g.cc[3] = (float)(a8 & 255);
     } else if (g.type == 0) {
         const float r15 = 1.5f * bx;
-        const int sigma = (int)std::sqrt(-(r15 * r15) / (2.f * std::log(1.f / 255.f)));
+        const int sigma = (int)std::sqrt(-(r15 * r15) / (2.f * rm::log(1.f / 255.f)));
         const float sg = (float)sigma;
         int wl = (int)std::floor(std::sqrt(12.f * sg * sg / 3.f + 1.f));
         if (wl % 2 == 0) --wl;
@@ -1495,7 +1496,7 @@ void borderGeometry(Ctx& c, int W, int H, BorderGeo& g)
         for (int i = 0; i < 3; ++i) g.rads[i] = ((i < m ? wl : wl + 2) - 1) / 2;
     } else {
         const double ang = c.d("Angle") * 0.017453292519943295;
-        float lx = (float)std::sin(ang), ly = -(float)std::cos(ang);
+        float lx = (float)rm::sin(ang), ly = -(float)rm::cos(ang);
         const float s2 = std::sqrt(2.f);
         const float n0 = 0.f / s2, nm = -1.f / s2, n1 = 1.f / s2;
         const float ln = std::sqrt(lx * lx + ly * ly + 2.25f);
@@ -1654,7 +1655,7 @@ void chromaKeyer(Ctx& c)
     // the blur
     const float amount = (float)clampd(c.d("BlurAmount"), 0, 1);
     const float size = std::max((float)W, (float)H) * amount * 0.25f + 1.5f;
-    const float ln2 = std::log(0.003921568859368563f) + std::log(0.003921568859368563f);
+    const float ln2 = rm::log(0.003921568859368563f) + rm::log(0.003921568859368563f);
     const float sigma = std::sqrt(-((size * size) / ln2));
     if (sigma > 0.6f) {
         const KeyerCoefs k = keyerCoefs(sigma);
@@ -1925,7 +1926,7 @@ struct NoiseR250 {
             v = (double)(step() & 0xffffu) / 65535.0 * 2.0 - 1.0;
             s = v * v + u * u;
         } while (s >= 1.0 || s == 0.0);
-        return std::sqrt(-2.0 * std::log(s) / s) * v;
+        return std::sqrt(-2.0 * rm::log(s) / s) * v;
     }
 };
 

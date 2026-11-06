@@ -11,6 +11,7 @@
 //     w = (mask << 14) / 255;  out = (first x w + second x (16384 - w) + 8192) >> 14   (per byte, the alpha too)
 // Horizontal / Vertical Mirror fold the mask about the middle (x > (w - 1) / 2 takes w - 1 - x), the Flips then turn it over (in that order).
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -556,7 +557,7 @@ inline bool radialProfile(const std::vector<uint8_t>& g, int pw, int ph, std::ve
     for (int r = 0; r <= half; ++r) prof[(size_t)r] = g[(size_t)cy * pw + (size_t)(cx - r)];
     for (int y = 0; y < ph; y += 7)
         for (int x = 0; x < pw; x += 7) {
-            const double r = std::hypot((double)(x - cx), (double)(y - cy));
+            const double r = rm::hypot((double)(x - cx), (double)(y - cy));
             if (r > half) continue;
             const int r0 = (int)std::floor(r);
             const double f = r - r0;
@@ -585,7 +586,7 @@ inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::
         // the picture is cropped to the frame's shape about its middle; a square picture (the circles) is scaled so that the frame's corners lie on the picture's
         // corner circle, which leaves parts of the frame outside the picture (the gradient goes on there)
         double sc;
-        if (pw == ph) sc = std::hypot((double)W + 1.0, (double)H + 1.0) / std::hypot((double)pw, (double)ph);
+        if (pw == ph) sc = rm::hypot((double)W + 1.0, (double)H + 1.0) / rm::hypot((double)pw, (double)ph);
         else sc = std::max((double)W / pw, (double)H / ph);
         vw = W / sc;
         vh = H / sc;
@@ -649,7 +650,7 @@ inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::
             for (int y = cy0; y < cy1; ++y)
                 for (int x = cx0; x < cx1; ++x) {
                     if (x >= 0 && x < pw && y >= 0 && y < ph) continue;
-                    const double r = std::hypot((double)(x - pw / 2), (double)(y - ph / 2));
+                    const double r = rm::hypot((double)(x - pw / 2), (double)(y - ph / 2));
                     const double v = r <= half ? prof[(size_t)std::floor(r + 0.5)] : prof[(size_t)half] + slope * (r - half);
                     canvas[(size_t)(y - cy0) * cw + (size_t)(x - cx0)] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : (int)(v + 0.5)));
                 }
@@ -682,7 +683,7 @@ inline void frameMask(const Picture& pic, const Settings& s, int W, int H, std::
 inline double blurSigma(double blur, double visMax)
 {
     if (!(blur > 9.999999974752427e-07)) return 0.0;
-    return visMax * 0.0011536774 * std::pow(846.8063024, 0.8 * blur);
+    return visMax * 0.0011536774 * rm::pow(846.8063024, 0.8 * blur);
 }
 
 // The index of the mask pixel a frame pixel takes: Mirror folds about the middle, then Flip turns over.

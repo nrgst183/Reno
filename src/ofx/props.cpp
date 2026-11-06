@@ -1,4 +1,5 @@
 // Property sets, parameters and parameter sets.
+#include "../core/rmath.h"
 #include "ofxinternal.h"
 #include <cfloat>
 #include <climits>
@@ -205,7 +206,7 @@ std::vector<double> Param::valueAt(double time) const
     case KeyFast: t = 1.0 - (1.0 - t) * (1.0 - t); break;
     case KeySlow: t = t * t; break;
     case KeySmooth: t = t * t * (3.0 - 2.0 * t); break;
-    case KeySharp: t = 0.5 - std::sin(std::asin(std::max(-1.0, std::min(1.0, 1.0 - 2.0 * t))) / 3.0); break;
+    case KeySharp: t = 0.5 - rm::sin(rm::asin(std::max(-1.0, std::min(1.0, 1.0 - 2.0 * t))) / 3.0); break;
     case KeyHold: return lo->second;
     default: break;
     }

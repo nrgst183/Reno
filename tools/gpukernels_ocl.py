@@ -6,6 +6,7 @@ import numpy as np
 from gpukernels import kernel, PIC_IN, PIC_OUT, TABLE, WH
 from spvdsl import compile_kernel
 from sf64 import SF, sf_pow, sf_atan2
+from rmath_gpu import sincos_f, log_f
 
 def F(x):
     """a float32 constant as the C++ compiler folds it (a Python float holding the float's value)"""
@@ -820,9 +821,10 @@ def o_noise(S):
             n = [S.var('f') for _ in range(3)]
             with S.if_(S.ne(P.gauss, 0)):
                 def box(a, b):
-                    r = S.sqrt(-2.0 * S.log(a))
+                    r = S.sqrt(-2.0 * log_f(S, a))
                     ang = F(2.0 * f32(3.1415926535897932384)) * b
-                    return r * S.sin(ang), r * S.cos(ang)
+                    sn, cs = sincos_f(S, ang)
+                    return r * sn, r * cs
                 s0, c0 = box(u0, u1)
                 s1, c1 = box(u2, u3)
                 n[0].set(s0); n[1].set(c0); n[2].set(s1)

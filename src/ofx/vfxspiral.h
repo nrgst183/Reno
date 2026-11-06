@@ -5,6 +5,7 @@
 //
 // Written from the decoded code. Pictures are RGBA floats; x, y given to the pixel functions are the kernel's (y = 0 is the bottom row), see Pic in vfxwipes.h.
 #pragma once
+#include "../core/rmath.h"
 #include "vfxwipes.h"
 #include <climits>
 #include <vector>
@@ -105,7 +106,7 @@ struct Spiral {
             const double a = angleDeg * 0.017453292519943;
             const double x7 = ((double)(-(Wf / 2)) - ((double)Wf * z * 0.5 + (double)border + (double)feather)) * s;
             const double y7 = ((double)(-(Hf / 2)) - ((double)Hf * z * 0.5 + (double)border + (double)feather)) * s;
-            const int bx = sat(std::cos(a) * x7 + 0.5), by = sat(std::sin(a) * y7 + 0.5);
+            const int bx = sat(rm::cos(a) * x7 + 0.5), by = sat(rm::sin(a) * y7 + 0.5);
             const int dx = sat((1.0 - z) * (double)Wf * 0.5 + 0.5) + bx, dy = sat((1.0 - z) * (double)Hf * 0.5 + 0.5) + by;
             R[0] += dx; R[2] += dx; R[1] += dy; R[3] += dy;
             for (int i = 0; i < 4; ++i) R1[i] = R[i];
@@ -127,7 +128,7 @@ struct Spiral {
         if (in3(r, x, y)) return std::fmin(d20, d21);
         if (r[0] < x && x < r[2]) return d21;
         if (r[1] < y && y < r[3]) return d20;
-        return std::hypot(d20, d21);
+        return rm::hypot(d20, d21);
     }
     // f6: outside the outer rectangle, or outside the inner one by more than the border
     static bool farOut(const float* outer, float x, float y, const float* inner, float bw)

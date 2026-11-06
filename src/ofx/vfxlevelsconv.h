@@ -2,6 +2,7 @@
 // kernels and their host code (Vfx1): 32-bit floats in the kernels' order, no fused multiply-add, the host's constants in doubles where the host uses doubles.
 // The kernels' pictures are premultiplied RGBA with the rows counted from the bottom; Convolution Kernel here takes Reno's top-first rows and flips the tap rows.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 
@@ -37,15 +38,15 @@ inline LevelsSetup levelsSetup(int channel, double inStart, double inEnd, double
     // the curve builder: a power with a straight piece (slope) below the threshold k, joined at k by the offset
     const double iv = 1.0 / gamma;
     const double gg = 1.0 / iv;
-    double k = std::pow(gg, -0.9418051973077521) * 0.03818376618407356;
-    const double slope = std::pow(gg, 1.8836103946155043);
+    double k = rm::pow(gg, -0.9418051973077521) * 0.03818376618407356;
+    const double slope = rm::pow(gg, 1.8836103946155043);
     double off = 0.0, v7 = 0.0;
     if (iv < 1.0) {
-        const float t = (float)std::pow(k, iv);
-        off = (std::pow(gg, 1.8836103946155043) * k - (double)t) / (double)(t - 1.0f);
+        const float t = (float)rm::pow(k, iv);
+        off = (rm::pow(gg, 1.8836103946155043) * k - (double)t) / (double)(t - 1.0f);
         s.curve0 = true;
     } else if (iv > 1.0) {
-        const float t = (float)std::pow(std::pow(gg, 1.8836103946155043) * k, gg);
+        const float t = (float)rm::pow(rm::pow(gg, 1.8836103946155043) * k, gg);
         off = (k - (double)t) / (double)(t - 1.0f);
         v7 = 1.0 / (off + 1.0);
         s.curve0 = false;
@@ -72,13 +73,13 @@ inline float levelsF(const LevelsSetup& s, float x)
     }
     float t = (x - s.inStart) / s.range;
     if (s.curve0) {
-        if (t >= s.toe) t = (1.0f + s.off) * std::pow(t, s.e) - s.off;
+        if (t >= s.toe) t = (1.0f + s.off) * rm::pow(t, s.e) - s.off;
         else if (t > -s.toe) t = t * s.slope;
-        else t = (-1.0f - s.off) * std::pow(-t, s.e) + s.off;
+        else t = (-1.0f - s.off) * rm::pow(-t, s.e) + s.off;
     } else {
-        if (t >= s.toe) t = std::pow((t + s.off) * s.v7, s.e);
+        if (t >= s.toe) t = rm::pow((t + s.off) * s.v7, s.e);
         else if (t > -s.toe) t = t * s.slope;
-        else t = -std::pow((t - s.off) * (-s.v7), s.e);
+        else t = -rm::pow((t - s.off) * (-s.v7), s.e);
     }
     const float r = t * (s.outEnd - s.outStart);
     return r + s.outStart;

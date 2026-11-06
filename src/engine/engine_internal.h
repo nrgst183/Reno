@@ -9,6 +9,8 @@ namespace reno {
 double overlapWeight(const Track& tr, const Event& e, double t, bool crossfade = true);
 // The same counting only 'others' (overlappingEvents: the events of e's track that can overlap it, in the track's
 // order), so that many samples of one event do not each look through the whole track.
+double overlapFade(const Track& tr, const Event& e, double t, bool crossfade = true);
+double overlapFadeAmong(const std::vector<const Event*>& others, const Event& e, double t, bool crossfade = true);
 double overlapWeightAmong(const std::vector<const Event*>& others, const Event& e, double t, bool crossfade = true);
 void overlappingEvents(const Track& tr, const Event& e, std::vector<const Event*>& out);
 // Turns the compositor's shortcuts (warp's per-column path, the first layer copied onto the canvas, the finished

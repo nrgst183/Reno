@@ -283,6 +283,13 @@ public:
     // Detect Scenes: timeline times where the picture of a video event cuts (sensitivity 0..100), and a split at those times.
     std::vector<double> detectScenes(uint64_t eventId, int sensitivity = 50);
     int splitAtScenes(int sensitivity = 50);
+    // Edit > Delete / Cut / Copy with a time selection (VEGAS): they work on the part of the events inside it - on every
+    // track, or only the selected events when some are selected - and events across its ends are split there. Events
+    // selected that do not touch the time selection are taken whole. timeSelectionEdit(): the commands work this way now.
+    typedef std::vector<std::pair<double, double>> TimeRanges;
+    bool timeSelectionEdit() const;
+    // Inside an edit: takes those parts out of p; 'removed' (if given) gets the time taken out of each track, by track id.
+    void removeTimeSelection(Project& p, std::map<uint64_t, TimeRanges>* removed) const;
     void deleteSelection();
     void copySelection();
     void cutSelection();

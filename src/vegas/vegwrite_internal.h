@@ -106,6 +106,7 @@ private:
 
     uint64_t lastEventId_ = 0;
     uint32_t lastMediaId_ = 0, lastTrackId_ = 0;
+    int recipCurve_ = 0;            // the event being written: its effectiveFadeInRecipCurve
     std::set<uint64_t> usedEventIds_;
     std::set<uint32_t> usedTrackIds_;
     std::map<uint64_t, uint32_t> busIndex_;             // Reno bus id -> VEGAS bus number (1 = Bus A)
@@ -159,6 +160,7 @@ private:
     void eventTake(const Event& e, const Track& t, const VegEventOrigin* o, const Chunk& base, OutNode& out, uint64_t vegId);
     void envelopes(OutNode& list, const Envelopes& envs, const std::vector<VegHidden>* hidden, bool track, TrackType type, const Event* ev,
                    const Event* evRead, const std::string& where, const FxChain* chain = nullptr);
+    OutNode videoOutFxList(const Chunk* orig);
     void videoFx(OutNode& list, const FxChain& chain, const std::vector<VegHidden>* hidden, const std::string& where, size_t* written);
     std::string ofxRecord(const FxSlot& s, const std::string& where);
     bool audioChain(const FxChain& chain, const Bytes* original, const char* tplName, std::string& out, size_t* written, const std::string& where);

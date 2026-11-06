@@ -139,9 +139,9 @@ def round_magic(S, x):
 
 
 def fpow(S, x, y):
-    """powf of floats, x >= 0: the double power rounded to a float (what a C library's powf gives but for a rare last bit)"""
-    from sf64 import sf_pow
-    return sf_pow(S, SF.from_f32(S, x), SF.from_f32(S, y)).to_f32()
+    """powf of floats as glibc 2.39 gives it (rmath::powf)"""
+    from rmath_gpu import pow_f
+    return pow_f(S, x, y)
 
 def fsqrt(S, x):
     """the float square root, correctly rounded (computed in double)"""

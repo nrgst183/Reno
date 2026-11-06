@@ -1,5 +1,6 @@
 // Built-in OpenFX plug-ins: the plumbing (entry points, describing, parameters, frames in and out), their presets, and VEGAS's rich text read
 // for Titles & Text. The effects are in builtins_gen.cpp (media generators) and builtins_filters.cpp (video effects).
+#include "../core/rmath.h"
 #include "builtins_impl.h"
 #include "builtins_more_internal.h"
 #include "vegas_ext.h"
@@ -968,7 +969,7 @@ static std::vector<float> gaussKernel(double sigma)
     const int r = (int)std::min(2000.0, std::ceil(sigma * 3));
     std::vector<float> k((size_t)r + 1);
     double sum = 0;
-    for (int i = 0; i <= r; ++i) { k[(size_t)i] = (float)std::exp(-0.5 * i * i / (sigma * sigma)); sum += (i ? 2 : 1) * k[(size_t)i]; }
+    for (int i = 0; i <= r; ++i) { k[(size_t)i] = (float)rm::exp(-0.5 * i * i / (sigma * sigma)); sum += (i ? 2 : 1) * k[(size_t)i]; }
     for (auto& v : k) v = (float)(v / sum);
     return k;
 }
@@ -1540,7 +1541,10 @@ RichText parseRichText(const std::string& in)
         if (c == '{') { stack.push_back(st); continue; }
         if (c == '}') {
             if (st.fontTable && !fontName.empty()) { fonts[curFontNo] = fontName; fontName.clear(); }
+            // The closing brace of the whole group ends the text: VEGAS's default Text is followed by a line break and tabs
+            // (the file's indentation), which are not text and must not make a second line.
             if (stack.size() > 1) stack.pop_back();
+            if (stack.size() <= 1) break;
             continue;
         }
         if (c == '\r' || c == '\n') continue;

@@ -8,7 +8,11 @@
 // reader against VEGAS's own output (tools/vegas/Export to Reno.cs).
 #include "vegas.h"
 #include "vegas_internal.h"
+#include "vegvst3side.h"
+#include "../audiofx/audioplugin.h"
+#include <cctype>
 #include <filesystem>
+#include <map>
 #include <mutex>
 
 namespace reno {
@@ -25,6 +29,11 @@ thread_local std::set<std::string>* t_nestOpen = nullptr;
 }  // namespace
 
 namespace vegread {
+
+// The video output's envelopes (fade to colour, mute, motion blur length, supersampling) are a list of their own at the top
+// of the file: an envelope header and an envelope points chunk each, as on a track (Coverage run 20261105).
+static const char* const kVideoBusEnvelopes = "f0ca0912-3506-496f-bdbf-7807976210d2";
+
 
 // "META:\SubClip\{C:\a\b.mp4} (2)[1184656300][7400444][0]": file, subclip start and length (100 ns), reversed flag.
 bool parseSubclip(const std::string& s, std::string& file, double& start, double& len, bool& reversed)
@@ -73,6 +82,14 @@ bool Importer::run(Project& p, std::string& error)
         readBuses(*b);
         if (const Chunk* m = childChunk(*b, G::Mixer)) readMixer(*m);
     }
+    if (const Chunk* vo = childList(root, G::VideoOutFx)) readVideoOutFx(*vo);
+    for (const auto& k : root.kids) {
+        if (k.isList && k.type == kVideoBusEnvelopes) {
+            std::vector<VegHidden> hidden;
+            readEnvelopeList(k, true, TrackType::Video, "The video output", p_->videoEnvelopes, hidden);
+            po_->videoEnvelopes = p_->videoEnvelopes;
+        }
+    }
     if (const Chunk* t = childList(root, G::Tracks)) {
         int i = 0;
         for (const Chunk* tr : childLists(*t, G::Track)) readTrack(*tr, i++);
@@ -84,14 +101,16 @@ bool Importer::run(Project& p, std::string& error)
     if (const Chunk* m = childList(root, G::CommandMarkers)) readMarkers(*m, 1);
     if (const Chunk* m = childList(root, G::CdMarkers)) readMarkers(*m, 2);
     finishMedia();
+    nameUnnamedAudioFx();
 
     // Top-level parts that are only VEGAS window/view state are kept and written back silently.
-    static const char* const known[] = {G::Header, G::MediaList, G::Tracks, G::Groups, G::Markers, G::Summary, G::Buses,
+    static const char* const known[] = {G::Header, G::MediaList, G::Tracks, G::Groups, G::Markers, G::Summary, G::Buses, G::VideoOutFx,
                                         G::ViewList, G::Timelines, G::WindowState, G::EmptyListA, G::EmptyChunkA};
     for (const auto& k : root.kids) {
         bool ok = false;
         for (const char* g : known) ok = ok || k.is(g);
         if (k.isList && (k.type == G::CommandMarkers || k.type == G::CdMarkers)) ok = true;     // read above
+        if (k.isList && k.type == kVideoBusEnvelopes) ok = true;                                 // read above
         if (k.isList && k.type == G::MarkersB) {
             ok = true;
             const size_t n = childChunks(k, G::Marker).size();
@@ -141,15 +160,28 @@ void Importer::readHeader(const Chunk& c)
     const double tempo = b.f64(0x18);
     if (std::isfinite(tempo) && tempo >= 10 && tempo <= 1000) s.tempo = tempo;
     s.rulerFormat = rulerFormatOfHeaderWord(b.u32(0x08));
-    const uint16_t bpm = b.u16(0x28);
+    // i64 at 0x20: the ruler's start time, stored negated (a ruler that starts at 0.5 s holds -5000000)
+    const int64_t rulerStart = -b.i64(0x20);
+    if (rulerStart > -(int64_t)36000000000000LL && rulerStart < (int64_t)36000000000000LL) s.rulerStart = (double)rulerStart / 1e7;
+    // u16 at 0x28: the note that gets one beat (4 = quarter note), u16 at 0x2a: beats per measure (3/8 holds 8 and 3)
+    const uint16_t note = b.u16(0x28), bpm = b.u16(0x2a);
     if (bpm >= 1 && bpm <= 32) s.beatsPerMeasure = bpm;
+    if (note >= 1 && note <= 64) s.noteGetsBeat = note;
+    // u32 at 0x70: the audio CD's first track number; u32 at 0x74 and 0x78: the low-pass filter on the LFE (5.1) switch
+    // and its cutoff in Hz
+    const uint32_t firstTrack = b.u32(0x70);
+    if (firstTrack >= 1 && firstTrack <= 99) s.cdFirstTrack = (int)firstTrack;
+    if (b.u32(0x74) <= 1) s.lfeLowpass = b.u32(0x74) == 1;
+    const uint32_t lfeCutoff = b.u32(0x78);
+    if (lfeCutoff >= 10 && lfeCutoff <= 1000) s.lfeCutoff = lfeCutoff;
     po_->lastEventId = b.u64(0x48);
 
     size_t at = b.u32(0);
     if (at < 0x40 || at > b.size()) return;
     const std::string projectPath = b.textZ(at, &at);
     po_->headerPath = projectPath;
-    for (int i = 0; i < 3; ++i) b.textZ(at, &at);
+    for (int i = 0; i < 2; ++i) b.textZ(at, &at);
+    s.cdUpc = b.textZ(at, &at);      // the fourth text is the audio CD's UPC / media catalog number
     const size_t sep = projectPath.find_last_of("\\/");
     if (sep != std::string::npos) originalDir_ = projectPath.substr(0, sep + 1);
     const uint32_t blk = b.u32(at);
@@ -166,6 +198,41 @@ void Importer::readHeader(const Chunk& c)
             static const char* const quality[] = {"", "draft", "preview", "good", "best"};
             if (q >= 1 && q <= 4) s.renderQuality = quality[q];
             if (d <= 2) s.deinterlace = d == 1 ? "blend" : d == 2 ? "interpolate" : "none";
+        }
+        // HDR mode at +0x348 (0 off, 1 HDR10, 2 HLG) and 360 output at +0x344 (0 off, 1 on): found by saving projects with each
+        // set (Coverage run 2, 20261105); older files have the words at 0
+        if (b.has(at, 0x34c)) {
+            const uint32_t hdr = b.u32(at + 0x348), t360 = b.u32(at + 0x344);
+            if (hdr <= 2) s.hdrMode = hdr == 1 ? "hdr10" : hdr == 2 ? "hlg" : "off";
+            if (t360 <= 1) s.output360 = t360 == 1;
+        }
+        // The video output's fade-to-colour colours: top at +0xa0 and bottom at +0xb0, four floats each in the order blue, green,
+        // red, alpha (white and black unless set; Coverage run 20261105)
+        if (b.has(at, 0xc0)) {
+            auto colour = [&](size_t off) {
+                auto ch = [&](size_t o) {
+                    const float f = b.f32(at + off + o);
+                    return (uint32_t)std::lround(std::max(0.0f, std::min(1.0f, std::isfinite(f) ? f : 0.0f)) * 255.0f);
+                };
+                return (ch(12) << 24) | (ch(8) << 16) | (ch(4) << 8) | ch(0);
+            };
+            p_->videoFadeTop = colour(0xa0);
+            p_->videoFadeBottom = colour(0xb0);
+            po_->videoFadeTop = p_->videoFadeTop;
+            po_->videoFadeBottom = p_->videoFadeBottom;
+        }
+        // Found by changing one setting at a time (Coverage run 20261105): +0x34 field order (0 progressive, 1 upper,
+        // 2 lower), +0xf0 motion blur type (VEGAS's MotionBlurType: 0 Gaussian, 1 Pyramid, 2 Box, 3-5 the asymmetric
+        // ones), +0x0c pixel format (0x1c 8-bit, 0x20 32-bit floating point, video levels), +0x130 output rotation
+        // (0 none, 1 clockwise, 2 upside down, 3 counterclockwise).
+        if (b.has(at, 0x134)) {
+            const uint32_t fo = b.u32(at + 0x34), mb = b.u32(at + 0xf0), pf = b.u32(at + 0x0c), rot = b.u32(at + 0x130);
+            if (fo <= 2) s.fieldOrder = fo == 1 ? "upper" : fo == 2 ? "lower" : "none";
+            static const char* const blur[] = {"gaussian", "pyramid", "box", "asymgaussian", "asympyramid", "asymbox"};
+            if (mb < 6) s.motionBlur = blur[mb];
+            if (pf == 0x20) { s.pixelFormat = "32bit"; s.pixelRange = "video"; }
+            else if (pf == 0x1c) s.pixelFormat = "8bit";
+            if (rot <= 3) s.outputRotation = (int)rot * 90;
         }
     } else {
         notes_.add("The project's picture size could not be read; 1920x1080 is assumed.");
@@ -200,7 +267,13 @@ void Importer::readMixer(const Chunk& c)
 {
     const Bytes& b = c.data;
     const uint32_t rate = b.u32(0x6e4), bits = b.u32(0x6e8);
-    if ((int)rate == p_->settings.sampleRate && (bits == 16 || bits == 24 || bits == 32)) p_->settings.audioBits = (int)bits;
+    // The project's sample rate is the mixer's: the header's word at 0x0c stays 48000 when a script or the dialog
+    // sets another rate (props_audio_* of the Coverage run: 8000..96000 all kept 48000 there, and 192000 only agreed
+    // because the project's mixer had it), and two of the samples have 44100 here and 48000 there.
+    if (rate >= 8000 && rate <= 768000) p_->settings.sampleRate = (int)rate;
+    if (bits == 16 || bits == 24 || bits == 32) p_->settings.audioBits = (int)bits;
+    // u32 at 0x0c and 0x10: the master bus mode (1 and 2: stereo; 2 and 6: 5.1 surround)
+    if (b.u32(0x0c) == 2 && b.u32(0x10) == 6) p_->settings.audioChannels = 6;
 }
 
 // ---------------------------------------------------------------- media
@@ -235,6 +308,7 @@ void Importer::readMedia(const Chunk& list)
         size_t at = hs + (size_t)pathLen + moreTexts;
         if (b.has(at, nameLen)) m.name = b.text(at, nameLen);
         at += nameLen;
+        const size_t recordsStart = at;
         for (int i = 0; i < 64 && b.has(at, 8); ++i) {
             const uint32_t sz = b.u32(at);
             if (sz < 8 || !b.has(at, sz)) break;
@@ -242,6 +316,9 @@ void Importer::readMedia(const Chunk& list)
                 const uint32_t type = b.u32(at + 4);
                 if (type == 3) m.video = true;
                 else if (type == 2) m.audio = true;
+            } else if (sz == 0xc) {
+                const double f = b.f64(at + 4);
+                if (std::isfinite(f) && f > 0 && f <= 1000) m.seqFps = f;
             } else if (sz == 0xb0) {
                 m.genW = (int)b.u32(at + 0x0c);
                 m.genH = (int)b.u32(at + 0x10);
@@ -266,6 +343,22 @@ void Importer::readMedia(const Chunk& list)
                 }
             }
         }
+        // Media effects of the older kinds (VEGAS's managed CoreGraphics effects such as Rays, and the DirectX-era ones) are records of
+        // their own behind the stream records (u32 0x38, the class GUID): found by position, one after the other
+        {
+            size_t q = recordsStart;
+            while (q + 0x38 <= b.size() && m.otherFx.size() < 1000) {
+                bool inOfx = false;
+                for (const auto& o : fx) inOfx = inOfx || (q >= o.second && q < o.first.end);
+                if (inOfx) { q += 1; continue; }
+                if (b.u32(q) == 0x38 && (isManagedFxAt(b, q) || isLegacyFxAt(b, q))) {
+                    m.otherFx.push_back(q);
+                    q += 0x38;
+                } else {
+                    q += 1;
+                }
+            }
+        }
         double ss = 0, sl = 0;
         bool rev = false;
         std::string parent;
@@ -285,6 +378,35 @@ void Importer::readMedia(const Chunk& list)
                 m.generatorOk = true;
                 m.mediaFx.assign(fx.begin() + 1, fx.end());
             }
+        } else if (raw.compare(0, 22, "META:\\Image Sequence\\{") == 0 && raw.find("} (") != std::string::npos) {
+            // the first picture is in the braces; the numbers after it are the frame count and the digits of the numbering
+            m.kind = VegMediaRecord::File;
+            m.sequence = true;
+            m.path = raw.substr(22, raw.rfind("} (") - 22);
+            m.video = true;
+            // VEGAS names it "first - last" (no name is stored): the numbers are [count][digits] at the end of the text
+            {
+                long long nums[2] = {0, 0};
+                size_t end = raw.size();
+                bool ok = true;
+                for (int i = 1; i >= 0 && ok; --i) {
+                    const size_t open = end > 0 && raw[end - 1] == ']' ? raw.rfind('[', end - 1) : std::string::npos;
+                    ok = open != std::string::npos && end - open - 2 > 0 && end - open - 2 < 10;
+                    if (ok) { nums[i] = std::atoll(raw.substr(open + 1, end - open - 2).c_str()); end = open; }
+                }
+                const std::string file = windowsFileName(m.path);
+                const size_t dot = file.find_last_of('.');
+                const std::string stem = dot == std::string::npos ? file : file.substr(0, dot);
+                const size_t digits = (size_t)nums[1];
+                if (ok && nums[0] >= 2 && digits > 0 && digits < stem.size() + 1 && digits < 10 && m.name.empty()) {
+                    const std::string head = stem.substr(0, stem.size() - digits);
+                    const long first = std::atol(stem.c_str() + stem.size() - digits);
+                    char last[16];
+                    std::snprintf(last, sizeof last, "%0*ld", (int)digits, first + (long)nums[0] - 1);
+                    m.name = stem + " - " + head + last;
+                }
+            }
+            m.mediaFx = fx;
         } else if (raw.compare(0, 5, "META:") == 0) {
             m.kind = VegMediaRecord::Other;
             m.path = raw;
@@ -298,7 +420,22 @@ void Importer::readMedia(const Chunk& list)
         vr.subStart = m.subStart;
         vr.subLen = m.subLen;
         vr.subReversed = m.subReversed;
-        if (m.kind == VegMediaRecord::Generated && !m.generatorOk) {
+        // The pre-OpenFX generators (DirectX plug-ins, named by class GUID in the path) have no OpenFX record; the two that
+        // Reno has a built-in of are taken with that built-in's default settings (their own settings block is not
+        // decoded). The record stays as it is in the file unless the generator is changed.
+        const char* legacyPlugin = nullptr;
+        if (m.kind == VegMediaRecord::Generated && !m.generatorOk && raw.size() > 22) {
+            static const struct { const char* guid; const char* plugin; } legacyGen[] = {
+                {"{02FD3B60-986B-11D4-9F6F-00485481BD31}", "com.vegascreativesoftware:creditroll"},
+                {"{8B5DEABC-53BD-49F6-9803-367478307A59}", "com.vegascreativesoftware:colorgradient"},
+            };
+            for (const auto& g : legacyGen)
+                if (raw.compare(22, std::strlen(g.guid), g.guid) == 0) legacyPlugin = g.plugin;
+            if (legacyPlugin)
+                notes_.count("%d generator(s) are VEGAS's older DirectX generators (Credit Roll, Color Gradient); their settings are not read, Reno uses the built-in's defaults",
+                             m.generatorName.empty() ? raw : m.generatorName);
+        }
+        if (m.kind == VegMediaRecord::Generated && !m.generatorOk && !legacyPlugin) {
             notes_.add("Generated media '" + (m.name.empty() ? raw : m.name) + "': the generator's settings could not be read; it is kept "
                        "in the file but not shown.");
             vr.kind = VegMediaRecord::Other;
@@ -316,7 +453,13 @@ void Importer::readMedia(const Chunk& list)
             mi.id = p_->newId();
             mi.generated = true;
             mi.name = !m.name.empty() ? m.name : (!m.generatorName.empty() ? m.generatorName : m.generator.pluginId);
-            mi.generator = fxSlotOf(m.generator, "Generated media '" + mi.name + "'", c, m.generatorOff, false);
+            if (legacyPlugin) {
+                mi.generator.id = p_->newId();
+                mi.generator.kind = "ofx";
+                mi.generator.pluginId = legacyPlugin;
+            } else {
+                mi.generator = fxSlotOf(m.generator, "Generated media '" + mi.name + "'", c, m.generatorOff, false);
+            }
             mi.generator.name = m.generatorName;
             mi.info.hasVideo = true;
             if (m.genW >= 1 && m.genW <= 16384 && m.genH >= 1 && m.genH <= 16384) {
@@ -333,8 +476,9 @@ void Importer::readMedia(const Chunk& list)
             // A subclip becomes its whole file: events using it get the subclip start added to their offset
             // (and are reversed if the subclip plays backwards).
             const std::string display = m.kind == VegMediaRecord::File ? m.name : std::string();
-            m.renoId = mediaItemForFile(m.path, display);
+            m.renoId = mediaItemForFile(m.path, display, m.sequence);
             MediaItem* mi = p_->findMedia(m.renoId);
+            if (mi && m.sequence && mi->sequenceFps <= 0) mi->sequenceFps = m.seqFps > 0 ? m.seqFps : p_->settings.fps();     // (the rate the sequence was opened at; the project's when the record has none)
             if (mi) {
                 mi->info.hasVideo = mi->info.hasVideo || m.video;
                 mi->info.hasAudio = mi->info.hasAudio || m.audio;
@@ -360,9 +504,9 @@ void Importer::readMedia(const Chunk& list)
     }
 }
 
-uint64_t Importer::mediaItemForFile(const std::string& path, const std::string& name)
+uint64_t Importer::mediaItemForFile(const std::string& path, const std::string& name, bool sequence)
 {
-    const std::string key = normPath(path);
+    const std::string key = normPath(path) + (sequence ? "\x01sequence" : "");
     auto it = fileMedia_.find(key);
     if (it != fileMedia_.end()) return it->second;
     MediaItem mi;
@@ -388,7 +532,7 @@ double Importer::mirrorEndOf(const MediaRec& m)
     double end = plain;
     std::string found = fileExists(m.path) ? m.path : std::string();
     if (found.empty()) {
-        const std::string here = pathDir(vegPath_);
+        const std::string here = pathDir(vegPath_).empty() ? std::string(".") : pathDir(vegPath_);      // (a bare file name is in the current folder)
         const std::string origDir = normPath(originalDir_);
         const std::string np = normPath(m.path);
         std::string rel;
@@ -419,7 +563,7 @@ double Importer::mirrorEndOf(const MediaRec& m)
 // offline. Other .veg files used as media are read for frame size, frame rate and length.
 void Importer::finishMedia()
 {
-    const std::string here = pathDir(vegPath_);
+    const std::string here = pathDir(vegPath_).empty() ? std::string(".") : pathDir(vegPath_);      // (a bare file name is in the current folder)
     const std::string origDir = normPath(originalDir_);
     for (auto& m : p_->media) {
         if (m.generated) continue;
@@ -503,6 +647,7 @@ FxSlot Importer::fxSlotOf(const OfxRecord& r, const std::string& where, const Ch
     out.kind = "ofx";
     out.pluginId = r.pluginId;
     out.state = r.state;
+    out.preset = r.preset;
     out.bypass = r.bypass();
     out.beforePanCrop = r.beforePanCrop() || mediaFx;      // media effects apply to the media itself
     if (r.unreadParams > 0) {
@@ -537,6 +682,12 @@ bool Importer::noteSkippedManagedFx(const Chunk& chunk, const std::string& where
 bool Importer::managedFxSlotOf(const Chunk& chunk, const std::string& where, FxSlot& out)
 {
     if (chunk.isList || chunk.id != G::Fx) return false;
+    return managedFxSlotAt(chunk, 0, where, out, false);
+}
+
+// The record at 'off' of the chunk's data (a media chunk holds its own effects behind the stream records).
+bool Importer::managedFxSlotAt(const Chunk& chunk, size_t off, const std::string& where, FxSlot& out, bool mediaFx)
+{
     ManagedFxRecord r;
     LegacyFxRecord lr;
     Json state;
@@ -544,12 +695,12 @@ bool Importer::managedFxSlotOf(const Chunk& chunk, const std::string& where, FxS
     std::vector<std::string> problems;
     std::string label, plugin;
     size_t recordEnd = 0;
-    if (readManagedFx(chunk.data, 0, r)) {
+    if (readManagedFx(chunk.data, off, r)) {
         plugin = managedPluginId(r);
         if (plugin.empty() || !managedFxState(r, p_->settings.fps(), state, bypass, problems)) return false;
         label = r.root;
         recordEnd = r.end;
-    } else if (readLegacyFx(chunk.data, 0, lr)) {
+    } else if (readLegacyFx(chunk.data, off, lr)) {
         plugin = legacyPluginId(lr);
         if (plugin.empty() || !legacyFxState(lr, p_->settings.fps(), state, problems)) return false;
         label = plugin.substr(plugin.find(':') + 1);
@@ -562,9 +713,11 @@ bool Importer::managedFxSlotOf(const Chunk& chunk, const std::string& where, FxS
     out.kind = "ofx";
     out.pluginId = plugin;
     out.state = state;
+    out.preset = !lr.classGuid.empty() ? lr.preset : r.preset;
     out.bypass = bypass;
-    out.beforePanCrop = recordBeforePanCrop(chunk.data, 0);
+    out.beforePanCrop = recordBeforePanCrop(chunk.data, off) || mediaFx;      // (a media effect works on the media itself)
     if (!lr.classGuid.empty()) out.bypass = legacyBypass(lr);
+    else if (chunk.data.size() >= off + 0x30 && (chunk.data.u32(off + 0x2c) & 1u)) out.bypass = true;      // managed effects: the record's bypass bit as well as their XML
     if (!problems.empty()) {
         std::string names;
         for (size_t i = 0; i < problems.size() && i < 4; ++i) names += (i ? ", " : "") + problems[i];
@@ -572,8 +725,9 @@ bool Importer::managedFxSlotOf(const Chunk& chunk, const std::string& where, FxS
                           problems.size() == 1 ? "" : "s", label.c_str(), problems.size() == 1 ? "" : "s", names.c_str()));
     }
     auto o = origin<VegFxOrigin>(&chunk);
-    o->entryOff = 0;
-    o->entryLen = recordEnd;
+    o->entryOff = off;
+    o->entryLen = recordEnd > off ? recordEnd - off : 0;
+    o->mediaFx = mediaFx;
     o->asRead = out;
     out.veg = o;
     return true;
@@ -601,6 +755,18 @@ void Importer::audioChain(const Chunk* chunk, size_t off, const std::string& whe
         s.audio.format = a.format;
         s.audio.uid = a.uid;
         s.audio.name = a.name;
+        if (a.format == "VST2") {
+            // the CLSID as text ("6e744157-...") back to the bytes as stored: the first three fields are little-endian
+            std::string hex;
+            for (char c : a.clsid) if (c != '-') hex += c;
+            if (hex.size() == 32) {
+                auto flip = [&](size_t at, size_t bytes) { for (size_t i = 0; i < bytes / 2; ++i) std::swap_ranges(hex.begin() + at + 2 * i, hex.begin() + at + 2 * i + 2, hex.begin() + at + 2 * (bytes - 1 - i)); };
+                flip(0, 4);
+                flip(8, 2);
+                flip(12, 2);
+                s.audio.vegasClsid = hex;
+            }
+        }
         if (!a.state.empty()) s.state = a.state;
         if (!a.problem.empty()) notes_.add(where + ": audio effect '" + a.name + "': " + a.problem + "; it starts with its default settings in Reno.");
         // (VST effects are matched by id at playback, DirectX effects by CLSID)
@@ -615,14 +781,89 @@ void Importer::audioChain(const Chunk* chunk, size_t off, const std::string& whe
     }
 }
 
+// An Assignable FX chain keeps no names for its plug-ins (VEGAS shows the plug-in's own): take the name another chain of the
+// project gives the same plug-in, else the name of Reno's own version of a VEGAS DirectX effect. Only the label changes:
+// the slot as read gets the same name, so the writer still sees it unchanged.
+void Importer::nameUnnamedAudioFx()
+{
+    std::map<std::string, std::string> byUid;
+    auto learn = [&](const FxChain& c) {
+        for (const auto& s : c)
+            if (s.kind == "audio" && !s.audio.name.empty() && !s.audio.uid.empty()) byUid.emplace(s.audio.uid, s.audio.name);
+    };
+    for (const auto& t : p_->tracks) {
+        learn(t.fx);
+        for (const auto& e : t.events) learn(e.fx);
+    }
+    for (const auto& b : p_->buses) learn(b.fx);
+    learn(p_->audioOut);
+    std::vector<AudioPluginDesc> builtins;
+    auto fill = [&](FxChain& c) {
+        for (auto& s : c) {
+            if (s.kind != "audio" || !s.audio.name.empty() || s.audio.uid.empty()) continue;
+            std::string name;
+            auto it = byUid.find(s.audio.uid);
+            if (it != byUid.end()) name = it->second;
+            else if (s.audio.format == "DX") {
+                const std::string b = builtinUidForDx(s.audio.uid);
+                if (!b.empty()) {
+                    if (builtins.empty()) builtins = builtinAudioPlugins();
+                    for (const auto& d : builtins) if (d.uid == b) name = d.name;
+                }
+            }
+            if (name.empty()) continue;
+            s.audio.name = name;
+            if (s.name.empty()) s.name = name;
+            if (auto* o = const_cast<VegFxOrigin*>(vegOriginAs<VegFxOrigin>(s.veg, VegOrigin::FxK))) {
+                o->asRead.audio.name = s.audio.name;
+                o->asRead.name = s.name;
+            }
+        }
+    };
+    for (auto& b : p_->buses) if (b.assignable) fill(b.fx);
+}
+
 // ---------------------------------------------------------------- buses
 // Bus chunk: u32 0xc8, u32 kind at 0x0c (2 master, 3 audio bus, 7 video bus), u32 index at 0x14 (1 = Bus A), f64
 // level at 0x18 (and 0x20 for the right side); u32 mute at 0x5c, u32 solo at 0x60, u32 pan type at 0x7c (as a track's,
 // see panTypeName; the master has no pan type there); at 0xd0 four 0-terminated texts (output device, name,
 // description, default name "Bus A"), then the audio effect chain. At 0x98 the audio and video buses hold -2 in every sample, taken to mean
 // "to the master"; anything else is reported.
+int curveFromVegas(int32_t c, bool* known);     // (vegas_tracks.cpp)
+
 void Importer::readBuses(const Chunk& list)
 {
+    // The envelopes of the master or of a bus are inside its record
+    auto envelopesOf = [&](const Chunk* c, const std::string& label, bool master) {
+        Envelopes out;
+        std::vector<EnvelopeRecord> recs;
+        if (!readBusEnvelopes(c->data, recs)) return out;
+        for (const auto& e : recs) {
+            Envelope env;
+            if (e.type == EnvVolume) env.kind = "volume";
+            else if (e.type == EnvPan && !master) env.kind = "pan";
+            else if (e.type == EnvMute) env.kind = "mute";
+            else {
+                notes_.add(strfmt("%s: its %s envelope (%zu point%s) is not used by Reno (it is kept in the file).", label.c_str(),
+                                  envelopeName(e.type).c_str(), e.points.size(), e.points.size() == 1 ? "" : "s"));
+                continue;
+            }
+            bool allKnown = true;
+            for (const auto& pt : e.points) {
+                EnvPoint q;
+                q.time = pt.time;
+                q.value = pt.value;
+                bool known = true;
+                q.curve = curveFromVegas(pt.curve, &known);
+                allKnown = allKnown && known;
+                env.points.push_back(q);
+            }
+            if (!allKnown) notes_.add(label + ": an envelope has points with a curve Reno does not know; they are straight lines in Reno.");
+            std::stable_sort(env.points.begin(), env.points.end(), [](const EnvPoint& a, const EnvPoint& b) { return a.time < b.time; });
+            out.push_back(env);
+        }
+        return out;
+    };
     static const uint8_t chainGuid[16] = {0x01, 0x86, 0x12, 0xb4, 0x2e, 0x70, 0xd1, 0x11, 0x82, 0x53, 0x00, 0x00, 0x92, 0x90, 0xdd, 0x44};
     for (const Chunk* c : childChunks(list, G::Bus)) {
         const Bytes& b = c->data;
@@ -637,6 +878,8 @@ void Importer::readBuses(const Chunk& list)
             if (level >= 0 && level < 16) p_->masterVolume = level;
             p_->masterMute = b.u32(busMuteOffset) != 0;
             if (chain != std::string::npos) audioChain(c, chain, "The master bus", p_->audioOut);
+            p_->masterEnvelopes = envelopesOf(c, "The master bus", true);
+            po_->masterEnvelopes = p_->masterEnvelopes;
         } else if (type == 3) {
             Bus bus;
             bus.id = p_->newId();
@@ -648,11 +891,27 @@ void Importer::readBuses(const Chunk& list)
             if (b.i32(0x98) != -2)
                 notes_.add("Bus '" + bus.name + "': where its sound goes could not be read; Reno sends it to the master.");
             if (chain != std::string::npos) audioChain(c, chain, "Bus '" + bus.name + "'", bus.fx);
+            bus.envelopes = envelopesOf(c, "Bus '" + bus.name + "'", false);
             auto o = origin<VegBusOrigin>(c);
             o->asRead = bus;
             o->asRead.fx.clear();
             bus.veg = o;
             busByIndex_[index] = bus.id;
+            p_->buses.push_back(bus);
+        } else if (type == 4) {
+            // An Assignable FX chain: the same record as a bus (type 3), named "FX n" by VEGAS (after its number, 0 first)
+            Bus bus;
+            bus.id = p_->newId();
+            bus.assignable = true;
+            bus.name = strfmt("FX %u", index + 1);
+            bus.level = (level >= 0 && level < 16) ? level : 1.0;
+            bus.mute = b.u32(busMuteOffset) != 0;
+            bus.solo = b.u32(busSoloOffset) != 0;
+            if (chain != std::string::npos) audioChain(c, chain, "Assignable FX " + std::to_string(index + 1), bus.fx);
+            auto o = origin<VegBusOrigin>(c);
+            o->asRead = bus;
+            o->asRead.fx.clear();
+            bus.veg = o;
             p_->buses.push_back(bus);
         } else if (type == 7) {
             // video output effects: OpenFX records, as on events
@@ -670,6 +929,29 @@ void Importer::readBuses(const Chunk& list)
             }
         } else {
             unknown("the mixer");
+        }
+    }
+}
+
+// The effects of the video output (Video Output FX): a list of its own between the summary and the buses, one effect
+// record (the same as an event's) per chunk. Found in VEGAS Pro 18's own coverage projects; older files hold none.
+void Importer::readVideoOutFx(const Chunk& list)
+{
+    const std::string where = "The video output";
+    for (const auto& k : list.kids) {
+        OfxRecord r;
+        FxSlot managed;
+        if (!k.isList && k.id == G::Fx && readOfxRecord(k.data, 0, r)) {
+            p_->videoOut.push_back(fxSlotOf(r, where, &k, 0, false));
+        } else if (managedFxSlotOf(k, where, managed)) {
+            p_->videoOut.push_back(managed);
+        } else {
+            VegHidden hd;
+            hd.before = p_->videoOut.size();
+            hd.chunks.push_back(&k);
+            po_->hiddenVideoOutFx.push_back(hd);
+            if (!noteSkippedManagedFx(k, where))
+                notes_.add(where + ": a video effect that is not an OpenFX plug-in is not used by Reno (it is kept in the file).");
         }
     }
 }
@@ -800,7 +1082,9 @@ VegasImportResult importVegasProject(const std::string& path, Project& out)
         r.error = "the file could not be read";
         return r;
     }
-    return importVegasData(raw, path, out);
+    VegasImportResult r = importVegasData(raw, path, out);
+    if (r.ok) readVst3Side(path, out, &r.notes);       // VST3 effects kept beside the .veg (VEGAS cannot store them)
+    return r;
 }
 
 // Cache of vegasProjectMediaInfo results per project file, valid while size and time are unchanged. Projects that
@@ -961,6 +1245,79 @@ bool loadProjectFileWithNotes(const std::string& path, Project& out, std::string
 bool loadProjectFile(const std::string& path, Project& out, std::string* error)
 {
     return loadProjectFileWithNotes(path, out, error, nullptr);
+}
+
+// ---------------------------------------------------------------- older effects, for the model dump
+static VegOlderFx olderFxAt(const Bytes& b, size_t off)
+{
+    VegOlderFx f;
+    std::string g = b.guid(off + 4);
+    for (char& c : g) c = (char)std::toupper((unsigned char)c);
+    f.classGuid = g;
+    if (b.has(off, 0x38)) {
+        const uint32_t flags = b.u32(off + 0x2c);
+        f.bypass = (flags & 1u) != 0;
+        f.beforePanCrop = (flags & 0xC0u) != 0;
+        const uint32_t n = b.u32(off + 0x34);
+        if (n >= 2 && n < 4096 && b.has(off + 0x38, n)) f.preset = b.text(off + 0x38, n);
+    }
+    return f;
+}
+
+bool vegOlderFxOf(const FxSlot& s, VegOlderFx& out)
+{
+    const auto* o = vegOriginAs<VegFxOrigin>(s.veg, VegOrigin::FxK);
+    if (!o || !o->chunk || isOfxRecordAt(o->chunk->data, o->entryOff) || !o->chunk->data.has(o->entryOff, 0x20)) return false;
+    out = olderFxAt(o->chunk->data, o->entryOff);
+    return true;
+}
+
+bool vegLegacyGeneratorOf(const MediaItem& m, VegOlderFx& out)
+{
+    const auto* o = vegOriginAs<VegMediaOrigin>(m.veg, VegOrigin::MediaK);
+    if (!m.generated || !o || !o->chunk || m.generator.veg) return false;
+    // the record behind the stream records (u32 0x38, the class GUID, the preset name), found as the importer finds media effects
+    const Bytes& b = o->chunk->data;
+    const char* guid = m.generator.pluginId == "com.vegascreativesoftware:creditroll" ? "02fd3b60-986b-11d4-9f6f-00485481bd31"
+                     : m.generator.pluginId == "com.vegascreativesoftware:colorgradient" ? "8b5deabc-53bd-49f6-9803-367478307a59" : nullptr;
+    if (!guid) return false;
+    for (size_t q = 0x40; q + 0x38 <= b.size(); ++q)
+        if (b.u32(q) == 0x38 && b.guid(q + 4) == guid) {
+            out = olderFxAt(b, q);
+            return true;
+        }
+    return false;
+}
+
+static std::vector<VegOlderFx> hiddenOf(const std::vector<VegHidden>& list)
+{
+    std::vector<VegOlderFx> out;
+    for (const VegHidden& h : list)
+        for (const Chunk* c : h.chunks) {
+            if (!c || c->isList || !c->data.has(0, 0x20)) continue;
+            VegOlderFx f = olderFxAt(c->data, 0);
+            f.before = h.before;
+            out.push_back(f);
+        }
+    return out;
+}
+
+std::vector<VegOlderFx> vegHiddenFxOf(const Track& t)
+{
+    const auto* o = vegOriginAs<VegTrackOrigin>(t.veg, VegOrigin::TrackK);
+    return o ? hiddenOf(o->hiddenFx) : std::vector<VegOlderFx>();
+}
+
+std::vector<VegOlderFx> vegHiddenFxOf(const Event& e)
+{
+    const auto* o = vegOriginAs<VegEventOrigin>(e.veg, VegOrigin::EventK);
+    return o ? hiddenOf(o->hiddenFx) : std::vector<VegOlderFx>();
+}
+
+std::vector<VegOlderFx> vegHiddenVideoOutFxOf(const Project& p)
+{
+    const auto* o = vegOriginAs<VegProjectOrigin>(p.veg, VegOrigin::ProjectK);
+    return o ? hiddenOf(o->hiddenVideoOutFx) : std::vector<VegOlderFx>();
 }
 
 }  // namespace reno

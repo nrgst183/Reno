@@ -13,6 +13,7 @@
 //   - Dot sizes under 0.15 are faded in from the unblurred picture (Monochrome: from its grey); alpha is the picture's.
 // Bytes: an 8-bit project's pictures are 8-bit textures on the card (more::oclStore12 after each kernel).
 #pragma once
+#include "../core/rmath.h"
 #include "vfxgauss.h"
 #include <algorithm>
 #include <cmath>
@@ -47,9 +48,9 @@ inline const float* coverTable()
         for (int j = 0; j < 256; j += 4) {
             float v = (float)j / 256.0f - 0.5f;
             if (j < 128) v = std::fabs(v);
-            const float a = std::acos(v / 0.5f);
-            const float s = std::sin(a) * 0.5f;
-            float area = Q * (a / PI) - 0.5f * std::sin(a) * (s * v);
+            const float a = rm::acos(v / 0.5f);
+            const float s = rm::sin(a) * 0.5f;
+            float area = Q * (a / PI) - 0.5f * rm::sin(a) * (s * v);
             if (j < 128) area = Q - area;
             const float r = area / Q;
             for (int k = 0; k < 4; ++k) t[j + k] = (j + k == 128) ? 0.5f : std::min(std::max(r, 0.f), 1.f);
@@ -77,7 +78,7 @@ inline Host host(int W, int H, double dot, double pa, double s88, double s90, co
     h.v41x = (float)Px; h.v41y = (float)P;
     h.v42x = (float)(-std::fmod((double)offx, 1.0)); h.v42y = (float)(-std::fmod((double)offy, 1.0));
     h.v45x = (float)pa / (float)s88; h.v45y = (float)(1.0 / s90);
-    const float ln = (float)(2.0 * std::log(1.0 / 255.0));
+    const float ln = (float)(2.0 * rm::log(1.0 / 255.0));
     const float a1 = (float)(pa * P / (s88 / s90));
     const float a2 = (float)Px;
     const float q1 = -(a1 * a1 / ln), q2 = -(a2 * a2 / ln);

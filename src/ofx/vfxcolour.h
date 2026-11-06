@@ -3,6 +3,7 @@
 // the store into an 8-bit frame is more::oclStore12 (done by the caller). Re-implemented from the kernels' arithmetic (notes: vegas_code/Colour_Kernels.md).
 // No Reno types in here, so the standalone tests can include it.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -67,13 +68,13 @@ struct CcKernel {
 inline float ccCurveF(const CcKernel& s, float x)
 {
     if (s.g <= 1.0f) {
-        if (x >= s.A) return (1.0f + s.B) * std::pow(x, s.g) - s.B;
+        if (x >= s.A) return (1.0f + s.B) * reno::rm::pow(x, s.g) - s.B;
         if (x > -1.0f * s.A) return x * s.P;
-        return ((-1.0f) - s.B) * std::pow((-1.0f) * x, s.g) + s.B;
+        return ((-1.0f) - s.B) * reno::rm::pow((-1.0f) * x, s.g) + s.B;
     }
-    if (x >= s.A) return std::pow((x + s.B) * s.C, s.g);
+    if (x >= s.A) return reno::rm::pow((x + s.B) * s.C, s.g);
     if (x > -1.0f * s.A) return x * s.P;
-    return (-1.0f) * std::pow((x - s.B) * ((-1.0f) * s.C), s.g);
+    return (-1.0f) * reno::rm::pow((x - s.B) * ((-1.0f) * s.C), s.g);
 }
 inline void ccKernelPx(const CcKernel& s, const float* p, float* o)
 {
@@ -94,11 +95,11 @@ inline void ccKernelPx(const CcKernel& s, const float* p, float* o)
             const float cen[3] = {0.0f, 0.5f, 1.0f};
             const float sg[3] = {0.283107266761f, 0.17f, 0.283107266761f};
             for (int w = 0; w < 3; ++w) {
-                const float cs = std::cos(s.ang[w] * pi / 180.0f), sn = std::sin(s.ang[w] * pi / 180.0f);
+                const float cs = reno::rm::cos(s.ang[w] * pi / 180.0f), sn = reno::rm::sin(s.ang[w] * pi / 180.0f);
                 const float a2 = s.amt[w] * s.amt[w];
                 const float k = 0.5f / (sg[w] * sg[w]);
                 const float x = ty - cen[w];
-                const float wt = a2 * std::exp(-x * x * k);
+                const float wt = a2 * reno::rm::exp(-x * x * k);
                 const float du = cs * wt * 0.5f, dv = sn * wt * 0.5f;
                 if (w == 0) { tu = du; tv = dv; } else { tu += du; tv += dv; }
             }
@@ -131,8 +132,8 @@ struct CcsWin {
     }
     float at(float y) const
     {
-        if (y < lo && 0.0f != sl) { const float d = lo - y; const float a = d * d * k1; return (-15.0f > a) ? 0.0f : std::exp(a); }
-        if (y > hi && 0.0f != sh) { const float d = hi - y; const float a = d * d * k2; return (-15.0f > a) ? 0.0f : std::exp(a); }
+        if (y < lo && 0.0f != sl) { const float d = lo - y; const float a = d * d * k1; return (-15.0f > a) ? 0.0f : reno::rm::exp(a); }
+        if (y > hi && 0.0f != sh) { const float d = hi - y; const float a = d * d * k2; return (-15.0f > a) ? 0.0f : reno::rm::exp(a); }
         if (y >= lo && y <= hi) return 1.0f;
         return 0.0f;
     }
@@ -167,7 +168,7 @@ inline void ccsPx(const CcsKernel& s, const float* p, float* o)
     if (s.mode == 1) {
         float ty = y, tu, tv, tw = s.satv;
         {
-            const float cs = std::cos(s.ang * pi / 180.0f), sn = std::sin(s.ang * pi / 180.0f);
+            const float cs = reno::rm::cos(s.ang * pi / 180.0f), sn = reno::rm::sin(s.ang * pi / 180.0f);
             const float a2 = s.amt * s.amt;
             tu = cs * a2 * 0.5f;
             tv = sn * a2 * 0.5f;
@@ -208,7 +209,7 @@ inline void ccsPx(const CcsKernel& s, const float* p, float* o)
     const float satM = s.sat.at(chroma * 255.0f);
     float ang[8];
     {
-        const float aa = std::asin(ratio) * (180.0f / pi);
+        const float aa = reno::rm::asin(ratio) * (180.0f / pi);
         const float bb = 90.0f - aa;
         ang[0] = aa; ang[4] = bb; ang[1] = 180.0f - aa; ang[5] = 180.0f - bb; ang[2] = 360.0f - aa; ang[6] = 360.0f - bb; ang[3] = 180.0f + aa; ang[7] = 180.0f + bb;
     }
@@ -383,15 +384,15 @@ struct LabSettings { float lightness, a, b; int invert; float desat; };
 inline void labFromRgb(const float* c, float* lab)
 {
     float v[3];
-    for (int k = 0; k < 3; ++k) v[k] = (c[k] > 0.04045f) ? std::pow((c[k] + 0.055f) / 1.055f, 2.4f) : c[k] / 12.92f;
+    for (int k = 0; k < 3; ++k) v[k] = (c[k] > 0.04045f) ? reno::rm::pow((c[k] + 0.055f) / 1.055f, 2.4f) : c[k] / 12.92f;
     float x = v[0] * 0.4124f + v[1] * 0.3576f + v[2] * 0.1805f;
     float y = v[0] * 0.2126f + v[1] * 0.7152f + v[2] * 0.0722f;
     float z = v[0] * 0.0193f + v[1] * 0.1192f + v[2] * 0.9505f;
     x = x / 0.95047f;
     z = z / 1.08883f;
-    x = x > 0.008856f ? std::cbrt(x) : (7.787f * x) + (16.0f / 116.0f);
-    y = y > 0.008856f ? std::cbrt(y) : (7.787f * y) + (16.0f / 116.0f);
-    z = z > 0.008856f ? std::cbrt(z) : (7.787f * z) + (16.0f / 116.0f);
+    x = x > 0.008856f ? reno::rm::cbrt(x) : (7.787f * x) + (16.0f / 116.0f);
+    y = y > 0.008856f ? reno::rm::cbrt(y) : (7.787f * y) + (16.0f / 116.0f);
+    z = z > 0.008856f ? reno::rm::cbrt(z) : (7.787f * z) + (16.0f / 116.0f);
     lab[0] = 116.0f * y - 16.0f;
     lab[1] = 500.0f * (x - y);
     lab[2] = 200.0f * (y - z);
@@ -411,7 +412,7 @@ inline void rgbFromLab(const float* lab, float* c)
     v[0] = x * 3.2406f + y * -1.5372f + z * -0.4986f;
     v[1] = x * -0.9689f + y * 1.8758f + z * 0.0415f;
     v[2] = x * 0.0557f + y * -0.2040f + z * 1.0570f;
-    for (int k = 0; k < 3; ++k) c[k] = (v[k] > 0.0031308f) ? (1.055f * std::pow(v[k], 1.0f / 2.4f) - 0.055f) : (12.92f * v[k]);
+    for (int k = 0; k < 3; ++k) c[k] = (v[k] > 0.0031308f) ? (1.055f * reno::rm::pow(v[k], 1.0f / 2.4f) - 0.055f) : (12.92f * v[k]);
 }
 inline void labPx(const LabSettings& s, const float* p, float* o)
 {

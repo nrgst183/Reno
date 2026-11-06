@@ -557,6 +557,9 @@ int main(int argc, char** argv)
         auto r = ofx::parseRichText("{\\rtf1\\ansi{\\fonttbl{\\f0\\fswiss Arial;}{\\f1\\froman Times New Roman;}}\\f1\\fs40\\i Caf\\'e9 \\u8364? two\\par line\\par}");
         check(r.text == "Caf\xc3\xa9 \xe2\x82\xac two\nline" && r.font == "Times New Roman" && r.points == 20 && r.italic && !r.bold,
               "rich text: accents, Unicode, paragraphs, the font used and its size", r.text + " / " + r.font + strfmt(" %.1f", r.points));
+        // VEGAS's default Titles & Text value is followed by a line break and tabs after the closing brace: not a second line
+        auto tail = ofx::parseRichText("{\\rtf1\\ansi{\\fonttbl{\\f0 Verdana;}}\\f0\\fs96 Sample Text\\par\n}\n\t\t\t\t\t");
+        check(tail.text == "Sample Text" && tail.font == "Verdana", "rich text: what follows the closing brace of the group is not text", tail.text);
         auto plain = ofx::parseRichText("just\r\ntext");
         check(plain.text == "just\ntext" && plain.font.empty(), "plain text is taken as it is");
         auto broken = ofx::parseRichText("{\\rtf1{\\fonttbl{\\f0 Ari");

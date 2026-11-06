@@ -1,6 +1,7 @@
 // VEGAS Pro's stock transitions as built-in stand-ins (see builtins.h), used when VEGAS's own plug-ins are missing.
 // Names, labels, defaults and presets come from builtins_vfxdata.cpp; 3D and page transitions are drawn flat.
 // Ctx::src is the outgoing frame, Ctx::src2 the incoming one, progress runs 0..1.
+#include "../core/rmath.h"
 #include "builtins_vfxdata.h"
 #include "builtins_deriche.h"
 #include "transrec.h"
@@ -477,13 +478,13 @@ void crossEffect(Ctx& c)
     if (type == 2) {
         // the number of cells and their sizes (floats, as VEGAS)
         float pw;
-        if (apply == 0) pw = std::pow(pf, 0.25f);
-        else if (apply == 1) pw = std::pow(1.0f - pf, 0.25f);
+        if (apply == 0) pw = rm::pow(pf, 0.25f);
+        else if (apply == 1) pw = rm::pow(1.0f - pf, 0.25f);
         else {
             float q = pf;
             if (!(0.5f >= q)) q = 1.0f - q;
             q += q;
-            pw = std::pow(q, 0.25f);
+            pw = rm::pow(q, 0.25f);
         }
         const float mxv = (float)c.d("EffectSettingsMaxX"), myv = (float)c.d("EffectSettingsMaxY");
         const float asx = 1.0f, asy = 1.0f;
@@ -598,7 +599,7 @@ void clockWipe8(Ctx& c)
             const float step = ccw ? -1.0f : 1.0f;
             float* row = &(*made)[(size_t)y * W];
             for (int x = 0; x < W; ++x, xs += step) {
-                float a = (float)std::atan2((double)xs, (double)Y);
+                float a = (float)rm::atan2((double)xs, (double)Y);
                 if (a < 0.0f) a += twoPi;
                 row[x] = a;
             }
@@ -626,7 +627,7 @@ void clockWipe8(Ctx& c)
             else {
                 const float R = std::sqrt(X * X + Y * Y);
                 const float rr = std::max(R, 2.0f);
-                float ww = (float)std::asin((double)(root2 / rr));
+                float ww = (float)rm::asin((double)(root2 / rr));
                 if (!(ww > f)) ww = f;
                 const float low = std::min(f2, edge - ww);
                 if (done || low >= a) useB = true;
@@ -665,21 +666,21 @@ void clockWipe(Ctx& c)
     const double edge = -F * 0.5 + clampd(c.progress, 0, 1) * (360.0 + F);
     const double cx = W * 0.5 + 0.5, cy = H * 0.5 + 1.0, sh0 = 0.5, sh1 = 0.71;
     const double cxs = W * 0.5 + 0.5, cys = H * 0.5 + 1.0;                                // (the soft edge's centre)
-    const double er = edge * kPi / 180.0, nex = -std::cos(er), ney = -std::sin(er);
-    const double uex = std::sin(er), uey = -std::cos(er);                                 // and its direction
+    const double er = edge * kPi / 180.0, nex = -rm::cos(er), ney = -rm::sin(er);
+    const double uex = rm::sin(er), uey = -rm::cos(er);                                 // and its direction
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const double dx = ccw ? cx - (x + 0.5) : x + 0.5 - cx, dy = y + 0.5 - cy;
             double t;
             if (F > 1e-9) {
                 const double sx = ccw ? cxs - (x + 0.5) : x + 0.5 - cxs, sy = y + 0.5 - cys;
-                double a = std::atan2(sx, -sy) * (180.0 / kPi);
+                double a = rm::atan2(sx, -sy) * (180.0 / kPi);
                 if (a < 0) a += 360.0;
                 t = smooth01((edge - a) / F + 0.5);
             } else if (edge <= 0) t = 0;
             else if (edge >= 360) t = 1;
             else {
-                double a = std::atan2(dx, -dy) * (180.0 / kPi);
+                double a = rm::atan2(dx, -dy) * (180.0 / kPi);
                 if (a < 0) a += 360.0;
                 t = a < edge ? 1.0 : 0.0;
                 const double d0 = dx + sh0, d1 = dx * nex + dy * ney - sh1;
@@ -705,7 +706,7 @@ void linearWipe8(Ctx& c)
     const float rad = 0.01745329238474369f;
     const float fw = (float)(W - 1), fh = (float)(H - 1);
     float x7 = 0, y12 = 0, o6 = 0, n2 = 0;
-    auto tanq = [&](float a) { return (float)std::tan((double)a); };
+    auto tanq = [&](float a) { return (float)rm::tan((double)a); };
     if (0.001f >= ang || ang > 359.999f) { x7 = kx; y12 = 0; n2 = fw * kx; o6 = 0; }
     else if (ang <= 89.999f) {
         const float t = tanq((90.0f - ang) * rad);
@@ -769,7 +770,7 @@ void linearWipe(Ctx& c)
     // VEGAS measures the wipe in pixels along the angle: position runs 0..1 across the frame's extent in that direction,
     // the soft edge is Feather/2 wide (smoothstep) and travels from just outside one side to just outside the other.
     const int W = c.out.w, H = c.out.h;
-    const double ang = c.d("Angle") * kPi / 180.0, dx = std::cos(ang), dy = std::sin(ang);
+    const double ang = c.d("Angle") * kPi / 180.0, dx = rm::cos(ang), dy = rm::sin(ang);
     const double span = std::max(1e-9, std::fabs(dx) * W + std::fabs(dy) * H);
     const double w = clampd(c.d("Feather"), 0, 1) * 0.5;
     const double edge = c.progress * (1.0 + w);
@@ -1700,15 +1701,15 @@ void irisFx(Ctx& c)
 // dx runs right, dy up, ang0 is the first tip's angle.
 struct StarShape {
     double seg, ey, ex, ang0;
-    StarShape(int arms, double ratio, double a0) : seg(2 * kPi / arms), ey(ratio * std::sin(seg * 0.5)), ex(ratio * std::cos(seg * 0.5) - 1.0), ang0(a0) {}
+    StarShape(int arms, double ratio, double a0) : seg(2 * kPi / arms), ey(ratio * rm::sin(seg * 0.5)), ex(ratio * rm::cos(seg * 0.5) - 1.0), ang0(a0) {}
 };
 double starMetric(double dx, double dy, const StarShape& s)
 {
     const double seg = s.seg;
-    double u = std::fmod(std::atan2(dy, dx) - s.ang0, seg);
+    double u = std::fmod(rm::atan2(dy, dx) - s.ang0, seg);
     if (u < 0) u += seg;
     if (u > seg * 0.5) u = seg - u;
-    const double den = std::cos(u) * s.ey - std::sin(u) * s.ex;
+    const double den = rm::cos(u) * s.ey - rm::sin(u) * s.ex;
     const double rb = den > 1e-12 ? s.ey / den : 1e12;
     return std::sqrt(dx * dx + dy * dy) / rb;
 }
@@ -2071,7 +2072,7 @@ void flashFx(Ctx& c)
             std::vector<double>& k = kern[pass];
             k.assign((size_t)rad * 2 + 1, 0.0);
             double sum = 0;
-            for (int i = -rad; i <= rad; ++i) sum += k[(size_t)(i + rad)] = std::exp(-0.5 * i * i / (sg * sg));
+            for (int i = -rad; i <= rad; ++i) sum += k[(size_t)(i + rad)] = rm::exp(-0.5 * i * i / (sg * sg));
             for (double& v : k) v /= sum;
         }
         firBlurDoubles(lum, W, H, 1, kern[0], kern[1]);
@@ -2244,15 +2245,15 @@ inline float roundLikeCrt(double t)
     if (std::fabs(t - mid) < 1e-3 * std::fabs((double)o - (double)f)) return std::fabs(o) > std::fabs(f) ? o : f;
     return f;
 }
-inline float crtSin(float a) { return roundLikeCrt(std::sin((double)a)); }
-inline float crtCos(float a) { return roundLikeCrt(std::cos((double)a)); }
+inline float crtSin(float a) { return roundLikeCrt(rm::sin((double)a)); }
+inline float crtCos(float a) { return roundLikeCrt(rm::cos((double)a)); }
 
 // The direction of travel: (360 - angle) degrees, turned for the pixel aspect (square here) as VEGAS does
 inline float travelAngle(float a)
 {
     const float cs = crtCos(a);
     if (cs > 1e-6f) {
-        float r = std::atan2(crtSin(a), cs);
+        float r = rm::atan2f(crtSin(a), cs);
         if (r < 0) r += 6.2831854820251465f;
         return r;
     }
@@ -2429,8 +2430,8 @@ float spanLoop(float ang, float W, float H)
     const int m = ic - (ic / 1800) * 1800;
     float phi = (float)m * 0.001745329238474369f;
     if (phi > 1.5707963705062866f) phi = 3.1415927410125732f - phi;
-    phi -= std::atan2(H, W);
-    return std::cos(phi) * diag;
+    phi -= rm::atan2f(H, W);
+    return rm::cosf(phi) * diag;
 }
 
 }  // namespace page
@@ -2452,7 +2453,7 @@ void pageLoop(Ctx& c)
     const float half = span * 0.5f;
     const float R = std::max(half * Rr, 0.001f), Rset = half * Rr;
     const float circ = Rset * 6.2831854820251465f;
-    const float ramp = (half - x0) / std::sin(1.3962634f);
+    const float ramp = (half - x0) / rm::sinf(1.3962634f);
     const float op = ((1.f - O) * (p * p) + O) * 255.f;
     const float shift = (((half + x0) + circ) + ramp * 1.3962634f) * (1.f - p);
     const float lo = x0 - Rset, hi = x0 + Rset, persp = (float)c.d("Perspective") * 0.125f;
@@ -2469,8 +2470,8 @@ void pageLoop(Ctx& c)
                 t.alpha = (uint8_t)cvtt(op + 0.5f);
                 return true;
             }
-            const float th = std::asin((a - x0) / ramp);                 // on the ramp
-            const float g = 1.f - persp * (1.f - std::cos(th));
+            const float th = rm::asinf((a - x0) / ramp);                 // on the ramp
+            const float g = 1.f - persp * (1.f - rm::cosf(th));
             t.u = ((x0 + circ) + ramp * th - shift) * g;
             t.v = g * b;
             t.alpha = (uint8_t)cvtt((255.f - op) * (th * k2pi) + op + 0.5f);
@@ -2479,9 +2480,9 @@ void pageLoop(Ctx& c)
         }
         if (!(lo < a) || !(a < hi)) return false;
         const bool pos = a >= x0;
-        const float th = std::asin(pos ? (a - x0) / R : (x0 - a) / R);
+        const float th = rm::asinf(pos ? (a - x0) / R : (x0 - a) / R);
         t.alpha = (uint8_t)cvtt((255.f - op) * (th * k2pi) + op + 0.5f);
-        const float cs = std::cos(th);
+        const float cs = rm::cosf(th);
         const float ab = (float)std::fabs((double)((th - q) * k4pi));
         if (layer == 1) {
             const float g = 1.f - persp * (1.f - cs);
@@ -2517,8 +2518,8 @@ void pagePeel(Ctx& c)
         const int m = ic - (ic / 1800) * 1800;
         float phi = (float)(m * kPi / 1800.0);
         if (phi > 1.5707963705062866f) phi = (float)(kPi - (double)phi);
-        phi -= std::atan2(Hh, W);
-        span = diag * std::cos(phi);
+        phi -= rm::atan2f(Hh, W);
+        span = diag * rm::cosf(phi);
     }
     const float p = (float)c.progress, FR = (float)c.d("FoldRadius"), sl = (float)c.d("SlideAmount");
     const float mn = std::min(W, Hh), R = mn * FR;
@@ -2546,8 +2547,8 @@ void pagePeel(Ctx& c)
             return true;
         }
         if (!(c54 > a1)) return false;
-        const float th = std::asin((a1 - x3) * iR);
-        const float cs = std::cos(th);
+        const float th = rm::asinf((a1 - x3) * iR);
+        const float cs = rm::cosf(th);
         if (layer == 0) {
             const float s = (cs - 1.f) * persp + 1.f;
             t.alpha = (uint8_t)(cvtt((kPi - (double)th) * (double)k * 0.3183098861837907) + op);
@@ -2583,8 +2584,8 @@ void pageRoll(Ctx& c)
         const int m = ic - (ic / 1800) * 1800;
         float phi = ((float)m * PIf) / 1800.f;
         if (phi > 1.5707963705062866f) phi = PIf - phi;
-        phi -= std::atan2(Hh, W);
-        span = diag * std::cos(phi);
+        phi -= rm::atan2f(Hh, W);
+        span = diag * rm::cosf(phi);
     }
     const float p = (float)c.progress, FR = (float)c.d("FoldRadius"), sl = (float)c.d("SlideAmount");
     const float mn = std::min(W, Hh), R = mn * FR, R2 = R * 0.9f;
@@ -2607,8 +2608,8 @@ void pageRoll(Ctx& c)
         if (layer == 0) {
             if (D > a1) { t.u = a1; t.v = b; t.alpha = 255; return true; }
             if (!(c88 > a1)) return false;
-            const float th = std::asin((a1 - D) * iR);
-            const float s = (std::cos(th) - 1.f) * persp + 1.f;
+            const float th = rm::asinf((a1 - D) * iR);
+            const float s = (rm::cosf(th) - 1.f) * persp + 1.f;
             t.alpha = alpha(k * (PIf - th));
             t.u = (th * R + D) * s;
             t.v = b * s;
@@ -2617,8 +2618,8 @@ void pageRoll(Ctx& c)
         if (layer == 1) {
             if ((D - R) > a1 || !(a1 < D + R2)) return false;
             const bool neg = D > a1;
-            const float s = neg ? std::asin((D - a1) * iR) : std::asin((a1 - D) * iR2);
-            const float g = (std::cos(s) - 1.f) * persp + 1.f;
+            const float s = neg ? rm::asinf((D - a1) * iR) : rm::asinf((a1 - D) * iR2);
+            const float g = (rm::cosf(s) - 1.f) * persp + 1.f;
             t.u = (neg ? (R * PIf + c7c) - R * s : (R * s + D) + R * 6.2831854820251465f) * g;
             t.v = b * g;
             t.alpha = alpha(k * (PIf - s));
@@ -2627,7 +2628,7 @@ void pageRoll(Ctx& c)
         const float Rl = layer == 2 ? R2 : R;
         if ((D - Rl) > a1 || !(a1 < (layer == 2 ? R2 + D : c88))) return false;
         const bool neg = D > a1;
-        const float s = std::asin(neg ? (D - a1) * (layer == 2 ? iR2 : iR) : (a1 - D) * (layer == 2 ? iR2 : iR));
+        const float s = rm::asinf(neg ? (D - a1) * (layer == 2 ? iR2 : iR) : (a1 - D) * (layer == 2 ? iR2 : iR));
         if (neg) {
             t.light = (uint8_t)(200 - cvtt((1.5707963705062866f - s) * lk * 0.5f));
             std::memcpy(t.col, black, 4);
@@ -2637,7 +2638,7 @@ void pageRoll(Ctx& c)
         float u;
         if (layer == 2) u = neg ? (R2 * s + D) + R2 * 9.42477798461914f : (D - R2 * s) + R2 * 9.42477798461914f;
         else u = neg ? R * s + c7c : c7c - R * s;
-        const float g = 1.f - (std::cos(s) + 1.f) * persp;
+        const float g = 1.f - (rm::cosf(s) + 1.f) * persp;
         t.u = u * g;
         t.v = b * g;
         t.alpha = alpha(k * s);
@@ -3167,7 +3168,7 @@ void moveIn(Ctx& c, double angleDeg, double zoom, bool slide)
         rect.x1 = dtoi((rect.x1 - rect.x0) * z) + rect.x0;
         rect.y1 = dtoi((rect.y1 - rect.y0) * z) + rect.y0;
         const double a = angleDeg * 0.017453292519943;
-        const double sa = std::sin(a), ca = std::cos(a);
+        const double sa = rm::sin(a), ca = rm::cos(a);
         const double k = slide ? s / std::max(std::fabs(sa), std::fabs(ca)) : s;
         const double ax = (r10 - (W * z * 0.5 + bsz + feather)) * k, ay = (edx - (H * z * 0.5 + bsz + feather)) * k;
         // (rounded half up, not cut towards zero: for negative values the cut leaves the frame one 16384th of a pixel off its place, which VEGAS's pictures do not show)
@@ -3505,7 +3506,7 @@ void crossZoomDraw(Ctx& c, int apply, float pf, const sf::Img8& a, const sf::Img
     auto zoom = [&](const Img8& src, float cx, float cy, float expo) {
         Img8 t;
         clearDst(t, W, H);
-        const float z = std::pow(maxz, expo);
+        const float z = rm::pow(maxz, expo);
         const float x0 = cx - z * cx, y0 = cy - z * cy;
         const float x1 = (Wf - cx) * z + cx, y1 = (Hf - cy) * z + cy;
         const Rect big = {page::cvtt(x0), page::cvtt(y0), page::cvtt(x1), page::cvtt(y1)};
@@ -3611,8 +3612,8 @@ inline float fb(uint32_t u)
     std::memcpy(&f, &u, 4);
     return f;
 }
-inline float sinF(float x) { return (float)std::sin((double)x); }
-inline float cosF(float x) { return (float)std::cos((double)x); }
+inline float sinF(float x) { return (float)rm::sin((double)x); }
+inline float cosF(float x) { return (float)rm::cos((double)x); }
 inline float clamp01(float v) { return 0.0f > v ? 0.0f : (1.0f < v ? 1.0f : v); }
 
 struct Metric {
@@ -3635,7 +3636,7 @@ struct Metric {
         } else if (eps > std::fabs(yr)) {
             if (0.0f > xr) ang = PI;
         } else {
-            ang = (float)std::atan((double)(yr / xr));
+            ang = (float)rm::atan((double)(yr / xr));
             if (0.0f > xr) {
                 if (yr > 0.0f) ang += PI;
                 else if (0.0f > yr) ang += PI;

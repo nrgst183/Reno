@@ -16,6 +16,7 @@
 // The noise tables come from the shift-register generator (vfxrand.h) seeded with the time stamp; the fractal noise's table is made once from the C library's rand(),
 // where VEGAS has left it after the first picture it drew: Reno uses the table that follows from time stamp 3333334 (its first Bad Sync picture in the capture).
 #pragma once
+#include "../core/rmath.h"
 #include <cmath>
 #include <cstdint>
 #include <climits>
@@ -282,9 +283,9 @@ inline int render8(uint8_t* dst, int dstPitch, int W, int H, const uint8_t* src,
         g2 = (g2 < 1.0) ? g2 : 1.0;
         for (int i = 0; i < 256; ++i) {
             const double base = (double)i / 255.0;
-            lut[i][0] = (uint8_t)cvt32(std::pow(base, g0) * 255.0);
-            lut[i][1] = (uint8_t)cvt32(std::pow(base, g1) * 255.0);
-            lut[i][2] = (uint8_t)cvt32(std::pow(base, g2) * 255.0);
+            lut[i][0] = (uint8_t)cvt32(rm::pow(base, g0) * 255.0);
+            lut[i][1] = (uint8_t)cvt32(rm::pow(base, g1) * 255.0);
+            lut[i][2] = (uint8_t)cvt32(rm::pow(base, g2) * 255.0);
             lut[i][3] = 0;
         }
     }
@@ -510,9 +511,9 @@ inline void prepare8(int W, int H, const double* P, int64_t stamp, double aspect
         g2 = (g2 < 1.0) ? g2 : 1.0;
         for (int i = 0; i < 256; ++i) {
             const double base = (double)i / 255.0;
-            o.lut[i][0] = (uint8_t)cvt32(std::pow(base, g0) * 255.0);
-            o.lut[i][1] = (uint8_t)cvt32(std::pow(base, g1) * 255.0);
-            o.lut[i][2] = (uint8_t)cvt32(std::pow(base, g2) * 255.0);
+            o.lut[i][0] = (uint8_t)cvt32(rm::pow(base, g0) * 255.0);
+            o.lut[i][1] = (uint8_t)cvt32(rm::pow(base, g1) * 255.0);
+            o.lut[i][2] = (uint8_t)cvt32(rm::pow(base, g2) * 255.0);
             o.lut[i][3] = 0;
         }
     }

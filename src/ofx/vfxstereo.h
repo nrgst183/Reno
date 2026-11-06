@@ -2,6 +2,7 @@
 // The capture goes through the warp path: the destination pixel (x, y) of the frame as it lies in memory (bottom row first) is looked up at the inverse matrix applied to it, with a float
 // bilinear read (continuous coordinates, no half pixel; taps outside the picture are nothing) and stored as floor(v + 0.46) in 8 bits. No dependencies, so a test program can include it alone.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -162,8 +163,8 @@ inline StereoMats stereoMatrix(double W, double H, double hz, double vt, double 
     if (rot != 0) {
         const double th = rot / -365.0 * 3.141592654;
         Mat3 Ra = mIdent(), Rb = mIdent();
-        Ra.m[0][0] = std::cos(th); Ra.m[1][0] = std::sin(th); Ra.m[0][1] = -Ra.m[1][0]; Ra.m[1][1] = Ra.m[0][0];
-        Rb.m[0][0] = std::cos(-th); Rb.m[1][0] = std::sin(-th); Rb.m[0][1] = -Rb.m[1][0]; Rb.m[1][1] = Rb.m[0][0];
+        Ra.m[0][0] = rm::cos(th); Ra.m[1][0] = rm::sin(th); Ra.m[0][1] = -Ra.m[1][0]; Ra.m[1][1] = Ra.m[0][0];
+        Rb.m[0][0] = rm::cos(-th); Rb.m[1][0] = rm::sin(-th); Rb.m[0][1] = -Rb.m[1][0]; Rb.m[1][1] = Rb.m[0][0];
         A = mMul(mMul(mMul(A, mTrans(W / 2, H / 2)), Ra), mTrans(-W / 2, -H / 2));
         B = mMul(mMul(mMul(B, mTrans(W / 2, H / 2)), Rb), mTrans(-W / 2, -H / 2));
     }
@@ -197,8 +198,8 @@ inline StereoMats stereoMatrix(double W, double H, double hz, double vt, double 
                     for (int i = 0; i < 4 && !hit; ++i) hit = segIntersect(cs[v], corners[ci], q[i], q[(i + 1) % 4], I);
                     double r = 0.0;
                     if (hit) {
-                        const double da = std::hypot(corners[ci][0] - I[0], corners[ci][1] - I[1]);
-                        const double D = std::hypot(corners[ci][0] - cs[v][0], corners[ci][1] - cs[v][1]);
+                        const double da = rm::hypot(corners[ci][0] - I[0], corners[ci][1] - I[1]);
+                        const double D = rm::hypot(corners[ci][0] - cs[v][0], corners[ci][1] - cs[v][1]);
                         r = da / (D - da);
                     }
                     if (!any || r > best) best = r;

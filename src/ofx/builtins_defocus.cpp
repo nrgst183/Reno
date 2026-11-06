@@ -7,6 +7,7 @@
 //     iris's sum, and the middle of each tile (T - ov pixels square) is taken, rounded to bytes;
 //   - beyond the frame the native code takes the pixel of the last column for columns left of it and the first row for rows above or below it (what VEGAS's pictures show).
 // The convolution is done in double precision (the native FFT is single precision): the result differs from VEGAS's only where a sum lies almost exactly between two bytes.
+#include "../core/rmath.h"
 #include "builtins_fast.h"
 #include "builtins_more_internal.h"
 #include "vfxdefocus.h"
@@ -70,7 +71,7 @@ struct Twiddles {
     {
         for (int k = 0; k < N / 2; ++k) {
             const double a = 2 * kPiD * k / N * (inverse ? 1 : -1);
-            w[(size_t)k] = std::complex<double>(std::cos(a), std::sin(a));
+            w[(size_t)k] = std::complex<double>(rm::cos(a), rm::sin(a));
         }
     }
 };
@@ -134,9 +135,9 @@ DefocusIris defocusIris(double radiusPx, int sides, double turn, double curvatur
             const double px = u + 0.5 - kCx, py = v + 0.5 - kCy, d = std::sqrt(px * px + py * py);
             double lim = R;
             if (sides >= 3) {
-                double rel = std::fmod(std::atan2(py, px) - a0, seg);
+                double rel = std::fmod(rm::atan2(py, px) - a0, seg);
                 if (rel < 0) rel += seg;
-                lim = R * std::cos(kPiD / sides) / std::cos(rel - kPiD / sides);
+                lim = R * rm::cos(kPiD / sides) / rm::cos(rel - kPiD / sides);
             }
             if (!(d <= lim)) continue;
             const double t = (1.0 - std::min(1.0, d / R)) * 254.0;

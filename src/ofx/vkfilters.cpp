@@ -1,4 +1,5 @@
 // Vulkan plans of the built-in filters, bit-identical to their CPU code (see vkfilters.h). Kernels: tools/gpukernels.py.
+#include "../core/rmath.h"
 #include "vkfilters.h"
 #include "vfxlens.h"
 #include "builtins_cgblur.h"
@@ -128,7 +129,7 @@ bool planConvolutionKernel(Ctx& c, Plan& p)
     const float mul = (float)(norm ? 1.0 : clampd(c.d("Scale"), -1e4, 1e4));
     const float off = (float)(clampd(c.d("Offset"), -100, 100) * 255.0);
     const double rot = c.d("Rotation") * kPi / 180.0;
-    const double cr = std::cos(rot), sr = std::sin(rot);
+    const double cr = rm::cos(rot), sr = rm::sin(rot);
     const bool turned = std::fabs(rot) > 1e-9;
     const bool between = c.scale < 0.999;
     float kv[9] = {0};
@@ -183,7 +184,7 @@ bool planWhiteBalance(Ctx& c, Plan& p)
         const float pi = 3.1415926535897932384f;
         const float m2 = sh.amount * sh.amount;
         const float ang = sh.angle * pi / 180.0f;
-        const float du = std::cos(ang) * m2 * 0.5f, dv = std::sin(ang) * m2 * 0.5f;
+        const float du = rm::cos(ang) * m2 * 0.5f, dv = rm::sin(ang) * m2 * 0.5f;
         const uint32_t q = c.host8 ? 1u : 0u;
         const int mid = hasData ? p.addBuf(p.w, p.h, 4) : 1;
         P::OWbShift ps = {p.w, p.h, q, 0u, sh.bright, du, dv};
@@ -592,8 +593,8 @@ bool planRadialPixelate(Ctx& c, Plan& p)
     std::vector<float> tab;
     for (int i = 0; i < W; ++i) {
         const float a = (float)((double)(((float)i / (float)p.w) * 2.f - 1.f) * 3.141592653589793);
-        tab.push_back((float)std::sin((double)a));
-        tab.push_back((float)std::cos((double)a));
+        tab.push_back((float)rm::sin((double)a));
+        tab.push_back((float)rm::cos((double)a));
     }
     const int pol = p.addBuf(p.w, p.h, 4);
     P::RpixPolar pp = {p.w, p.h, su.c0, su.c1, su.q8 ? 1u : 0u, 0u};
@@ -658,7 +659,7 @@ bool planTinyPlanetVegas(Ctx& c, Plan& p)
 bool planTinyPlanet(Ctx& c, Plan& p)
 {
     const double tilt = (c.d("Latitude") - 90.0) * kPi / 180.0, lon = c.d("Longitude") * kPi / 180.0, zoom = std::max(0.05, c.d("Z"));
-    const double ct = std::cos(tilt), st = std::sin(tilt);
+    const double ct = rm::cos(tilt), st = rm::sin(tilt);
     const double R = 0.5 * c.frameH * zoom;
     if (!(R > 0)) return false;
     const D2 A = d2(ct), B = d2(st), C = d2(R), D = d2(lon);

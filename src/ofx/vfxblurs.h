@@ -13,6 +13,7 @@
 //   Glow:          s = max(W, H) x clamp(GlowPercent, 0, 1) x 0.5 (no 1.5), the same double formula
 //   Chroma Blur:   s = ((float)Pixels + 1.5f) x pixel aspect, the float formula as Gaussian Blur
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -36,7 +37,7 @@ typedef float (*StoreFn)(float);
 // 2 logf(1/255) as the host computes it (logf of the float 0x3b808081, doubled)
 inline float twoLn()
 {
-    const float ln = std::log(0.003921568859368563f);
+    const float ln = rm::log(0.003921568859368563f);
     return ln + ln;
 }
 // sigma of the float formula (Gaussian Blur, Chroma Blur): s is the float already carrying its 1.5

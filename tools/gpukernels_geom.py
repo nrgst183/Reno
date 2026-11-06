@@ -6,6 +6,7 @@ library functions (sin, cos, atan2, pow) are the correctly rounded float of the 
 (more::oclStore12), flagged by the push constant q8.
 """
 import struct
+from rmath_gpu import atan_f, asin_f, atan2_f as sf_atan2_f, sincos_f, fma_f, cos_f
 from gpukernels import kernel, PIC_IN, PIC_IN1, PIC_OUT, TABLE, WH, SF, ld_sf
 
 
@@ -447,7 +448,7 @@ def spherize_ocl(S):
         res = S.var('v4', src.load(i))
         with S.if_(r2 < 1.0):
             r = S.sqrt(r2)
-            f = 1.0 - (S.cos(r * S.f(f32(1.5707963267949))) * P.amount) * S.f(f32(0.8))
+            f = 1.0 - (cos_f(S, r * S.f(f32(1.5707963267949))) * P.amount) * S.f(f32(0.8))
             py = v29 + (fy - v29) * f
             px = v28 + (fx - v28) * f
             res.set(lin_read(S, src, P.w, P.h, px, py, True))
@@ -456,24 +457,7 @@ def spherize_ocl(S):
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------- Tiny Planet (vftp::sourcePos)
-def atan_f(S, x):
-    """atanf: the double arctangent rounded to a float"""
-    return sf_atan2_f(S, x, S.f(1.0))
-
-
-def sf_atan2_f(S, y, x):
-    from sf64 import sf_atan2
-    return sf_atan2(S, SF.from_f32(S, y), SF.from_f32(S, x)).to_f32()
-
-
-def asin_f(S, x):
-    """asinf: the double arcsine (atan2 (x, sqrt (1 - x x))) rounded to a float; not a number beyond 1"""
-    from sf64 import sf_atan2
-    X = SF.from_f32(S, x)
-    d = (SF.const(S, 1.0) - X * X).sqrt()
-    r = sf_atan2(S, X, d).to_f32()
-    bad = ~(S.abs(x) <= 1.0)
-    return S.select(bad, S.f(float('nan')), r)
+# (atanf, asinf, atan2f, sinf and cosf are Reno's own, tools/rmath_gpu.py: the CPU's vfxtinyplanet.h calls the same ones in src/core/rmath.h)
 
 
 @kernel("tinyplanet_ocl", WH + [('q8', 'u'), ('lat', 'f'), ('lon', 'f'), ('z', 'f')], [PIC_IN, PIC_OUT])
@@ -486,16 +470,16 @@ def tinyplanet_ocl(S):
         twopi = S.f(f32(3.14159265358979323846) * 2)
         wi, hi = S.to_i(P.w), S.to_i(P.h)
         v28 = S.to_f(wi) / P.z
-        v29 = S.fma(P.lat * pi, S.f(f32(1.0 / 180)), -hp)
+        v29 = fma_f(S, P.lat * pi, S.f(f32(1.0 / 180)), -hp)
         v30 = P.lon * pi * S.f(f32(1.0 / 180))
-        cos29 = S.select(S.eq(v29, -hp), S.f(0.0), S.cos(v29))
-        sin29 = S.sin(v29)
+        sin29, cos29r = sincos_f(S, v29)
+        cos29 = S.select(S.eq(v29, -hp), S.f(0.0), cos29r)
         v31 = S.to_i(S.gx) - wi / 2
         v32 = (hi - 1 - S.to_i(S.gy)) - hi / 2
         f31, f32_ = S.to_f(v31), S.to_f(v32)
         v33 = S.sqrt(S.to_f(v31 * v31 + v32 * v32))
         v34 = 2.0 * atan_f(S, v33 / (2.0 * v28))
-        s34, c34 = S.sin(v34), S.cos(v34)
+        s34, c34 = sincos_f(S, v34)
         v35 = hp + asin_f(S, c34 * sin29 + f32_ * s34 * cos29 / v33)
         v36 = v30 + sf_atan2_f(S, f31 * s34, v33 * cos29 * c34 - f32_ * sin29 * s34)
         v36 = v36 + pi

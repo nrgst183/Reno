@@ -3,6 +3,7 @@
 // arithmetic, the colour table, the conversion of the drawn bitmap to the bytes handed to the kernel and the scale 1 / sum. What VEGAS draws with GDI+ (a path gradient brush over each
 // polygon) is drawn by Windows' own GDI+ in Reno on Windows (gdipflat.h: the same calls in the same order) and by the model below elsewhere.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -58,9 +59,9 @@ inline Plan makePlan(int points, double orientationDeg, double radiusPx, double 
     P.star.centre = 0xFF404040u;
     for (int i = 0; i < m; ++i) {
         float a = (float)i * step + start;
-        P.star.pts.push_back({std::cos(a) * R, std::sin(a) * R});
+        P.star.pts.push_back({rm::cos(a) * R, rm::sin(a) * R});
         a += step * 0.5f;
-        P.star.pts.push_back({std::cos(a) * 0.75f, std::sin(a) * 0.75f});
+        P.star.pts.push_back({rm::cos(a) * 0.75f, rm::sin(a) * 0.75f});
     }
     P.star.pts.push_back(P.star.pts[0]);
     P.star.fills.push_back(2 * m);
@@ -84,9 +85,9 @@ inline Plan makePlan(int points, double orientationDeg, double radiusPx, double 
         for (int i = 0; i < 8; ++i) {
             const float len = (t1[i] * 0.3f + 1.0f) * len1;
             float a = (float)i * pi4 + start;
-            P.burst1.pts.push_back({std::cos(a) * len, std::sin(a) * len});
+            P.burst1.pts.push_back({rm::cos(a) * len, rm::sin(a) * len});
             a += pi8;
-            P.burst1.pts.push_back({std::cos(a) * 7.5f, std::sin(a) * 7.5f});
+            P.burst1.pts.push_back({rm::cos(a) * 7.5f, rm::sin(a) * 7.5f});
         }
         P.burst1.pts.push_back(P.burst1.pts[0]);
         P.burst1.fills.push_back(16);
@@ -96,9 +97,9 @@ inline Plan makePlan(int points, double orientationDeg, double radiusPx, double 
         for (int i = 0; i < 27; ++i) {
             const float len = (t2[i] * 0.75f + 1.0f) * len2;
             float a = (float)i * a27 + start;
-            P.burst2.pts.push_back({std::cos(a) * len, std::sin(a) * len});
+            P.burst2.pts.push_back({rm::cos(a) * len, rm::sin(a) * len});
             a += h27;
-            P.burst2.pts.push_back({std::cos(a) * 3.75f, std::sin(a) * 3.75f});
+            P.burst2.pts.push_back({rm::cos(a) * 3.75f, rm::sin(a) * 3.75f});
         }
         P.burst2.pts.push_back(P.burst2.pts[0]);
         P.burst2.fills.push_back(54);

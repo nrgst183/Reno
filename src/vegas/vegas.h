@@ -37,6 +37,29 @@ struct VegasSaveResult {
 // file (Project::veg and the objects' origins) so the next save starts from it.
 VegasSaveResult saveVegasProject(Project& p, const std::string& path);
 
+// The curve an event's cross-fade-in lets the event before it fade out by (VEGAS's FadeIn.ReciprocalCurve, which a .veg
+// always holds): the event's own when given, else - as the mixer does - the fade-out curve of the earlier event it
+// overlaps, else the mirror of its fade-in. Used by the .veg writer and by the model dump, so both say what the mixer plays.
+int effectiveFadeInRecipCurve(const Track& t, const Event& e);
+
+// Video effects and transitions of VEGAS's older kinds (not OpenFX: Swirl, Film Effects, 3D Blinds...) as the .veg holds them: the class GUID
+// (upper case, no braces), the preset name, the switches in the record, and for effects Reno cannot host (kept in the file, not in
+// the chain) how many of the chain's effects come before it. For the model dump (src/cli/modeldump.cpp).
+struct VegOlderFx {
+    std::string classGuid, preset;
+    bool bypass = false, beforePanCrop = false;
+    size_t before = 0;
+};
+// True (and 'out' filled) if the slot was read from a record of the older kind.
+bool vegOlderFxOf(const FxSlot& s, VegOlderFx& out);
+// The settings record of one of VEGAS's older (DirectX-era) generators, Credit Roll or Color Gradient, which Reno hosts as its own
+// built-in without reading the record's settings: class GUID and preset name, for the model dump.
+bool vegLegacyGeneratorOf(const MediaItem& m, VegOlderFx& out);
+// The older effects of a track's / event's / the video output's chain that Reno cannot host.
+std::vector<VegOlderFx> vegHiddenFxOf(const Track& t);
+std::vector<VegOlderFx> vegHiddenFxOf(const Event& e);
+std::vector<VegOlderFx> vegHiddenVideoOutFxOf(const Project& p);
+
 // The bytes saveVegasProject would write, without writing (for tests). 'path' is where the file would go
 // (VEGAS stores the project path in it).
 std::string writeVegasData(const Project& p, const std::string& path, std::vector<std::string>* warnings);

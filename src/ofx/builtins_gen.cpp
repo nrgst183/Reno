@@ -1,5 +1,6 @@
 // Built-in media generators with VEGAS Pro 18's identifiers, parameters and choices (Solid Color, Color Gradient, Checkerboard,
 // Noise Texture, Test Pattern, Titles & Text). See builtins.h.
+#include "../core/rmath.h"
 #include "builtins_impl.h"
 #include "builtins_more_internal.h"
 #include "vfxgen.h"
@@ -121,7 +122,7 @@ void gradSetup(Ctx& c, GradSetup& g)
     g.rx = std::max(1e-4, std::fabs(g.rx));
     g.ry = std::max(1e-4, std::fabs(g.ry));
     const double ang = c.d("AspectRatioAngle") * kPi / 180.0;
-    g.ca = std::cos(ang); g.sa = std::sin(ang);
+    g.ca = rm::cos(ang); g.sa = rm::sin(ang);
     g.ddx = g.ex - g.sx; g.ddy = g.ey - g.sy; g.dd = g.ddx * g.ddx + g.ddy * g.ddy;
 }
 
@@ -906,7 +907,7 @@ TextMotion textMotion(const std::string& anim, double t, int W, int H, double bx
     const double D = 1.0;
     const double u = clampd(t / D, 0, 1);
     const double out = 1 - (1 - u) * (1 - u) * (1 - u);
-    auto hash = [](double v) { const double x = std::sin(v * 12.9898) * 43758.5453; return x - std::floor(x); };
+    auto hash = [](double v) { const double x = rm::sin(v * 12.9898) * 43758.5453; return x - std::floor(x); };
     const double frame = std::floor(t * 30.0);
     if (a == "fly in") m.dx = -(bx + bw + 4) * (1 - out);
     else if (a == "fly in from right") m.dx = (W - bx + 4) * (1 - out);
@@ -941,7 +942,7 @@ TextMotion textMotion(const std::string& anim, double t, int W, int H, double bx
     else if (a == "rolling glow and enlarge") { m.sx = m.sy = 0.8 + 0.3 * clampd(t / 2.0, 0, 1); m.opacity = std::min(1.0, 2 * u); }
     else if (a == "earthquake") { m.dx = (hash(frame) - 0.5) * 0.04 * W; m.dy = (hash(frame + 0.37) - 0.5) * 0.04 * H; }
     else if (a == "rough day") { m.dx = (hash(frame) - 0.5) * 0.012 * W; m.dy = (hash(frame + 0.71) - 0.5) * 0.012 * H; }
-    else if (a == "menace") m.sx = m.sy = 1 + 0.08 * (0.5 - 0.5 * std::cos(t * kPi));
+    else if (a == "menace") m.sx = m.sy = 1 + 0.08 * (0.5 - 0.5 * rm::cos(t * kPi));
     else if (a == "scroll") {
         const double f = clampd(t / 10.0, 0, 1);
         m.dy = (H - by) + 4 - f * (H + bh + 8);

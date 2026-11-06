@@ -9,6 +9,7 @@
 //
 // Guessed (VEGAS's maths are not published): which of the four curves is the master and that it works after the channels' curves, the direction and unit of Tiny Planet's Z (larger =
 // nearer to the planet), which way up Mesh Warp's y runs, and everything Smart Upscale does. All are correct at any render scale (Ctx::scale), thread safe and work row by row on all cores.
+#include "../core/rmath.h"
 #include "builtins_impl.h"
 #include "vkeffects.h"
 #include "builtins_magixdata.h"
@@ -199,10 +200,10 @@ bool curveBytes8(const std::vector<CurvePoint>& P, unsigned char out[256])
             const float o0 = 1.0f - t0, o1 = 1.0f - t1;
             double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
             for (int j = 0; j < 4; ++j) {
-                const double w0 = std::pow((double)t0, (double)j) * std::pow((double)o0, (double)(3 - j)) * binom[j];
+                const double w0 = rm::pow((double)t0, (double)j) * rm::pow((double)o0, (double)(3 - j)) * binom[j];
                 x0 += X[j] * w0;
                 y0 += Y[j] * w0;
-                const double w1 = std::pow((double)t1, (double)j) * std::pow((double)o1, (double)(3 - j)) * binom[j];
+                const double w1 = rm::pow((double)t1, (double)j) * rm::pow((double)o1, (double)(3 - j)) * binom[j];
                 y1 += Y[j] * w1;
                 x1 += X[j] * w1;
             }

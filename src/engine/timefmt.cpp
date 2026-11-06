@@ -32,9 +32,17 @@ const std::vector<TimeFormatInfo>& timeFormats()
     return list;
 }
 
+// Two formats only the scripting API (and a .veg) has: they are not in VEGAS's menus, so they are not in timeFormats() either.
+static const TimeFormatInfo kScriptOnly[] = {
+    {"nanoseconds", "Nanoseconds", 16},
+    {"microseconds", "Microseconds", 17},
+};
+
 const TimeFormatInfo& timeFormatInfo(const std::string& id)
 {
     for (const TimeFormatInfo& f : timeFormats())
+        if (id == f.id) return f;
+    for (const TimeFormatInfo& f : kScriptOnly)
         if (id == f.id) return f;
     return timeFormats()[3];
 }
@@ -42,6 +50,8 @@ const TimeFormatInfo& timeFormatInfo(const std::string& id)
 std::string timeFormatFromScript(int value)
 {
     for (const TimeFormatInfo& f : timeFormats())
+        if (f.scriptValue == value) return f.id;
+    for (const TimeFormatInfo& f : kScriptOnly)
         if (f.scriptValue == value) return f.id;
     return "timecode";
 }
@@ -159,6 +169,8 @@ std::string timeFormatTitle(const ProjectSettings& s, const std::string& f)
     if (f == "smpteDrop") return "SMPTE Drop (29.970 fps)";
     if (f == "smpte30") return "SMPTE 30 (30.000 fps)";
     if (f == "cdtime") return "Audio CD Time";
+    if (f == "nanoseconds") return "Nanoseconds";
+    if (f == "microseconds") return "Microseconds";
     // Time & Frames at the project's rate (Reno has always called it SMPTE)
     return strfmt("SMPTE (%.3f fps)", projectFps(s));
 }
@@ -173,6 +185,8 @@ std::string formatTime(const ProjectSettings& s, double shown, const std::string
     }
     if (f == "seconds") return strfmt("%s%.3f", sign, shown);
     if (f == "samples") return strfmt("%s%lld", sign, (long long)std::llround(shown * s.sampleRate));
+    if (f == "nanoseconds") return strfmt("%s%lld", sign, (long long)std::llround(shown * 1e9));
+    if (f == "microseconds") return strfmt("%s%lld", sign, (long long)std::llround(shown * 1e6));
     if (f == "frames") return strfmt("%s%lld", sign, (long long)std::floor(shown * projectFps(s) + 1e-6));
     if (f == "time") {
         // hours:minutes:seconds.milliseconds
@@ -269,6 +283,8 @@ bool parseTimeText(const ProjectSettings& s, const std::string& textIn, const st
         const std::vector<double> n = numbers(text, "", &ok);
         if (!ok || n.size() != 1) return false;
         if (f == "samples") v = n[0] / std::max(1, s.sampleRate);
+        else if (f == "nanoseconds") v = n[0] / 1e9;
+        else if (f == "microseconds") v = n[0] / 1e6;
         else if (f == "frames") v = n[0] / fps;
         else if (feetFrames(f)) v = n[0] * feetFrames(f) / fps;
         else if (f == "measures") v = std::max(0.0, n[0] - 1) * std::max(1, s.beatsPerMeasure) * 60.0 / (s.tempo > 0 ? s.tempo : 120.0);

@@ -658,7 +658,7 @@ static void clearAround(Image& img, int ox, int oy, int dw, int dh)
     }
 }
 
-ImagePtr fitImage(const Image& src, int w, int h)
+ImagePtr fitImage(const Image& src, int w, int h, bool cornerAligned)
 {
     if (src.w < 1 || src.h < 1) return Image::make(w, h, src.depth, true);
     ImagePtr out = Image::make(w, h, src.depth, false);
@@ -686,8 +686,10 @@ ImagePtr fitImage(const Image& src, int w, int h)
     parallelRows(dh, (size_t)dw * 4 * (size_t)(box * box), [&](int ya, int yb) {
     for (int y = ya; y < yb; ++y) {
         double fy = (y + 0.5) / s - 0.5;
+        if (cornerAligned && dh > 1 && src.h > 1) fy = y * (double)(src.h - 1) / (dh - 1);
         for (int x = 0; x < dw; ++x) {
             double fx = (x + 0.5) / s - 0.5;
+            if (cornerAligned && dw > 1 && src.w > 1) fx = x * (double)(src.w - 1) / (dw - 1);
             float acc[4] = {0, 0, 0, 0};
             if (box >= 2) {
                 int x0 = (int)(x / s), y0 = (int)(y / s), cnt = 0;

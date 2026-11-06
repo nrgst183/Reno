@@ -16,6 +16,8 @@
 // vegwrite_tracks.cpp: tracks and events. vegwrite_fx.cpp: envelopes and effects. vegwrite_util.cpp: helpers.
 // The Writer class is declared in vegwrite_internal.h.
 #include "vegwrite_internal.h"
+#include "../media/media.h"
+#include "vegvst3side.h"
 
 namespace reno {
 namespace vegwrite {
@@ -103,18 +105,11 @@ std::string Writer::run()
     }
 
     {
-        // image sequences (File > Import > Image Sequence): no sample shows how VEGAS stores them
-        size_t seqs = 0, alpha = 0;
-        for (const MediaItem& m : p_.media) {
-            seqs += m.sequenceFps > 0 ? 1 : 0;
-            alpha += m.alphaMode.empty() ? 0 : 1;
-        }
+        size_t alpha = 0;
+        for (const MediaItem& m : p_.media) alpha += m.alphaMode.empty() ? 0 : 1;
         if (alpha)
             warn(strfmt("%zu media file(s) have an Alpha channel setting in Media Properties, which was not saved (Reno does not know where a .veg "
                         "stores it; Reno's own project files keep it).", alpha));
-        if (seqs)
-            warn(strfmt("%zu image sequence(s) were saved as their first picture (Reno does not know how a .veg stores image sequences; "
-                        "Reno's own project files keep them).", seqs));
     }
 
     // tracks first (they decide which media records are needed), then the rest in VEGAS's order
@@ -124,7 +119,7 @@ std::string Writer::run()
 
     OutNode top;
     top.isList = true;
-    bool groupsDone = false, markersDone = false;
+    bool groupsDone = false, markersDone = false, videoOutDone = false;
     auto addGroups = [&](const Chunk* orig) {
         groupsDone = true;
         OutNode g = groups(orig);
@@ -143,6 +138,12 @@ std::string Writer::run()
     for (const auto& k : root_->kids) {
         if (!k.isList && k.id == G::Header) { top.kids.push_back(header()); continue; }
         if (k.isList && k.type == G::MediaList) {
+            // a project that had no Video Output FX list gets one before the media list (after the view list), where VEGAS puts it
+            if (!videoOutDone && !childList(*root_, G::VideoOutFx)) {
+                videoOutDone = true;
+                OutNode vo = videoOutFxList(nullptr);
+                if (!vo.kids.empty()) top.kids.push_back(std::move(vo));
+            }
             top.kids.push_back(OutNode());          // filled in below, once the tracks have said what they use
             continue;
         }
@@ -169,6 +170,7 @@ std::string Writer::run()
             if (!markersDone) addMarkers(po_ ? origMarkers : nullptr);
             continue;
         }
+        if (k.isList && k.type == G::VideoOutFx) { videoOutDone = true; top.kids.push_back(videoOutFxList(&k)); continue; }
         if (k.isList && k.type == G::Buses) { top.kids.push_back(buses(&k)); continue; }
         top.kids.push_back(copyNode(k));
     }
@@ -216,6 +218,7 @@ OutNode Writer::header()
         if (const char* la = std::getenv("LOCALAPPDATA")) { texts[2] = std::string(la) + "\\VEGAS Pro\\18.0\\"; textsChanged = true; }
 #endif
     }
+    if ((po_ ? p_.settings.cdUpc != po_->settings.cdUpc : !p_.settings.cdUpc.empty())) { texts[3] = p_.settings.cdUpc; textsChanged = true; }
     if (textsChanged) {
         std::string t;
         for (size_t i = 0; i < texts.size(); ++i) {
@@ -241,7 +244,12 @@ OutNode Writer::header()
         setF64(d, blk + 0x38, s.fps());
     }
     if (!r || s.tempo != r->tempo) setF64(d, 0x18, s.tempo);
-    if (!r || s.beatsPerMeasure != r->beatsPerMeasure) setU16(d, 0x28, (uint16_t)s.beatsPerMeasure);
+    if (!r || s.beatsPerMeasure != r->beatsPerMeasure) setU16(d, 0x2a, (uint16_t)s.beatsPerMeasure);
+    if (!r || s.noteGetsBeat != r->noteGetsBeat) setU16(d, 0x28, (uint16_t)s.noteGetsBeat);
+    if (!r || s.rulerStart != r->rulerStart) setU64(d, 0x20, (uint64_t)(-(int64_t)std::llround(s.rulerStart * 1e7)));
+    if (!r || s.cdFirstTrack != r->cdFirstTrack) setU32(d, 0x70, (uint32_t)s.cdFirstTrack);
+    if (!r || s.lfeLowpass != r->lfeLowpass) setU32(d, 0x74, s.lfeLowpass ? 1u : 0u);
+    if (!r || s.lfeCutoff != r->lfeCutoff) setU32(d, 0x78, (uint32_t)std::llround(s.lfeCutoff));
     if (!r || s.width != r->width || s.height != r->height) {
         setU32(d, blk + 4, (uint32_t)s.width);
         setU32(d, blk + 8, (uint32_t)s.height);
@@ -251,26 +259,56 @@ OutNode Writer::header()
     const ProjectSettings def;
     const ProjectSettings& was = r ? *r : def;
     std::vector<std::string> lost;
-    if (s.fieldOrder != was.fieldOrder) lost.push_back("field order");
-    if (s.pixelFormat != was.pixelFormat) lost.push_back("pixel format");
+    if (!r || s.fieldOrder != r->fieldOrder) setU32(d, blk + 0x34, s.fieldOrder == "upper" ? 1u : s.fieldOrder == "lower" ? 2u : 0u);
+    if (!r || s.pixelFormat != r->pixelFormat || s.pixelRange != r->pixelRange) {
+        if (s.pixelFormat == "32bit" && s.pixelRange == "video") setU32(d, blk + 0xc, 0x20);
+        else if (s.pixelFormat == "8bit") setU32(d, blk + 0xc, 0x1c);
+        else if (r) lost.push_back("pixel format (32-bit full range)");
+    }
+    // the video output's fade colours (blue, green, red, alpha as floats), see the reader
+    {
+        auto colour = [&](size_t off, uint32_t argb) {
+            setF32(d, blk + off, (argb & 0xff) / 255.0f);
+            setF32(d, blk + off + 4, ((argb >> 8) & 0xff) / 255.0f);
+            setF32(d, blk + off + 8, ((argb >> 16) & 0xff) / 255.0f);
+            setF32(d, blk + off + 12, ((argb >> 24) & 0xff) / 255.0f);
+        };
+        const uint32_t wasTop = po_ ? po_->videoFadeTop : 0xFFFFFFFFu, wasBottom = po_ ? po_->videoFadeBottom : 0xFF000000u;
+        if (d.size() >= blk + 0xc0) {
+            if (p_.videoFadeTop != wasTop) colour(0xa0, p_.videoFadeTop);
+            if (p_.videoFadeBottom != wasBottom) colour(0xb0, p_.videoFadeBottom);
+        }
+    }
+    if (!r || s.outputRotation != r->outputRotation) setU32(d, blk + 0x130, (uint32_t)((s.outputRotation / 90) & 3));
     if (!r || s.renderQuality != r->renderQuality) {
         static const char* const names[] = {"", "draft", "preview", "good", "best"};
         for (uint32_t q = 1; q <= 4; ++q) if (s.renderQuality == names[q]) setU32(d, blk + 0x1c, q);
     }
     if (s.resample != was.resample) lost.push_back("resample mode");
-    if (s.motionBlur != was.motionBlur) lost.push_back("motion blur type");
+    if (!r || s.motionBlur != r->motionBlur) {
+        static const char* const blur[] = {"gaussian", "pyramid", "box", "asymgaussian", "asympyramid", "asymbox"};
+        for (uint32_t k = 0; k < 6; ++k) if (s.motionBlur == blur[k]) setU32(d, blk + 0xf0, k);
+    }
     if (!r || s.deinterlace != r->deinterlace) {
         if (s.deinterlace == "none") setU32(d, blk + 0xf4, 0);
         else if (s.deinterlace == "blend") setU32(d, blk + 0xf4, 1);
         else if (s.deinterlace == "interpolate") setU32(d, blk + 0xf4, 2);
     }
-    if (s.rulerFormat != was.rulerFormat) {
+    // (a new project starts from the template's header, whose word need not be this project's format)
+    if (!r || s.rulerFormat != r->rulerFormat) {
         const int word = headerWordOfRulerFormat(s.rulerFormat);
         if (word >= 0) setU32(d, 0x08, (uint32_t)word);
         else lost.push_back("ruler format");
     }
-    if (s.rulerStart != was.rulerStart) lost.push_back("ruler start time");
-    if (s.output360 != was.output360) lost.push_back("360\xC2\xB0 output");
+    // HDR mode and 360 output sit in the first video block (see the reader)
+    if (!r || s.hdrMode != r->hdrMode) {
+        if (d.size() >= blk + 0x34c) setU32(d, blk + 0x348, s.hdrMode == "hdr10" ? 1u : s.hdrMode == "hlg" ? 2u : 0u);
+        else lost.push_back("HDR mode");
+    }
+    if (!r || s.output360 != r->output360) {
+        if (d.size() >= blk + 0x34c) setU32(d, blk + 0x344, s.output360 ? 1u : 0u);
+        else lost.push_back("360\xC2\xB0 output");
+    }
     if (s.masterDisplay != was.masterDisplay) lost.push_back("master display");
     if (s.viewTransform != was.viewTransform || s.acesVersion != was.acesVersion) lost.push_back("view transform");
     if (!lost.empty()) {
@@ -409,6 +447,7 @@ bool Writer::sameAudioChain(const FxChain& chain, const Chunk* chunk)
     size_t n = 0, prev = 0;
     for (const auto& f : chain) {
         if (f.kind != "audio") continue;
+        if (f.audio.format == "VST3") continue;     // never in the .veg (see vegvst3side.h): not part of what it holds
         const auto* fo = originOf<VegFxOrigin>(f.veg, VegOrigin::FxK);
         if (!fo || fo->chunk != chunk || !sameFxState(f, fo->asRead) || f.name != fo->asRead.name || (n > 0 && fo->entryOff <= prev)) return false;
         prev = fo->entryOff;
@@ -423,6 +462,39 @@ bool Writer::sameAudioChain(const FxChain& chain, const Chunk* chunk)
     return parts.entries.size() == n;
 }
 
+// The Video Output FX list: the project's video output effects (those read from this list, and new ones), then what Reno
+// could not read, in place. Effects that came from a bus record (an older place for them) stay with that record.
+OutNode Writer::videoOutFxList(const Chunk* orig)
+{
+    OutNode list = listNode(G::VideoOutFx);
+    FxChain mine;
+    size_t skipped = 0;
+    for (const auto& f : p_.videoOut) {
+        const auto* fo = originOf<VegFxOrigin>(f.veg, VegOrigin::FxK);
+        bool inList = false;
+        if (orig && fo)
+            for (const auto& k : orig->kids) inList = inList || &k == fo->chunk;
+        if (fo && !inList) { ++skipped; continue; }
+        mine.push_back(f);
+    }
+    (void)skipped;
+    videoFx(list, mine, po_ ? &po_->hiddenVideoOutFx : nullptr, "The video output", nullptr);
+    return list;
+}
+
+// Whether two envelope lists are the same (what the file kept is written by copying its chunks; only a change cannot be written)
+static bool sameEnvelopes(const Envelopes& a, const Envelopes& b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i].kind != b[i].kind || a[i].target != b[i].target || a[i].param != b[i].param || a[i].points.size() != b[i].points.size()) return false;
+        for (size_t j = 0; j < a[i].points.size(); ++j)
+            if (a[i].points[j].time != b[i].points[j].time || a[i].points[j].value != b[i].points[j].value || a[i].points[j].curve != b[i].points[j].curve)
+                return false;
+    }
+    return true;
+}
+
 OutNode Writer::buses(const Chunk* list)
 {
     OutNode out = listNode(G::Buses);
@@ -434,6 +506,11 @@ OutNode Writer::buses(const Chunk* list)
             const ProjectSettings* r = po_ ? &po_->settings : nullptr;
             if (!r || s.sampleRate != r->sampleRate) setU32(d, 0x6e4, (uint32_t)s.sampleRate);
             if (!r || s.audioBits != r->audioBits) setU32(d, 0x6e8, (uint32_t)s.audioBits);
+            if (!r || s.audioChannels != r->audioChannels) {
+                setU32(d, 0xc, s.audioChannels == 6 ? 2u : 1u);
+                setU32(d, 0x10, s.audioChannels == 6 ? 6u : 2u);
+                setU32(d, 0x14, s.audioChannels == 6 ? 12u : 0u);
+            }
             out.kids.push_back(chunkNode(G::Mixer, d));
             continue;
         }
@@ -441,13 +518,14 @@ OutNode Writer::buses(const Chunk* list)
         const uint32_t type = k.data.u32(0x0c);
         if (type == 3) continue;            // written after the master, below
         if (type == 7) {
-            // video bus: no sample has effects on it, so they cannot be written
+            // video bus record: effects read from here (an older place for them) cannot be rewritten; the others are in the
+            // Video Output FX list (see videoOutFxList)
             bool same = true;
             for (const auto& f : p_.videoOut) {
                 const auto* fo = originOf<VegFxOrigin>(f.veg, VegOrigin::FxK);
-                if (!fo || fo->chunk != &k || !sameFxState(f, fo->asRead)) same = false;
+                if (fo && fo->chunk == &k && !sameFxState(f, fo->asRead)) same = false;
             }
-            if (!same) warn("The effects on the video output were not saved: no VEGAS project shows how VEGAS keeps them.");
+            if (!same) warn("Changed effects on the video output that were read from the video bus record were not saved.");
             out.kids.push_back(copyNode(k));
             continue;
         }
@@ -472,6 +550,12 @@ OutNode Writer::buses(const Chunk* list)
             const auto* o = originOf<VegBusOrigin>(bus.veg, VegOrigin::BusK);
             const std::string where = "Bus '" + bus.name + "'";
             const Chunk* base = o ? o->chunk : nullptr;
+            if (bus.assignable && base && base->data.u32(0x0c) == 4) {
+                // an Assignable FX chain read from the file: its record was copied above; changes to it are not written
+                if (!sameAudioChain(bus.fx, base) || bus.level != o->asRead.level || bus.mute != o->asRead.mute || bus.solo != o->asRead.solo)
+                    warn(where + ": changes to an Assignable FX chain were not saved (how VEGAS keeps them is only known for reading).");
+                continue;
+            }
             if (!base) {
                 if (!busTpl) busTpl = sameFile([](const Chunk& c) { return !c.isList && c.id == G::Bus && c.data.u32(0x0c) == 3; });
                 if (!busTpl) busTpl = tpl("bus");
@@ -491,7 +575,7 @@ OutNode Writer::buses(const Chunk* list)
             const Bus& was = o ? o->asRead : def;
             if (bus.pan != was.pan) lost.push_back("pan");
             if (bus.output != was.output) lost.push_back("output (VEGAS sends every bus to the master)");
-            if (!bus.envelopes.empty()) lost.push_back("envelopes");
+            if (!sameEnvelopes(bus.envelopes, was.envelopes)) lost.push_back("envelopes");
             if (!lost.empty()) {
                 std::string l;
                 for (size_t j = 0; j < lost.size(); ++j) l += (j ? ", " : "") + lost[j];
@@ -499,10 +583,14 @@ OutNode Writer::buses(const Chunk* list)
             }
         }
     }
-    if (!p_.masterEnvelopes.empty()) warn("The master bus's envelopes were not saved: no VEGAS project shows how VEGAS keeps them.");
-    if (!p_.videoEnvelopes.empty()) warn("The video output's envelopes were not saved: no VEGAS project shows how VEGAS keeps them.");
-    if (p_.videoFadeTop != 0xFFFFFFFF || p_.videoFadeBottom != 0xFF000000)
-        warn("The video output's fade colours were not saved: where VEGAS keeps them is not known.");
+    {
+        const auto* po = vegOriginAs<VegProjectOrigin>(p_.veg, VegOrigin::ProjectK);
+        const Envelopes none;
+        if (!sameEnvelopes(p_.masterEnvelopes, po ? po->masterEnvelopes : none))
+            warn("The master bus's envelopes were not saved: how VEGAS keeps a changed one is not known.");
+        if (!sameEnvelopes(p_.videoEnvelopes, po ? po->videoEnvelopes : none))
+            warn("The video output's envelopes were not saved: how VEGAS keeps a changed one is not known.");
+    }
     return out;
 }
 
@@ -608,6 +696,27 @@ uint32_t Writer::fileRecordFor(const MediaItem& m)
     } else {
         parts.path = utf16(writtenPath(m), true);
         parts.name.clear();
+        bool sequenceRecord = false;
+        if (m.sequenceFps > 0) {
+            // an image sequence: META:\Image Sequence\{first picture} (n)[how many pictures][digits of the numbers], named
+            // "first - last" (as VEGAS wrote one in the Coverage run 20261105)
+            const int count = imageSequenceLength(m.path);
+            const std::string file = fileNameOf(m.path);
+            const size_t dot = file.find_last_of('.');
+            const std::string stem = dot == std::string::npos ? file : file.substr(0, dot);
+            size_t digits = 0;
+            while (digits < stem.size() && stem[stem.size() - 1 - digits] >= '0' && stem[stem.size() - 1 - digits] <= '9') ++digits;
+            if (count >= 2 && digits > 0 && digits < 10) {
+                const long first = std::atol(stem.c_str() + stem.size() - digits);
+                char last[16];
+                std::snprintf(last, sizeof last, "%0*ld", (int)digits, first + count - 1);
+                parts.path = utf16(strfmt("META:\\Image Sequence\\{%s} (%d)[%d][%d]", writtenPath(m).c_str(), 0, count, (int)digits), true);
+                parts.name = utf16(stem + " - " + stem.substr(0, stem.size() - digits) + last, true);
+                sequenceRecord = true;
+            } else {
+                warn("Image sequence '" + fileNameOf(m.path) + "' was saved as its first picture (its pictures were not found next to each other).");
+            }
+        }
         // one stream record (0x90 bytes, u32 type at +4: 3 video, 2 sound) per kind of stream
         std::string video, audio;
         for (size_t at = 0; at + 0x90 <= parts.rest.size(); at += 0x90) {
@@ -626,6 +735,13 @@ uint32_t Writer::fileRecordFor(const MediaItem& m)
         if (!streams.empty()) {
             parts.rest = streams;
             setU32(parts.head, 0x38, (uint32_t)(streams.size() / 0x90));
+        }
+        // an image sequence's frame rate: a 12-byte record (u32 0xc, f64) ahead of the stream records
+        if (sequenceRecord) {
+            std::string rate;
+            addU32(rate, 0xc);
+            addF64(rate, m.sequenceFps);
+            parts.rest = rate + parts.rest;
         }
     }
     newMedia_.push_back(chunkNode(G::Media, joinMedia(parts)));
@@ -938,7 +1054,12 @@ std::string writeInternal(const Project& p, const std::string& path, std::vector
 {
     Writer w(p, path);
     std::string bytes = w.run();
-    if (warnings) *warnings = w.warnings();
+    if (warnings) {
+        *warnings = w.warnings();
+        if (const int n = countVst3(p))
+            warnings->push_back(strfmt("%d VST3 audio effect(s) are not in the .veg: VEGAS Pro has no VST3 support, so it cannot hold them. Reno keeps "
+                                       "them in a .reno-vst3 file beside the project and puts them back when it opens the project.", n));
+    }
     if (mediaIds) *mediaIds = w.mediaVegId;
     return bytes;
 }
@@ -1117,6 +1238,7 @@ VegasSaveResult saveVegasProject(Project& p, const std::string& path)
         return r;
     }
     adoptOrigins(p, q, mediaIds);
+    writeVst3Side(p, path, &r.warnings);        // VST3 effects cannot be in the .veg: they go beside it
     r.ok = true;
     return r;
 }

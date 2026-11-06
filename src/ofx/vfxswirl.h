@@ -10,6 +10,7 @@
 //                 sum 0 gives a transparent black pixel. Swirl float: the same with float weights (alpha times bilinear weight), colour = their sum, alpha = sum of weights.
 //   Pinch 8-bit : plain bilinear, ((c00 * (256 - fx) + c01 * fx) * (256 - fy) + (c10 * (256 - fx) + c11 * fx) * fy) >> 16 for all four bytes. Float: plain bilinear.
 #pragma once
+#include "../core/rmath.h"
 #include <climits>
 #include <cmath>
 #include <cstddef>
@@ -85,7 +86,7 @@ inline void swirl8(uint8_t* dst, ptrdiff_t dstPitch, const uint8_t* src, ptrdiff
             const double r = std::sqrt(d2);
             const double one = 1.0 - r;
             const double t = (one * amt15) * one;
-            const double ca = std::cos(t), sa = std::sin(t);
+            const double ca = rm::cos(t), sa = rm::sin(t);
             const double ysrc = (ca * dy - sa * dx) * a.ry + (double)a.cyPix;
             const double xsrc = (ca * dx + sa * dy) * a.rx + (double)a.cxPix;
             const int iy = floorMagic(ysrc);
@@ -128,7 +129,7 @@ inline void swirlF(float* dst, ptrdiff_t dstPitch, const float* src, ptrdiff_t s
             const double r = std::sqrt(d2);
             const double one = 1.0 - r;
             const double t = (one * amt15) * one;
-            const double ca = std::cos(t), sa = std::sin(t);
+            const double ca = rm::cos(t), sa = rm::sin(t);
             const double ysrc = (ca * dy - sa * dx) * a.ry + (double)a.cyPix;
             const double xsrc = (ca * dx + sa * dy) * a.rx + (double)a.cxPix;
             const int iy = floorMagic(ysrc);
@@ -156,7 +157,7 @@ inline void swirlF(float* dst, ptrdiff_t dstPitch, const float* src, ptrdiff_t s
 // ---------------------------------------------------------------- Pinch/Punch
 inline double pinchK(const Area& a, double r)
 {
-    const double c = std::cos(r * 3.1415926);
+    const double c = rm::cos(r * 3.1415926);
     return 1.0 - ((c + 1.0) * a.amount) * 0.4;
 }
 

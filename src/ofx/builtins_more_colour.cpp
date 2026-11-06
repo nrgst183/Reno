@@ -1,4 +1,5 @@
 // Built-in colour effects (Saturation, Soft Contrast, White Balance, Lab Adjust, Black Restore, Broadcast Colors, Channel Blend); see builtins_more.cpp.
+#include "../core/rmath.h"
 #include "builtins_more_internal.h"
 #include "vegas8.h"
 #include "vfxhslwb.h"
@@ -239,7 +240,7 @@ void whiteBalanceSettings(Ctx& c, std::vector<float>& tab, bool& shift, bool& ha
         wbDrawSettings(c, angDeg, amt);
         const double ang = angDeg * 3.141592653589793 / 180.0;
         const double s2 = amount * amount;
-        const float su = (float)(std::cos(ang) * s2 * 127.5), sv = (float)(std::sin(ang) * s2 * 127.5);
+        const float su = (float)(rm::cos(ang) * s2 * 127.5), sv = (float)(rm::sin(ang) * s2 * 127.5);
         for (int i = 0; i < 1024; ++i) {
             double y = ((double)i * 0.25 / 255.0) * 255.0 * bright;
             y = y < 0.0 ? 0.0 : y;      // not held to 255: with Brightness 2 the luma goes above it and only the finished R, G, B are clamped (captured picture)
@@ -466,11 +467,11 @@ void whiteBalanceChanged(Change& ch)
 double srgbToLinear(double v)
 {
     v = v < 0 ? 0 : (v > 1 ? 1 : v);
-    return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+    return v <= 0.04045 ? v / 12.92 : rm::pow((v + 0.055) / 1.055, 2.4);
 }
 float labEncodeSlow(double v)
 {
-    v = v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
+    v = v <= 0.0031308 ? v * 12.92 : 1.055 * rm::pow(v, 1.0 / 2.4) - 0.055;
     v = v < 0 ? 0 : (v > 1 ? 1 : v);
     return (float)(std::floor(v * 255.0 + 1e-3) / 255.0);
 }
@@ -530,7 +531,7 @@ void labAdjust8GpuTable(std::vector<float>& t)
     t.clear();
     for (int k = 0; k < 256; ++k) {
         const double v = (double)k * 0.00392156862745098;
-        const double l = v > 0.04045 ? std::pow((v + 0.055) / 1.055, 2.4) : v / 12.92;
+        const double l = v > 0.04045 ? rm::pow((v + 0.055) / 1.055, 2.4) : v / 12.92;
         uint64_t b;
         std::memcpy(&b, &l, 8);
         const uint32_t w[2] = {(uint32_t)(b >> 32), (uint32_t)b};
@@ -555,11 +556,11 @@ static void labAdjust8(Ctx& c)
     const double keepSat = 1.0 - c.d("Desaturate");
     const bool invert = c.b("InvertLuminance");
     const double k255 = 0.00392156862745098;
-    auto lin = [&](double v) { return v > 0.04045 ? std::pow((v + 0.055) / 1.055, 2.4) : v / 12.92; };
+    auto lin = [&](double v) { return v > 0.04045 ? rm::pow((v + 0.055) / 1.055, 2.4) : v / 12.92; };
     auto fwd = [&](double t) {
         if (t > 0.008856) {
             if (2.220446049250313e-16 > std::fabs(t)) return 0.0;
-            return t > 0.0 ? std::pow(t, 0.3333333333333333) : -std::pow(-t, 0.3333333333333333);
+            return t > 0.0 ? rm::pow(t, 0.3333333333333333) : -rm::pow(-t, 0.3333333333333333);
         }
         return t * 7.7870001792907715 + 0.13793103448275862;
     };
@@ -567,7 +568,7 @@ static void labAdjust8(Ctx& c)
         const double cube = f * f * f;
         return cube > 0.008856 ? cube : (f - 0.13793103448275862) / 7.787;
     };
-    auto enc = [&](double v) { return v > 0.0031308 ? std::pow(v, 0.4166666666666667) * 1.055 - 0.055 : v * 12.92; };
+    auto enc = [&](double v) { return v > 0.0031308 ? rm::pow(v, 0.4166666666666667) * 1.055 - 0.055 : v * 12.92; };
     auto back = [&](double v) {
         const double e = enc(v);
         if (0.0 > e) return 0.0;
@@ -650,7 +651,7 @@ void labAdjust(Ctx& c)
         const double X = (0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb) / wx;
         const double Y = 0.2126729 * lr + 0.7151522 * lg + 0.0721750 * lb;
         const double Z = (0.0193339 * lr + 0.1191920 * lg + 0.9503041 * lb) / wz;
-        auto f = [&](double v) { return v > e ? std::cbrt(v) : (kk * v + 16.0) / 116.0; };
+        auto f = [&](double v) { return v > e ? rm::cbrt(v) : (kk * v + 16.0) / 116.0; };
         const double fx = f(X), fy = f(Y), fz = f(Z);
         double L = 116.0 * fy - 16.0, A = 500.0 * (fx - fy), B = 200.0 * (fy - fz);
         if (invert) L = 95.58 - L;
@@ -709,7 +710,7 @@ inline float broadcastSoftLow(float x, float L, float T)
 {
     if (T <= L + 1e-7f) return std::max(x, L);
     if (x >= T) return x;
-    return L + (T - L) * std::pow(std::min(1.f, std::max(0.f, x / T)), T / (T - L));
+    return L + (T - L) * rm::pow(std::min(1.f, std::max(0.f, x / T)), T / (T - L));
 }
 
 // VEGAS's 8-bit Broadcast Colors, transcribed from its own code (tables of doubles built from the settings, then a per-pixel pass over the bytes). Luma Y = 0.299 R + 0.587 G + 0.114 B and

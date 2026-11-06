@@ -21,6 +21,7 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+#include "../core/rmath.h"
 
 // (the name the host gives a key press's X11 key symbol under: ofxinternal.h)
 #ifndef kRenoOfxPropKeySym
@@ -359,13 +360,13 @@ bool isSmooth(const BezPoint& b, double w, double h)
 {
     if (!hasIn(b) || !hasOut(b)) return false;
     const double ax = (b.ix - b.x) * w, ay = (b.iy - b.y) * h, bx = (b.ox - b.x) * w, by = (b.oy - b.y) * h;
-    const double la = std::hypot(ax, ay), lb = std::hypot(bx, by);
+    const double la = rm::hypot(ax, ay), lb = rm::hypot(bx, by);
     if (la < 1e-9 || lb < 1e-9) return false;
     return (ax * bx + ay * by) / (la * lb) < -0.98;
 }
 
 // Distance (in screen pixels) of a place from a point.
-double screenDist(const View& v, double x, double y, double px, double py) { return std::hypot((x - px) * v.w / v.psx, (y - py) * v.h / v.psy); }
+double screenDist(const View& v, double x, double y, double px, double py) { return rm::hypot((x - px) * v.w / v.psx, (y - py) * v.h / v.psy); }
 
 void drawPoly(GL& g, const View& v, const BezPath& p, float r, float gr, float b, float a, float width)
 {
@@ -581,10 +582,10 @@ OfxStatus bezierEntry(const char* action, const void* handle, OfxPropertySetHand
                 double& hy = out ? b.oy : b.iy;
                 double& ox = out ? b.ix : b.ox;                  // the other handle
                 double& oy = out ? b.iy : b.oy;
-                const double olen = std::hypot((ox - b.x) * v.w, (oy - b.y) * v.h);
+                const double olen = rm::hypot((ox - b.x) * v.w, (oy - b.y) * v.h);
                 hx = nx; hy = ny;
                 if (st.mirror) {
-                    const double dx = (b.x - nx) * v.w, dy = (b.y - ny) * v.h, l = std::hypot(dx, dy);
+                    const double dx = (b.x - nx) * v.w, dy = (b.y - ny) * v.h, l = rm::hypot(dx, dy);
                     if (l > 1e-9) { ox = b.x + dx / l * olen / v.w; oy = b.y + dy / l * olen / v.h; }
                 }
             }

@@ -14,6 +14,7 @@
 //                saturation, hue/sat/value, curves, output levels and LUT slots.
 //
 // All four work per pixel, so they are correct at any render scale; they are thread safe and row-parallel, with no allocation per pixel.
+#include "../core/rmath.h"
 #include "builtins_impl.h"
 #include "ofxhost.h"
 #include "builtins_more_internal.h"
@@ -310,7 +311,7 @@ void lookApply(const Look& k, float c[3])
     for (int i = 0; i < 3; ++i) {
         float v = std::min(1.f, std::max(0.f, c[i]));
         v = v + k.contrast * (v * v * (3 - 2 * v) - v);
-        v = std::pow(v, k.curve);
+        v = rm::pow(v, k.curve);
         c[i] = v;
     }
     const float l2 = luma(c[0], c[1], c[2]);
@@ -463,8 +464,8 @@ struct SrgbTables {
     {
         for (int i = 0; i <= 4096; ++i) {
             const double v = i / 4096.0;
-            dec[i] = (float)(v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4));
-            enc[i] = (float)(v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1 / 2.4) - 0.055);
+            dec[i] = (float)(v <= 0.04045 ? v / 12.92 : rm::pow((v + 0.055) / 1.055, 2.4));
+            enc[i] = (float)(v <= 0.0031308 ? v * 12.92 : 1.055 * rm::pow(v, 1 / 2.4) - 0.055);
         }
     }
 };
@@ -480,7 +481,7 @@ inline float tab(const float* t, float v)
     const int i = std::min(4095, (int)p);
     return t[i] + (t[i + 1] - t[i]) * (p - (float)i);
 }
-inline float labF(float t) { return t > 0.008856f ? (float)std::cbrt((double)t) : 7.787f * t + 16.f / 116.f; }      // (the double cbrt rounded to a float: the same on every C library, and what the GPU kernel works out)
+inline float labF(float t) { return t > 0.008856f ? (float)rm::cbrt((double)t) : 7.787f * t + 16.f / 116.f; }      // (the double cbrt rounded to a float: the same on every C library, and what the GPU kernel works out)
 inline float labFinv(float t) { const float t3 = t * t * t; return t3 > 0.008856f ? t3 : (t - 16.f / 116.f) / 7.787f; }
 void toLab(const SrgbTables& T, float r, float g, float b, float lab[3])
 {
@@ -701,7 +702,7 @@ void colorGrading(Ctx& c)
             }
         }
     }
-    const double expo = std::exp2(c.d("ExposureAdjust")) * std::exp(c.d("ExposureLnAdjust"));
+    const double expo = rm::exp2(c.d("ExposureAdjust")) * rm::exp(c.d("ExposureLnAdjust"));
     const double inMin = c.d("InMinAdjust"), inMax = c.d("InMaxAdjust"), outMin = c.d("OutMinAdjust"), outMax = c.d("OutMaxAdjust");
     const double sat = c.d("SaturationAdjust"), hueShift = c.d("HueAdjust"), hsvSat = c.d("SatAdjust"), hsvVal = c.d("ValAdjust");
     float curves[4][1025];
@@ -743,7 +744,7 @@ void colorGrading(Ctx& c)
             if (wheels) {
                 for (int k = 0; k < 3; ++k) {
                     float t = (float)gain[k] * (v[k] + (float)lift[k] * (1.f - v[k]));
-                    t = t >= 0.f ? std::pow(t, invGamma[k]) : -std::pow(-t, invGamma[k]);
+                    t = t >= 0.f ? rm::pow(t, invGamma[k]) : -rm::pow(-t, invGamma[k]);
                     v[k] = t + (float)off[k];
                 }
             }
@@ -897,7 +898,7 @@ bool colorGradingGpu(Ctx& c, ColorGradingGpu& o)
             }
         }
     }
-    const double expo = std::exp2(c.d("ExposureAdjust")) * std::exp(c.d("ExposureLnAdjust"));
+    const double expo = rm::exp2(c.d("ExposureAdjust")) * rm::exp(c.d("ExposureLnAdjust"));
     const double inMin = c.d("InMinAdjust"), inMax = c.d("InMaxAdjust"), outMin = c.d("OutMinAdjust"), outMax = c.d("OutMaxAdjust");
     const double sat = c.d("SaturationAdjust"), hueShift = c.d("HueAdjust"), hsvSat = c.d("SatAdjust"), hsvVal = c.d("ValAdjust");
     float curves[4][1025];

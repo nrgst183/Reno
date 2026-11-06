@@ -12,6 +12,7 @@
 // (the delay shape evaluated at the item's place in the list x the duration). A cascading row first copies its first item's saved state (transform, effects, opacity) to the others.
 // What a property means: the offsets are canvas units (20 high), Y up; scale; shear; rotation in radians (clockwise); opacity; blur and glow amounts of the item's image effects.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -268,8 +269,8 @@ struct Fn {
             return (2.0 * t3 - 3.0 * t2 + 1.0) * a.value + (-2.0 * t3 + 3.0 * t2) * b.value + (t3 - 2.0 * t2 + frac) * m0 + (t3 - t2) * m1;
         }
         case 1: {
-            const double e = std::exp(-damp * 10.0 * t);
-            return (amp * e * std::cos(6.283185307179586 * freq * t) - amp * e) * level;
+            const double e = rm::exp(-damp * 10.0 * t);
+            return (amp * e * rm::cos(6.283185307179586 * freq * t) - amp * e) * level;
         }
         case 2: {
             t = t < 0.5 ? 1.0 - t * 2.0 : (t - 0.5) * 2.0;

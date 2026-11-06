@@ -5,6 +5,7 @@
 // GDI+ does, the gradient runs from the polygon's mean point out to its edge in the triangles of a fan, the pixels whose position lies inside are filled, the position of pixel k
 // being k) - the bytes agree with VEGAS's pictures to within a level on most pixels, not on all (GDI+'s own rounding inside its gradient is not known).
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -37,7 +38,7 @@ inline int circlePieces(double r)
     const double kPi = 3.14159265358979323846;
     for (int k = 0; k < 8; ++k) {
         const double quarter = (kPi / 2) / (double)(1 << k);
-        const double sag = r * (1.0 - std::cos(quarter / 2));
+        const double sag = r * (1.0 - rm::cos(quarter / 2));
         if (sag * 4.0 / 3.0 <= 0.25) return 4 << k;
     }
     return 4 << 8;
@@ -65,7 +66,7 @@ inline void maskBytes(double radPx, double curv, double orientDeg, int shape, do
         float a = std::fmod((float)orientDeg * 0.0174532924f + (1.57079637f - step), twoPi);
         const float rx = r * (float)sx, ry = r * (float)sy;
         for (int i = 0; i < n; ++i) {
-            poly.push_back({std::cos(a) * rx, std::sin(a) * ry});
+            poly.push_back({rm::cos(a) * rx, rm::sin(a) * ry});
             a = std::fmod(a + step, twoPi);
         }
         poly.push_back(poly[0]);
@@ -88,7 +89,7 @@ inline void maskBytes(double radPx, double curv, double orientDeg, int shape, do
     }
     if (shape <= 0) {
         const int n = circlePieces((double)r);
-        for (int i = 0; i < n; ++i) { vx.push_back(std::cos(2 * kPi * i / n) * (double)r); vy.push_back(std::sin(2 * kPi * i / n) * (double)r); }
+        for (int i = 0; i < n; ++i) { vx.push_back(rm::cos(2 * kPi * i / n) * (double)r); vy.push_back(rm::sin(2 * kPi * i / n) * (double)r); }
     } else {
         for (size_t i = 0; i + 1 < poly.size(); ++i) { vx.push_back((double)poly[i].x); vy.push_back((double)poly[i].y); }
     }

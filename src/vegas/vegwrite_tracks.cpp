@@ -65,7 +65,7 @@ OutNode Writer::track(const Track& t, size_t index)
             if (origChain) {
                 chain = bytesOf(origChain->data);
                 haveChain = true;
-                chainWritten = audioSlots.size();
+                chainWritten = (size_t)std::count_if(audioSlots.begin(), audioSlots.end(), [](const FxSlot& f) { return f.audio.format != "VST3"; });
             }
         } else if (!audioSlots.empty()) {
             std::string c;
@@ -157,27 +157,28 @@ void Writer::trackEvents(const Track& t, const VegTrackOrigin* o, OutNode& out)
     }
 }
 
-// A video track's parent/child bits for word 0x0c of its settings: 0x20 for a child (a video track at level 1 under
-// a level-0 video track), 0x40 for a parent (the next video track below is a child). 0 if neither; for a child
-// without a parent above it, also 0 (it is written as an ordinary track).
+// A video track's parent/child bits for word 0x0c of its settings: 0x20 for a child (a video track nested deeper than a video
+// track above it), 0x40 for a parent (the next video track below is nested deeper than it); a track in the middle of a group
+// has both. 0 if neither; for a child without a parent above it, also 0 (it is written as an ordinary track).
 uint32_t Writer::parentChildRelation(const Track& t) const
 {
     if (t.type != TrackType::Video) return 0;
     const Track* b = p_.tracks.data();
     if (&t < b || &t >= b + p_.tracks.size()) return 0;
     const size_t i = (size_t)(&t - b);
+    uint32_t bits = 0;
     if (t.compositeLevel > 0) {
         for (size_t j = i; j-- > 0;) {
             if (p_.tracks[j].type != TrackType::Video) continue;
-            if (p_.tracks[j].compositeLevel == 0) return 0x20;
+            if (p_.tracks[j].compositeLevel < t.compositeLevel) { bits |= 0x20u; break; }
         }
-        return 0;
     }
     for (size_t j = i + 1; j < p_.tracks.size(); ++j) {
         if (p_.tracks[j].type != TrackType::Video) continue;
-        return p_.tracks[j].compositeLevel > 0 ? 0x40u : 0u;
+        if (p_.tracks[j].compositeLevel > t.compositeLevel) bits |= 0x40u;
+        break;
     }
-    return 0;
+    return bits;
 }
 
 // The track's video or audio settings record (levels, pan, compositing mode, bus...).
@@ -193,9 +194,9 @@ void Writer::trackSettings(const Track& t, const Chunk& base, const VegTrackOrig
         std::string d = bytesOf(dc->data);
         if (video) {
             auto colour = [&](size_t off, uint32_t argb) {
-                setF32(d, off, ((argb >> 16) & 0xff) / 255.0f);
+                setF32(d, off, (argb & 0xff) / 255.0f);                    // blue, green, red, alpha (Coverage run 20261105)
                 setF32(d, off + 4, ((argb >> 8) & 0xff) / 255.0f);
-                setF32(d, off + 8, (argb & 0xff) / 255.0f);
+                setF32(d, off + 8, ((argb >> 16) & 0xff) / 255.0f);
                 setF32(d, off + 12, ((argb >> 24) & 0xff) / 255.0f);
             };
             if (!o || t.fadeTop != was.fadeTop) colour(0x30, t.fadeTop);
@@ -238,9 +239,12 @@ void Writer::trackSettings(const Track& t, const Chunk& base, const VegTrackOrig
                 const uint32_t relation = parentChildRelation(t);
                 const bool child = (relation & 0x20) != 0;
                 const uint32_t level = d.size() >= 0xb0 ? dc->data.u32(0xac) : 0;
-                if (((dc->data.u32(0x0c) & 0x60) != relation) || (child != (level != 0)))
-                    setU32(d, 0x0c, (dc->data.u32(0x0c) & ~0x60u) | relation);
-                if (child != (level != 0)) setU32(d, 0xac, child ? 1u : 0u);
+                // bit 0x100 of the same word: Bypass Motion Blur (Coverage run 20261105)
+                uint32_t word = (dc->data.u32(0x0c) & ~0x60u) | relation;
+                if (!o || t.bypassMotionBlur != was.bypassMotionBlur) word = (word & ~0x100u) | (t.bypassMotionBlur ? 0x100u : 0u);
+                const uint32_t want = child ? (uint32_t)std::min(t.compositeLevel, 8) : 0u;
+                if (word != dc->data.u32(0x0c) || want != level) setU32(d, 0x0c, word);
+                if (want != level) setU32(d, 0xac, want);
             }
             // effect count and last-shown effect (VEGAS uses 0 or -1 for none)
             if (dc->data.u32(0xa0) != (uint32_t)fxWritten) setU32(d, 0xa0, (uint32_t)fxWritten);
@@ -287,12 +291,31 @@ void Writer::trackSettings(const Track& t, const Chunk& base, const VegTrackOrig
 // Warns about the parts of the track that a VEGAS project cannot keep.
 void Writer::trackWarnings(const Track& t, const VegTrackOrigin* o, const Track& was, const std::string& label)
 {
-    if (!t.motion.empty())
+    // (what the file kept, as read, is saved by copying its chunk; only a change cannot be written)
+    auto sameMotion = [](const std::vector<MotionKey>& a, const std::vector<MotionKey>& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (a[i].time != b[i].time || a[i].x != b[i].x || a[i].y != b[i].y || a[i].w != b[i].w || a[i].h != b[i].h || a[i].rotation != b[i].rotation ||
+                a[i].curve != b[i].curve || a[i].smoothness != b[i].smoothness || a[i].z != b[i].z || a[i].d != b[i].d || a[i].rotX != b[i].rotX ||
+                a[i].rotY != b[i].rotY || a[i].oriX != b[i].oriX || a[i].oriY != b[i].oriY || a[i].oriZ != b[i].oriZ || a[i].offX != b[i].offX ||
+                a[i].offY != b[i].offY || a[i].offZ != b[i].offZ)
+                return false;
+        return true;
+    };
+    auto sameGlow = [](const std::vector<GlowKey>& a, const std::vector<GlowKey>& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (a[i].time != b[i].time || a[i].x != b[i].x || a[i].y != b[i].y || a[i].w != b[i].w || a[i].h != b[i].h || a[i].blur != b[i].blur ||
+                a[i].intensity != b[i].intensity || a[i].color != b[i].color || a[i].curve != b[i].curve)
+                return false;
+        return true;
+    };
+    if (!sameMotion(t.motion, was.motion) || (!o && !t.motion.empty()))
         warn(label + ": its track motion was not saved: how VEGAS stores a changed track motion is not known.");
-    if (!t.parentMotion.empty())
+    if (!sameMotion(t.parentMotion, was.parentMotion) || (!o && !t.parentMotion.empty()))
         warn(label + ": its Parent Motion was not saved: how VEGAS stores a changed track motion is not known.");
-    if (!t.shadow2d.empty() || !t.glow2d.empty())
-        warn(label + ": its Track Motion 2D Shadow / 2D Glow was not saved: no VEGAS project here shows how VEGAS keeps them.");
+    if (!sameGlow(t.shadow2d, was.shadow2d) || !sameGlow(t.glow2d, was.glow2d) || (!o && (!t.shadow2d.empty() || !t.glow2d.empty())))
+        warn(label + ": its Track Motion 2D Shadow / 2D Glow was not saved: how VEGAS stores a changed one is not known.");
     if (!t.sends.empty()) warn(label + ": its sends to buses were not saved: no VEGAS project shows how a send is kept.");
     if (t.compositeLevel != 0 && parentChildRelation(t) == 0)
         warn(label + ": it is a compositing child but no video track above it is its parent; it was saved as an ordinary track.");
@@ -306,6 +329,25 @@ void Writer::trackWarnings(const Track& t, const VegTrackOrigin* o, const Track&
 
 
 // ---------------------------------------------------------------- events
+}  // namespace vegwrite
+
+int effectiveFadeInRecipCurve(const Track& t, const Event& e)
+{
+    if (e.fadeInRecipCurve >= 0) return e.fadeInRecipCurve;
+    // the mixer fades the earlier event out by its own fade-out curve under an event that begins later and ends after it
+    const Event* from = nullptr;
+    for (const Event& o : t.events) {
+        if (o.id == e.id || o.mute) continue;
+        if (!(o.start < e.start || (o.start == e.start && o.id < e.id))) continue;
+        if (o.end() <= e.start || o.end() >= e.end()) continue;
+        if (!from || o.start > from->start) from = &o;
+    }
+    if (from) return from->fadeOutCurve;
+    return e.fadeInCurve == CurveFast ? (int)CurveSlow : e.fadeInCurve == CurveSlow ? (int)CurveFast : e.fadeInCurve;
+}
+
+namespace vegwrite {
+
 OutNode Writer::event(const Event& e, const Track& t)
 {
     const auto* o = originOf<VegEventOrigin>(e.veg, VegOrigin::EventK);
@@ -323,6 +365,7 @@ OutNode Writer::event(const Event& e, const Track& t)
     if (!vegId || usedEventIds_.count(vegId)) vegId = newEventId(t.type);
     usedEventIds_.insert(vegId);
     eventVegId[e.id] = vegId;
+    recipCurve_ = effectiveFadeInRecipCurve(t, e);
     out.kids.push_back(chunkNode(G::EventData, eventRecord(e, *base, o, was, video, vegId)));
     // the takes
     eventTake(e, t, o, *base, out, vegId);
@@ -337,8 +380,7 @@ OutNode Writer::event(const Event& e, const Track& t)
     // the frame or sound settings, and the effects
     if (video) eventVideoParts(e, *base, o, was, where, out);
     else eventAudioParts(e, *base, o, was, where, out);
-    // Reno's event snap offsets and sync links: no sample has them
-    if (e.snapOffset > 0) warnCount("%d event snap offset(s) were not saved: no VEGAS project here has one, so where VEGAS keeps them is not known.");
+    // Reno's sync links: no sample has them
     if (e.adjustment) warnCount("%d adjustment event(s) were saved as empty events: VEGAS Pro 18 has no adjustment events.");
     if (e.syncLink) warnCount("%d sync link(s) were not saved: no VEGAS project here has one, so how VEGAS keeps them is not known.");
     // anything else the event had
@@ -399,6 +441,7 @@ std::string Writer::eventRecord(const Event& e, const Chunk& base, const VegEven
         if (!o || e.start != was.start) setU64(d, 0x10, (uint64_t)toTicks(e.start));
         if (!o || e.length != was.length) setU64(d, 0x18, (uint64_t)toTicks(e.length));
         if (!o || e.rate != was.rate) setF64(d, 0x28, e.rate);
+        if (!o || e.snapOffset != was.snapOffset) setU64(d, 0x30, (uint64_t)toTicks(e.snapOffset));
         if (!o || vegId != o->vegId) setU64(d, 0x40, vegId);
         // gain: VEGAS stores a normalised event's normalising gain separately (Event::normalizeGain)
         if (!o || e.gain != was.gain) setF32(d, s + 0x0c, (float)e.gain);
@@ -408,13 +451,9 @@ std::string Writer::eventRecord(const Event& e, const Chunk& base, const VegEven
         if (!o || e.fadeOut != was.fadeOut) setU64(d, s + 0x30, (uint64_t)toTicks(e.fadeOut));
         if (!o || e.fadeInCurve != was.fadeInCurve) setU32(d, s + 0x14, (uint32_t)curveToVegas(e.fadeInCurve));
         if (!o || e.fadeOutCurve != was.fadeOutCurve) setU32(d, s + 0x18, (uint32_t)curveToVegas(e.fadeOutCurve));
-        // curve the previous event fades out by under this fade-in (FadeIn.ReciprocalCurve; when not given, the
-        // mirror of the fade-in, as VEGAS makes it)
-        if (!o || e.fadeInRecipCurve != was.fadeInRecipCurve) {
-            const int c = e.fadeInRecipCurve >= 0 ? e.fadeInRecipCurve
-                        : e.fadeInCurve == CurveFast ? (int)CurveSlow : e.fadeInCurve == CurveSlow ? (int)CurveFast : e.fadeInCurve;
-            setU32(d, s + 0x1c, (uint32_t)curveToVegas(c));
-        }
+        // curve the previous event fades out by under this fade-in (FadeIn.ReciprocalCurve; when Reno has none given, the
+        // one the mixer plays: see effectiveFadeInRecipCurve)
+        if (!o || e.fadeInRecipCurve != was.fadeInRecipCurve) setU32(d, s + 0x1c, (uint32_t)curveToVegas(recipCurve_));
         // "in a group" is corrected once groups are known (see groups())
     }
     return d;
@@ -462,18 +501,24 @@ void Writer::eventVideoParts(const Event& e, const Chunk& base, const VegEventOr
         const int32_t sel = vd->data.i32(0x68);
         if (!o) setU32(v, 0x68, 0xFFFFFFFFu);
         else if (sel > (int32_t)fxWritten) setU32(v, 0x68, (uint32_t)fxWritten);    // the effects, or pan/crop after them
+        // the transition is the record after the first 0x80 bytes; one kept as it was (also an older kind Reno cannot write) stays
+        const auto* to = originOf<VegFxOrigin>(e.transition.veg, VegOrigin::FxK);
+        if (!e.transition.kind.empty() && to && to->chunk == vd && sameFxState(e.transition, to->asRead)) {
+            // unchanged: v still ends with the original record
+        } else {
+            if (v.size() > 0x80) v.resize(0x80);
+            if (e.transition.kind == "ofx" && !e.transition.pluginId.empty()) v += ofxRecord(e.transition, where + ", its transition");
+            else if (!e.transition.kind.empty()) warnCount("%d transition(s) with no plug-in were not saved.");
+        }
         OutNode l = listNode(G::VideoEventList);
         l.kids.push_back(chunkNode(G::VideoEventData, v));
         out.kids.push_back(std::move(l));
     }
     if (haveFx) out.kids.push_back(std::move(fxList));
     eventPanCrop(e, base, o, was, where, out);
-    if (!e.transition.kind.empty()) warnCount("%d transition(s) were not saved: no VEGAS project here has one, so how VEGAS keeps them is not known.");
+    if (!e.transition.kind.empty() && !vd) warnCount("%d transition(s) were not saved: the event has no video event record to hold it.");
     if (e.maskOn || !e.mask.empty()) warnCount("%d Event Pan/Crop mask(s) were not saved: no VEGAS project here has one, so how VEGAS keeps them is not known.");
     if (e.stretchToFill) warnCount("%d Event Pan/Crop \"Stretch to fill frame\" setting(s) were not saved: where VEGAS keeps it is not known.");
-    bool smooth = false;
-    for (const PanCropKey& k : e.panCrop) smooth = smooth || k.smoothness != 0;
-    if (smooth) warnCount("%d event(s)' Pan/Crop keyframe Smoothness was not saved: where VEGAS keeps it is not known.");
 }
 
 // Event Pan/Crop keyframes, written into the original record when there is one.
@@ -536,11 +581,11 @@ void Writer::eventPanCrop(const Event& e, const Chunk& base, const VegEventOrigi
                 addF64(key, k.h * mh);
                 addF64(key, cx);
                 addF64(key, cy);
-                addF64(key, -k.rotation * kPi / 180.0);
+                addF64(key, k.rotation * kPi / 180.0);
                 // rotation centre
                 addF64(key, cx + k.pivotX * mw);
                 addF64(key, cy + k.pivotY * mh);
-                addF64(key, 0.0);
+                addF64(key, std::max(0.0, std::min(1.0, k.smoothness / 100.0)));
                 posl += key;
             }
             setU32(posl, 4, (uint32_t)(posl.size() - 8));
@@ -567,7 +612,7 @@ void Writer::eventAudioParts(const Event& e, const Chunk& base, const VegEventOr
     std::string chain;
     size_t written = 0;
     if (same) {
-        if (origChain) { chain = bytesOf(origChain->data); written = audioSlots.size(); }
+        if (origChain) { chain = bytesOf(origChain->data); written = (size_t)std::count_if(audioSlots.begin(), audioSlots.end(), [](const FxSlot& f) { return f.audio.format != "VST3"; }); }
     } else if (!audioSlots.empty()) {
         std::string c;
         if (audioChain(audioSlots, origChain ? &origChain->data : nullptr, "eventAudioChain", c, &written, where) && written > 0) {
@@ -583,6 +628,8 @@ void Writer::eventAudioParts(const Event& e, const Chunk& base, const VegEventOr
             uint32_t ch = 1000;
             if (e.channels == "right") ch = 1001;
             else if (e.channels == "left") ch = 1002;
+            else if (e.channels == "muteleft") ch = 1003;
+            else if (e.channels == "muteright") ch = 1004;
             else if (e.channels == "combine") ch = 1005;
             else if (e.channels == "swap") ch = 1006;
             setU32(a, 0x04, ch);
@@ -769,7 +816,7 @@ void Writer::eventTake(const Event& e, const Track& t, const VegEventOrigin* o, 
     // moved; reading back gives Reno's takes in Reno's order either way).
     std::vector<const Item*> order;
     for (size_t i = 1; i < items.size(); ++i) order.push_back(&items[i]);
-    order.insert(order.begin() + (std::ptrdiff_t)std::min(origActive, order.size()), &items[0]);
+    order.insert(order.begin() + (std::ptrdiff_t)std::min(o ? origActive : (size_t)std::max(0, e.activeTake), order.size()), &items[0]);
     uint32_t activeIdx = 0, written = 0;
     for (const Item* it : order) {
         const Chunk& tk = *takes[(size_t)(it->orig >= 0 ? it->orig : (int)origActive)];

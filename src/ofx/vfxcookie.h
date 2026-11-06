@@ -3,6 +3,7 @@
 // vfxgauss.h, but on global float buffers and with every multiply-add fused), and the composite of picture, border colour and nothing in floats (mask 0 .. 2).
 // Header only (the set-up and the mask are templates over any struct with CookieSetup's field names) so a test program can check it against the captured pictures.
 #pragma once
+#include "../core/rmath.h"
 #include "builtins_cookie_vegas.h"
 #include "vfxgauss.h"
 #include <algorithm>
@@ -217,7 +218,7 @@ inline void passColumns1(const vfxgauss::Coefsf& cf, const std::vector<float>& i
 // The sigmas of the feather (width Fe in pixels, pixel aspect scales sx / sy): sqrt(((Fe + 1.5) s)^2 / c) with c = -2 ln(1/255) (as the card's host computes them, in floats).
 inline void featherSigmas(float fe, float sx, float sy, float& sigx, float& sigy)
 {
-    const float c = -2.0f * std::log(0.00392156886f);
+    const float c = -2.0f * rm::log(0.00392156886f);
     const float ax = (fe + 1.5f) * sx, ay = (fe + 1.5f) * sy;
     sigx = std::sqrt((ax * ax) / c);
     sigy = std::sqrt((ay * ay) / c);

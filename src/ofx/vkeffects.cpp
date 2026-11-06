@@ -1,6 +1,7 @@
 // The built-in effects on the GPU: for each effect with Vulkan kernels, a function that plans the compute passes from the effect's settings. Each reads the
 // settings exactly as the effect's CPU code does (same clamps, same float arithmetic) and hands the kernel (tools/gpukernels.py) the numbers in a
 // push-constant block (shaders/push_layouts.h). See vkeffects.h.
+#include "../core/rmath.h"
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -114,8 +115,8 @@ bool oclColorCorrector(Ctx& c, Plan& p)
     t[1] = k.gain; t[2] = k.offset; t[3] = k.satv; t[4] = k.g; t[5] = k.A; t[6] = k.B; t[7] = k.P; t[8] = k.C;
     const float sg[3] = {0.283107266761f, 0.17f, 0.283107266761f};
     for (int w = 0; w < 3; ++w) {
-        t[9 + 4 * (size_t)w] = std::cos(k.ang[w] * pi / 180.0f);
-        t[10 + 4 * (size_t)w] = std::sin(k.ang[w] * pi / 180.0f);
+        t[9 + 4 * (size_t)w] = rm::cos(k.ang[w] * pi / 180.0f);
+        t[10 + 4 * (size_t)w] = rm::sin(k.ang[w] * pi / 180.0f);
         t[11 + 4 * (size_t)w] = k.amt[w] * k.amt[w];
         t[12 + 4 * (size_t)w] = 0.5f / (sg[w] * sg[w]);
     }
@@ -135,7 +136,7 @@ bool oclColorCorrectorSecondary(Ctx& c, Plan& p)
     std::vector<float> t(39, 0.f);
     t[0] = (float)k.mode; t[1] = k.inv ? 1.f : 0.f; t[2] = k.satOn ? 1.f : 0.f; t[3] = k.lumOn ? 1.f : 0.f;
     if (k.mode == 1) {
-        const float cs = std::cos(k.ang * pi / 180.0f), sn = std::sin(k.ang * pi / 180.0f);
+        const float cs = rm::cos(k.ang * pi / 180.0f), sn = rm::sin(k.ang * pi / 180.0f);
         const float a2 = k.amt * k.amt;
         t[4] = cs * a2 * 0.5f;
         t[5] = sn * a2 * 0.5f;
@@ -297,13 +298,13 @@ bool planLevels(Ctx& c, Plan& p)
     const double G = 1.0 / gamma;
     double k0 = 0, slope = 0, a = 0, inv = 0;
     if (!straight) {
-        k0 = std::pow(1.0 / G, -0.9418051973077521) * 0.03818376618407356;
-        slope = std::pow(1.0 / G, 1.8836103946155043);
+        k0 = rm::pow(1.0 / G, -0.9418051973077521) * 0.03818376618407356;
+        slope = rm::pow(1.0 / G, 1.8836103946155043);
         if (G < 1.0) {
-            const double t1 = std::pow(k0, G);
+            const double t1 = rm::pow(k0, G);
             a = (slope * k0 - t1) / (t1 - 1.0);
         } else {
-            const double u = slope * k0, w = std::pow(u, 1.0 / G);
+            const double u = slope * k0, w = rm::pow(u, 1.0 / G);
             a = (k0 - w) / (w - 1.0);
             inv = 1.0 / (a + 1.0);
         }
@@ -370,9 +371,9 @@ bool planColorCorrectorSecondary(Ctx& c, Plan& p)
     double ca, cm;
     c.xy("Chrominance", ca, cm);
     const double a = ca * kPi / 180.0, cam = clampd(cm, -2, 2), k = (cam < 0 ? -cam * cam : cam * cam) * 0.5;
-    const float cu = (float)(std::cos(a) * k), cv = (float)(std::sin(a) * k);
+    const float cu = (float)(rm::cos(a) * k), cv = (float)(rm::sin(a) * k);
     const double rot = c.d("RotateHue") * kPi / 180.0;
-    const float cr = (float)std::cos(rot), sr = (float)std::sin(rot);
+    const float cr = (float)rm::cos(rot), sr = (float)rm::sin(rot);
     const float sat = (float)clampd(c.d("Saturation"), 0, 100);
     float gc, ga;
     secondaryGammaCurve(c.d("Gamma"), gc, ga);
@@ -409,7 +410,7 @@ std::vector<float> gaussWeights(double sigma)
     const int r = (int)std::min(2000.0, std::ceil(sigma * 3));
     std::vector<float> k((size_t)r + 1);
     double sum = 0;
-    for (int i = 0; i <= r; ++i) { k[(size_t)i] = (float)std::exp(-0.5 * i * i / (sigma * sigma)); sum += (i ? 2 : 1) * k[(size_t)i]; }
+    for (int i = 0; i <= r; ++i) { k[(size_t)i] = (float)rm::exp(-0.5 * i * i / (sigma * sigma)); sum += (i ? 2 : 1) * k[(size_t)i]; }
     for (auto& v : k) v = (float)(v / sum);
     return k;
 }
@@ -497,7 +498,7 @@ bool oclMirror(Ctx& c, Plan& p)
     } else if (kind < 4) {
         pc.i10 = (int)v5;
     } else {
-        pc.v22 = -std::tan(th);
+        pc.v22 = -rm::tan(th);
         pc.v23 = -1.0f / pc.v22;
         pc.k0 = std::fma(pc.v22, v5, -v6);
     }
@@ -544,7 +545,7 @@ bool planMirror(Ctx& c, Plan& p)
     const Color bg = c.color("Background");
     float bgPix[4];
     put(bgPix, bg);
-    const double kx = -std::sin(a), ky = -std::cos(a);
+    const double kx = -rm::sin(a), ky = -rm::cos(a);
     const bool straight = std::fabs(kx) < 1e-9 || std::fabs(ky) < 1e-9;
     if (c.levels) {
         // 8-bit: mirror() in builtins_filters.cpp sends angles away from the axes to mirror8General() (VEGAS's float steps on the bytes)
@@ -558,7 +559,7 @@ bool planMirror(Ctx& c, Plan& p)
             const float sx = (float)c.scale, sy = (float)c.scale;
             const float cxp = (float)(cx * (double)(W - 1)), cyp = (float)((1.0 - cy) * (double)(H - 1));
             const float u = (th > 0.f ? 3.14159274101257f : -3.14159274101257f) - th;
-            const float t = (float)std::tan((double)u);
+            const float t = (float)rm::tan((double)u);
             const float isx = 1.0f / sx, isy = 1.0f / sy;
             const float cxs = cxp * isx, cys = cyp * isy;
             const float m1t = -1.0f / t;
@@ -605,8 +606,8 @@ bool planColorCorrector(Ctx& c, Plan& p)
         double an, m;
         c.xy(names[k], an, m);
         const double am = clampd(m, -2, 2), t = (am < 0 ? -am * am : am * am) * 0.5, r = an * kPi / 180.0;
-        du[k] = (float)(std::cos(r) * t);
-        dv[k] = (float)(std::sin(r) * t);
+        du[k] = (float)(rm::cos(r) * t);
+        dv[k] = (float)(rm::sin(r) * t);
     }
     const float sat = (float)clampd(c.d("Saturation"), 0, 100);
     float gc, ga;
@@ -852,7 +853,7 @@ bool planWipeLinear(Ctx& c, Plan& p)
     if (c.levels) return false;                 // the 8-bit picture is VEGAS's own whole-number maths on the CPU (builtins_trans.cpp)
     const int t = toTable(c, p);
     if (t < 0) return false;
-    const double ang = c.d("Angle") * kPi / 180.0, dx = std::cos(ang), dy = std::sin(ang);
+    const double ang = c.d("Angle") * kPi / 180.0, dx = rm::cos(ang), dy = rm::sin(ang);
     const double span = std::max(1e-9, std::fabs(dx) * p.w + std::fabs(dy) * p.h);
     const double w = clampd(c.d("Feather"), 0, 1) * 0.5;
     const double edge = c.progress * (1.0 + w);
@@ -872,7 +873,7 @@ bool planWipeClock(Ctx& c, Plan& p)
     const double edge = -F * 0.5 + clampd(c.progress, 0, 1) * (360.0 + F);
     const double er = edge * kPi / 180.0;
     P::WipeClock pc = {p.w, p.h, c.i("Direction") == 1 ? 1u : 0u, 0u, (float)F, (float)edge,
-                       (float)-std::cos(er), (float)-std::sin(er), (float)std::sin(er), (float)-std::cos(er)};
+                       (float)-rm::cos(er), (float)-rm::sin(er), (float)rm::sin(er), (float)-rm::cos(er)};
     Pass& ps = p.add("wipe_clock", 0, 1, p.w, p.h);
     ps.table = t;
     ps.setPush(pc);
@@ -1002,7 +1003,7 @@ bool planCrop(Ctx& c, Plan& p)
     }
     const double xs = clampd(c.d("XScale"), 0, 1), ys = clampd(c.d("YScale"), 0, 1), ang = c.d("Angle") * kPi / 180.0;
     const double W = p.w, H = p.h;
-    P::Crop pc = {p.w, p.h, (float)(lx * W), (float)((1 - ly) * H), (float)std::cos(ang), (float)std::sin(ang), (float)(xs * W * 0.5), (float)(ys * H * 0.5),
+    P::Crop pc = {p.w, p.h, (float)(lx * W), (float)((1 - ly) * H), (float)rm::cos(ang), (float)rm::sin(ang), (float)(xs * W * 0.5), (float)(ys * H * 0.5),
                   (float)clampd(c.d("Opacity"), 0, 1)};
     p.add("crop", 0, 1, p.w, p.h).setPush(pc);
     return true;
@@ -1032,7 +1033,7 @@ bool planBumpMapNamed(Ctx& c, Plan& p, const char* srcName, const char* dstName)
     const float amb2 = (float)c.d("Ambience") * 2.f, i8 = (float)c.d("Intensity") * 8.f;
     const float shin = (float)c.d("Shininess");
     const float kd = 0.6f - shin * 0.2f, ks = shin * 0.5f, power = shin * 8.f + 4.f;
-    const float cosCut = std::cos((float)c.d("Focus") * 0.7853981852531433f);
+    const float cosCut = rm::cos((float)c.d("Focus") * 0.7853981852531433f);
     const float invCut = 1.f / std::max(1.f - cosCut, 1e-5f);
     P::Bumpmap pc = {p.w, p.h, (uint32_t)type, (uint32_t)chan, sx, sy, sz, ax, ay, az, hs, amb2, i8, kd, ks, power, cosCut, invCut, 2.f / mx, W * 0.5f, H * 0.5f - 1.f, c.host8 ? 1u : 0u};   // (an 8-bit frame gets the kernel's 12-bit store, oclStore12; cy - 1: the kernel counts rows from the bottom, so a top-down row y is at y + 1 - H/2 from the middle)
     p.add("bumpmap", 0, 1, p.w, p.h).setPush(pc);
@@ -1276,7 +1277,7 @@ std::string testCubeFile(bool oneD)
         if (FILE* f = std::fopen(path.c_str(), "wb")) {
             if (oneD) {
                 std::fprintf(f, "TITLE \"vkcheck\"\nLUT_1D_SIZE 16\n");
-                for (int i = 0; i < 16; ++i) { const double t = i / 15.0; std::fprintf(f, "%.6f %.6f %.6f\n", std::pow(t, 0.8), t * t, 1.0 - 0.5 * t); }
+                for (int i = 0; i < 16; ++i) { const double t = i / 15.0; std::fprintf(f, "%.6f %.6f %.6f\n", rm::pow(t, 0.8), t * t, 1.0 - 0.5 * t); }
             } else {
                 const int n = 9;
                 std::fprintf(f, "TITLE \"vkcheck\"\nLUT_3D_SIZE %d\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n", n);
@@ -1284,7 +1285,7 @@ std::string testCubeFile(bool oneD)
                     for (int g = 0; g < n; ++g)
                         for (int r = 0; r < n; ++r) {
                             const double R = r / (n - 1.0), G = g / (n - 1.0), B = b / (n - 1.0);
-                            std::fprintf(f, "%.6f %.6f %.6f\n", std::pow(R, 0.8) * 0.9 + 0.1 * G, G * (1.0 - 0.3 * B) + 0.05, 1.0 - 0.6 * R * B - 0.2 * G);
+                            std::fprintf(f, "%.6f %.6f %.6f\n", rm::pow(R, 0.8) * 0.9 + 0.1 * G, G * (1.0 - 0.3 * B) + 0.05, 1.0 - 0.6 * R * B - 0.2 * G);
                         }
             }
             std::fclose(f);
@@ -1318,7 +1319,7 @@ std::string meshBlob(int cols, int rows, float bend)
     std::memcpy(&b[0], hdr, 16);
     for (int j = 0; j < rows; ++j)
         for (int i = 0; i < cols; ++i) {
-            float xy[2] = {(float)i / (cols - 1) + bend * std::sin(0.7f * j + 0.3f), (float)j / (rows - 1) + bend * std::cos(0.9f * i)};
+            float xy[2] = {(float)i / (cols - 1) + bend * rm::sin(0.7f * j + 0.3f), (float)j / (rows - 1) + bend * rm::cos(0.9f * i)};
             b.append((const char*)xy, 8);
         }
     return statsBlobBytes(b);
@@ -1520,7 +1521,7 @@ void makeGpuTestPicture(int w, int h, bool isFloat, bool bgra, bool hdr, uint8_t
         const int y = h - 1 - row;                    // from the top
         for (int x = 0; x < w; ++x) {
             const float fx = (float)x / (float)std::max(1, w - 1), fy = (float)y / (float)std::max(1, h - 1);
-            float r = 0.5f + 0.5f * std::sin(fx * 9.f + fy * 2.f), g = 0.5f + 0.5f * std::sin(fy * 7.f + 1.f), b = fx * (1.f - fy);
+            float r = 0.5f + 0.5f * rm::sin(fx * 9.f + fy * 2.f), g = 0.5f + 0.5f * rm::sin(fy * 7.f + 1.f), b = fx * (1.f - fy);
             if (((x / 16) + (y / 16)) % 7 == 0) { r = 1.f; g = 0.f; b = 0.f; }                       // saturated blocks
             if (((x / 24) + (y / 24)) % 11 == 3) { r = g = b = (float)((x + y) % 2); }              // hard black / white
             const float n = (rnd() - 0.5f) * 0.1f;

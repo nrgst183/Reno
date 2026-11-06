@@ -11,6 +11,7 @@
 // the units of the blur and glow amounts (fractions of the width, as the shadow's blur).
 #pragma once
 
+#include "../core/rmath.h"
 #include "vfxtitleanim.h"
 #include "vfxtitles.h"
 
@@ -310,7 +311,7 @@ inline Aff subAff(const vfxta::Sub& s, double px, double py, double u)
     Tn.e = -px; Tn.f = -py;
     const double rot = safeNum(s.rot, 1e3, 0);
     Aff R;
-    R.a = std::cos(rot); R.b = std::sin(rot); R.c = -std::sin(rot); R.d = std::cos(rot);
+    R.a = rm::cos(rot); R.b = rm::sin(rot); R.c = -rm::sin(rot); R.d = rm::cos(rot);
     Aff Sc;
     Sc.a = safeNum(s.scale[0], 1e3, 1);
     Sc.d = safeNum(s.scale[1], 1e3, 1);

@@ -71,6 +71,9 @@ struct VegProjectOrigin : VegOrigin {
     uint64_t lastEventId = 0;               // the largest event id in the file (and in the header's counter)
     uint32_t maxTrackId = 0, maxMediaId = 0;
     std::string headerPath;                 // the project's own path, as written in the header
+    std::vector<VegHidden> hiddenVideoOutFx;    // video output effects Reno cannot host (kept, written back in place)
+    Envelopes masterEnvelopes, videoEnvelopes;   // as read (the writer keeps what it did not change)
+    uint32_t videoFadeTop = 0xFFFFFFFF, videoFadeBottom = 0xFF000000;      // the video output's fade colours, as read
 };
 
 struct VegMediaOrigin : VegOrigin {

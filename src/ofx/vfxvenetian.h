@@ -9,6 +9,7 @@
 // the top); its alpha is the profile read between two entries with a 14-bit fraction; the picture is the outgoing one plus (incoming - outgoing) x alpha, the
 // 8-bit way (+128, +itself/256, /256) or, for float pictures, in floats with alpha / 255.
 #pragma once
+#include "../core/rmath.h"
 #include <cmath>
 #include <cstdint>
 #include <climits>
@@ -49,9 +50,9 @@ inline Setup setup(const Params& p, int W, int H)
     s.w = W;
     s.h = H;
     const double rad = p.angleDeg * 3.141592653589793 / 180.0;
-    s.sinI = cvt32(std::sin(rad) * 16384.0);
-    s.cosI = cvt32(std::cos(rad) * p.aspect * 16384.0);
-    const double d2 = std::pow((double)H, 2.0) + std::pow((double)W, 2.0);
+    s.sinI = cvt32(rm::sin(rad) * 16384.0);
+    s.cosI = cvt32(rm::cos(rad) * p.aspect * 16384.0);
+    const double d2 = rm::pow((double)H, 2.0) + rm::pow((double)W, 2.0);
     const int L = cvt32(std::sqrt(d2) * 2.0 * 16384.0) & (int)0xffffc000;
     s.n = div14(L);
     s.centre = (L - (L >> 31)) >> 1;

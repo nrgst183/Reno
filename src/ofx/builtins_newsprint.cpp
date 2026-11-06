@@ -8,6 +8,7 @@
 //   - Dot sizes under 0.15 are faded in from the picture (Monochrome: from its grey); at 0 it is the picture itself.
 // On float frames (what VEGAS hands it in a project) VEGAS's pictures differ in three ways: the dots are a half pixel over (right and up, pixel-index centres), a dot's colour is the
 // average of the P x P block around it (not a bilinear look into the shrunk picture), and the three offset inks keep their places by colour (yellow up left) although the channels lie red first.
+#include "../core/rmath.h"
 #include "builtins_impl.h"
 #include "vkfilters.h"
 #include "vfxnews.h"
@@ -36,7 +37,7 @@ struct CoverTable {
                 continue;
             }
             const double a = std::fabs(x);
-            const double ac = std::acos(a + a), s = std::sin(ac);
+            const double ac = rm::acos(a + a), s = rm::sin(ac);
             const double x6 = ac / 3.14159265358979 * 0.7853981633974475;
             const double h = 0.5 * s, x1 = h * a * h;
             double v = k < 128 ? (0.7853981633974475 - (x6 - x1)) / 0.7853981633974475 * 255 : (x6 - x1) / 0.7853981633974475 * 255;

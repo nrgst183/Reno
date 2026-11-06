@@ -23,6 +23,7 @@ struct FxSlot {
     std::string pluginId;       // ofx: the effect's identifier
     AudioPluginDesc audio;      // audio: which plug-in
     std::string name;           // as shown
+    std::string preset;         // video effects from a VEGAS project: the preset name VEGAS shows for it ("(Default)"); "" when not known
     bool bypass = false;
     bool beforePanCrop = false; // event video effects: applied before Event Pan/Crop (VEGAS's pre-pan/crop effects)
     bool afterComposite = false; // track video effects: applied after the track is composited (VEGAS's Composite button in the chain), not before
@@ -640,6 +641,26 @@ double eventMediaTime(const Event& e, const MediaItem* m, double t);
 extern const char* const kSlowMotionId;
 extern const char* const kTimeWarpId;       // VEGAS Pro 18's version of the same effect (de.magix:TimeWarp), with its own names for the settings
 double eventFxRate(const Event& e);
+// How far into its media an event has played after its first 'u' seconds (rate, Slow Motion and the velocity envelope
+// counted; not wrapped by looping, not mirrored for a reversed event - the length of media between the two points).
+double eventMediaAdvance(const Event& e, double u);
+// Where an event's media window starts (its offset) after the event's start edge moves by d seconds on the timeline (d > 0
+// trims into the event) with the picture staying put on the timeline: media moves by what the event plays in d seconds;
+// a reversed event plays its media from the top down, so its start edge is the top of the window and the offset stays.
+// Not wrapped by looping.
+double offsetAfterStartMove(const Event& e, double d);
+// Same for the end edge: the event's length changes by d (negative: shorter). Only a reversed event's offset moves.
+double offsetAfterEndMove(const Event& e, double d);
+// TrackEvent.AdjustStartLength: moves the event's edges to newStart / newStart + newLength. With keepMedia the media stays
+// where it is on the timeline (the offset follows the start edge - or, for a reversed event, the end edge - and so do the
+// other takes, envelope points and Pan/Crop keys); without it only start and length change.
+void adjustEventEdges(Event& e, double newStart, double newLength, bool keepMedia);
+// Splits an event at timeline time t, VEGAS's way (Edit > Split, TrackEvent.Split): 'e' becomes the left half and the right
+// half is returned, with a new id, new effect ids and no id yet in any group (the caller puts it on the track). The right half
+// has no fade-in or transition, the left no fade-out; the media each half plays is exactly what the event played there (a
+// reversed event's right half plays the earlier media, so the left half's offset moves up); envelope and Pan/Crop keys
+// stay where they are on the timeline. Does nothing (returns id 0) unless e.start < t < e.end().
+Event splitEventAt(Project& p, Event& e, double t);
 std::string eventFxResample(const Event& e);
 // VEGAS's sample grid: the sample a timeline time falls on at 'rate' is the nearest one, so an event
 // plays the samples [timeToSample(start), timeToSample(end)) and starts reading its media at its offset rounded to a
@@ -647,7 +668,7 @@ std::string eventFxResample(const Event& e);
 int64_t timeToSample(double t, int rate);
 double mediaSampleTime(double seconds, const MediaItem& m);
 // The event's fade level at timeline time t (0..1), from its fade-in and fade-out and their curves.
-double eventFade(const Event& e, double t);
+double eventFade(const Event& e, double t, bool skipIn = false, bool skipOut = false);
 // A new event's fade curves as VEGAS gives them (and keeps in every sample project): Fast in and Slow out for sound
 // (together a cross-fade that keeps the loudness), Smooth in and out for frames (their cross-fade adds up to 1).
 void setDefaultFadeCurves(Event& e, TrackType type);

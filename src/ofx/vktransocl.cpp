@@ -1,6 +1,7 @@
 // The transitions as VEGAS draws them with its OpenCL kernels, on the GPU: for each, the host-side struct of the CPU port (vfxwipes.h, ...) works out the numbers exactly as the CPU
 // does and the kernel (tools/gpukernels_oclt.py) does the per-pixel part float for float. In an 8-bit frame the result is cut with the card's 12-bit store inside the kernel
 // (the 'q8' word), as the CPU port does with more::oclStore12.
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -300,8 +301,8 @@ bool planOclCrossEffect(Ctx& c, Plan& p)
     if (type == 1) {
         const float fade = crossfx::fadeHost(pf, s.fadeRange);
         const float Z = (float)s.maxZoom;
-        const float sA = 1.0f / std::pow(Z, pf);
-        const float sB = 1.0f / std::pow(Z, 1.0f - pf);
+        const float sA = 1.0f / rm::pow(Z, pf);
+        const float sB = 1.0f / rm::pow(Z, 1.0f - pf);
         const float cs[2] = {(float)s.srcX * (float)W, (float)s.srcY * (float)H};
         const float cd[2] = {(float)s.dstX * (float)W, (float)s.dstY * (float)H};
         P::OcltCrossZoom pc = {p.w, p.h, (uint32_t)apply, q8(c), fade, sA, sB, cs[0], cs[1], cd[0], cd[1]};
@@ -316,13 +317,13 @@ bool planOclCrossEffect(Ctx& c, Plan& p)
     };
     if (type == 2) {
         float pw;
-        if (apply == 0) pw = std::pow(pf, 0.25f);
-        else if (apply == 1) pw = std::pow(1.0f - pf, 0.25f);
+        if (apply == 0) pw = rm::pow(pf, 0.25f);
+        else if (apply == 1) pw = rm::pow(1.0f - pf, 0.25f);
         else {
             float q = pf;
             if (!(0.5f >= q)) q = 1.0f - q;
             q += q;
-            pw = std::pow(q, 0.25f);
+            pw = rm::pow(q, 0.25f);
         }
         int nx, ny;
         crossfx::pixelateCounts(W, H, pw, s.maxX, s.maxY, nx, ny);

@@ -9,6 +9,7 @@
 // Written from the decoded code. Pictures are RGBA floats; x, y given to pixel() are the kernel's (y = 0 is the bottom row), see Pic in vfxwipes.h.
 // The pixel aspect (the host reads it from the destination image) is taken as 1.
 #pragma once
+#include "../core/rmath.h"
 #include "vfxwipes.h"
 #include <cmath>
 #include <cstdint>
@@ -31,9 +32,9 @@ struct StarWipe {
     float asp[2] = {1, 1};              // v6
 
     // (the single precision functions of the Windows C runtime work in double and round once)
-    static float sinf_(float v) { return (float)std::sin((double)v); }
-    static float cosf_(float v) { return (float)std::cos((double)v); }
-    static float atanf_(float v) { return (float)std::atan((double)v); }
+    static float sinf_(float v) { return (float)rm::sin((double)v); }
+    static float cosf_(float v) { return (float)rm::cos((double)v); }
+    static float atanf_(float v) { return (float)rm::atan((double)v); }
 
     // the distance function the host probes with (0x180616570); the kernel's own (f0) differs only in dividing by a reciprocal: 'recip' says which
     static float dist(long xi, long yi, const float* cen, float v2, float v3, float v4, float v5, const float* a, bool recip)

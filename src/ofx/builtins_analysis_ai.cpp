@@ -8,6 +8,7 @@
 //   de.magix:StyleTransfer  "VEGAS Style Transfer": paints the picture in the style of 17 learned models (Model 1 .. 17; their names are not in the VEGAS files here).
 //                           Reno has 17 painterly looks of its own (Kuwahara brush strokes, a colour treatment, outlines, canvas): Details sets how fine the
 //                           strokes are (Low .. High; Original keeps the picture's own detail), Method how carefully they are made (Accurate or Fast).
+#include "../core/rmath.h"
 #include "builtins_analysis_internal.h"
 #include "../core/base.h"
 #include <algorithm>
@@ -326,7 +327,7 @@ void styleTransfer(Ctx& c)
             }
     }
     const double hueRad = look.hue * kPi / 180.0;
-    const float ch = (float)std::cos(hueRad), sh = (float)std::sin(hueRad);
+    const float ch = (float)rm::cos(hueRad), sh = (float)rm::sin(hueRad);
     const float blendOrig = details == 3 ? 0.35f : 0.f;
     const double period = std::max(2.0, 4.0 * c.scale * (W / 640.0));
     forRows(H, W, [&](int y) {
@@ -366,7 +367,7 @@ void styleTransfer(Ctx& c)
                 r *= f; g *= f; b *= f;
             }
             if (look.canvas > 0.f) {
-                const float weave = 0.5f + 0.25f * (float)(std::sin(2 * kPi * x / period) * std::sin(2 * kPi * y / period)) + 0.25f * (hash2(x / 2, y / 2) - 0.5f) * 2.f;
+                const float weave = 0.5f + 0.25f * (float)(rm::sin(2 * kPi * x / period) * rm::sin(2 * kPi * y / period)) + 0.25f * (hash2(x / 2, y / 2) - 0.5f) * 2.f;
                 const float f = 1.f + look.canvas * (weave - 0.5f) * 1.2f;
                 r *= f; g *= f; b *= f;
             }

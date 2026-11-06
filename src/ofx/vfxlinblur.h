@@ -3,6 +3,7 @@
 // an 8-bit texture in an 8-bit project. Read from the kernels and the host code of the user's own VEGAS install; re-implemented here. No dependencies beyond vfxgauss.h, so a test program can
 // include it alone. The reads and the stores are passed in (the shared OpenCL rules of builtins_more_internal.h), the rest is here.
 #pragma once
+#include "../core/rmath.h"
 #include "vfxgauss.h"
 #include <algorithm>
 #include <cmath>
@@ -24,17 +25,17 @@ inline Geometry geometry(int W, int H, double angle, double amount)
     const double pi = 3.141592653589793;
     Geometry g;
     double th = ((angle >= 180.0) ? (angle - 270.0) : (angle - 90.0)) * pi / 180.0;
-    if (std::fabs(std::cos(th)) > 1e-6) {
-        th = std::atan2(std::sin(th), std::cos(th));
+    if (std::fabs(rm::cos(th)) > 1e-6) {
+        th = rm::atan2(rm::sin(th), rm::cos(th));
         if (th < 0) th += 2 * pi;
     }
     g.thf = (float)th;
-    const double ss = std::fabs(std::sin(th)), cc = std::fabs(std::cos(th));
+    const double ss = std::fabs(rm::sin(th)), cc = std::fabs(rm::cos(th));
     g.Wc = (int)std::ceil((double)H * ss + (double)W * cc);
     g.Hc = (int)std::ceil((double)H * cc + (double)W * ss);
     const double L = (double)std::max(W, H) * amount;
     const double t = L + 1.5;
-    const float lf = std::log(1.0f / 255.0f);
+    const float lf = rm::log(1.0f / 255.0f);
     const float lf2 = lf + lf;
     g.sigma = std::sqrt(-(t * t / (double)lf2));
     return g;
@@ -60,10 +61,10 @@ inline Setup prepare(int W, int H, double angle, double amount)
     if (s.g.Wc < 2 || s.g.Hc < 2 || (double)s.g.Wc * s.g.Hc > 1.0e8) { s.state = -1; return s; }
     const int Wc = s.g.Wc, Hc = s.g.Hc;
     const float nth = -s.g.thf;
-    s.s1 = std::sin(nth); s.c1 = std::cos(nth);
+    s.s1 = rm::sin(nth); s.c1 = rm::cos(nth);
     s.cx = (float)Wc * 0.5f; s.cy = (float)Hc * 0.5f;
     s.offx = (float)std::nearbyint((double)(Wc - W)) / 2.0f; s.offy = (float)std::nearbyint((double)(Hc - H)) / 2.0f;
-    s.s2 = std::sin(s.g.thf); s.c2 = std::cos(s.g.thf);
+    s.s2 = rm::sin(s.g.thf); s.c2 = rm::cos(s.g.thf);
     s.cx2 = (float)W * 0.5f; s.cy2 = (float)H * 0.5f;
     s.cf = vfxgauss::toFloats(vfxgauss::build(s.g.sigma));
     s.state = 0;

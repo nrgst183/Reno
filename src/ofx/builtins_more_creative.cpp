@@ -1,4 +1,5 @@
 // Built-in creative effects (Black Bar Fill, Crop, Picture in Picture, film looks, Vignette, TV Simulator, Timecode, Deform...); see builtins_more.cpp.
+#include "../core/rmath.h"
 #include "vfxpipcrop.h"
 #include "vfxlayerdim.h"
 #include "vktext.h"
@@ -339,7 +340,7 @@ void cropFx(Ctx& c)
     c.xy("Location", lx, ly);
     const double xs = clampd(c.d("XScale"), 0, 1), ys = clampd(c.d("YScale"), 0, 1), ang = c.d("Angle") * kPi / 180.0;
     const double op = clampd(c.d("Opacity"), 0, 1);
-    const double cs = std::cos(ang), sn = std::sin(ang);
+    const double cs = rm::cos(ang), sn = rm::sin(ang);
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
             const double u = x + 0.5 - lx * W, v = y + 0.5 - (1 - ly) * H;
@@ -366,7 +367,7 @@ void pipSetup(Ctx& c, int W, int H, PipSetup& o)
     const double ang = c.d("Angle") * kPi / 180.0, op = clampd(c.d("Opacity"), 0, 1);
     const int anchor = c.i("Anchor");
     const double ax = (anchor % 3) * 0.5, ay = 1.0 - (anchor / 3) * 0.5;          // the anchor inside the picture, from the bottom left
-    const double cs = std::cos(ang), sn = std::sin(ang);
+    const double cs = rm::cos(ang), sn = rm::sin(ang);
     const double shear = mode == 1 ? c.d("DistortionShear") : 0.0;
     double hm[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
     if (mode == 2) {
@@ -405,7 +406,7 @@ void pipSetup(Ctx& c, int W, int H, PipSetup& o)
             // Vfx1's matrix builder (0x18066b120 -> 0x18066af80), step for step in floats: the turn is fmod(Angle * pi / 180, 2 pi) cut to a float, cos and sin of that
             // as floats; the scale factors are 1 / Scale (cut to floats); the shear sits in the second row.
             const float a = (float)std::fmod(c.d("Angle") * 0.017453292519943295, 6.283185307179586);
-            const float fcs = (float)std::cos((double)a), fsn = (float)std::sin((double)a);
+            const float fcs = (float)rm::cos((double)a), fsn = (float)rm::sin((double)a);
             const float P0 = (float)(1.0 / sx), P1 = (float)(1.0 / (mode == 0 ? sx : sy)), C = mode == 0 ? 0.f : (float)(shear * 0.5);
             const float t3 = P0 * fcs, t2 = P0 * fsn, pa = t3, pb = -t2;
             const float da = (fcs * C + fsn) * P1, db = (fcs - fsn * C) * P1;
@@ -580,7 +581,7 @@ void filmGrainSetup(Ctx& c, int W, int H, FilmGrainSetup& g)
         const double v = (double)(rng.next() & 0xffffu) / 65535.0 * 2 - 1.0;
         const double q = u * u + v * v;
         if (q >= 1.0 || q == 0.0) continue;
-        table[(size_t)k++] = (std::sqrt(std::log(q) * -2.0 / q) * v + 5.28) / 10.56;
+        table[(size_t)k++] = (std::sqrt(rm::log(q) * -2.0 / q) * v + 5.28) / 10.56;
     }
     g.stepX = 1.0 / (grain * c.scale);
     g.stepY = 1.0 / (grain * c.scale);
@@ -818,7 +819,7 @@ void vignetteSetup(Ctx& c, int W, int H, VignetteSetup& o)
     o.ramp = rOuter - o.rInner;
     if (1e-6f > o.ramp) o.ramp = 1.f;
     const float rot = (float)(c.d("Rotation") * 0.01745329052209854);
-    o.cs = std::cos(rot); o.sn = std::sin(rot);
+    o.cs = rm::cos(rot); o.sn = rm::sin(rot);
     o.g = (float)((c.d("Aspect") - 1.0) * 0.5 + 1.0);
     const float fe = (float)c.d("Feather") + 0.001f;
     o.expo = 100.f / (fe * fe);
@@ -856,7 +857,7 @@ void vignetteOclGpu(Ctx& c, int W, int H, float out[14], bool& invert)
     float cc[3], ca;
     vignetteOclParams(c, W, H, p, cc, ca);
     const vfxvig::Setup u = vfxvig::setup(p);
-    const float big = 0.5f * p.outer * std::hypot(u.w1, u.h1 / p.par);
+    const float big = 0.5f * p.outer * rm::hypot(u.w1, u.h1 / p.par);
     const float inner = p.inner * big;
     const float den = (std::fabs(big - inner) < 0.000001f) ? 1.0f : big - inner;
     const float v[14] = {u.h1, u.centreX, u.centreY, u.c, u.s, u.asp, inner, den, p.exponent, ca, cc[0], cc[1], cc[2], 0.f};
@@ -905,7 +906,7 @@ void vignette(Ctx& c)
             t = t < 0.f ? 0.f : std::min(1.f, t);
             float m = 0.f;
             if (d > rInner) {
-                const float pw = std::pow(t, expo);
+                const float pw = rm::pow(t, expo);
                 m = pw < 0.f ? 0.f : std::min(1.f, pw);
             }
             if (invert) m = 1.f - m;
@@ -1040,7 +1041,7 @@ void radialPixelate(Ctx& c)
         const float rr = ((float)j / Hf) * 2.8284270763397217f;
         for (int i = 0; i < W; ++i) {
             const float a = (float)((double)(((float)i / Wf) * 2.f - 1.f) * 3.141592653589793);
-            float px = (float)std::sin((double)a) * rr, py = (float)std::cos((double)a) * rr;      // correctly rounded, as VEGAS's sinf/cosf
+            float px = (float)rm::sin((double)a) * rr, py = (float)rm::cos((double)a) * rr;      // correctly rounded, as VEGAS's sinf/cosf
             px = ((px + c0) * 0.5f + 0.5f) * Wf; py = ((py + c1) * 0.5f + 0.5f) * Hf;
             if (px < 0.f) px = 0.f;
             if (!(px < Wf)) px = (float)(W - 1);
@@ -1088,7 +1089,7 @@ void radialPixelate(Ctx& c)
             const float X = (((float)i / Wf) * 2.f - 1.f) - c0;
             const float r = std::sqrt(X * X + Y * Y);
             float ri = (r / 2.8284270763397217f) * Hf;
-            const float ang = (float)std::atan2((double)X, (double)Y);
+            const float ang = (float)rm::atan2((double)X, (double)Y);
             float u = (float)((double)ang / 3.141592653589793 * 0.5 + 0.5) * Wf;
             u = std::max(0.f, u);
             if (!(u < Wf)) u = (float)(W - 1);
@@ -1512,7 +1513,7 @@ void bumpMapRender(Ctx& c, const char* srcName, const char* dstName)
     const float amb2 = (float)c.d("Ambience") * 2.f, i8 = (float)c.d("Intensity") * 8.f;
     const float shin = (float)c.d("Shininess");
     const float kd = 0.6f - shin * 0.2f, ks = shin * 0.5f, power = shin * 8.f + 4.f;
-    const float cosCut = std::cos((float)c.d("Focus") * 0.7853981852531433f);
+    const float cosCut = rm::cos((float)c.d("Focus") * 0.7853981852531433f);
     const float invCut = 1.f / std::max(1.f - cosCut, 1e-5f);
     const float unit = 2.f / mx, cx = W * 0.5f, cy = H * 0.5f;
     auto hAt = [&](int x, int y) { return c.src.at(x, y)[chan]; };
@@ -1553,7 +1554,7 @@ void bumpMapRender(Ctx& c, const char* srcName, const char* dstName)
             }
             const float ndl = nx * lx + ny * ly + nz * lz;
             const float rz = nz * 2.f * ndl - lz;
-            const float spec = std::pow(std::max(rz, 0.01f), power);
+            const float spec = rm::pow(std::max(rz, 0.01f), power);
             const float k = std::max(0.f, i8 * (kd * ndl + ks * spec) * att + amb2);
             const float* s = c.src.at(x, y);
             float* o = c.out.at(x, y);

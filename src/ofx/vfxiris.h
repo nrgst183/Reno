@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include "../core/rmath.h"
 
 namespace reno {
 namespace ofx {
@@ -72,7 +73,7 @@ struct Iris {
         rel(x, y, cx, cy, u, w);
         if (shape == 1) u *= ratio;
         else if (shape == 2) w *= ratio;
-        return std::hypot(u, w);
+        return rm::hypot(u, w);
     }
     // Rectangle (3), Diamond (4), Square (5)
     float boxy(int x, int y, float cx, float cy) const

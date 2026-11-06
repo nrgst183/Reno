@@ -15,6 +15,10 @@ struct AudioPluginDesc {
     bool hasEditor = false;
     bool isInstrument = false;
     bool bridged32 = false;     // a 32-bit VST2 plug-in, run in a process of its own (reno_vst32.exe, see vst32client.cpp)
+    // VST2: the 16 bytes (32 hex digits) VEGAS names the plug-in by in a .veg (its CLSID: the VST id backwards, 4 bytes worked
+    // out on the machine VEGAS runs on, a fixed tail). Kept from the .veg it came from so that saving a .veg again can name a
+    // plug-in no sample project shows; "" when not known. Not part of key().
+    std::string vegasClsid;
 
     std::string key() const { return format + "|" + path + "|" + uid; }       // what a project stores
     Json toJson() const;

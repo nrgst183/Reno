@@ -1,6 +1,7 @@
 // The transitions and generators on the GPU: for each, a function that plans the compute passes from the effect's settings, reading them exactly as the
 // effect's CPU code (builtins_trans.cpp, builtins_gen.cpp) does, and the test cases that make vkcheck / vkfx_test reach every branch of that code. The
 // kernels are in tools/gpukernels_trans.py. vkeffects.cpp lists these planners (extraGpuEntries) and they take over the ids they name.
+#include "../core/rmath.h"
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -165,7 +166,7 @@ bool planLinearWipe8(Ctx& c, Plan& p)
     const float rad = 0.01745329238474369f;
     const float fw = (float)(W - 1), fh = (float)(H - 1);
     float x7 = 0, y12 = 0, o6 = 0, n2 = 0;
-    auto tanq = [&](float a) { return (float)std::tan((double)a); };
+    auto tanq = [&](float a) { return (float)rm::tan((double)a); };
     if (0.001f >= ang || ang > 359.999f) { x7 = kx; y12 = 0; n2 = fw * kx; o6 = 0; }
     else if (ang <= 89.999f) {
         const float t = tanq((90.0f - ang) * rad);
@@ -236,7 +237,7 @@ bool planLinearWipe(Ctx& c, Plan& p)
     if (c.levels) return planLinearWipe8(c, p);
     const int t = toTable(c, p);
     if (t < 0) return false;
-    const double ang = c.d("Angle") * kPi / 180.0, dx = std::cos(ang), dy = std::sin(ang);
+    const double ang = c.d("Angle") * kPi / 180.0, dx = rm::cos(ang), dy = rm::sin(ang);
     const double span = std::max(1e-9, std::fabs(dx) * p.w + std::fabs(dy) * p.h);
     const double w = clampd(c.d("Feather"), 0, 1) * 0.5;
     const double edge = c.progress * (1.0 + w);
@@ -539,13 +540,13 @@ bool planCrossEffect(Ctx& c, Plan& p)
     };
     if (type == 2) {
         float pw;
-        if (apply == 0) pw = std::pow(pf, 0.25f);
-        else if (apply == 1) pw = std::pow(1.0f - pf, 0.25f);
+        if (apply == 0) pw = rm::pow(pf, 0.25f);
+        else if (apply == 1) pw = rm::pow(1.0f - pf, 0.25f);
         else {
             float q = pf;
             if (!(0.5f >= q)) q = 1.0f - q;
             q += q;
-            pw = std::pow(q, 0.25f);
+            pw = rm::pow(q, 0.25f);
         }
         const float mxv = (float)c.d("EffectSettingsMaxX"), myv = (float)c.d("EffectSettingsMaxY");
         const float asx = 1.0f, asy = 1.0f;
@@ -695,7 +696,7 @@ bool planClockWipe(Ctx& c, Plan& p)
     const double edge = -F * 0.5 + clampd(c.progress, 0, 1) * (360.0 + F);
     const double er = edge * kPi / 180.0;
     Words q;
-    q.d(0, F); q.d(2, edge); q.d(4, -std::cos(er)); q.d(6, -std::sin(er)); q.d(8, std::sin(er)); q.d(10, -std::cos(er));
+    q.d(0, F); q.d(2, edge); q.d(4, -rm::cos(er)); q.d(6, -rm::sin(er)); q.d(8, rm::sin(er)); q.d(10, -rm::cos(er));
     P::WipeClockF pc;
     std::memset(&pc, 0, sizeof(pc));
     pc.w = p.w; pc.h = p.h;

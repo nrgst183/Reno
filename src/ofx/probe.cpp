@@ -1,3 +1,4 @@
+#include "../core/rmath.h"
 #include "probe.h"
 #include "ofxinternal.h"
 #include <chrono>
@@ -24,7 +25,7 @@ ImagePtr makeTestPattern(int w, int h, double frame)
             } else {                                       // bottom half: a gradient that drifts
                 r = (uint8_t)((x * 255) / std::max(1, w - 1));
                 g = (uint8_t)((y * 510) / std::max(1, h - 1));
-                b = (uint8_t)(128 + 127 * std::sin((x + frame * 5.0) * 0.05));
+                b = (uint8_t)(128 + 127 * rm::sin((x + frame * 5.0) * 0.05));
             }
             if (x >= bx && x < bx + w / 6 && y >= by && y < by + h / 6) { r = 255; g = 128; b = 0; }
             d[0] = b; d[1] = g; d[2] = r; d[3] = 255;

@@ -123,7 +123,7 @@ const std::map<std::string, std::string>& vegasLabels()
     {"com.vegascreativesoftware:zoom", u8"VEGAS Zoom"},
     {"de.magix:stereographicProjectionOCL", u8"VEGAS Tiny Planet"},
     {"de.magix:MeshWarp", u8"VEGAS Mesh Warp"},
-    {"com.sonycreativesoftware:smart_upscale", u8"Sony Smart Upscale"},
+    {"com.sonycreativesoftware:smart_upscale", u8"VEGAS Smart Upscale"},
     {"com.vegascreativesoftware:Stabilize", u8"VEGAS Stabilize"},
     {"de.magix:Stabilize", u8"VEGAS Video Stabilization"},
     {"de.magix:MotionTracker", u8"VEGAS Motion Tracker"},

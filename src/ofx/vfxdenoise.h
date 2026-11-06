@@ -11,6 +11,7 @@
 //   5. Amount (Sharpening) > 0: a 3 x 3 kernel (corners -1, edges -2, centre c, divided by c - 12; c from the amount) over the 4 channels, edges repeated; into the 8-bit result.
 // Both strengths 0 (or below the float epsilon): the picture is passed on as it is (the sharpening still runs).
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -57,7 +58,7 @@ inline void weightTable(double hd, int* tab)
     const float step = 64.f / 49.f, coef = 1.0f / (h * h);
     for (int i = 0; i < 196; ++i) {
         const float d = (float)i * step;
-        float w = std::exp((-d * d) * coef);
+        float w = rm::exp((-d * d) * coef);
         if (w != w) w = 1.0f;
         const int v = (int)(19096.f * w);
         tab[i] = (float)v < 0.001f * 19096.f ? 0 : v;

@@ -1,5 +1,6 @@
 // Shared by the topic files of the built-in effects of builtins_more.cpp: small helpers and the effect functions.
 #pragma once
+#include "../core/rmath.h"
 #include "builtins_impl.h"
 #include <algorithm>
 #include <cmath>
@@ -143,15 +144,15 @@ inline void hslToRgb(float h, float s, float l, float& r, float& g, float& b)
 }
 
 // sRGB <-> CIE Lab (D65), L 0..100
-inline float srgbToLin(float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); }
-inline float linToSrgb(float v) { return v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(std::max(0.f, v), 1.f / 2.4f) - 0.055f; }
+inline float srgbToLin(float v) { return v <= 0.04045f ? v / 12.92f : rm::pow((v + 0.055f) / 1.055f, 2.4f); }
+inline float linToSrgb(float v) { return v <= 0.0031308f ? v * 12.92f : 1.055f * rm::pow(std::max(0.f, v), 1.f / 2.4f) - 0.055f; }
 inline void rgbToLab(float r, float g, float b, float& L, float& A, float& B)
 {
     const float lr = srgbToLin(r), lg = srgbToLin(g), lb = srgbToLin(b);
     float X = (0.4124f * lr + 0.3576f * lg + 0.1805f * lb) / 0.95047f;
     float Y = 0.2126f * lr + 0.7152f * lg + 0.0722f * lb;
     float Z = (0.0193f * lr + 0.1192f * lg + 0.9505f * lb) / 1.08883f;
-    auto f = [](float t) { return t > 0.008856f ? std::cbrt(t) : 7.787f * t + 16.f / 116.f; };
+    auto f = [](float t) { return t > 0.008856f ? rm::cbrt(t) : 7.787f * t + 16.f / 116.f; };
     X = f(X); Y = f(Y); Z = f(Z);
     L = 116.f * Y - 16.f; A = 500.f * (X - Y); B = 200.f * (Y - Z);
 }

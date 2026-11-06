@@ -7,6 +7,7 @@ in1 the second one; both are top-row-first buffers of premultiplied RGBA floats.
 import struct
 from gpukernels import kernel, PIC_IN, PIC_IN1, PIC_OUT, TABLE, WH, SF
 from sf64 import sf_atan2
+from rmath_gpu import asin_f, cos_f
 
 
 def f32(x):
@@ -1415,70 +1416,8 @@ def oclt_pixelate(S):
 # ---------------------------------------------------------------------------------------------------------- Page Peel, Page Loop, Page Roll (vfxpage.h)
 # in0 is the page (the picture that is drawn on the layers), in1 what lies under it; the table holds the setup floats of the transition (PeelSetup / LoopSetup / RollSetup, in the order
 # the C++ planner writes them). The kernels' pictures are zero outside and any input that is not finite reads as 0, as the CPU port makes them.
-def sf_asin_f(S, x):
-    """asinf of this machine's glibc (2.39: __asinf_finite, the float polynomial without a division; read from the library's code, checked against it for every float in 0..1): the very
-    same float operations, so the result is the library's, bit for bit"""
-    cf = lambda bits: S.bits_to_f(S.u(bits))
-    a, b, c, d, e = cf(0x3d2cb694), cf(0x3cc6141e), cf(0x3d3a3f25), cf(0x3d9980f2), cf(0x3e2aaae4)
-    pio2, lo, lop, pio4 = cf(0x3fc90fdb), cf(0xb33bbd2e), cf(0x333bbd2e), cf(0x3f490fdb)
-    u = S.f_to_bits(x)
-    ix = u & 0x7fffffff
-    poly = lambda t: (((((a * t + b) * t + c) * t + d) * t + e) * t)
-    # |x| < 0.5
-    t0 = x * x
-    small = S.select(ix < 0x32000000, x, poly(t0) * x + x)
-    # |x| >= 0.5
-    ax = S.abs(x)
-    t = (1.0 - ax) * 0.5
-    p = poly(t)
-    s = S.sqrt(t)
-    w1 = p * s + s
-    w1 = w1 + w1
-    r1 = pio2 - (lop + w1)
-    w = S.bits_to_f(S.f_to_bits(s) & 0xfffff000)
-    cc = (t - w * w) / (s + w)
-    pp = (s + s) * p - (lo - (cc + cc))
-    q = pio4 - (w + w)
-    r2 = pio4 - (pp - q)
-    r = S.select(ix > 0x3f799999, r1, r2)
-    big = S.select((u >> 31) > 0, -r, r)
-    nan = S.bits_to_f(S.u(0x7fc00000))
-    one = pio2 * x + x * lo
-    return S.select(ix > 0x3f800000, nan, S.select(S.eq(ix, 0x3f800000), one, S.select(ix < 0x3f000000, small, big)))
-
-
-def cos_f(S, y):
-    """cosf of this machine's glibc (2.39, the cosf the library picks on a CPU with FMA; read from the library's code and checked against it for every float up to 2.3, which covers the
-    arcs these transitions work with: the double polynomial of sincosf, the quadrant for pi/4 .. 3 pi/4 folded as the library does). The library fuses its multiplies with adds; here each
-    double operation rounds on its own, which changes the double by about 1e-16 relative and the float it is rounded to in one case in a billion."""
-    D = lambda v: SF.const(S, struct.unpack('<d', struct.pack('<Q', v))[0])
-    c0, c1, s1, c2 = D(0x3ff0000000000000), D(0xbfdffffffd0c621c), D(0xbfc555545995a603), D(0x3fa55553e1068f19)
-    s2, c3, s3, c4 = D(0x3f81107605230bc4), D(0xbf56c087e89a359d), D(0xbf2994eb3774cf24), D(0x3ef99343027bf8c3)
-    hpi, hinv = D(0x3ff921fb54442d18), D(0x41645f306dc9c883)
-    ay = S.abs(y)
-    e = (S.f_to_bits(ay) >> 20) & 0x7ff
-    X = SF.from_f32(S, ay)
-
-    def cospoly(r):
-        x2 = r * r
-        x4 = x2 * x2
-        c01 = c1 * x2 + c0
-        c34 = c4 * x2 + c3
-        x6 = x2 * x4
-        c = x4 * c2 + c01
-        return c34 * x6 + c
-    small = cospoly(X).to_f32()
-    n1 = X * hinv >= SF.const(S, 8388608.0)
-    r = SF.sel(S, n1, X - hpi, X)
-    x2 = r * r
-    xs = r.neg()
-    x3 = x2 * xs
-    x7 = x2 * x3
-    odd = ((s3 * x2 + s2) * x7 + (x3 * s1 + xs)).to_f32()
-    even = cospoly(r).to_f32()
-    big = S.select(n1, odd, even)
-    nan = S.bits_to_f(S.u(0x7fc00000))
-    return S.select(e <= 0x3f3, S.select(e <= 0x397, S.f(1.0), small), S.select(e <= 0x42e, big, nan))
+# (asinf and cosf: Reno's own, tools/rmath_gpu.py, the same as src/core/rmath.h)
+sf_asin_f = asin_f
 
 
 def cvt_int(S, v):

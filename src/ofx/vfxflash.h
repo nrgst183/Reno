@@ -4,6 +4,7 @@
 // picture the kernels write being an image of the frame's format, so cut to levels in an 8-bit frame. Pictures are RGBA floats, the BOTTOM row first (the kernels' order).
 // Nothing here depends on Reno's Ctx, so a test can drive it with plain arrays.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -58,7 +59,7 @@ inline Host host(int W, int H, const Settings& s)
     sy = sy * dimf;
     sy = sy * h.S;
     sy = sy * 1.0f;
-    const float ln = std::log(0.003921568859368563f);
+    const float ln = rm::log(0.003921568859368563f);
     const float twoLn = ln + ln;
     sx = sx * sx;
     sx /= twoLn;

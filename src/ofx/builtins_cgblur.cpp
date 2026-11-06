@@ -3,6 +3,7 @@
 //   forward   y[i] = ((x[i] * gain + c1 * y[i-1]) + c2 * y[i-2]) + c3 * y[i-3]   with y[-1] = y[-2] = y[-3] = x[0]
 //   backward  z[i] = ((y[i] * gain + c1 * z[i+1]) + c2 * z[i+2]) + c3 * z[i+3]   with z[n] = z[n+1] = z[n+2] = y[n-1]
 // and every result below 1e-5 is set to 0. Rows are filtered into a float picture, then its columns. Bytes come out as the nearest whole number (ties to even) held to 0..255.
+#include "../core/rmath.h"
 #include "builtins_cgblur.h"
 #include <algorithm>
 #include <cmath>
@@ -144,8 +145,8 @@ OclBlurCoefs oclBlurCoefs(double sigmaIn)
     double n[5] = {0, 0, 0, 0, 0}, d[5] = {0, 0, 0, 0, 0};
     if (s <= 100.0) {
         const double a = 1.475 / s;
-        const double sa = std::sin(a), ca = std::cos(a);
-        const double e1 = std::exp(-1.512 / s), e2 = std::exp(-1.556 / s), e3 = std::exp(-3.024 / s), e4 = std::exp(-3.068 / s);
+        const double sa = rm::sin(a), ca = rm::cos(a);
+        const double e1 = rm::exp(-1.512 / s), e2 = rm::exp(-1.556 / s), e3 = rm::exp(-3.024 / s), e4 = rm::exp(-3.068 / s);
         const double x8 = sa * 1.021;
         double x11 = e1 * x8 - (ca * 3.796) * e1;
         x11 = x11 + e2 * 0.8929 + e1 * (ca * 0.8929);
@@ -161,12 +162,12 @@ OclBlurCoefs oclBlurCoefs(double sigmaIn)
         d[1] = d1; d[2] = d2; d[3] = d3;
     } else {
         const double a = 0.8448 / s;
-        const double cs = std::cos(a), sn = std::sin(a);
-        const double e = std::exp(-1.26 / s);
+        const double cs = rm::cos(a), sn = rm::sin(a);
+        const double e = rm::exp(-1.26 / s);
         double x9 = cs * 0.9629 * e - sn * 1.942 * e;
         double x10 = (cs + cs) * e;
         x9 = -x9; x10 = -x10;
-        const double e2 = std::exp(-2.52 / s);
+        const double e2 = rm::exp(-2.52 / s);
         const double k = 2.0 * (x9 + 0.9629) / (x10 + 1.0 + e2) - 0.9629;
         n[0] = 0.9629 / k; n[1] = x9 / k;
         d[1] = x10; d[2] = e2;
@@ -228,7 +229,7 @@ double oclBlurSigma(double p)
     const float s = (float)p;
     float x = s * 6.0f + 1.5f;
     x = x * x;
-    const float den = (float)(2.0 * std::log((double)(1.0f / 255.0f)));
+    const float den = (float)(2.0 * rm::log((double)(1.0f / 255.0f)));
     const float q = -(x / den);
     return (double)(float)std::sqrt((double)q);
 }

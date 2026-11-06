@@ -1282,51 +1282,117 @@ static void eraseEventsWhere(Project& p, Want want)
 
 void AppState::splitAtCursor()
 {
-    const double t = project_.quantize(cursor_);
-    std::vector<uint64_t> ids;
-    for (const auto& tr : project_.tracks)
-        for (const auto& e : tr.events)
-            if (e.start < t - 1e-9 && e.end() > t + 1e-9 && (selection_.empty() || selection_.count(e.id)) && !e.locked) ids.push_back(e.id);
-    if (ids.empty()) return;
+    // VEGAS's Edit > Split: at the cursor; with a time selection, at both of its ends. The selected events are split, and
+    // with none selected every event under the cut, on all tracks.
+    std::vector<double> cuts;
+    if (loopEnd > loopStart + 1e-9) {
+        cuts.push_back(project_.quantize(loopStart));
+        cuts.push_back(project_.quantize(loopEnd));
+    } else {
+        cuts.push_back(project_.quantize(cursor_));
+    }
+    const bool all = selection_.empty();
+    auto targets = [&](const Project& p, double t, const std::set<uint64_t>& sel) {
+        std::vector<uint64_t> ids;
+        for (const auto& tr : p.tracks)
+            for (const auto& e : tr.events)
+                if (e.start < t - 1e-9 && e.end() > t + 1e-9 && (all || sel.count(e.id)) && !e.locked) ids.push_back(e.id);
+        return ids;
+    };
+    bool any = false;
+    for (double t : cuts) if (!targets(project_, t, selection_).empty()) any = true;
+    if (!any) return;
     std::set<uint64_t> newSel = selection_;
     edit("Split", [&](Project& p) {
         fx.captureStates(p);
-        std::map<uint64_t, uint64_t> groups;
         std::set<Track*> touched;
-        for (uint64_t id : ids) {
-            Track* tr = nullptr;
-            Event* e = p.findEvent(id, &tr);
-            if (!e || !tr) continue;
-            Event right = *e;
-            right.id = p.newId();
-            right.start = t;
-            right.length = e->end() - t;
-            right.offset = e->offset + (t - e->start) * e->rate;
-            for (Take& k : right.takes) k.offset += (t - e->start) * e->rate;
-            shiftEventEnvelopes(right, t - e->start);
-            shiftEventKeyframes(right, t - e->start);
-            right.fadeIn = 0;
-            right.transition = FxSlot();
-            renewFx(p, right);
-            if (e->group) {
-                auto it = groups.find(e->group);
-                if (it == groups.end()) it = groups.emplace(e->group, p.newId()).first;
-                right.group = it->second;
+        for (double t : cuts) {
+            std::map<uint64_t, uint64_t> groups;
+            for (uint64_t id : targets(p, t, newSel)) {
+                Track* tr = nullptr;
+                Event* e = p.findEvent(id, &tr);
+                if (!e || !tr) continue;
+                Event right = splitEventAt(p, *e, t);
+                if (!right.id) continue;
+                if (e->group) {
+                    auto it = groups.find(e->group);
+                    if (it == groups.end()) it = groups.emplace(e->group, p.newId()).first;
+                    right.group = it->second;
+                }
+                if (newSel.count(id)) newSel.insert(right.id);
+                tr->events.push_back(right);
+                touched.insert(tr);
             }
-            e->length = t - e->start;
-            e->fadeOut = 0;
-            if (selection_.count(id)) newSel.insert(right.id);
-            tr->events.push_back(right);
-            touched.insert(tr);
+            // once per cut and track: the second cut finds the first one's halves in order
+            for (Track* tr : touched) tr->sortEvents();
         }
-        // once per track, not per event; same order: a stable sort puts each new half after the events that start with it
-        for (Track* tr : touched) tr->sortEvents();
     });
     setSelection(newSel);
 }
 
+static bool overlapsRange(const Event& e, double a, double b)
+{
+    return e.start < b - 1e-9 && e.end() > a + 1e-9;
+}
+
+bool AppState::timeSelectionEdit() const
+{
+    if (!(loopEnd > loopStart + 1e-9)) return false;
+    if (selection_.empty()) return true;
+    for (const Track& t : project_.tracks)
+        for (const Event& e : t.events)
+            if (selection_.count(e.id) && overlapsRange(e, loopStart, loopEnd)) return true;
+    return false;
+}
+
+void AppState::removeTimeSelection(Project& p, std::map<uint64_t, TimeRanges>* removed) const
+{
+    const double a = loopStart, b = loopEnd;
+    const bool all = selection_.empty();
+    std::vector<uint64_t> ids;
+    for (const Track& tr : p.tracks)
+        for (const Event& e : tr.events)
+            if (!e.locked && (all ? overlapsRange(e, a, b) : selection_.count(e.id) != 0)) ids.push_back(e.id);
+    std::map<uint64_t, uint64_t> groups;
+    for (uint64_t id : ids) {
+        Track* tr = nullptr;
+        Event* e = p.findEvent(id, &tr);
+        if (!e || !tr) continue;
+        if (!overlapsRange(*e, a, b)) {         // selected, but outside the time selection: goes whole
+            if (removed) (*removed)[tr->id].emplace_back(e->start, e->end());
+            tr->events.erase(std::remove_if(tr->events.begin(), tr->events.end(), [&](const Event& o) { return o.id == id; }), tr->events.end());
+            continue;
+        }
+        const double lo = std::max(a, e->start), hi = std::min(b, e->end());
+        auto regroup = [&](Event& half) {
+            if (!half.group) return;
+            auto it = groups.find(half.group);
+            if (it == groups.end()) it = groups.emplace(half.group, p.newId()).first;
+            half.group = it->second;
+        };
+        std::vector<Event> made;
+        if (e->end() > hi + 1e-9) {
+            Event right = splitEventAt(p, *e, hi);
+            if (right.id) { regroup(right); made.push_back(right); }
+        }
+        uint64_t middle = id;
+        if (e->start < lo - 1e-9) {
+            Event mid = splitEventAt(p, *e, lo);
+            if (mid.id) { middle = mid.id; made.push_back(mid); }
+        }
+        if (removed) (*removed)[tr->id].emplace_back(lo, hi);
+        for (const Event& m : made) tr->events.push_back(m);
+        tr->events.erase(std::remove_if(tr->events.begin(), tr->events.end(), [&](const Event& o) { return o.id == middle; }), tr->events.end());
+        tr->sortEvents();
+    }
+}
+
 void AppState::deleteSelection()
 {
+    if (timeSelectionEdit()) {
+        edit("Delete", [&](Project& p) { removeTimeSelection(p, nullptr); });
+        return;
+    }
     if (selection_.empty()) return;
     std::set<uint64_t> ids = selection_;
     for (uint64_t id : lockedAmong(ids)) ids.erase(id);
@@ -1338,18 +1404,27 @@ void AppState::deleteSelection()
 
 void AppState::copySelection()
 {
-    if (selection_.empty()) return;
+    const bool timed = timeSelectionEdit();
+    if (selection_.empty() && !timed) return;
     fx.captureStates(project_);
     clipboard_.clear();
     int firstTrack = -1;
     double first = 1e300;
+    Project scratch;
     for (size_t k = 0; k < project_.tracks.size(); ++k)
-        for (const auto& e : project_.tracks[k].events)
-            if (selection_.count(e.id)) {
-                if (firstTrack < 0) firstTrack = (int)k;
-                first = std::min(first, e.start);
-                clipboard_.push_back({e, project_.tracks[k].type, (int)k - firstTrack});
+        for (const auto& e : project_.tracks[k].events) {
+            const bool want = selection_.empty() ? overlapsRange(e, loopStart, loopEnd) : selection_.count(e.id) != 0;
+            if (!want) continue;
+            Event c = e;
+            if (timed && overlapsRange(e, loopStart, loopEnd)) {
+                // only the part inside the time selection goes on the clipboard
+                if (c.end() > loopEnd + 1e-9) splitEventAt(scratch, c, loopEnd);
+                if (c.start < loopStart - 1e-9) c = splitEventAt(scratch, c, loopStart);
             }
+            if (firstTrack < 0) firstTrack = (int)k;
+            first = std::min(first, c.start);
+            clipboard_.push_back({c, project_.tracks[k].type, (int)k - firstTrack});
+        }
     clipboardStart_ = first;
     notify(kSelection);
 }
@@ -1357,6 +1432,10 @@ void AppState::copySelection()
 void AppState::cutSelection()
 {
     copySelection();
+    if (timeSelectionEdit()) {
+        edit("Cut", [&](Project& p) { removeTimeSelection(p, nullptr); });
+        return;
+    }
     if (selection_.empty()) return;
     std::set<uint64_t> ids = selection_;
     for (uint64_t id : lockedAmong(ids)) ids.erase(id);
@@ -2074,20 +2153,9 @@ void AppState::insertTime(double at, double length)
                     e.start += length;
                 } else if (e.end() > at + 1e-9) {
                     // across the insertion point: split there, second half after the new time
-                    Event right = e;
-                    right.id = p.newId();
+                    Event right = splitEventAt(p, e, at);
                     right.start = at + length;
-                    right.length = e.end() - at;
-                    right.offset = e.offset + (at - e.start) * e.rate;
-                    for (Take& k : right.takes) k.offset += (at - e.start) * e.rate;
-                    shiftEventEnvelopes(right, at - e.start);
-                    shiftEventKeyframes(right, at - e.start);
-                    right.fadeIn = 0;
-                    right.transition = FxSlot();
-                    for (auto& s : right.fx) s.id = p.newId();
                     right.group = 0;
-                    e.length = at - e.start;
-                    e.fadeOut = 0;
                     added.push_back(right);
                 }
             }

@@ -1,6 +1,7 @@
 // Built-in stand-in for VEGAS Pro 18's Dual Fish Eye Stitching (manual: "360° video", "Stitching"): the frame of a 360° camera with two fish-eye lenses side by side (front lens's circle
 // in the left half, back lens's in the right) made into one equirectangular 360° frame, the seam blended and the vignetting towards each circle's edge removed. Uses VEGAS's identifier and
 // settings (from its OfxStitch bundle: gui.xml gives ranges and defaults, VrPresets.xml the camera models). The picture follows the plug-in's OpenCL kernel (what VEGAS draws on the GPU).
+#include "../core/rmath.h"
 #include "builtins_impl.h"
 #include "vkfilters.h"
 #include <algorithm>
@@ -41,7 +42,7 @@ KVec2 rotateAbout90(KVec2 n, int orientation, float angle)
         case 2: angle += kPif; break;
         case 3: angle -= 1.5707963f; break;
     }
-    const float rs = (float)std::sin((double)angle), rc = (float)std::cos((double)angle);
+    const float rs = (float)rm::sin((double)angle), rc = (float)rm::cos((double)angle);
     KVec2 r;
     r.x = n.x * rc - n.y * rs;
     r.y = n.x * rs + n.y * rc;
@@ -50,15 +51,15 @@ KVec2 rotateAbout90(KVec2 n, int orientation, float angle)
 
 KVec2 fishEyePoint(float sx, float sy, float sz, const KSettings& k, bool useFront, float& radius)
 {
-    float faRad = 2.0f * atan2f(hypotf(sz, sy), sx) / k.aperture;
+    float faRad = 2.0f * rm::atan2f(rm::hypotf(sz, sy), sx) / k.aperture;
     const float offsetRad = faRad * k.narrowOff;
     faRad -= offsetRad;
     faRad *= k.narrowRad;
     radius = std::fabs(faRad);
-    const float faAngle = atan2f(sy, sz);
+    const float faAngle = rm::atan2f(sy, sz);
     KVec2 n;
-    n.x = faRad * (float)std::cos((double)faAngle);
-    n.y = faRad * (float)std::sin((double)faAngle);
+    n.x = faRad * (float)rm::cos((double)faAngle);
+    n.y = faRad * (float)rm::sin((double)faAngle);
     const float angle = k.eyeRotate * kPif / 180.0f;
     if (useFront) {
         n = rotateAbout90(n, k.orient[1], angle);
@@ -139,7 +140,7 @@ void shadeSample(const KPicture& pic, const KSample& s, float out[3])
     }
     if (s.gamma != kNoGamma) {
         for (int c = 0; c < 3; ++c) {
-            const float q = out[c] > 0.f ? powf(out[c], s.gamma) : 0.f;
+            const float q = out[c] > 0.f ? rm::powf(out[c], s.gamma) : 0.f;
             out[c] = q < 0.f ? 0.f : (q > 1.f ? 1.f : q);
         }
     }
@@ -188,14 +189,14 @@ bool stitchSetup(Ctx& c, int W, int H, KStitch& st)
     st.pic.W = W;
     st.pic.H = H;
     st.pic.levels = c.levels != 0;
-    st.fovDist = (float)std::fabs((double)std::sin((double)((fov - kPif) / 2.0f)));
+    st.fovDist = (float)std::fabs((double)rm::sin((double)((fov - kPif) / 2.0f)));
     // the angles of the columns
     st.cosL.resize((size_t)W);
     st.sinL.resize((size_t)W);
     for (int ix = 0; ix < W; ++ix) {
         const float lon = ((float)ix / (float)(W - 1) * 2.0f - 1.0f) * kPif;
-        st.cosL[(size_t)ix] = (float)std::cos((double)lon);
-        float sl = (float)std::sin((double)lon);
+        st.cosL[(size_t)ix] = (float)rm::cos((double)lon);
+        float sl = (float)rm::sin((double)lon);
         if (lon >= kPif) sl = 3.8e-7f;
         else if (lon <= -kPif) sl = -0.0f;
         st.sinL[(size_t)ix] = sl;
@@ -209,9 +210,9 @@ void stitchRow(const KStitch& st, int y, float& cp, float& sp)
     const int H = st.pic.H;
     const float hh = (float)(H - 1);
     const float latR = (((float)(H - 1) - (float)y) / hh * 2.0f - 1.0f) * kHalfPif;
-    cp = (float)std::cos((double)latR);
+    cp = (float)rm::cos((double)latR);
     if (std::fabs(latR) >= kHalfPif) cp = 0.0f;
-    sp = (float)std::sin((double)latR);
+    sp = (float)rm::sin((double)latR);
 }
 
 KPix stitchPixel(const KStitch& st, int x, float cp, float sp)

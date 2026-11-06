@@ -569,7 +569,7 @@ bool MediaPool::audio(uint64_t user, const MediaItem& m, int64_t start, int fram
 
 // ====================================================================== shared helpers
 template <class List, class Get>
-static double overlapWeightOf(const List& events, Get get, const Event& e, double t, bool crossfade)
+static double overlapWeightOf(const List& events, Get get, const Event& e, double t, bool crossfade, bool* inCovered = nullptr, bool* outCovered = nullptr)
 {
     if (!crossfade) {
         for (const auto& item : events) {
@@ -589,12 +589,14 @@ static double overlapWeightOf(const List& events, Get get, const Event& e, doubl
             // (shaped by its fade-in curve, as VEGAS shapes a cross-fade; linear gives exactly the straight ramp)
             if (o.end() < e.end()) {
                 const double span = o.end() - e.start;
+                if (inCovered) *inCovered = true;
                 if (span > 0) w = std::min(w, e.fadeInCurve == CurveLinear ? std::max(0.0, (t - e.start) / span) : curveShape(e.fadeInCurve, (t - e.start) / span));
             }
         } else {
             // 'o' began later: this event fades out under it.
             if (o.end() > e.end()) {
                 const double span = e.end() - o.start;
+                if (outCovered) *outCovered = true;
                 const int c = o.fadeInRecipCurve >= 0 ? o.fadeInRecipCurve : e.fadeOutCurve;
                 if (span > 0)
                     w = std::min(w, c == CurveLinear ? std::max(0.0, 1.0 - (t - o.start) / span)
@@ -617,6 +619,23 @@ double overlapWeight(const Track& tr, const Event& e, double t, bool crossfade)
 double overlapWeightAmong(const std::vector<const Event*>& others, const Event& e, double t, bool crossfade)
 {
     return overlapWeightOf(others, [](const Event* o) -> const Event& { return *o; }, e, t, crossfade);
+}
+
+// Overlap weight times the event's own fade. Where the event overlaps another one the cross-fade is made by the overlap
+// (VEGAS keeps the cross-fade as the later event's fade-in, of the length of the overlap), so the fade-in (or fade-out)
+// that is that cross-fade is not applied a second time.
+double overlapFade(const Track& tr, const Event& e, double t, bool crossfade)
+{
+    bool inC = false, outC = false;
+    const double w = overlapWeightOf(tr.events, [](const Event& o) -> const Event& { return o; }, e, t, crossfade, &inC, &outC);
+    return w * eventFade(e, t, crossfade && inC, crossfade && outC);
+}
+
+double overlapFadeAmong(const std::vector<const Event*>& others, const Event& e, double t, bool crossfade)
+{
+    bool inC = false, outC = false;
+    const double w = overlapWeightOf(others, [](const Event* o) -> const Event& { return *o; }, e, t, crossfade, &inC, &outC);
+    return w * eventFade(e, t, crossfade && inC, crossfade && outC);
 }
 
 void overlappingEvents(const Track& tr, const Event& e, std::vector<const Event*>& out)

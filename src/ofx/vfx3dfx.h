@@ -11,6 +11,7 @@
 //    of the light the curve value; no light at all (mode 1: only the directional one) when it is 0;
 //  - the key-frame spline (tension 0.5, the key's bias weight 0.8 pulling the handles in) is the one of VEGAS's keyframe controls.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -187,7 +188,7 @@ inline void scale(float x, float y, float z, M4 out)
 inline void rotate(float x, float y, float z, float ang, M4 out)
 {
     const double a = (double)ang;
-    const double c = std::cos(a), s0 = std::sin(a);
+    const double c = rm::cos(a), s0 = rm::sin(a);
     const float t = (float)(1.0 - c), cf = (float)c, s = (float)s0;
     const float tx = t * x, ty = t * y, tz = t * z;
     M4 m;

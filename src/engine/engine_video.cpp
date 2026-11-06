@@ -2115,7 +2115,7 @@ struct VideoEngine::Pass {
         if (m && !pre.empty()) {
             ImagePtr img = preStage(e, pre, pre.size(), t);
             const bool plain = e.panCrop.empty() && e.keepAspect && std::fabs(par - 1.0) < 1e-9;
-            if (img && plain) out = (img->w == W && img->h == H) ? img : fitImage(*img, W, H);
+            if (img && plain) out = (img->w == W && img->h == H) ? img : fitImage(*img, W, H, true);
             else if (img) {
                 // Pan/Crop of what the effects made (the media's own shape; a generator's is the frame's)
                 double mw = 0, mh = 0;
@@ -2123,7 +2123,7 @@ struct VideoEngine::Pass {
                 if (m->generated || !(mw > 0 && mh > 0)) { mw = W; mh = H; }
                 out = panCrop(e, t, *img, mw, mh);
             }
-            if (out && e.reduceFlicker) out = reduceFlicker(*out);
+            if (out && e.reduceFlicker && p.settings.fieldOrder != "none") out = reduceFlicker(*out);   // VEGAS: only on an interlaced project (a progressive one shows hard edges, coverage run)
             out = intoLight(m, inDepth(out));
             out = masked(e, m, t, out);
             memoPut(key, out);
@@ -2142,14 +2142,28 @@ struct VideoEngine::Pass {
                 }
             } else if (m->info.hasVideo && !m->offline) {
                 if (plain) {
-                    ImagePtr f = eventFrame(e, *m, mt, W, H);
-                    if (f) out = (f->w == W && f->h == H) ? f : fitImage(*f, W, H);
+                    // A picture smaller than the frame is enlarged here the way VEGAS does (see fitImage), so the reader is asked
+                    // for it at its own size. A still's size is not known before it is read (a project file does not hold it),
+                    // so it is read at its own size first, and again at the frame's size if it turns out to be bigger.
+                    int rw = W, rh = H;
+                    double mw = 0, mh = 0;
+                    m->shownSize(mw, mh);
+                    const bool unknownSize = !(mw >= 1 && mh >= 1);
+                    if (!unknownSize && mw <= W && mh <= H) {
+                        rw = (int)std::lround(mw);
+                        rh = (int)std::lround(mh);
+                    } else if (unknownSize && m->info.isStill) {
+                        rw = rh = 0;
+                    }
+                    ImagePtr f = eventFrame(e, *m, mt, rw, rh);
+                    if (f && rw == 0 && (f->w > W || f->h > H)) f = eventFrame(e, *m, mt, W, H);
+                    if (f) out = (f->w == W && f->h == H) ? f : fitImage(*f, W, H, true);
                 } else {
                     out = panCropMedia(e, *m, mt, t);
                 }
             }
         }
-        if (out && e.reduceFlicker) out = reduceFlicker(*out);
+        if (out && e.reduceFlicker && p.settings.fieldOrder != "none") out = reduceFlicker(*out);   // VEGAS: only on an interlaced project (a progressive one shows hard edges, coverage run)
         out = intoLight(m, inDepth(out));
         out = masked(e, m, t, out);
         memoPut(key, out);
@@ -2223,9 +2237,20 @@ struct VideoEngine::Pass {
         const double c = std::cos(b.rotation * kDegrees), s = std::sin(b.rotation * kDegrees);
         const double ax = b.w * mediaW, ay = b.h * mediaH;          // box size in media units
         const double kx = pw / mediaW, ky = ph / mediaH;            // media units -> frame pixels
+        // VEGAS puts the first and last pixel of the drawn box on the first and last pixel centre of the box's picture
+        // (so the box's width in the picture counts one pixel less, and the drawn box's width too): a scale of the box's
+        // square by (ax*kx - 1) / (ax*kx) * dw / (dw - 1), and the same for the height. Checked against VEGAS's own
+        // pictures of a 3x enlargement and a 1.6x zoom (about 0.01 to 0.06 mean difference, was 1 and 0.4). A turned box
+        // is drawn the other way (pixel centres evenly spread over the box), which matches VEGAS's picture of one to 0.07.
+        double fxs = 1.0, fys = 1.0;
+        if (std::fabs(b.rotation) < 1e-9) {
+            const double wx = std::fabs(ax * kx), wy = std::fabs(ay * ky);
+            if (wx > 1.0 && bp.dw > 1.5) fxs = (wx - 1.0) / wx * bp.dw / (bp.dw - 1.0);
+            if (wy > 1.0 && bp.dh > 1.5) fys = (wy - 1.0) / wy * bp.dh / (bp.dh - 1.0);
+        }
         Affine toSource;
-        toSource.m[0] = c * ax * kx; toSource.m[1] = -s * ay * kx; toSource.m[2] = b.cx * pw;
-        toSource.m[3] = s * ax * ky; toSource.m[4] = c * ay * ky;  toSource.m[5] = b.cy * ph;
+        toSource.m[0] = c * ax * kx * fxs; toSource.m[1] = -s * ay * kx * fys; toSource.m[2] = b.cx * pw;
+        toSource.m[3] = s * ax * ky * fxs; toSource.m[4] = c * ay * ky * fys;  toSource.m[5] = b.cy * ph;
         // shrinking a lot: shrink the frame first with a proper average, so that it does not sparkle
         ImagePtr small;
         const Image* from = &image;
@@ -2389,7 +2414,7 @@ struct VideoEngine::Pass {
             std::vector<std::pair<const Event*, double>> shown;
             for (const Event* e : active) {
                 const double level = std::min(1.0, std::max(0.0, e->gain * envelopeValue(e->envelopes, "composite", t - e->start, 1.0)));
-                const double w = overlapWeight(tr, *e, t, p.autoCrossfades) * eventFade(*e, t) * level;
+                const double w = overlapFade(tr, *e, t, p.autoCrossfades) * level;
                 if (w > 0.0) shown.push_back(std::make_pair(e, w));
             }
             // Events that cross-fade (or are layered on one track) are independent until they are mixed.
@@ -2496,7 +2521,10 @@ struct VideoEngine::Pass {
     static bool trackOff(const Track& tr, double t, bool solo)
     {
         if (tr.mute || (solo && !tr.solo)) return true;
-        return trackAutomationValue(tr, "mute", t) >= 0.5;
+        // The mute envelope holds each point's value (see Envelope::valueAt). VEGAS's own files only hold 0 and 1, but a
+        // point made through its scripting API can hold anything: a held 0.25 mutes in VEGAS (checked against its
+        // snapshots), so any value above 0 mutes.
+        return trackAutomationValue(tr, "mute", t) > 0.0;
     }
 
     // How solid the track is laid on: its level times its "composite" envelope.
@@ -2805,7 +2833,7 @@ struct VideoEngine::Pass {
         for (const Event& e : tr.events) {
             if (!e.adjustment || e.mute || e.fx.empty() || !coversFrame(e, t)) continue;
             const double own = std::min(1.0, std::max(0.0, e.gain * envelopeValue(e.envelopes, "composite", t - e.start, 1.0)));
-            const float level = (float)std::min(1.0, overlapWeight(tr, e, t, p.autoCrossfades) * eventFade(e, t) * own * trackOpacity(tr, t));
+            const float level = (float)std::min(1.0, overlapFade(tr, e, t, p.autoCrossfades) * own * trackOpacity(tr, t));
             if (level <= 0.f) continue;
             ImagePtr now = canvas.clone();
             if (!now) continue;
@@ -3019,7 +3047,7 @@ ImagePtr VideoEngine::render(const Project& p, double seconds, const FrameOption
     const FinalRenderScope finalScope(!opt.interactive);
     const double t = p.frameTime(p.frameAt(seconds));          // frames change on frame boundaries
     // the video output's "mute" envelope: black
-    if (envelopeValue(p.videoEnvelopes, "mute", t, 0.0) >= 0.5) {
+    if (envelopeValue(p.videoEnvelopes, "mute", t, 0.0) > 0.0) {
         int fw = 0, fh = 0;
         frameSizeFor(p, opt, fw, fh);
         ImagePtr out = Image::make(fw, fh, PixelDepth::Byte, true);

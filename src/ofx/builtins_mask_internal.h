@@ -1,5 +1,6 @@
 // Shared by the files of builtins_mask.cpp's group (Bezier Masking, Bump Map, Stereoscopic 3D Adjust, Lens Correction, Smart Zoom, Warp Flow, Time Warp): each adds its effects to the list.
 #pragma once
+#include "../core/rmath.h"
 #include "builtins_impl.h"
 #include <cmath>
 #include <cstdio>
@@ -46,13 +47,13 @@ struct MaskXf {
     double lx = 0.5, ly = 0.5, sx = 1, sy = 1, ang = 0, W = 1, H = 1;
     void apply(double x, double y, double& ox, double& oy) const
     {
-        const double dx = (x - 0.5) * W * sx, dy = (y - 0.5) * H * sy, c = std::cos(ang), s = std::sin(ang);
+        const double dx = (x - 0.5) * W * sx, dy = (y - 0.5) * H * sy, c = rm::cos(ang), s = rm::sin(ang);
         ox = lx + (dx * c - dy * s) / W;
         oy = ly + (dx * s + dy * c) / H;
     }
     void invert(double x, double y, double& ox, double& oy) const
     {
-        const double rx = (x - lx) * W, ry = (y - ly) * H, c = std::cos(ang), s = std::sin(ang);
+        const double rx = (x - lx) * W, ry = (y - ly) * H, c = rm::cos(ang), s = rm::sin(ang);
         const double ax = std::fabs(sx) < 0.01 ? 0.01 : sx, ay = std::fabs(sy) < 0.01 ? 0.01 : sy;
         ox = 0.5 + (rx * c + ry * s) / (W * ax);
         oy = 0.5 + (-rx * s + ry * c) / (H * ay);
@@ -183,7 +184,7 @@ inline void flattenBezPath(const BezPath& p, double W, double H, std::vector<dou
         xy.push_back(y0);
         const bool straight = x1 == x0 && y1 == y0 && x2 == x3 && y2 == y3;
         if (straight) continue;
-        const double len = std::hypot(x1 - x0, y1 - y0) + std::hypot(x2 - x1, y2 - y1) + std::hypot(x3 - x2, y3 - y2);
+        const double len = rm::hypot(x1 - x0, y1 - y0) + rm::hypot(x2 - x1, y2 - y1) + rm::hypot(x3 - x2, y3 - y2);
         int steps = (int)std::ceil(len / 3.0);
         steps = steps < 8 ? 8 : (steps > 96 ? 96 : steps);
         for (int k = 1; k < steps; ++k) {

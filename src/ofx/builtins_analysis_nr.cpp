@@ -8,6 +8,7 @@
 // The method is Reno's own: every pixel becomes the average of the pixels round it (7 x 7 search window), weighted by how much the 5 x 5 patch round each looks like its
 // own patch (patch distances from box filters of the squared difference per offset, so cost does not depend on patch size). Luminance is done at full size, the two colour
 // planes at half size (colour noise is soft). The strengths are the noise levels (in 1/255ths of the range) the denoiser expects.
+#include "../core/rmath.h"
 #include "builtins_analysis_internal.h"
 #include "../core/base.h"
 #include "vfxdenoise.h"
@@ -56,7 +57,7 @@ void padPlanes(const std::vector<const float*>& planes, int w, int h, int m, Pad
 
 struct WeightTable {
     float v[1025];
-    WeightTable() { for (int i = 0; i <= 1024; ++i) v[i] = std::exp(-(float)i / 102.4f); }       // exp(-t) for t in 0..10
+    WeightTable() { for (int i = 0; i <= 1024; ++i) v[i] = rm::exp(-(float)i / 102.4f); }       // exp(-t) for t in 0..10
     float operator()(float t) const
     {
         if (t >= 10.f) return 0.f;
@@ -246,7 +247,7 @@ struct VegasNlm {
         for (int i = 0; i < 65536; ++i) {
             const double v = (double)i - twoSigma2;
             const double m = 0.0 > v ? 0.0 : v;
-            const double e = std::exp(m * k);
+            const double e = rm::exp(m * k);
             if (0.001 > e) break;                                           // from here on the table is 0
             tab[(size_t)i] = e;
         }

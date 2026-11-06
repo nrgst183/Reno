@@ -75,6 +75,7 @@ extern const char* const Summary, *const SummaryData;
 extern const char* const Buses, *const Mixer, *const Bus;
 extern const char* const ViewList, *const ViewData, *const Timelines, *const TimelineList, *const TimelineData;
 extern const char* const WindowState, *const EmptyListA, *const EmptyChunkA;
+extern const char* const VideoOutFx;        // top-level list holding the effects of the video output (one G::Fx chunk each)
 extern const char* const OfxEffect;          // the class of an OpenFX effect record
 extern const char* const AudioChain;         // the start of a chain of audio plug-ins
 }  // namespace G
@@ -202,6 +203,9 @@ std::vector<OfxRecord> findOfxRecords(const Bytes& b, size_t from);
 // A VST plug-in's data is a u32 (0, or 0xFFFFFFFF for eFX programs picked from the "[Sys]" list) and a VST program
 // file ("CcnK": "FxCk" with a value per parameter, or "FPCh" with the plug-in's program chunk). Its CLSID is the
 // VST id backwards, 4 more bytes and a fixed tail.
+// There is no VST3 record: VEGAS Pro 18 has no VST3 host (its VST wrapper, sfvstwrap.dll, and vegas180.exe /
+// vegas180k.dll hold no VST3 code or strings; the VEGAS Pro 23 manual knows only .fxp/.fxb VST effects). Reno keeps
+// VST3 effects beside the .veg instead (vegvst3side.h) and writes nothing of them into it.
 struct AudioPluginRecord {
     std::string clsid;
     std::string name;
@@ -220,10 +224,11 @@ bool readAudioChain(const Bytes& b, size_t off, std::vector<AudioPluginRecord>& 
 // EPCS holds the media's frame size at 0x2c and 0x30 (the rest is uninitialised). Each POSK is i64 time (100 ns
 // from the event's start), u32, u32, u32 key type (VideoKeyframeType: 0 linear, 1 hold, 2 slow, 3 fast, 4 smooth,
 // 5 sharp), and eight doubles: box width, height, centre x, centre y (media pixels, y down), rotation (radians),
-// the centre it turns about (x, y), and one more (always 0).
+// the centre it turns about (x, y), and the key's Smoothness (0..1; 0 in a linear key; the script's value was set to 10, 20..
+// and read back as 1: Coverage run 20261105). A positive rotation turns the box clockwise.
 struct PanCropRecord {
     int mediaW = 0, mediaH = 0;
-    struct Key { double time = 0, w = 0, h = 0, cx = 0, cy = 0, rot = 0, rcx = 0, rcy = 0; uint32_t type = 0; };
+    struct Key { double time = 0, w = 0, h = 0, cx = 0, cy = 0, rot = 0, rcx = 0, rcy = 0, smooth = 0; uint32_t type = 0; };
     std::vector<Key> keys;
     bool mask = false;              // a mask (bezier) is drawn
 };
@@ -253,6 +258,12 @@ enum EnvelopeType : uint32_t {
     EnvFx1 = 64, EnvVelocity = 202, EnvPlugin = 301,
 };
 bool readEnvelope(const Bytes& b, EnvelopeRecord& out);
+// The envelopes inside a bus record (G::Bus of the master and of the buses): after the bus's own settings a u32 count and that many
+// envelope records of the points chunk's layout back to back (at an offset that need not be a multiple of 4: the texts before
+// them are UTF-16 of any length). Found by the pattern (0x38 at the start, 0x18 at 0x34 and a count before the first), as the
+// settings before them are not decoded. The master has volume and mute (0, 31), a bus volume, pan and mute (0, 1, 31).
+// Coverage run 20261105 (envelopes_buses). False if the record holds none.
+bool readBusEnvelopes(const Bytes& b, std::vector<EnvelopeRecord>& out);
 std::string envelopeName(uint32_t type);         // "volume", "pan", "send to Bus B"...
 
 // ---------------------------------------------------------------- track motion
@@ -265,10 +276,43 @@ std::string envelopeName(uint32_t type);         // "volume", "pan", "send to Bu
 // default box (1.7778 = frame aspect, 1.0) and the glow's default size (1.05, 1.05); 0.05 at 0x60 (motion); 1.0 at
 // 0x28, 0x68, 0x88, 0x90; shadow and glow keys have four floats at 0xb0 (colour) and 0.05 at 0xc0. Type, smoothness,
 // angle and rotation centre are not located, so Reno does not write changed track motion.
+//
+// Decoded from the Coverage run's tracks_video_motion (one change at a time; VEGAS's script values in brackets). The
+// chunk is u32 0x24 (header size), u32 flags at 0x04 (see above), f64 frame aspect at 0x14 (width / height), u32 parts
+// at 0x1c (3), then per part (motion, shadow, glow) u32 key count and the keys, each starting with its own u32 size
+// (0xdc for motion, 0xd8 for shadow and glow). Offsets below are from the key's size word:
+//   0x04 u32 type (0 linear, 1 hold, 2 slow, 3 fast, 4 smooth, 5 sharp)   0x08 i64 time in 100 ns ticks
+//   motion keys: rotation centre (Org) X/Y/Z f64 at 0x10/0x18/0x20 (RotationOffsetX/Y/Z / 180 for a 640x360 frame),
+//     position X/Y/Z at 0x30/0x38/0x40 (PositionX/Y/Z / 180, y up), scale X/Y at 0x50/0x58 (Width / height * aspect...:
+//     Width 320 of 640x360 reads 0.8889 = 320 / 360, Height 180 reads 0.5 = 180 / 360), depth at 0x60 (Depth / frame
+//     height: 18 of 360 reads 0.05), rotation X/Y/Z at 0x70/0x78/0x80 in radians (degrees in the script),
+//     orientation as a quaternion (w 0x90, x 0x98, y 0xa0, z 0xa8) of the script's degrees composed X, then Y, then Z,
+//     smoothness f64 at 0xb0 (Smoothness / 100).
+//   shadow and glow keys: offset from the motion's position at 0x30/0x38 (the script's X/Y are the motion's plus
+//     this), scale of the motion's size at 0x50/0x58 (the script's Width / Height are the motion's times this), colour
+//     as four f32 blue, green, red, alpha at 0xb0, blur f64 at 0xc0 and intensity f64 at 0xc8 (the script's values / 100).
+// How the units follow other frame sizes is not confirmed (the run's only track motion is in a 640x360 project): the
+// reader takes the position unit as half the frame height (x also divided by the aspect).
+struct TrackMotionKey {
+    int type = 0;
+    double time = 0;                        // seconds
+    double posX = 0, posY = 0, posZ = 0;
+    double sclX = 1, sclY = 1;
+    double orgX = 0, orgY = 0, orgZ = 0;
+    double depth = 0.05;
+    double rotX = 0, rotY = 0, rotZ = 0;    // radians
+    double quat[4] = {0, 0, 0, 1};          // x, y, z, w
+    double smoothness = 0;                  // 0..1
+    float colour[4] = {0, 0, 0, 1};         // blue, green, red, alpha (shadow and glow)
+    double blur = 0, intensity = 0;         // shadow and glow
+};
 struct TrackMotionRecord {
     int parts = 0;
     std::vector<int> keys;          // per part
     bool untouched = false;         // exactly VEGAS's default: no motion, no shadow, no glow
+    uint32_t flags = 0;             // word 0x04: 0x08 shadow enabled, 0x10 glow enabled
+    double aspect = 0;
+    std::vector<TrackMotionKey> motion, shadow, glow;
 };
 bool readTrackMotion(const Bytes& b, TrackMotionRecord& out);
 

@@ -4,6 +4,7 @@
 //     degrees, green 240.7, blue 347.1, as in VEGAS's presets; a wheel point is (angle, amount 0..1);
 //   - luminance limits are 0..255, saturation limits the vectorscope distance x 255 (pure red is 162, VEGAS's "all of it" upper limit);
 //   - Offset is in 0..255 steps (a guess: VEGAS's range is not known).
+#include "../core/rmath.h"
 #include "builtins_impl.h"
 #include "builtins_vec.h"
 #include "vegas8.h"
@@ -119,9 +120,9 @@ bool colorCorrectorSecondaryRows(Ctx& c, RowFn& fn)
     double ca, cm;
     c.xy("Chrominance", ca, cm);
     const double cam = clampd(cm, -2, 2), ct = (cam < 0 ? -cam * cam : cam * cam) * 0.5;
-    const float cu = (float)(std::cos(ca * kPi / 180.0) * ct), cv = (float)(std::sin(ca * kPi / 180.0) * ct);
+    const float cu = (float)(rm::cos(ca * kPi / 180.0) * ct), cv = (float)(rm::sin(ca * kPi / 180.0) * ct);
     const double rot = c.d("RotateHue") * kPi / 180.0;
-    const float cr = (float)std::cos(rot), sr = (float)std::sin(rot);
+    const float cr = (float)rm::cos(rot), sr = (float)rm::sin(rot);
     const float sat = (float)clampd(c.d("Saturation"), 0, 100);
     float gc, ga;
     secondaryGamma(c.d("Gamma"), gc, ga);
@@ -152,7 +153,7 @@ bool colorCorrectorSecondaryRows(Ctx& c, RowFn& fn)
             if (useS) m *= secondaryRange(std::sqrt(U * U + V * V) * 255.f, s0, s1, ss);
             if (hueLimit && m != 0.f) {
                 // (a colour with no chroma has hue 0: its rounding noise must not decide, and the GPU kernel does the same)
-                const float hue = std::max(std::fabs(U), std::fabs(V)) < 1e-5f ? 0.f : std::atan2(V, U) * (float)(180.0 / kPi);
+                const float hue = std::max(std::fabs(U), std::fabs(V)) < 1e-5f ? 0.f : rm::atan2(V, U) * (float)(180.0 / kPi);
                 float d = std::fabs(std::fmod(hue - hc, 360.f));
                 if (d > 180.f) d = 360.f - d;
                 const float dd = d - hw * 0.5f;
@@ -167,7 +168,7 @@ bool colorCorrectorSecondaryRows(Ctx& c, RowFn& fn)
             if (Yp < 0.f) Yp = 0.f;
             if (gammaOn) {
                 const float base = (Yp + gc) / (1.f + gc);
-                Yp = base > 0.f ? std::pow(base, ga) : 0.f;
+                Yp = base > 0.f ? rm::pow(base, ga) : 0.f;
             }
             Yp += offset;
             Yp = Yp < 0.f ? 0.f : (Yp > 1.f ? 1.f : Yp);
@@ -211,8 +212,8 @@ void secondaryChanged(Change& ch)
             ys.push_back(Y * 255.f);
             ss.push_back(sat);
             if (sat > 2.f) {            // (a grey has no hue)
-                const float hue = std::atan2(V, U);
-                hx += std::cos(hue) * sat; hy += std::sin(hue) * sat;
+                const float hue = rm::atan2(V, U);
+                hx += rm::cos(hue) * sat; hy += rm::sin(hue) * sat;
                 hues.push_back(hue);
             }
         }
@@ -227,7 +228,7 @@ void secondaryChanged(Change& ch)
     ch.setD("LimitSaturationLow", clampd(lowS - 4, 0, 162));
     ch.setD("LimitSaturationHigh", clampd(highS + 4, 0, 162));
     if (hues.size() >= 4 && (hx != 0 || hy != 0)) {
-        const double centre = std::atan2(hy, hx);
+        const double centre = rm::atan2(hy, hx);
         std::vector<float> dev;
         for (float h : hues) {
             double d = std::fabs(std::fmod(h - centre, 2 * kPi));
@@ -258,14 +259,14 @@ CcCurve ccCurve(double g)
     CcCurve s = {};
     s.g = g;
     const double ig = 1.0 / g;
-    const double A = std::pow(ig, -0.9418051973077521) * 0.03818376618407356;
+    const double A = rm::pow(ig, -0.9418051973077521) * 0.03818376618407356;
     s.A = A;
     if (1.0 > g) {
-        const double pa = std::pow(A, g);
-        s.B = (std::pow(ig, 1.8836103946155043) * A - pa) / (pa - 1.0);
+        const double pa = rm::pow(A, g);
+        s.B = (rm::pow(ig, 1.8836103946155043) * A - pa) / (pa - 1.0);
         s.lin = true;
     } else if (g > 1.0) {
-        const double q = std::pow(std::pow(ig, 1.8836103946155043) * A, ig);
+        const double q = rm::pow(rm::pow(ig, 1.8836103946155043) * A, ig);
         s.B = (A - q) / (q - 1.0);
         s.C = 1.0 / (s.B + 1.0);
         s.lin = false;
@@ -274,7 +275,7 @@ CcCurve ccCurve(double g)
         s.B = 0.0;
         s.lin = true;
     }
-    s.P = std::pow(ig, 1.8836103946155043);
+    s.P = rm::pow(ig, 1.8836103946155043);
     return s;
 }
 // The curve's value at x (0..1) for 'lin' curves (gamma < 1 after the remap) and the other kind.
@@ -283,18 +284,18 @@ double ccCurveAt(const CcCurve& s, double x)
     double v;
     if (s.lin) {
         if (x >= s.A) {
-            v = std::pow(x, s.g);
+            v = rm::pow(x, s.g);
             v = v * (s.B + 1.0) - s.B;
         } else if (x > s.A * -1.0) {
             v = x * s.P;
         } else {
-            const double v0 = std::pow(x * -1.0, s.g) * (s.B + 1.0);
+            const double v0 = rm::pow(x * -1.0, s.g) * (s.B + 1.0);
             v = s.B - v0;
         }
     } else {
-        if (x >= s.A) v = std::pow((s.B + x) * s.C, s.g);
+        if (x >= s.A) v = rm::pow((s.B + x) * s.C, s.g);
         else if (x > s.A * -1.0) v = x * s.P;
-        else v = std::pow((x - s.B) * (s.C * -1.0), s.g) * -1.0;
+        else v = rm::pow((x - s.B) * (s.C * -1.0), s.g) * -1.0;
     }
     return v;
 }
@@ -350,13 +351,13 @@ void ccBuild(CcTable& t, const double P[10])
         const double centre[3] = {0.0, 127.5, 255.0};
         for (int w = 0; w < 3; ++w) {
             const double rad = P[2 * w] * 3.141592653589793 / 180.0;
-            const double c = std::cos(rad), sn = std::sin(rad);
+            const double c = rm::cos(rad), sn = rm::sin(rad);
             const double amt2 = P[2 * w + 1] * P[2 * w + 1];
             for (int i = 0; i < 1024; ++i) {
                 double dy = (double)t.e[i].y - centre[w];
                 dy = dy * dy;
                 dy = dy * k[w];
-                const double wt = std::exp(dy) * amt2;
+                const double wt = rm::exp(dy) * amt2;
                 const float o1 = (float)((c * wt) * 127.5), o2 = (float)((sn * wt) * 127.5);
                 if (w == 0) { t.e[i].b = o1; t.e[i].a = o2; }
                 else { t.e[i].b = o1 + t.e[i].b; t.e[i].a = o2 + t.e[i].a; }
@@ -482,13 +483,13 @@ struct CcsWindow {
             double q = lo - x;
             q = q * q;
             q = q * k1;
-            return (-15.0 > q) ? 0.f : (float)std::exp(q);
+            return (-15.0 > q) ? 0.f : (float)rm::exp(q);
         }
         if (x > hi && sh != 0.0) {
             double q = hi - x;
             q = q * q;
             q = q * k2;
-            return (-15.0 > q) ? 0.f : (float)std::exp(q);
+            return (-15.0 > q) ? 0.f : (float)rm::exp(q);
         }
         return (x < lo || hi < x) ? 0.f : 1.f;
     }
@@ -499,7 +500,7 @@ void ccsBuildA(CcTable& t, const CcsSet& p, int fl)
     t.flags = fl & 0x1f;
     t.lum = (fl & 0x20) != 0;
     const double rad = p.ang * 3.141592653589793 / 180.0;
-    const double cs = std::cos(rad), sn = std::sin(rad), amt2 = p.amt * p.amt;
+    const double cs = rm::cos(rad), sn = rm::sin(rad), amt2 = p.amt * p.amt;
     const float U = (float)((cs * amt2) * 127.5), V = (float)((sn * amt2) * 127.5);
     t.e.assign(1024, CcEntry{V, U, 0.f, (float)p.sat});
     ccYFill(t.e, (fl & 1) != 0, p.off, p.gamma, p.gain);
@@ -533,14 +534,14 @@ void ccsBuildGeneral(Ccs8& t, const CcsSet& p, int fl, bool inv)
     t.show = p.show;
     t.inv = inv;
     const double rad = p.ang * 3.141592653589793 / 180.0;
-    const double cs = std::cos(rad), sn = std::sin(rad), amt2 = p.amt * p.amt;
+    const double cs = rm::cos(rad), sn = rm::sin(rad), amt2 = p.amt * p.amt;
     t.tintU = (float)((cs * amt2) * 127.5);
     t.tintV = (float)((sn * amt2) * 127.5);
     t.satF = (float)p.sat;
     t.alphaF = (float)p.alpha;
     if (fl & 0x18) {
         const double r = p.rot * 3.141592653589793 / 180.0;
-        const float c = (float)std::cos(r), s = (float)std::sin(r);
+        const float c = (float)rm::cos(r), s = (float)rm::sin(r);
         t.rot[0] = c; t.rot[1] = -s; t.rot[2] = s; t.rot[3] = c;
     }
     // the Y' curve as a difference to Y, and the luminance mask
@@ -564,7 +565,7 @@ void ccsBuildGeneral(Ccs8& t, const CcsSet& p, int fl, bool inv)
     double k = 0;
     if (sm > 0) { const double q = sm * 0.3; k = -1.0 / ((q + q) * q); }
     for (int i = 0; i < 175; ++i) {
-        const float a = std::asin((float)i / 240.f) * 57.29578018188477f;
+        const float a = rm::asin((float)i / 240.f) * 57.29578018188477f;
         const float b = 90.f - a;
         const float ang[8] = {a, 180.f - a, 360.f - a, a + 180.f, b, 180.f - b, 360.f - b, b + 180.f};
         for (int j = 0; j < 8; ++j) {
@@ -576,12 +577,12 @@ void ccsBuildGeneral(Ccs8& t, const CcsSet& p, int fl, bool inv)
                 double q = lo - v;
                 q = q * q;
                 q = q * k;
-                m = (-15.0 > q) ? 0.f : (float)std::exp(q);
+                m = (-15.0 > q) ? 0.f : (float)rm::exp(q);
             } else if (v > hi && sm != 0.0) {
                 double q = hi - v;
                 q = q * q;
                 q = q * k;
-                m = (-15.0 > q) ? 0.f : (float)std::exp(q);
+                m = (-15.0 > q) ? 0.f : (float)rm::exp(q);
             } else {
                 m = (v < lo || hi < v) ? 0.f : 1.f;
             }
@@ -768,10 +769,10 @@ void ccsSettingsImpl(Ctx& c, vcol::CcsKernel& k, bool& passThrough)
         k.hue.make(180.0f - half, 180.0f + half, (float)p.hs, 360.0f, true);
         k.hueShift = 180.0f - (float)p.hc;
         const double rad = p.ang * 3.141592653589793 / 180.0, amt2 = p.amt * p.amt;
-        k.tintU = (float)((std::cos(rad) * amt2) * 0.5);
-        k.tintV = (float)((std::sin(rad) * amt2) * 0.5);
+        k.tintU = (float)((rm::cos(rad) * amt2) * 0.5);
+        k.tintV = (float)((rm::sin(rad) * amt2) * 0.5);
         float cc = 1.0f, ss = 0.0f;
-        if (fl & 0x18) { const double r = p.rot * 3.141592653589793 / 180.0; cc = (float)std::cos(r); ss = (float)std::sin(r); }
+        if (fl & 0x18) { const double r = p.rot * 3.141592653589793 / 180.0; cc = (float)rm::cos(r); ss = (float)rm::sin(r); }
         k.M[0] = k.satv * cc; k.M[1] = k.satv * -ss; k.M[2] = k.satv * ss; k.M[3] = k.satv * cc;
     }
 }
@@ -823,8 +824,8 @@ bool colorCorrectorRows(Ctx& c, RowFn& fn)
         double a, m;
         c.xy(names[k], a, m);
         const double am = clampd(m, -2, 2), t = (am < 0 ? -am * am : am * am) * 0.5, an = a * kPi / 180.0;
-        du[k] = (float)(std::cos(an) * t);
-        dv[k] = (float)(std::sin(an) * t);
+        du[k] = (float)(rm::cos(an) * t);
+        dv[k] = (float)(rm::sin(an) * t);
     }
     const float sat = (float)clampd(c.d("Saturation"), 0, 100);
     float gc, ga;
@@ -846,12 +847,12 @@ bool colorCorrectorRows(Ctx& c, RowFn& fn)
             if (Yp < 0.f) Yp = 0.f;
             if (gammaOn) {
                 const float base = (Yp + gc) / (1.f + gc);
-                Yp = base > 0.f ? std::pow(base, ga) : 0.f;
+                Yp = base > 0.f ? rm::pow(base, ga) : 0.f;
             }
             Yp += offset;
             Yp = Yp < 0.f ? 0.f : (Yp > 1.f ? 1.f : Yp);
             const float e0 = Yp / 0.402f, e1 = (Yp - 0.5f) / 0.2414f, e2 = (Yp - 1.f) / 0.402f;
-            const float wl = std::exp(-e0 * e0), wm = std::exp(-e1 * e1), wh = std::exp(-e2 * e2);
+            const float wl = rm::exp(-e0 * e0), wm = rm::exp(-e1 * e1), wh = rm::exp(-e2 * e2);
             const float u2 = (U + du[0] * wl + du[1] * wm + du[2] * wh) * sat, v2 = (V + dv[0] * wl + dv[1] * wm + dv[2] * wh) * sat;
             const float nr = Yp + v2 / 0.877f, nb = Yp + u2 / 0.492f;
             const float ng = (Yp - 0.299f * nr - 0.114f * nb) / 0.587f;
@@ -927,7 +928,7 @@ static void convolutionKernelRaw(Ctx& c)
     const float mul = (float)(norm ? 1.0 : clampd(c.d("Scale"), -1e4, 1e4));
     const float off = (float)(clampd(c.d("Offset"), -100, 100) * 255.0);      // (in levels)
     const double rot = c.d("Rotation") * kPi / 180.0;
-    const double cr = std::cos(rot), sr = std::sin(rot);
+    const double cr = rm::cos(rot), sr = rm::sin(rot);
     const bool turned = std::fabs(rot) > 1e-9;
     const bool between = c.scale < 0.999;
     // the straight (unpremultiplied) frame, so dark edges of soft alpha do not bleed in
@@ -1283,7 +1284,7 @@ void spherize(Ctx& c)
             const double xx = dx * kx, r2 = xx * xx + yy;
             float* o = c.out.at(i, yt);
             if (r2 >= 1.0) { std::memcpy(o, c.src.at(i, yt), sizeof(float) * 4); continue; }
-            const double f = 1.0 - std::cos(std::sqrt(r2) * 3.1415926 * 0.5) * amount * 0.8;
+            const double f = 1.0 - rm::cos(std::sqrt(r2) * 3.1415926 * 0.5) * amount * 0.8;
             const double sy = f * dy + cyp, sx = f * dx + cxp;
             const int iy = (int)std::nearbyint(sy - 0.499999985), ix = (int)std::nearbyint(sx - 0.499999985);
             const int y0 = std::min(std::max(iy, 0), H - 1), y1 = std::min(std::max(iy + 1, 0), H - 1);

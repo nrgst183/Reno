@@ -11,6 +11,7 @@
 // Identifiers, parameter names, types, choices and labels come from VEGAS's plug-in descriptions (resource files) and presets; defaults come from its
 // presets where it has them, otherwise Reno's own, as are ranges, maths and pictures. Parameters needing what Reno has no counterpart of (a lens
 // database, motion analysis, auto-align) are declared with the same name and kept in the project, and do nothing.
+#include "../core/rmath.h"
 #include "vkfilters.h"
 #include "builtins_mask_internal.h"
 #include "builtins_more_internal.h"
@@ -64,7 +65,7 @@ double lanczos3(double x)
     if (x < 1e-8) return 1.0;
     if (x >= 3.0) return 0.0;
     const double px = kPi * x;
-    return 3.0 * std::sin(px) * std::sin(px / 3.0) / (px * px);
+    return 3.0 * rm::sin(px) * rm::sin(px / 3.0) / (px * px);
 }
 
 // The taps for the output positions 0..n-1 of a zoom: for each the first source index and 6 weights (normalised).

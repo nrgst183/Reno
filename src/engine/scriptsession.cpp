@@ -403,6 +403,43 @@ double ScriptSession::mediaLength(const MediaItem& m) const
     return m.info.duration;
 }
 
+// A looping event's take offset is kept inside the media: trimming the start earlier than the media begins gives the
+// offset modulo the media's length (RenoEdits adjust_audio, "pastMediaStart": 2 s earlier than the start of a 20 s file
+// gives an offset of 18 s).
+void ScriptSession::keepOffsetInLoop(Event& e) const
+{
+    if (!e.loop) return;
+    auto wrap = [&](double off, uint64_t mediaId) {
+        const MediaItem* m = project.findMedia(mediaId);
+        const double dur = (m && !m->info.isStill && !m->generated) ? m->info.duration : 0.0;
+        if (!(dur > 0)) return off;
+        off = std::fmod(off, dur);
+        return off < 0 ? off + dur : off;
+    };
+    e.offset = wrap(e.offset, e.mediaId);
+    for (Take& k : e.takes) if (!k.reverse) k.offset = wrap(k.offset, k.mediaId);
+}
+
+// The fades of an event never add up to more than its length: the fade-in has the room first (RenoEdits adjust_audio:
+// trimming an event with 3 s fades to 3 s long leaves a fade-in of 3 s and no fade-out).
+void ScriptSession::keepFadesInside(Event& e) const
+{
+    e.fadeIn = std::min(e.fadeIn, e.length);
+    e.fadeOut = std::min(e.fadeOut, std::max(0.0, e.length - e.fadeIn));
+}
+
+// VEGAS keeps a take's offset in timeline time (the media position is offset x rate), so a new rate moves the media
+// position the event starts at, unless adjustStart asks for the same place in the media (RenoEdits playback_rate).
+void ScriptSession::changeRate(Event& e, double rate, bool sameMediaPlace) const
+{
+    if (!sameMediaPlace && e.rate > 0) {
+        const double f = rate / e.rate;
+        e.offset *= f;
+        for (Take& k : e.takes) if (!k.reverse) k.offset *= f;
+    }
+    e.rate = rate;
+}
+
 // VEGAS's take offset is from the start of the take's media (a subclip's own start); a reversed subclip runs
 // backwards from its end.
 double ScriptSession::takeOffset(const Event& e, const MediaItem* m) const
@@ -772,18 +809,20 @@ int ScriptSession::eventProp(const Desc& d, int prop, int64_t* oi, double* ox, s
             if (!sx) { *ox = e->length; return RS_OK; }
             if (*sx <= 0) return fail("an event's length must be more than 0");
             e->length = *sx;
+            keepFadesInside(*e);
             touch();
             return RS_OK;
         case RP_END:
             if (!sx) { *ox = e->end(); return RS_OK; }
             if (*sx <= e->start) return fail("an event must end after it starts");
             e->length = *sx - e->start;
+            keepFadesInside(*e);
             touch();
             return RS_OK;
         case RP_RATE:
             if (!sx) { *ox = e->rate; return RS_OK; }
             if (*sx <= 0) return fail("the playback rate must be more than 0");
-            e->rate = *sx;
+            changeRate(*e, *sx, false);        // (the setter keeps the take offset in timeline time, like AdjustPlaybackRate(rate, false))
             touch();
             return RS_OK;
         case RP_FADE_IN:
@@ -859,13 +898,15 @@ int ScriptSession::eventProp(const Desc& d, int prop, int64_t* oi, double* ox, s
         // 1004 mute right, 1005 mono, 1006 swap.
         if (!si) {
             const std::string& c = e->channels;
-            *oi = c == "left" ? 1002 : c == "right" ? 1001 : c == "swap" ? 1006 : c == "combine" ? 1005 : 1000;
+            *oi = c == "left" ? 1002 : c == "right" ? 1001 : c == "swap" ? 1006 : c == "combine" ? 1005 : c == "muteleft" ? 1003 : c == "muteright" ? 1004 : 1000;
             return RS_OK;
         }
         switch (*si) {
         case 1000: e->channels = "both"; break;
-        case 1001: case 1003: e->channels = "right"; break;
-        case 1002: case 1004: e->channels = "left"; break;
+        case 1001: e->channels = "right"; break;
+        case 1002: e->channels = "left"; break;
+        case 1003: e->channels = "muteleft"; break;
+        case 1004: e->channels = "muteright"; break;
         case 1005: e->channels = "combine"; break;
         case 1006: e->channels = "swap"; break;
         default: return fail("not one of VEGAS's channel remappings");
@@ -2231,23 +2272,12 @@ int ScriptSession::call(uint64_t h, int op, const std::vector<int64_t>& ia, cons
         switch (op) {
         case RO_SPLIT: {
             const double at = D(0, -1);
-            if (!(at > kEps && at < e->length - kEps)) return fail("the split must be inside the event (0 < offset < its length)");
-            if (e->locked) return fail("the event is locked");
-            Event right = *e;
-            right.id = project.newId();
-            right.start = e->start + at;
-            right.length = e->length - at;
-            right.offset = e->reverse ? e->offset : e->offset + at * e->rate;
-            for (Take& k : right.takes) if (!k.reverse) k.offset += at * e->rate;
-            for (Envelope& env : right.envelopes) for (EnvPoint& p : env.points) p.time -= at;
-            for (PanCropKey& k : right.panCrop) k.time -= at;
-            right.fadeIn = 0;
-            right.transition = FxSlot();
-            for (auto& x : right.fx) x.id = project.newId();
+            // VEGAS (RenoEdits split_edge_cases): a split outside the event, at its start or end, does nothing and does not raise an
+            // error (the result is null); a locked event is split like any other (the lock only guards the program's own editing)
+            if (!(at > kEps && at < e->length - kEps)) return RS_OK;
+            Event right = splitEventAt(project, *e, e->start + at);
+            if (!right.id) return RS_OK;
             right.veg = nullptr;
-            if (e->reverse) e->offset += right.length * e->rate;
-            e->length = at;
-            e->fadeOut = 0;
             // the right part is in the same group as the left.
             if (selection.count(e->id)) selection.insert(right.id);
             const uint64_t rid = right.id;
@@ -2284,15 +2314,10 @@ int ScriptSession::call(uint64_t h, int op, const std::vector<int64_t>& ia, cons
             const double start = D(0, e->start), len = D(1, e->length);
             if (!(len > 0)) return fail("an event's length must be more than 0");
             if (e->locked) return fail("the event is locked");
-            const double delta = start - e->start;
-            if (I(0)) {
-                e->offset += delta * e->rate;
-                for (Take& k : e->takes) k.offset += delta * e->rate;
-                for (Envelope& env : e->envelopes) for (EnvPoint& p : env.points) p.time -= delta;
-                for (PanCropKey& k : e->panCrop) k.time -= delta;
-            }
-            e->start = std::max(0.0, start);
-            e->length = len;
+            adjustEventEdges(*e, start, len, I(0) != 0);
+            e->start = std::max(0.0, e->start);
+            keepOffsetInLoop(*e);
+            keepFadesInside(*e);
             tr->sortEvents();
             touch();
             return RS_OK;
@@ -2301,12 +2326,10 @@ int ScriptSession::call(uint64_t h, int op, const std::vector<int64_t>& ia, cons
             const double rate = D(0, 1.0);
             if (!(rate > 0)) return fail("the playback rate must be more than 0");
             if (e->locked) return fail("the event is locked");
-            // the event keeps playing the same stretch of its media: its length changes with the rate
-            const double end = e->end();
-            e->length = e->length * e->rate / rate;
-            e->rate = rate;
-            if (I(0)) e->start = std::max(0.0, end - e->length);
-            tr->sortEvents();
+            // VEGAS (RenoEdits playback_rate): the event keeps its start and length. Its take offset is kept in timeline time, so
+            // by default the media position it starts at changes with the rate; with adjustStart the start offset is changed
+            // so that it starts at the same place in the media as before.
+            changeRate(*e, rate, I(0) != 0);
             touch();
             return RS_OK;
         }

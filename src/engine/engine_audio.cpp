@@ -58,6 +58,8 @@ void mapChannels(const std::string& channels, float* l, float* r, int n)
         const float a = l[k], b = r[k];
         if (channels == "left") r[k] = a;                       // the left channel on both sides
         else if (channels == "right") l[k] = b;
+        else if (channels == "muteleft") l[k] = 0.0f;           // VEGAS's Mute Left: that side is silent, the other stays on its side
+        else if (channels == "muteright") r[k] = 0.0f;
         else if (channels == "swap") { l[k] = b; r[k] = a; }
         else if (channels == "combine") l[k] = r[k] = 0.5f * (a + b);     // a mono mix (half each, so it cannot clip)
     }
@@ -1585,8 +1587,7 @@ struct AudioBlockMixer {
                 float g = gain;
                 if (fades) {
                     const double t = (double)(start + a + k) / rate;
-                    g *= (float)(eventFade(e, t) * quick(t));
-                    if (overlaps) g *= (float)overlapWeightAmong(w.others, e, t);
+                    g *= (float)((overlaps ? overlapFadeAmong(w.others, e, t) : eventFade(e, t)) * quick(t));
                 }
                 w.tl[(size_t)(a + k)] += w.el[(size_t)k] * g;
                 w.trb[(size_t)(a + k)] += w.er[(size_t)k] * g;
@@ -1600,8 +1601,7 @@ struct AudioBlockMixer {
             double g = level;
             if (fades) {
                 const double t = (double)(start + a + k) / rate;
-                g *= eventFade(e, t) * quick(t);
-                if (overlaps) g *= overlapWeightAmong(w.others, e, t);
+                g *= (overlaps ? overlapFadeAmong(w.others, e, t) : eventFade(e, t)) * quick(t);
             }
             if (evVol) g *= std::max(0.0, scratch.a[(size_t)k]);
             const double pp = evPan ? std::min(1.0, std::max(-1.0, scratch.b[(size_t)k])) : 0.0;

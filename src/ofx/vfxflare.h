@@ -8,6 +8,7 @@
 //     element's strength is added to the pixel, with Blend taken of it;
 //   - the sums are single precision in the kernels' order; the sunburst's ray lengths are a table of 64 values the host fills (Reno: the ray table in builtins_lensflare.cpp).
 #pragma once
+#include "../core/rmath.h"
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -102,7 +103,7 @@ inline bool shape(int type, float u, float v, float d, float strength, const flo
     default: {                                          // rays round the circle
         if (!(d < 1.0f)) return false;
         const float pi = 3.14159265358979323846f;
-        const float ang = (float)(std::atan2((double)v, (double)u));        // (the double function rounded to a float: the same on every C library)
+        const float ang = (float)(rm::atan2((double)v, (double)u));        // (the double function rounded to a float: the same on every C library)
         const float a = ang + pi;
         const float p = a / (2 * pi) * 3;
         const float pv = p * 60.f;
@@ -133,7 +134,7 @@ inline void prepare(std::vector<Elem>& out, int W, int H, const Row* rows, int n
     out.clear();
     const float lx = P.lx, ly = -P.ly;
     const float mn = (float)(W < H ? W : H);
-    const float sinP = (float)std::sin((double)(-P.perspective) * 1.5707963267948966);
+    const float sinP = (float)rm::sin((double)(-P.perspective) * 1.5707963267948966);
     const float pa = P.pixelAspect > 0.f ? P.pixelAspect : 1.f;
     const float Wf = (float)W, Hf = (float)H;
     const float lcol[3] = {P.lightR, P.lightG, P.lightB};
@@ -142,7 +143,7 @@ inline void prepare(std::vector<Elem>& out, int W, int H, const Row* rows, int n
     for (int n = 0; n < nrows; ++n) {
         const Row& e = rows[n];
         const float xoff = e.place * (-lx) + lx, yoff = e.place * (-ly) + ly;
-        const float sc = (float)std::pow(2.0, (double)((e.place - 1.0f) * sinP));
+        const float sc = (float)rm::pow(2.0, (double)((e.place - 1.0f) * sinP));
         const float cx = Wf * xoff * 0.5f + Wf * 0.5f, cy = Hf * yoff * 0.5f + Hf * 0.5f;
         const float R = sc * P.size * e.size * mn;
         const float Rx = R / pa;

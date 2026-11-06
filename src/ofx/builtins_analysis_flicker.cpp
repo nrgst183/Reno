@@ -16,6 +16,7 @@
 //  - Histogram smoothing (after Calculate): Reno's own method (VEGAS's analysis is stored in the project, which is not read): the frame's brightness histogram is matched
 //    to the average of the histograms round it.
 // Neighbouring frames' brightness (for the histogram model) is cached per instance (one more frame each time while playing).
+#include "../core/rmath.h"
 #include "builtins_analysis_internal.h"
 #include "builtins_more_internal.h"
 #include "vfxflicker.h"
@@ -75,7 +76,7 @@ inline float toneWeight(int type, float y)
 {
     switch (type) {
     case 0: return (float)smooth01((y - 0.4) / 0.4);
-    case 1: { const float d = (y - 0.5f) / 0.27f; return std::exp(-0.5f * d * d); }
+    case 1: { const float d = (y - 0.5f) / 0.27f; return rm::exp(-0.5f * d * d); }
     case 2: return 1.f - (float)smooth01((y - 0.15) / 0.45);
     default: return 1.f;
     }
@@ -226,7 +227,7 @@ float additionAmount(Ctx& c, double sens)
     double amount = 0;
     const double sensF = (double)(float)sens;
     if (freq > 1.0) {
-        amount = std::sin(freq * 6.283185307179586 * t / fps) * (sensF * 0.1);
+        amount = rm::sin(freq * 6.283185307179586 * t / fps) * (sensF * 0.1);
     } else {
         // 'Celluloid': the plug-in draws a random number of 1000 trials with chance 'sensitivity' (times 1e-4) and puts it in only when the whole second is a multiple of another
         // random number (about fps / sens trials, chance 1 - 0.9 sens) plus one - for most of a clip, never. The draws here are from a hash of the frame number.
@@ -236,7 +237,7 @@ float additionAmount(Ctx& c, double sens)
             hsh ^= hsh >> 33; hsh *= 0xff51afd7ed558ccdULL; hsh ^= hsh >> 33; hsh *= 0xc4ceb9fe1a85ec53ULL; hsh ^= hsh >> 33;
             return ((double)(hsh >> 11) + 0.5) / 9007199254740992.0;
         };
-        auto normal = [&]() { return std::sqrt(-2.0 * std::log(rnd())) * std::cos(2.0 * kPi * rnd()); };
+        auto normal = [&]() { return std::sqrt(-2.0 * rm::log(rnd())) * rm::cos(2.0 * kPi * rnd()); };
         const double nA = std::floor(1000.0 * p + std::sqrt(1000.0 * p * (1 - p)) * normal() + 0.5);
         const int trialsB = p > 0 ? (int)(fps / p) : 0;
         const double pB = 1.0 - p * 0.9;

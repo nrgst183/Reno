@@ -385,29 +385,11 @@ class Shader:
         return v
 
     def _fdiv_exact(self, x, a):
-        """x / a rounded the way the CPU's division is (IEEE, to nearest). The hardware divide may be a few ulp off (the Vulkan rule), so the quotient is
-        corrected with its exact remainder, worked out with Dekker's error-free product (no fused multiply-add: a software Vulkan driver does not fuse it).
-        Where that does not apply (zero, huge or tiny operands, non-finite) the plain divide is the answer."""
-        def op(name, p, q):
-            return self._nc(self._v(name, 'f', p.id, q.id))
-        q0 = op("FDiv", x, a)
-        y = op("FDiv", self.f(1.0), a)
-        split = self.f(4097.0)
-        def parts(v):
-            t = op("FMul", split, v)
-            hi = op("FSub", t, op("FSub", t, v))
-            return hi, op("FSub", v, hi)
-        ah, al = parts(a)
-        qh, ql = parts(q0)
-        p = op("FMul", q0, a)
-        # q0 * a = p + e exactly
-        e = op("FAdd", op("FAdd", op("FAdd", op("FSub", op("FMul", qh, ah), p), op("FMul", qh, al)), op("FMul", ql, ah)), op("FMul", ql, al))
-        # remainder x - q0 * a = (x - p) - e (x - p is exact when q0 is within an ulp or two)
-        r = op("FSub", op("FSub", x, p), e)
-        q2 = op("FAdd", q0, op("FMul", r, y))
-        ax, aa = self.abs(x), self.abs(a)
-        ok = self.isfinite(q2) & (aa > 1e-18) & (aa < 1e18) & (ax < 1e18) & ((ax > 1e-18) | self.eq(x, 0.0))
-        return self.select(ok, q2, q0)
+        """x / a rounded the way the CPU's division is (IEEE, to nearest even), whatever the card's divide does (Vulkan allows it 2.5 ulp of error): the card's quotient is
+        corrected with its exact remainder and the last bit is decided with exact arithmetic (tools/fdiv_exact.py has the steps and the argument; tools/fdiv_test.py checks
+        them against a divide that is deliberately wrong). Operands outside 1e-18..1e18 (and zero, non-finite) get the first correction or the plain divide."""
+        from fdiv_exact import fdiv_exact
+        return fdiv_exact(self, x, a, lambda p, q: self._nc(self._v("FDiv", 'f', p.id, q.id)))
 
     def fma(self, a, b, c):
         return self._ext("Fma", 'f', self.conv(a, 'f'), self.conv(b, 'f'), self.conv(c, 'f'))
@@ -465,15 +447,20 @@ class Shader:
     def bit_count(self, x): return self._v("BitCount", 'u', x.id)      # (the number of set bits of a uint)
     def find_umsb(self, x): return self._ext("FindUMsb", 'u', x)      # (the index of the highest set bit; every bit of -1 for 0)
     def round_even(self, x): return self._f1("RoundEven", x)       # (lrintf)
-    # The elementary functions are worked out in the software double (sf64) and rounded to a float, not by the driver's Exp/Log/Sin/Cos/Atan2/Pow (Vulkan
-    # allows those several ulp of error, and they differ from one GPU to the next). The result is the double function rounded to a float, which is what a
-    # C library's float function gives but for a very rare last bit.
+    # exp, log and pow are the C library's float functions (glibc 2.39's expf, logf and powf, which Reno's src/core/rmath.h reproduces bit for bit): tools/rmath_gpu.py
+    # runs the same steps in the software double (sf64), not the driver's Exp/Log/Pow (Vulkan allows those several ulp of error, and they differ from one GPU to the next).
+    # sin, cos and atan2 below are the DOUBLE function rounded to a float (the CPU effects that use them call the double one); the float functions are
+    # rmath_gpu.sin_f, cos_f and atan2_f.
     def _sf1(self, fn, x):
         import sf64
         x = self.conv(x, 'f') if not isinstance(x, V) else x
         return getattr(sf64, fn)(self, sf64.SF.from_f32(self, x)).to_f32()
-    def exp(self, x): return self._sf1("sf_exp", x)
-    def log(self, x): return self._sf1("sf_log", x)
+    def exp(self, x):
+        import rmath_gpu
+        return rmath_gpu.exp_f(self, self.conv(x, 'f') if not isinstance(x, V) else x)
+    def log(self, x):
+        import rmath_gpu
+        return rmath_gpu.log_f(self, self.conv(x, 'f') if not isinstance(x, V) else x)
     def sin(self, x): return self._sf1("sf_sin", x)
     def cos(self, x): return self._sf1("sf_cos", x)
     def atan2(self, y, x):
@@ -481,9 +468,8 @@ class Shader:
         y, x = self.conv(y, 'f'), self.conv(x, 'f')
         return sf64.sf_atan2(self, sf64.SF.from_f32(self, y), sf64.SF.from_f32(self, x)).to_f32()
     def pow(self, x, y):
-        import sf64
-        x, y = self.conv(x, 'f'), self.conv(y, 'f')
-        return sf64.sf_pow(self, sf64.SF.from_f32(self, x), sf64.SF.from_f32(self, y)).to_f32()
+        import rmath_gpu
+        return rmath_gpu.pow_f(self, self.conv(x, 'f'), self.conv(y, 'f'))
     def fmod(self, x, y):
         """C's fmod (the sign of x), exact: the remainder x - q y of the truncated quotient is worked out with Dekker's error-free product (the hardware
         FRem may use x - y trunc(x / y), which rounds). Operands whose quotient is 2^23 or more, zero, or non-finite use the hardware FRem."""

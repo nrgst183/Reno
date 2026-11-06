@@ -3,6 +3,7 @@
 // (a colour matrix chain: Hue, Tint as a saturation) weighted by a hump over the brightness whose peak the Bias moves, written as bytes. Pictures are RGBA floats, the BOTTOM row first.
 // Nothing here depends on Reno's Ctx, so a test can drive it with plain arrays.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -68,7 +69,7 @@ inline void hueRotate(Mat& dest, float angle)
     lz = lz + M.m[12] * wb;
     const float zsx = lx / lz, zsy = ly / lz;
     M.shearZ(zsx, zsy);
-    const float c = std::cos(theta), s = std::sin(theta);
+    const float c = rm::cos(theta), s = rm::sin(theta);
     Mat Z;
     Z.identity();
     Z.m[0] = c; Z.m[1] = -s; Z.m[5] = s; Z.m[6] = c;

@@ -1,6 +1,7 @@
 // VEGAS's Vignette as its OpenCL kernel draws it (the float path VEGAS takes with GPU acceleration on), written from the decoded kernel and checked against it
 // (see the port notes). All in 32-bit floats in the kernel's order. The kernel's rows run bottom first, so y here is counted from the bottom of the frame.
 #pragma once
+#include "../core/rmath.h"
 #include <cmath>
 
 namespace reno {
@@ -30,8 +31,8 @@ inline Setup setup(const Params& p)
     u.centreX = u.w1 * p.cx;
     u.centreY = u.h1 * (1.0f - p.cy);
     const float a = p.rotation * 0.01745329f;
-    u.c = std::cos(a);
-    u.s = std::sin(a);
+    u.c = rm::cos(a);
+    u.s = rm::sin(a);
     u.asp = (p.aspect - 1.0f) * 0.5f + 1.0f;
     return u;
 }
@@ -48,15 +49,15 @@ inline float amount(const Params& p, const Setup& u, int x, int y)
     float ry = dx * u.s + dy * u.c;
     rx /= u.asp;
     ry *= u.asp;
-    const float r = std::hypot(rx, ry);
-    const float big = 0.5f * p.outer * std::hypot(w, h);
+    const float r = rm::hypot(rx, ry);
+    const float big = 0.5f * p.outer * rm::hypot(w, h);
     const float inner = p.inner * big;
     const float den = (std::fabs(big - inner) < 0.000001f) ? 1.0f : big - inner;
     float t = (r - inner) / den;
     t = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);
     float a = 0.f;
     if (r > inner) {
-        a = std::pow(t, p.exponent);
+        a = rm::pow(t, p.exponent);
         a = a < 0.f ? 0.f : (a > 1.f ? 1.f : a);
     }
     return p.invert ? 1.0f - a : a;

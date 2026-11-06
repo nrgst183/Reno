@@ -34,6 +34,7 @@ Json AudioPluginDesc::toJson() const
     j["editor"] = hasEditor;
     j["instrument"] = isInstrument;
     if (bridged32) j["bridged32"] = true;
+    if (!vegasClsid.empty()) j["vegasClsid"] = vegasClsid;
     return j;
 }
 
@@ -50,6 +51,7 @@ AudioPluginDesc AudioPluginDesc::fromJson(const Json& j)
     d.hasEditor = j.get("editor").asBool();
     d.isInstrument = j.get("instrument").asBool();
     d.bridged32 = j.get("bridged32").asBool();
+    d.vegasClsid = j.get("vegasClsid").asString();
     return d;
 }
 

@@ -4,6 +4,7 @@
 //
 // Pictures are RGBA floats; the kernels number their rows from the BOTTOM row. Every number is a float, in the order the kernel does it.
 #pragma once
+#include "../core/rmath.h"
 #include "vfxgauss.h"
 #include "vfxwipes.h"
 #include <vector>
@@ -207,7 +208,7 @@ inline void blurSigmas(int W, int H, int apply, float p, double maxBlur, float& 
     float sz = (float)std::max(W, H);
     sz = sz * ((float)maxBlur * q);
     sz = sz * 0.25f;
-    const float ln = std::log(0.003921568859368563f);
+    const float ln = rm::log(0.003921568859368563f);
     const float twoLn = ln + ln;
     float ax = 1.0f, ay = 1.0f;
     ax *= sz;
@@ -255,8 +256,8 @@ inline void render(const std::vector<float>& a, const std::vector<float>& b, std
     if (type == 1) {                                       // kernels 819, 8110, 8111 (host 0x1805b6b94)
         const float fade = fadeHost(p, s.fadeRange);
         const float Z = (float)s.maxZoom;
-        const float sA = 1.0f / std::pow(Z, p);
-        const float sB = 1.0f / std::pow(Z, 1.0f - p);
+        const float sA = 1.0f / rm::pow(Z, p);
+        const float sB = 1.0f / rm::pow(Z, 1.0f - p);
         const float cs[2] = {(float)s.srcX * (float)W, (float)s.srcY * (float)H};
         const float cd[2] = {(float)s.dstX * (float)W, (float)s.dstY * (float)H};
         const int mode = s.bilinear ? 1 : 0;
@@ -278,13 +279,13 @@ inline void render(const std::vector<float>& a, const std::vector<float>& b, std
     }
     if (type == 2) {                                       // kernels 8112, 8113 and 818 (host 0x1805b4b03)
         float pw;
-        if (apply == 0) pw = std::pow(p, 0.25f);
-        else if (apply == 1) pw = std::pow(1.0f - p, 0.25f);
+        if (apply == 0) pw = rm::pow(p, 0.25f);
+        else if (apply == 1) pw = rm::pow(1.0f - p, 0.25f);
         else {
             float q = p;
             if (!(0.5f >= q)) q = 1.0f - q;
             q += q;
-            pw = std::pow(q, 0.25f);
+            pw = rm::pow(q, 0.25f);
         }
         int nx, ny;
         pixelateCounts(W, H, pw, s.maxX, s.maxY, nx, ny);

@@ -4,6 +4,7 @@
 //                      the resource file order (a group first, its members after) and the settings' names (BorderSize, BorderFeather, BorderColor ...).
 //   addFiltersVegasRest  360 Stabilization (com.magix.ofx.vr.stabilization), Scene Rotation (com.magixsoftware:panorotation), Displacement Map,
 //                      Height Map, Histogram and Gradient Wipe.
+#include "../core/rmath.h"
 #include "builtins_impl.h"
 #include "builtins_vfxdata.h"
 #include "vkfilters.h"
@@ -117,9 +118,9 @@ Rot mul(const Rot& a, const Rot& b)
     return r;
 }
 // About the vertical axis: a direction straight ahead is turned by 'a' to the right (its longitude grows by a).
-Rot rotYaw(double a) { const double c = std::cos(a), s = std::sin(a); return Rot{{c, 0, s, 0, 1, 0, -s, 0, c}}; }
+Rot rotYaw(double a) { const double c = rm::cos(a), s = rm::sin(a); return Rot{{c, 0, s, 0, 1, 0, -s, 0, c}}; }
 // About the sideways axis: straight ahead is turned up by 'a' (its latitude grows by a).
-Rot rotPitch(double a) { const double c = std::cos(a), s = std::sin(a); return Rot{{1, 0, 0, 0, c, -s, 0, s, c}}; }
+Rot rotPitch(double a) { const double c = rm::cos(a), s = rm::sin(a); return Rot{{1, 0, 0, 0, c, -s, 0, s, c}}; }
 
 // An equirectangular picture seen through a rotation: output pixel (x, y) of a W x H picture takes the colour of the direction the rotation turns
 // it to. The picture is the part [px, px + pw) x [py, py + ph) of the frame (stereo halves).
@@ -129,8 +130,8 @@ inline PanoTap panoTap(const Rot& rot, double wm, int pw, int ph, int x, double 
 {
     const double lon = ((double)x / wm - 0.5) * 2 * kPi;
     double dx, dy, dz;
-    rot.apply(cl * std::sin(lon), sl, cl * std::cos(lon), dx, dy, dz);
-    const double u = std::atan2(dx, dz) / (2 * kPi) + 0.5, v = 0.5 - std::asin(clampd(dy, -1, 1)) / kPi;
+    rot.apply(cl * rm::sin(lon), sl, cl * rm::cos(lon), dx, dy, dz);
+    const double u = rm::atan2(dx, dz) / (2 * kPi) + 0.5, v = 0.5 - rm::asin(clampd(dy, -1, 1)) / kPi;
     const double fx = u * pw - 0.5, fy = clampd(v * ph - 0.5, -1.0, (double)ph);
     PanoTap t;
     t.x0 = (int)std::floor(fx);
@@ -154,7 +155,7 @@ void rotatePanorama(const Buf& src, Buf& out, const Rot& rot, int px, int py, in
     const double wm = std::max(1, pw - 1), hm = std::max(1, ph - 1);
     forRows(ph, pw, [&](int y) {
         const double lat = (0.5 - (double)y / hm) * kPi;
-        const double cl = std::cos(lat), sl = std::sin(lat);
+        const double cl = rm::cos(lat), sl = rm::sin(lat);
         for (int x = 0; x < pw; ++x) {
             const PanoTap t = panoTap(rot, wm, pw, ph, x, cl, sl);
             const int x0 = t.x0, x1 = x0 + 1, y0 = t.y0, y1 = y0 + 1;
@@ -182,7 +183,7 @@ void panoramaMap(const Rot& rot, int pw, int ph, std::vector<float>& tab)
     tab.assign((size_t)pw * ph * 4, 0.f);
     forRows(ph, pw, [&](int y) {
         const double lat = (0.5 - (double)y / hm) * kPi;
-        const double cl = std::cos(lat), sl = std::sin(lat);
+        const double cl = rm::cos(lat), sl = rm::sin(lat);
         for (int x = 0; x < pw; ++x) {
             const PanoTap t = panoTap(rot, wm, pw, ph, x, cl, sl);
             float* o = &tab[((size_t)y * pw + (size_t)x) * 4];
@@ -242,8 +243,8 @@ struct SceneGeom {
         for (int ix = 0; ix < w; ++ix) {
             const float nx = (float)ix / (float)(w - 1) * 2.0f - 1.0f;
             const float lon = nx * kPiF;
-            cosL[(size_t)ix] = (float)std::cos((double)lon);
-            float sl = (float)std::sin((double)lon);
+            cosL[(size_t)ix] = (float)rm::cos((double)lon);
+            float sl = (float)rm::sin((double)lon);
             if (lon >= kPiF) sl = 0.0f;
             else if (lon <= -kPiF) sl = -0.0f;
             sinL[(size_t)ix] = sl;
@@ -252,10 +253,10 @@ struct SceneGeom {
         for (int iy = 0; iy < h; ++iy) {
             const float ny = (hh - (float)iy) / hh * 2.0f - 1.0f;
             const float lat = ny * kHalfPiF;
-            float cp = (float)std::cos((double)lat);
+            float cp = (float)rm::cos((double)lat);
             if (std::fabs(lat) >= kHalfPiF) cp = 0.0f;
             cosP[(size_t)iy] = cp;
-            sinP[(size_t)iy] = (float)std::sin((double)lat);
+            sinP[(size_t)iy] = (float)rm::sin((double)lat);
         }
     }
     // false for a pixel the kernel does not write (the odd line or column of a stereo frame)
@@ -274,7 +275,7 @@ struct SceneGeom {
             X = xn; Y = yn; Z = zn;
         }
         const float hyp = std::sqrt(X * X + Z * Z);
-        const float lo = (float)std::atan2((double)Z, (double)X), la = (float)std::atan2((double)Y, (double)hyp);
+        const float lo = (float)rm::atan2((double)Z, (double)X), la = (float)rm::atan2((double)Y, (double)hyp);
         float nx = lo / kPiF, ny = 2.0f * la / kPiF;
         nx = std::min(1.0f, std::max(-1.0f, nx));
         ny = std::min(1.0f, std::max(-1.0f, ny));
@@ -343,8 +344,8 @@ void sceneRotationMatrix(Ctx& c, float M[9], bool& rotate)
     const float k = 0.01745329238474369f;
     const float ax = (float)c.d(kRotX) * k, ay = -(float)c.d(kRotY) * k, az = (float)c.d(kRotZ) * k;
     rotate = c.d(kRotX) != 0.0 || c.d(kRotY) != 0.0 || c.d(kRotZ) != 0.0;
-    auto cs = [](float a) { return (float)std::cos((double)a); };
-    auto sn = [](float a) { return (float)std::sin((double)a); };
+    auto cs = [](float a) { return (float)rm::cos((double)a); };
+    auto sn = [](float a) { return (float)rm::sin((double)a); };
     const float A[9] = {1, 0, 0, 0, cs(ax), -sn(ax), 0, sn(ax), cs(ax)};
     const float B[9] = {cs(ay), 0, sn(ay), 0, 1, 0, -sn(ay), 0, cs(ay)};
     const float C[9] = {cs(az), sn(az), 0, -sn(az), cs(az), 0, 0, 0, 1};
@@ -450,7 +451,7 @@ std::vector<float> smallLuma(const Buf& b, int px, int py, int pw, int ph, int w
 void findShift(const std::vector<float>& prev, const std::vector<float>& cur, int w, int h, int r0, int r1, int sx, int sy, bool subpixel, double& mx, double& my)
 {
     std::vector<double> wt((size_t)h);
-    for (int y = 0; y < h; ++y) wt[(size_t)y] = std::cos((0.5 - (y + 0.5) / h) * kPi);
+    for (int y = 0; y < h; ++y) wt[(size_t)y] = rm::cos((0.5 - (y + 0.5) / h) * kPi);
     const int nx = 2 * sx + 1, ny = 2 * sy + 1;
     std::vector<double> cost((size_t)nx * ny, 1e30);
     for (int dy = -sy; dy <= sy; ++dy)
@@ -660,10 +661,10 @@ void heightMap(Ctx& c)
 // Transparency its background's see-through amount, Logarithmic scale the bar heights, HDR how far over 1.0 the horizontal axis goes (1: usual range).
 void rgbToLabApprox(float r, float g, float b, float& L, float& A, float& B)
 {
-    auto lin = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+    auto lin = [](float v) { return v <= 0.04045f ? v / 12.92f : rm::pow((v + 0.055f) / 1.055f, 2.4f); };
     const float lr = lin(clamp01(r)), lg = lin(clamp01(g)), lb = lin(clamp01(b));
     const float X = (0.4124f * lr + 0.3576f * lg + 0.1805f * lb) / 0.95047f, Y = 0.2126f * lr + 0.7152f * lg + 0.0722f * lb, Z = (0.0193f * lr + 0.1192f * lg + 0.9505f * lb) / 1.08883f;
-    auto f = [](float t) { return t > 0.008856f ? std::cbrt(t) : 7.787f * t + 16.f / 116.f; };
+    auto f = [](float t) { return t > 0.008856f ? rm::cbrt(t) : 7.787f * t + 16.f / 116.f; };
     const float fx = f(X), fy = f(Y), fz = f(Z);
     L = 116.f * fy - 16.f; A = 500.f * (fx - fy); B = 200.f * (fy - fz);
 }
@@ -712,7 +713,7 @@ void histogramFx(Ctx& c)
             double bv = 0;
             for (int bi = b0; bi <= b1; ++bi) bv = std::max(bv, bins[(size_t)bi]);
             double hgt = bv / mx;
-            if (logScale) hgt = std::log1p(bv) / std::log1p(mx);
+            if (logScale) hgt = rm::log1p(bv) / rm::log1p(mx);
             const double fromBottom = 1.0 - (double)(y - y0 + 0.5) / bh;
             float* o = c.out.at(x, y);
             const float k = back * 0.6f;

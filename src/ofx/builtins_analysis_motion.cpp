@@ -1,6 +1,7 @@
 // How the movement of the whole picture between two frames is found (see builtins_analysis_internal.h), used by Stabilize and the Flicker Reducer. Reno's own method
 // (VEGAS also works from feature points and a model fit, but its code is not published): block matching of textured patches on a grid, a coarse whole-picture shift to
 // start the search for fast movement, Lucas-Kanade refinement between pixels, and a robust (re-weighted least squares) fit of a shift / similarity / affine map to the vectors.
+#include "../core/rmath.h"
 #include "builtins_analysis_internal.h"
 #include <algorithm>
 #include <cmath>
@@ -303,8 +304,8 @@ bool solveModel(const std::vector<FeatPt>& pts, const std::vector<double>& w, in
         return true;
     }
     if (model == 1) {
-        const double th = std::atan2(cross, dot);
-        r.a = std::cos(th); r.b = -std::sin(th); r.c = std::sin(th); r.d = std::cos(th);
+        const double th = rm::atan2(cross, dot);
+        r.a = rm::cos(th); r.b = -rm::sin(th); r.c = rm::sin(th); r.d = rm::cos(th);
     } else if (model == 2) {
         const double a = dot / spp, b = cross / spp;
         r.a = a; r.b = -b; r.c = b; r.d = a;
@@ -344,7 +345,7 @@ bool fitRobust(std::vector<FeatPt>& pts, int model, Xf& xf, double& conf)
         for (size_t i = 0; i < n; ++i) {
             double ox, oy;
             f.apply(pts[i].x, pts[i].y, ox, oy);
-            r[i] = std::hypot(pts[i].x + pts[i].vx - ox, pts[i].y + pts[i].vy - oy);
+            r[i] = rm::hypot(pts[i].x + pts[i].vx - ox, pts[i].y + pts[i].vy - oy);
         }
         s = std::max(1.4826 * medianOf(r), 0.0006);
     };

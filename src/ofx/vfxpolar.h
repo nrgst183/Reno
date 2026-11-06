@@ -3,6 +3,7 @@
 // host's (vegasTiesDown), and the middle pictures of Radial Pixelate are 8-bit textures when the host's frame is (oclUnormLevel; the offset 0.46 is the fit that
 // matches VEGAS's captured pictures best, as for Radial Blur, see oclWriteLevel).
 #pragma once
+#include "../core/rmath.h"
 #include "builtins_more_internal.h"
 
 namespace reno {
@@ -36,7 +37,7 @@ inline void spherize(const std::vector<float>& src, int W, int H, float cx, floa
                 continue;
             }
             r2 = std::sqrt(r2);
-            const float f = 1.0f - (std::cos(r2 * 1.5707963267949f) * amount) * 0.8f;
+            const float f = 1.0f - (rm::cos(r2 * 1.5707963267949f) * amount) * 0.8f;
             const float py = v29 + (fy - v29) * f;
             const float px = v28 + (fx - v28) * f;
             oclLinear4(src, W, H, px, py, o);
@@ -56,7 +57,7 @@ inline void radialPixelate(const std::vector<float>& src, int W, int H, float cx
         for (int x = 0; x < W; ++x) {
             const float xn = (float)x / fw, yn = (float)y / fh;
             const float a = (xn / 0.5f - 1.0f) * pi, r = yn * two;
-            float px = r * std::sin(a), py = r * std::cos(a);
+            float px = r * rm::sin(a), py = r * rm::cos(a);
             px += cx; py += cy;
             px = (px / 2.0f + 0.5f) * fw; py = (py / 2.0f + 0.5f) * fh;
             float* o = &T[((size_t)y * W + x) * 4];
@@ -112,7 +113,7 @@ inline void radialPixelate(const std::vector<float>& src, int W, int H, float cx
         for (int x = 0; x < W; ++x) {
             const float xn = (float)x / fw, yn = (float)y / fh;
             const float vx = (xn / 0.5f - 1.0f) - cx, vy = (yn / 0.5f - 1.0f) - cy;
-            const float ang = std::atan2(vx, vy), len = std::sqrt(vx * vx + vy * vy);
+            const float ang = rm::atan2(vx, vy), len = std::sqrt(vx * vx + vy * vy);
             const float u = ((ang / pi) / 2.0f + 0.5f) * fw, v = (len / two) * fh;
             oclLinear4(U, W, H, u, v, &out[((size_t)y * W + x) * 4]);
         }

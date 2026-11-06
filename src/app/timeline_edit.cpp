@@ -24,7 +24,7 @@ void TimelineWidget::Impl::trimStartTo(const Project& p, Event& e, double t, dou
 {
     t = std::min(t, e.end() - fr);
     double d = t - e.start;
-    double offset = e.offset + d * e.rate;
+    double offset = offsetAfterStartMove(e, d);
     const double dur = mediaDuration(p, e);
     if (offset < 0 && !(e.loop && dur > 0)) {
         d -= offset / e.rate;
@@ -44,7 +44,15 @@ void TimelineWidget::Impl::trimStartTo(const Project& p, Event& e, double t, dou
 
 void TimelineWidget::Impl::trimEndTo(Event& e, double t, double fr)
 {
-    e.length = std::max(fr, t - e.start);
+    const double length = std::max(fr, t - e.start);
+    if (e.reverse) {
+        // a reversed event plays down from the top of its window: the end edge is the window's bottom
+        double offset = offsetAfterEndMove(e, length - e.length);
+        if (offset < 0 && !e.loop) offset = 0;
+        shiftTakes(e, offset - e.offset);
+        e.offset = offset;
+    }
+    e.length = length;
     e.fadeIn = std::min(e.fadeIn, e.length);
     e.fadeOut = std::min(e.fadeOut, std::max(0.0, e.length - e.fadeIn));
 }
@@ -52,6 +60,20 @@ void TimelineWidget::Impl::trimEndTo(Event& e, double t, double fr)
 void TimelineWidget::Impl::removeSelection(bool cut)
 {
     if (!cut && deleteEnvelopePoints()) return;
+    if (app.timeSelectionEdit()) {
+        // VEGAS: with a time selection the commands take that time out of the events (see AppState::timeSelectionEdit)
+        if (cut) app.copySelection();
+        std::map<uint64_t, Ranges> removed;
+        const bool ripple = opt.autoRipple;
+        const RippleMode mode = opt.ripple;
+        app.edit(cut ? "Cut" : "Delete", [&](Project& p) {
+            removed.clear();
+            app.removeTimeSelection(p, &removed);
+            if (ripple) rippleClose(p, removed, mode);
+        });
+        if (!ripple && !removed.empty()) rememberRemoval(removed);
+        return;
+    }
     if (app.selection().empty()) return;
     std::set<uint64_t> ids = app.selection();
     for (uint64_t id : app.lockedAmong(ids)) ids.erase(id);
@@ -705,11 +727,23 @@ double TimelineWidget::Impl::wrapOffset(const Mover& m, double offset)
 
 void TimelineWidget::Impl::trimLeftBy(Event& e, const Mover& m, double d)
 {
+    const double media = e.reverse ? 0.0 : eventMediaAdvance(e, d);
     e.start = m.start + d;
+    e.offset = wrapOffset(m, offsetAfterStartMove(e, d));
+    shiftTakes(e, media);
     shiftEventEnvelopes(e, d);
     e.length = m.length - d;
-    e.offset = wrapOffset(m, m.offset + d * m.rate);
-    shiftTakes(e, d * m.rate);
+}
+
+// The end edge of an event moved by d (a trim): only a reversed event's media window moves with it.
+void TimelineWidget::Impl::trimRightBy(Event& e, const Mover& m, double d)
+{
+    if (e.reverse) {
+        const double was = e.offset;
+        e.offset = wrapOffset(m, offsetAfterEndMove(e, d));
+        shiftTakes(e, e.offset - was);
+    }
+    e.length = m.length + d;
 }
 
 void TimelineWidget::Impl::applyEdge(Project& p, const EdgeWork& w, double d) const
@@ -723,16 +757,20 @@ void TimelineWidget::Impl::applyEdge(Project& p, const EdgeWork& w, double d) co
         case EdgeOp::Trim:
         case EdgeOp::Slide:
             if (w.side < 0) trimLeftBy(*e, m, d);
-            else e->length = m.length + d;
+            else trimRightBy(*e, m, d);
             break;
         case EdgeOp::SlipTrim:
+            // the media stays under the edge that is dragged: a reversed event has its window's top at the start edge
             if (w.side < 0) {
                 e->start = m.start + d;
                 e->length = m.length - d;
+                if (e->reverse) e->offset = wrapOffset(m, m.offset + d * m.rate);
             } else {
                 e->length = m.length + d;
-                e->offset = wrapOffset(m, m.offset - d * m.rate);
-                if (slipTakes) shiftTakes(*e, -d * m.rate);
+                if (!e->reverse) {
+                    e->offset = wrapOffset(m, m.offset - d * m.rate);
+                    if (slipTakes) shiftTakes(*e, -d * m.rate);
+                }
             }
             break;
         case EdgeOp::Stretch:
@@ -753,7 +791,7 @@ void TimelineWidget::Impl::applyEdge(Project& p, const EdgeWork& w, double d) co
         Event* e = p.findEvent(m.id);
         if (!e) continue;
         if (w.side > 0) trimLeftBy(*e, m, d);
-        else e->length = m.length + d;
+        else trimRightBy(*e, m, d);
         clampFades(*e);
     }
 }
@@ -826,13 +864,16 @@ void TimelineWidget::Impl::applyBody(Project& p, const BodyWork& w, double d) co
         Event* e = p.findEvent(m.id);
         if (!e) continue;
         if (w.slide) {
+            // (a reversed event plays its window downwards, so its media moves the other way)
+            const double sg = e->reverse ? -1.0 : 1.0;
             e->start = m.start + d;
-            e->offset = wrapOffset(m, m.offset + d * m.rate);
+            e->offset = wrapOffset(m, m.offset + sg * d * m.rate);
             shiftEventEnvelopes(*e, d);
-            shiftTakes(*e, d * m.rate);
+            shiftTakes(*e, sg * d * m.rate);
         } else {
-            e->offset = wrapOffset(m, m.offset - d * m.rate);
-            if (opt.slipAllTakes) shiftTakes(*e, -d * m.rate);
+            const double sg = e->reverse ? -1.0 : 1.0;
+            e->offset = wrapOffset(m, m.offset - sg * d * m.rate);
+            if (opt.slipAllTakes) shiftTakes(*e, -sg * d * m.rate);
         }
     }
 }
@@ -1065,24 +1106,12 @@ uint64_t TimelineWidget::Impl::splitIn(Project& p, uint64_t id, double t, std::m
     Track* tr = nullptr;
     Event* e = p.findEvent(id, &tr);
     if (!e || !tr || t <= e->start + 1e-9 || t >= e->end() - 1e-9) return 0;
-    Event right = *e;
-    right.id = p.newId();
-    right.start = t;
-    right.length = e->end() - t;
-    right.offset = e->offset + (t - e->start) * e->rate;
-    shiftTakes(right, (t - e->start) * e->rate);
-    shiftEventEnvelopes(right, t - e->start);
-    shiftEventKeyframes(right, t - e->start);
-    right.fadeIn = 0;
-    right.transition = FxSlot();
-    for (auto& s : right.fx) s.id = p.newId();
+    Event right = splitEventAt(p, *e, t);
     if (groups && right.group) {
         auto it = groups->find(right.group);
         if (it == groups->end()) it = groups->emplace(right.group, p.newId()).first;
         right.group = it->second;
     }
-    e->length = t - e->start;
-    e->fadeOut = 0;
     const uint64_t rid = right.id;
     tr->events.push_back(right);
     tr->sortEvents();

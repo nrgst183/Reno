@@ -2,6 +2,7 @@
 // through a 3 x 3 matrix) and of the float matrix builders that feed them, re-implemented here step for step in floats. The pictures are RGBA floats,
 // rows from the bottom (VEGAS's memory order), premultiplied; W x H pixels. Plain C++17 with no Reno types, so the test programs can include it alone.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -28,7 +29,7 @@ inline AspectPairs aspectPairs(float par)
 // make two rows: m0 = (sax sbx c, -(say sbx s), ty m01 + tx m00 + ox), m1 = ((c K + s)(sby sax), (c - s K)(sby say), ty m11 + tx m10 + oy).
 inline void rowsFrom(float a, const AspectPairs& p, float sbx, float sby, float K, float tx, float ty, float ox, float oy, float* m)
 {
-    const float c = std::cos(a), s = std::sin(a);
+    const float c = reno::rm::cos(a), s = reno::rm::sin(a);
     m[0] = p.sax * sbx * c;
     m[1] = -(p.say * sbx * s);
     m[2] = ty * m[1] + tx * m[0] + ox;

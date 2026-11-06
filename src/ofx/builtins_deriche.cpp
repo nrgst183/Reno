@@ -1,6 +1,7 @@
 // VEGAS's Gaussian blur (see builtins_deriche.h), worked out from VEGAS's Vfx1 plug-ins: a 4th-order recursive filter after Deriche (the constants 1.680, 3.735, 1.783, 1.723,
 // 0.6318, 1.997, -0.6803, -0.2598 of his 1993 report, as single-precision numbers); its causal and anti-causal halves run along each line at once, the picture's edge values taken
 // to continue forever; values below 1e-17 count as 0. Every step is in doubles in VEGAS's order, so 8-bit results match to the level.
+#include "../core/rmath.h"
 #include "builtins_deriche.h"
 #include "builtins_vec.h"
 #include "builtins_more_internal.h"
@@ -22,17 +23,17 @@ DericheCoefs vegasDericheCoefs(double sigma)
     const double B0 = (double)-1.783f / s, C0 = (double)-0.6803f / r, A0 = (double)1.6803f / r, W1 = (double)1.997f / s;
     const double B1 = (double)-1.723f / s, A1 = (double)3.735f / r, C1 = (double)-0.2598f / r, W0 = (double)0.6318f / s;
     const double n0 = C0 + A0;
-    const double sW1 = std::sin(W1), cW1 = std::cos(W1), eB1 = std::exp(B1);
-    const double sW0 = std::sin(W0), cW0 = std::cos(W0), eB0 = std::exp(B0);
+    const double sW1 = rm::sin(W1), cW1 = rm::cos(W1), eB1 = rm::exp(B1);
+    const double sW0 = rm::sin(W0), cW0 = rm::cos(W0), eB0 = rm::exp(B0);
     const double n1 = (A1 * sW0 - (C0 + C0 + A0) * cW0) * eB0 + (C1 * sW1 - (A0 + A0 + C0) * cW1) * eB1;
-    const double e01 = std::exp(B1 + B0), e00 = std::exp(B0 + B0), e11 = std::exp(B1 + B1);
+    const double e01 = rm::exp(B1 + B0), e00 = rm::exp(B0 + B0), e11 = rm::exp(B1 + B1);
     const double n2 = ((cW1 * n0 * cW0 - A1 * cW1 * sW0) - C1 * cW0 * sW1) * (e01 + e01) + e00 * C0 + e11 * A0;
-    const double e001 = std::exp(B0 + B0 + B1), e011 = std::exp(B1 + B1 + B0);
+    const double e001 = rm::exp(B0 + B0 + B1), e011 = rm::exp(B1 + B1 + B0);
     const double n3 = (A1 * sW0 - A0 * cW0) * e011 + (C1 * sW1 - C0 * cW1) * e001;
     const double d1 = -2.0 * eB1 * cW1 - 2.0 * eB0 * cW0;
     const double d2 = 4.0 * cW1 * cW0 * e01 + e11 + e00;
     const double d3 = -2.0 * cW0 * e011 - 2.0 * cW1 * e001;
-    const double d4 = std::exp((B1 + B1) + (B0 + B0));
+    const double d4 = rm::exp((B1 + B1) + (B0 + B0));
     DericheCoefs c;
     const double n[5] = {n0, n1, n2, n3, 0.0}, d[5] = {0.0, d1, d2, d3, d4};
     for (int k = 0; k < 5; ++k) { c.n[k] = n[k]; c.d[k] = d[k]; }
@@ -49,7 +50,7 @@ DericheCoefs vegasDericheCoefs(double sigma)
 double vegasBlurSigma(double s)
 {
     const double t = std::fabs(s) + 1.5;
-    return std::sqrt(t * t / (-2.0 * std::log(1.0 / 255.0)));
+    return std::sqrt(t * t / (-2.0 * rm::log(1.0 / 255.0)));
 }
 
 namespace {
@@ -402,18 +403,18 @@ bool vegasLinearBlurParams(int W, int H, double angleDeg, double amount, LinearB
     double x6 = 360.0 - a;
     if (x6 >= 180.0) x6 -= 180.0;
     double th = x6 * pi / 180.0;
-    const double cth = std::cos(th);
+    const double cth = rm::cos(th);
     if (std::fabs(cth) > 1e-6) {
-        th = std::atan2(std::sin(th), cth);
+        th = rm::atan2(rm::sin(th), cth);
         if (th < 0.0) th += 2.0 * pi;
     }
     const double L = (double)std::max(W, H) * amount;
     int branch, shear;
     double sx, sy;
-    if (th < pi / 4) { branch = 1; shear = (int)(std::tan(th) * W * 16384.0); sx = std::cos(x7) * L; sy = 0; }
-    else if (th < pi / 2) { branch = 2; shear = (int)(std::tan(pi / 2 - th) * H * 16384.0); sx = 0; sy = std::cos(pi / 2 - x7) * L; }
-    else if (th < 3 * pi / 4) { branch = 3; shear = (int)(std::tan(th - pi / 2) * H * 16384.0); sx = 0; sy = std::cos(x7 - pi / 2) * L; }
-    else { branch = 4; shear = (int)(std::tan(pi - th) * W * 16384.0); sx = std::cos(pi - x7) * L; sy = 0; }
+    if (th < pi / 4) { branch = 1; shear = (int)(rm::tan(th) * W * 16384.0); sx = rm::cos(x7) * L; sy = 0; }
+    else if (th < pi / 2) { branch = 2; shear = (int)(rm::tan(pi / 2 - th) * H * 16384.0); sx = 0; sy = rm::cos(pi / 2 - x7) * L; }
+    else if (th < 3 * pi / 4) { branch = 3; shear = (int)(rm::tan(th - pi / 2) * H * 16384.0); sx = 0; sy = rm::cos(x7 - pi / 2) * L; }
+    else { branch = 4; shear = (int)(rm::tan(pi - th) * W * 16384.0); sx = rm::cos(pi - x7) * L; sy = 0; }
     r.branch = branch;
     r.shear = std::max(0, shear);
     r.sx = sx;

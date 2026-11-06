@@ -5,6 +5,7 @@
 // chain and is not done. Blend is how much of the unmasked picture shows through the masks' outside.
 //
 // The shapes are drawn and edited on the preview (builtins_mask_overlay.cpp) while Edit Mode is on for a mask.
+#include "../core/rmath.h"
 #include "builtins_mask_internal.h"
 #include "builtins_deriche.h"
 #include <algorithm>
@@ -280,7 +281,7 @@ void bezierTotal(Ctx& c, int W, int H, std::vector<float>& total, bool& any)
         const double feather = clampd(c.d(maskParam("Feather", i).c_str()), 0, 50);
         if (feather > 0 && !empty) {
             soft = cover;
-            const double sigma = feather * 0.01 * H / std::sqrt(-2.0 * std::log(1.0 / 255.0));
+            const double sigma = feather * 0.01 * H / std::sqrt(-2.0 * rm::log(1.0 / 255.0));
             Buf tb;
             tb.resize(W, H);
             for (size_t k = 0; k < N; ++k) tb.px[k * 4] = soft[k];

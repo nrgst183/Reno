@@ -588,12 +588,14 @@ int main(int argc, char** argv)
             check(off > 0 && near(on / off, a->normalizeGain, 0.05), "the mix plays a normalized event louder by its normalizing gain", strfmt("%.4f / %.4f", on, off));
         }
         check(trigger("Edit/Switches/Normalize") && !app.project().findEvent(aud)->normalize, "Normalize again turns it off");
-        // Reduce Interlace Flicker changes the picture (a light vertical blur)
+        // Reduce Interlace Flicker changes the picture (a light vertical blur) of an interlaced project; VEGAS leaves a
+        // progressive one alone (coverage snapshots)
         {
             MediaPool pool;
             pool.setOpener(app.mediaOpener);
             VideoEngine ve(pool, app.fx);
             Project p = app.project();
+            p.settings.fieldOrder = "upper";
             p.findEvent(vid)->keepAspect = true;
             FrameOptions fo;
             ImagePtr withBlur = ve.render(p, 0.5, fo);

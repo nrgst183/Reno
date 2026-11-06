@@ -8,6 +8,7 @@
 // pairs of them. Monochromatic repeats the first value in all three channels. The noise is added to the picture's colour with the alpha taken out, and put back in again.
 // The seed is rand() of the C library when Animate is on (a number from 0 to 32767 that nobody can reproduce) and 0 when it is off.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -106,10 +107,10 @@ inline int store12(float v)
 
 inline float box(float a, float b, float& cosPart)
 {
-    const float r = std::sqrt(-2.f * std::log(a));
+    const float r = std::sqrt(-2.f * rm::logf(a));
     const float ang = 2.f * 3.1415926535897932384f * b;
-    cosPart = r * std::cos(ang);
-    return r * std::sin(ang);
+    cosPart = r * rm::cosf(ang);
+    return r * rm::sinf(ang);
 }
 
 // The state each column's work item starts from, 25 floats per column (24 numbers, the carry), as the kernel reads it. The host fills W columns' states in planes with stride W; the kernel

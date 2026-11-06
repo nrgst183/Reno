@@ -203,7 +203,7 @@ void Writer::envelopes(OutNode& list, const Envelopes& envs, const std::vector<V
                 std::string pt;
                 addU64(pt, (uint64_t)toTicks(p.time));
                 addF32(pt, (float)(plugin ? p.value * 100.0 : p.value));
-                addU32(pt, (uint32_t)curveToVegas(e.kind == "mute" ? CurveHold : p.curve));
+                addU32(pt, (uint32_t)curveToVegas(p.curve));     // a mute envelope plays held whatever the curve; VEGAS keeps the one the point was given
                 pt.resize(st, '\0');
                 pd += pt;
             }
@@ -245,6 +245,14 @@ std::string Writer::ofxRecord(const FxSlot& s, const std::string& where)
         }
         o = nullptr;
     }
+    // a record of another kind (an older transition) that Reno cannot rewrite: kept as it was; another plug-in in its place is new
+    if (o && !o->mediaFx && !isOfxRecordAt(o->chunk->data, o->entryOff)) {
+        if (s.pluginId == o->asRead.pluginId) {
+            if (!sameFxState(s, o->asRead)) warn(where + ": the settings of VEGAS's older effect '" + s.pluginId + "' were not saved (Reno cannot write that kind).");
+            return bytesOf(o->chunk->data.sub(o->entryOff, o->entryLen));
+        }
+        o = nullptr;
+    }
     OfxWriteInput in;
     in.rawId = "{Svfx:" + s.pluginId + "}";
     in.state = s.state;
@@ -265,14 +273,14 @@ std::string Writer::ofxRecord(const FxSlot& s, const std::string& where)
         const Chunk* t = sameFile([](const Chunk& c) { return !c.isList && c.id == G::Fx && isOfxRecordAt(c.data, 0); });
         if (!t) t = tpl("fx");
         if (t) in.headerTemplate = t->data;
-        in.preset = "(Default)";
+        in.preset = s.preset.empty() ? "(Default)" : s.preset;
         in.flags = 0x400 | (s.bypass ? 1u : 0u) | (s.beforePanCrop ? 0x80u : 0u);
         // parameter layout: from the record it was copied from (another project's), or another record of the same
         // effect in this one
         const auto* fo = vegOriginAs<VegFxOrigin>(s.veg, VegOrigin::FxK);
         if (fo && fo->asRead.pluginId == s.pluginId && isOfxRecordAt(fo->chunk->data, fo->entryOff)) {
             in.layout = fo->chunk->data.sub(fo->entryOff, fo->entryLen);
-            in.preset = in.layout.text(in.layout.u32(0) + in.layout.u32(0x28), in.layout.u32(0x2c));
+            if (s.preset.empty()) in.preset = in.layout.text(in.layout.u32(0) + in.layout.u32(0x28), in.layout.u32(0x2c));
         } else {
             const std::string rawId = "{Svfx:" + s.pluginId + "}";
             const Chunk* same = sameFile([&](const Chunk& c) {
@@ -324,6 +332,12 @@ static std::string audioClsid(const FxSlot& s, const Chunk* root, const VegProje
     if (s.audio.format == "VST2") {
         const uint32_t id = (uint32_t)std::strtoul(s.audio.uid.c_str(), nullptr, 10);
         uint8_t want[4] = {(uint8_t)id, (uint8_t)(id >> 8), (uint8_t)(id >> 16), (uint8_t)(id >> 24)};
+        // the name VEGAS gave it in the project (or .reno) it came from, if it is the same plug-in
+        if (s.audio.vegasClsid.size() == 32) {
+            std::string raw;
+            for (size_t i = 0; i < 32; i += 2) raw += (char)std::strtoul(s.audio.vegasClsid.substr(i, 2).c_str(), nullptr, 16);
+            if (std::memcmp(raw.data(), want, 4) == 0) return raw;
+        }
         // a plug-in this project already has
         if (po && root) {
             static const uint8_t cg[16] = {0x01, 0x86, 0x12, 0xb4, 0x2e, 0x70, 0xd1, 0x11, 0x82, 0x53, 0x00, 0x00, 0x92, 0x90, 0xdd, 0x44};
@@ -393,10 +407,7 @@ bool Writer::audioChain(const FxChain& chain, const Bytes* original, const char*
             ++n;
             continue;
         }
-        if (s.audio.format == "VST3") {
-            warnCount("%d VST3 audio effect(s) were not saved: no VEGAS project shows how VEGAS keeps a VST3 plug-in.");
-            continue;
-        }
+        if (s.audio.format == "VST3") continue;     // not in the .veg at all (VEGAS has no VST3): vegvst3side.h, said by the caller
         if (s.audio.format == "BUILTIN") {
             // Reno's stand-ins for VEGAS's DirectX effects: VEGAS has no such plug-in
             warnCount("%d of Reno's built-in audio effects (Pitch Shift, Chorus...) were not saved: VEGAS has no such plug-ins - use VEGAS's own of the same name there.");
@@ -443,10 +454,22 @@ bool Writer::audioChain(const FxChain& chain, const Bytes* original, const char*
             in.vst = true;
             const uint32_t id = (uint32_t)std::strtoul(s.audio.uid.c_str(), nullptr, 10);
             std::string prog;
+            std::string defaults;
+            if (st.empty() && !origData.size()) {
+                // no saved settings (a .reno from the VEGAS export script holds none): the plug-in's own defaults, if Reno can
+                // make it - a reproduced eFX effect always, another one when it is installed
+                std::string err;
+                std::unique_ptr<AudioPlugin> pl;
+                if (efxReproducedId(s.audio.uid)) pl = efxCreate(s.audio, &err);
+                else if (!s.audio.path.empty()) pl = createAudioPlugin(s.audio, &err);
+                if (pl) defaults = pl->saveState();
+            }
             if (!st.empty() && vstProgram(st, id, origData, prog)) in.data = prog;
+            else if (!defaults.empty() && vstProgram(defaults, id, origData, prog)) in.data = prog;
             else if (origData.size()) in.data = bytesOf(origData);
             else {
-                warn(where + ": VST effect '" + in.name + "' has no saved settings in Reno; it was not saved (VEGAS needs its program).");
+                warn(where + ": VST effect '" + in.name + "' has no saved settings in Reno and is not installed here to ask for its defaults; it was not saved "
+                     "(VEGAS needs the plug-in's program in the file).");
                 continue;
             }
         } else {

@@ -1,4 +1,5 @@
 #include "vegformat.h"
+#include "vegfxlayouts.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -202,6 +203,7 @@ const char* const TimelineData = "ca8caf32-cb40-4c9c-992c-659cb76624ba";
 const char* const WindowState = "c5ea942e-91f9-4ad0-accc-72c090e71969";
 const char* const EmptyListA = "1f0900b5-dc84-4743-81cb-087744404598";
 const char* const EmptyChunkA = "4c05a4b4-4e50-4e4e-8f5a-0d5f28eb9ede";
+const char* const VideoOutFx = "6697a914-7b18-11d2-8713-00c04f8edb8a";
 const char* const OfxEffect = "a2fc1a41-01f6-460e-ae5a-2be4af57b92e";
 const char* const AudioChain = "b4128601-702e-11d1-8253-00009290dd44";
 }  // namespace G
@@ -222,20 +224,24 @@ std::vector<const Chunk*> Chunk::children(const char* g) const
     return v;
 }
 
+// The header word at 0x08 is VEGAS's own numbering of the ruler formats, not the scripting API's RulerFormat. Found by
+// saving one project per format (Coverage run 20261105).
+static const struct { uint32_t word; const char* id; } kRulerWords[] = {
+    {0, "samples"}, {1, "time"}, {2, "seconds"}, {3, "timecode"}, {4, "frames"}, {5, "measures"}, {6, "smpteNonDrop"},
+    {7, "smpte30"}, {8, "smpteDrop"}, {9, "smpteEBU"}, {10, "smpte24"}, {15, "feet16"}, {16, "feet35"}, {17, "cdtime"},
+    {18, "smpteIVTC"}, {11, "nanoseconds"}, {12, "microseconds"}};
+
 std::string rulerFormatOfHeaderWord(uint32_t word)
 {
-    switch (word) {
-    case 1: return "time";
-    case 7: return "smpte30";
-    default: return "timecode";   // 3, and the numbers no sample explains
-    }
+    for (const auto& e : kRulerWords)
+        if (e.word == word) return e.id;
+    return "timecode";   // the numbers no sample explains
 }
 
 int headerWordOfRulerFormat(const std::string& id)
 {
-    if (id == "time") return 1;
-    if (id == "timecode") return 3;
-    if (id == "smpte30") return 7;
+    for (const auto& e : kRulerWords)
+        if (id == e.id) return (int)e.word;
     return -1;
 }
 
@@ -705,6 +711,7 @@ static void riff32(const Bytes& b, size_t off, size_t end, int depth, PanCropRec
                 k.rot = b.f64(body + 52);
                 k.rcx = b.f64(body + 60);
                 k.rcy = b.f64(body + 68);
+                k.smooth = b.f64(body + 76);
                 if (out.keys.size() < 100000) out.keys.push_back(k);
             }
         }
@@ -747,6 +754,33 @@ bool readEnvelope(const Bytes& b, EnvelopeRecord& out)
         out.points.push_back(p);
     }
     return true;
+}
+
+bool readBusEnvelopes(const Bytes& b, std::vector<EnvelopeRecord>& out)
+{
+    out.clear();
+    for (size_t o = 4; o + 0x38 <= b.size(); ++o) {
+        if (b.u32(o) != 0x38 || b.u32(o + 0x34) != 0x18) continue;
+        const uint32_t want = b.u32(o - 4);
+        if (want == 0 || want > 64) continue;
+        std::vector<EnvelopeRecord> got;
+        size_t at = o;
+        bool ok = true;
+        for (uint32_t i = 0; i < want && ok; ++i) {
+            if (!b.has(at, 0x38) || b.u32(at) != 0x38 || b.u32(at + 0x34) != 0x18) { ok = false; break; }
+            const uint32_t count = b.u32(at + 0x18);
+            const size_t len = 0x38 + (size_t)count * 0x18;
+            EnvelopeRecord r;
+            if (count > 100000 || !b.has(at, len) || !readEnvelope(b.sub(at, len), r)) { ok = false; break; }
+            got.push_back(r);
+            at += len;
+        }
+        if (ok) {
+            out = got;
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string envelopeName(uint32_t type)
@@ -814,6 +848,8 @@ bool readTrackMotion(const Bytes& b, TrackMotionRecord& out)
     const uint32_t parts = b.u32(0x1c);
     if (parts > 16) return false;
     out.parts = (int)parts;
+    out.flags = b.u32(0x04);
+    out.aspect = aspect;
     size_t at = hs;
     bool untouched = parts == 3 && std::isfinite(aspect);
     for (uint32_t i = 0; i < parts; ++i) {
@@ -826,6 +862,35 @@ bool readTrackMotion(const Bytes& b, TrackMotionRecord& out)
             const uint32_t size = b.u32(at);
             if (size < 12 || !b.has(at, size)) return false;
             const Bytes key = b.sub(at + 4, size - 4);
+            if (i < 3 && size >= 0xd4) {
+                TrackMotionKey q;
+                q.type = (int)b.u32(at + 4);
+                q.time = (double)b.i64(at + 8) / 1e7;
+                q.posX = b.f64(at + 0x30);
+                q.posY = b.f64(at + 0x38);
+                q.sclX = b.f64(at + 0x50);
+                q.sclY = b.f64(at + 0x58);
+                if (i == 0 && size >= 0xdc) {
+                    q.orgX = b.f64(at + 0x10);
+                    q.orgY = b.f64(at + 0x18);
+                    q.orgZ = b.f64(at + 0x20);
+                    q.posZ = b.f64(at + 0x40);
+                    q.depth = b.f64(at + 0x60);
+                    q.rotX = b.f64(at + 0x70);
+                    q.rotY = b.f64(at + 0x78);
+                    q.rotZ = b.f64(at + 0x80);
+                    q.quat[3] = b.f64(at + 0x90);
+                    q.quat[0] = b.f64(at + 0x98);
+                    q.quat[1] = b.f64(at + 0xa0);
+                    q.quat[2] = b.f64(at + 0xa8);
+                    q.smoothness = b.f64(at + 0xb0);
+                } else if (i > 0) {
+                    for (int c = 0; c < 4; ++c) q.colour[c] = b.f32(at + 0xb0 + 4 * (size_t)c);
+                    q.blur = b.f64(at + 0xc0);
+                    q.intensity = b.f64(at + 0xc8);
+                }
+                (i == 0 ? out.motion : i == 1 ? out.shadow : out.glow).push_back(q);
+            }
             if (n != 1) untouched = false;
             else if (i == 0) untouched = untouched && keyIsDefault(key, kMotionDefaults, sizeof kMotionDefaults / sizeof kMotionDefaults[0], 0xd8, aspect);
             else if (i == 1) untouched = untouched && keyIsDefault(key, kShadowDefaults, sizeof kShadowDefaults / sizeof kShadowDefaults[0], 0xd4, aspect);
@@ -1276,6 +1341,13 @@ std::string numberValue(const Json& e, size_t dims, bool whole, const Bytes* ori
 
 }  // namespace
 
+// "{Svfx:com.x:y}" -> "com.x:y"
+static std::string effectIdOf(const std::string& raw)
+{
+    if (raw.compare(0, 6, "{Svfx:") == 0 && raw.size() > 7 && raw.back() == '}') return raw.substr(6, raw.size() - 7);
+    return raw;
+}
+
 OfxWriteResult writeOfxRecord(const OfxWriteInput& in)
 {
     OfxWriteResult res;
@@ -1376,6 +1448,20 @@ OfxWriteResult writeOfxRecord(const OfxWriteInput& in)
         } else if (e.has("v") && lay != layouts.end() && lay->second.kind != ValKind::Text && lay->second.kind != ValKind::None) {
             const bool whole = lay->second.kind == ValKind::Int;
             addParam(nb, numberValue(e, lay->second.vsize / (whole ? 4 : 8), whole, nullptr, nullptr));
+        } else if (e.has("v") && e.get("v").size() >= 1 && e.get("v").size() <= 4) {
+            // not marked as whole numbers, and no record of the effect here: VEGAS's own records of this effect say how it
+            // keeps the setting; or the values are not whole numbers, so VEGAS keeps it as doubles
+            int whole = knownFxSettingIsWhole(effectIdOf(in.rawId), m.first);
+            if (whole < 0) {
+                bool fractional = false;
+                for (size_t i = 0; i < e.get("v").size(); ++i) fractional = fractional || e.get("v").at(i).asDouble() != std::floor(e.get("v").at(i).asDouble());
+                for (size_t k = 0; k < e.get("k").size(); ++k)
+                    for (size_t i = 1; i < e.get("k").at(k).size(); ++i)
+                        fractional = fractional || e.get("k").at(k).at(i).asDouble() != std::floor(e.get("k").at(k).at(i).asDouble());
+                if (fractional) whole = 0;
+            }
+            if (whole >= 0) addParam(nb, numberValue(e, e.get("v").size(), whole == 1, nullptr, nullptr));
+            else res.dropped.push_back(m.first);
         } else {
             // whole-number-ness is not in the state: left out rather than written in a layout VEGAS would misread
             res.dropped.push_back(m.first);

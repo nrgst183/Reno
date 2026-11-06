@@ -182,7 +182,8 @@ bool planStarburst(Ctx& c, Plan& p)
     uint32_t lN = 0;
     while ((1u << lN) < N) ++lN;
     const size_t planeWords = (size_t)N * N * 4;
-    const size_t limit = std::min<size_t>(16u * 1024 * 1024, std::max<size_t>(1, storageRange() / 4));
+    // one buffer holds both planes (134 MB at 720p/1080p, 537 MB at 4K): as large as the device's storage buffers allow, at most 1 GB
+    const size_t limit = std::min<size_t>((size_t)256 * 1024 * 1024, std::max<size_t>(1, storageRange() / 4));
     if (2 * planeWords > limit) return false;
     // the picture's bytes, softened and blurred
     int img = p.addBuf(p.w, p.h, 4);

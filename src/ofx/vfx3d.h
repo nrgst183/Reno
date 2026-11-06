@@ -19,6 +19,7 @@
 // low half) are kept as they are. VEGAS does not stop a strip that starts left of the picture at the edge, it writes the columns before it (the one before the first lands on
 // the last pixel of the row above); so does this, except that nothing is ever written outside the surface.
 #pragma once
+#include "../core/rmath.h"
 #include <cmath>
 #include <cstdint>
 #include <climits>
@@ -743,14 +744,14 @@ inline void blendPixel(uint8_t* dp, i32* sum, int cov, float x, float y, float s
                         Rv[2] = -(((nrm[2] + nrm[2]) * dd) - Lv[2]);
                         diff = -dd;
                         const double q = (double)dot3f(V, Rv);
-                        spec = (q <= -0.001) ? (float)std::pow(q, 8.0) : 0.0f;
+                        spec = (q <= -0.001) ? (float)rm::pow(q, 8.0) : 0.0f;
                     } else {
                         Rv[0] = ((nrm[0] + nrm[0]) * dd) - Lv[0];
                         Rv[1] = ((nrm[1] + nrm[1]) * dd) - Lv[1];
                         Rv[2] = ((nrm[2] + nrm[2]) * dd) - Lv[2];
                         diff = dd;
                         const double q = (double)dot3f(V, Rv);
-                        spec = (0.001 <= q) ? (float)std::pow(q, 8.0) : 0.0f;
+                        spec = (0.001 <= q) ? (float)rm::pow(q, 8.0) : 0.0f;
                     }
                     float den = dist * 0.0f;
                     den = den + 0.0f;

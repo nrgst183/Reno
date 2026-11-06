@@ -8,6 +8,7 @@
 //     its alpha; Blend is how much of that is taken;
 //   - the rays' lengths come from the C runtime's rand() as the plug-in finds it after its first 64 calls.
 // The frame is taken as 8 bits and the sums done in single precision in VEGAS's order, so the result is bit-exact.
+#include "../core/rmath.h"
 #include "builtins_more_internal.h"
 #include "vfxflare.h"
 #include <cmath>
@@ -191,7 +192,7 @@ bool shape(int type, float u, float v, float d, float I, const float* col, const
     }
     default: {
         if (!(d < 1.f)) return false;
-        const float ang = (float)std::atan2((double)v, (double)u);      // (the double function rounded to a float: the same on every C library, and what the GPU kernel works out)
+        const float ang = (float)rm::atan2((double)v, (double)u);      // (the double function rounded to a float: the same on every C library, and what the GPU kernel works out)
         double a = (double)(float)((double)ang + 3.141592653589793);
         a = a / 6.283185307179586 * 3.0;
         a = a * 60.0;
@@ -202,7 +203,7 @@ bool shape(int type, float u, float v, float d, float I, const float* col, const
         if (0.f >= d) q = 0.f;
         else if (d < w) q = d / w;
         else q = 1.f;
-        s = (float)std::pow(1.0 - (double)q, 3.0);
+        s = (float)rm::pow(1.0 - (double)q, 3.0);
         if ((double)d < 0.3) s = (d / 0.3f) * (s - 1.f) + 1.f;
         break;
     }
@@ -284,7 +285,7 @@ void lensFlare(Ctx& c)
     }
 
     const float lcb[3] = {(float)lc.b, (float)lc.g, (float)lc.r};
-    const float sinP = (float)std::sin((double)(-persp) * 1.5707963267948966);
+    const float sinP = (float)rm::sin((double)(-persp) * 1.5707963267948966);
     const float Wf = (float)W, Hf = (float)H, mn = (float)std::min(W, H);
     const float one = 1.f;
     const float om = one - tint;
@@ -294,7 +295,7 @@ void lensFlare(Ctx& c)
         const float Y = Hf * yoff * 0.5f + Hf * 0.5f;
         const float cx = Wf * xoff * 0.5f + Wf * 0.5f;
         const float e = (fl.place - one) * sinP;
-        const float s = (float)std::pow(2.0, (double)e);
+        const float s = (float)rm::pow(2.0, (double)e);
         const float r = s * size * fl.size * mn;
         if (!(r > 0.f) || r > 1.0e5f || !std::isfinite(Y) || !std::isfinite(cx) || std::fabs(Y) > 1.0e6f || std::fabs(cx) > 1.0e6f) continue;
         const int a = (int)(Y - r), b = (int)(r + Y);
@@ -386,7 +387,7 @@ int lensFlareGpu(Ctx& c, int W, int H, std::vector<float>& tab, int& nflares, fl
         tab[82 + (size_t)i] = hex.ny[i];
     }
     const float lcb[3] = {(float)lc.b, (float)lc.g, (float)lc.r};
-    const float sinP = (float)std::sin((double)(-persp) * 1.5707963267948966);
+    const float sinP = (float)rm::sin((double)(-persp) * 1.5707963267948966);
     const float Wf = (float)W, Hf = (float)H, mn = (float)std::min(W, H);
     const float one = 1.f;
     const float om = one - tint;
@@ -396,7 +397,7 @@ int lensFlareGpu(Ctx& c, int W, int H, std::vector<float>& tab, int& nflares, fl
         const float Y = Hf * yoff * 0.5f + Hf * 0.5f;
         const float cx = Wf * xoff * 0.5f + Wf * 0.5f;
         const float e = (fl.place - one) * sinP;
-        const float sc = (float)std::pow(2.0, (double)e);
+        const float sc = (float)rm::pow(2.0, (double)e);
         const float r = sc * size * fl.size * mn;
         if (!(r > 0.f) || r > 1.0e5f || !std::isfinite(Y) || !std::isfinite(cx) || std::fabs(Y) > 1.0e6f || std::fabs(cx) > 1.0e6f) continue;
         const int a = (int)(Y - r), b = (int)(r + Y);

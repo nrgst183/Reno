@@ -12,6 +12,7 @@
 //   final    the overlay over the frame x Opacity; then the drop shadow under it / the inner shadow over it; or the overlay x Opacity when no shadow.
 // The blur is the recursive Gaussian of vfxgauss.h on the alpha plane, in global float buffers with every multiply-add fused (vfxcookie.h's feather()).
 #pragma once
+#include "../core/rmath.h"
 #include "vfxcookie.h"
 #include "vfxgauss.h"
 #include <algorithm>
@@ -262,7 +263,7 @@ inline float phongValue(const LightArgs& a, const float* n)
     r[0] = n[0] * two - a.L[0]; r[1] = n[1] * two - a.L[1]; r[2] = n[2] * two - a.L[2];
     float v103 = r[2];
     v103 = std::fmax(v103, 0.01f);
-    v103 = std::pow(v103, a.v90);
+    v103 = rm::pow(v103, a.v90);
     const float x = a.v88 * v101, y = a.v89 * v103;
     float v = a.v87 * (x + y);
     v += a.v86;
@@ -329,7 +330,7 @@ inline void blurSigmas(int W, int H, float amount, float pairX, float pairY, flo
     float s = maxdim * amount;
     s *= 0.125f;
     const float fx = pairX * s + 1.5f, fy = pairY * s + 1.5f;
-    const float l = std::log(0.003921568859368563f);
+    const float l = rm::log(0.003921568859368563f);
     const float l2 = l + l;
     sigx = std::sqrt(-((fx * fx) / l2));
     sigy = std::sqrt(-((fy * fy) / l2));

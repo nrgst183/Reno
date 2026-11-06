@@ -1434,6 +1434,7 @@ struct TimelineWidget::Impl {
 
     static double wrapOffset(const Mover& m, double offset);
     static void trimLeftBy(Event& e, const Mover& m, double d);
+    static void trimRightBy(Event& e, const Mover& m, double d);
 
     static void clampFades(Event& e)
     {

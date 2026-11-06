@@ -597,15 +597,15 @@ int main(int argc, char** argv)
     r += "None of your projects has the things below, and VEGAS's own files do not show their records plainly, so Reno keeps them\n";
     r += "when it reads a project but cannot make them. One small project with all of them would settle it. In VEGAS Pro 18:\n\n";
     r += "  1. File > New. Import any video (with sound) and put it on the timeline twice, on two video tracks (and their sound).\n";
-    r += "  2. VST3: add a VST3 audio effect to the first sound event (Event FX) and another VST3 effect to the second audio track\n";
-    r += "     (Track FX). Change one setting of each from its default and write down which setting and value.\n";
+    r += "  2. VST: add a VST (not VST3: VEGAS Pro 18 has no VST3 support) audio effect to the first sound event (Event FX) and another\n";
+    r += "     VST effect to the second audio track (Track FX). Change one setting of each from its default and write down which setting\n     and value.\n";
     r += "  3. Compositing: click the lower video track's \"Make Compositing Child\" button (the arrow in its header), then on the\n";
     r += "     upper (parent) track set Parent Composite Mode to Multiply and move its Parent Motion a little (to the right).\n";
     r += "  4. Track group: select both audio tracks, right-click a track header > Group > Group Selected Tracks.\n";
     r += "  5. Markers: Insert > Command (any command, e.g. URL with https://example.com), Insert > Audio CD Track Region\n";
     r += "     around a few seconds, and Insert > Audio CD Track Index inside it.\n";
     r += "  6. If the Compositing Mode menu of a video track offers Custom..., pick a compositor in it (any).\n";
-    r += "  7. Save it as \"reno samples 1.veg\". Then change only the VST3 setting of step 2 on the event to another value and\n";
+    r += "  7. Save it as \"reno samples 1.veg\". Then change only the VST setting of step 2 on the event to another value and\n";
     r += "     Save As \"reno samples 2.veg\".\n\n";
     r += "Send both .veg files and the notes from step 2.\n";
     writeFile(out + "/README.txt", r);

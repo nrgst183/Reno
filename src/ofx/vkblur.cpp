@@ -1,4 +1,5 @@
 // Vulkan plans of the blur and light effects that follow VEGAS's OpenCL kernels; see vkblur.h.
+#include "../core/rmath.h"
 #include "vkfft.h"
 #include "vkblur.h"
 #include "vkfx2.h"
@@ -69,15 +70,15 @@ static void polarTables(int W, int H, float v56x, float v56y, std::vector<float>
     sc.resize((size_t)W * 2);
     for (int x = 0; x < W; ++x) {
         const float xn = (float)x / (float)W, a = (xn / 0.5f - 1.f) * pi;
-        sc[(size_t)x * 2] = std::sin(a);
-        sc[(size_t)x * 2 + 1] = std::cos(a);
+        sc[(size_t)x * 2] = rm::sin(a);
+        sc[(size_t)x * 2 + 1] = rm::cos(a);
     }
     at.resize((size_t)W * H);
     for (int gy = 0; gy < H; ++gy) {
         const float yn = (float)(H - 1 - gy) / (float)H, vy = (yn / 0.5f - 1.f) - v56y;
         for (int x = 0; x < W; ++x) {
             const float xn = (float)x / (float)W, vx = (xn / 0.5f - 1.f) - v56x;
-            at[(size_t)gy * W + x] = std::atan2(vx, vy);
+            at[(size_t)gy * W + x] = rm::atan2(vx, vy);
         }
     }
 }

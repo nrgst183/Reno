@@ -2,6 +2,7 @@
 // All in 32-bit floats in the kernel's order. The kernel's rows run bottom first, so y is counted from the bottom of the frame.
 #pragma once
 #include <cmath>
+#include "../core/rmath.h"
 
 namespace reno {
 namespace ofx {
@@ -23,13 +24,13 @@ inline void sourcePos(const Params& p, int x, int y, float& sx, float& sy)
     // which with Z = 0 puts every pixel on the middle column)
     const float v29 = std::fma(p.latitude * pi, 1.0f / 180, -(pi / 2));
     const float v30 = p.longitude * pi * (1.0f / 180);
-    const float cos29 = v29 == -(pi / 2) ? 0.f : std::cos(v29);
+    const float cos29 = v29 == -(pi / 2) ? 0.f : rm::cosf(v29);
     const int v31 = x - p.w / 2;
     const int v32 = y - p.h / 2;
     const float v33 = std::sqrt((float)(v31 * v31 + v32 * v32));
-    const float v34 = 2 * std::atan(v33 / (2 * v28));
-    const float v35 = pi / 2 + std::asin(std::cos(v34) * std::sin(v29) + (float)v32 * std::sin(v34) * cos29 / v33);
-    float v36 = v30 + std::atan2((float)v31 * std::sin(v34), v33 * cos29 * std::cos(v34) - (float)v32 * std::sin(v29) * std::sin(v34));
+    const float v34 = 2 * rm::atanf(v33 / (2 * v28));
+    const float v35 = pi / 2 + rm::asinf(rm::cosf(v34) * rm::sinf(v29) + (float)v32 * rm::sinf(v34) * cos29 / v33);
+    float v36 = v30 + rm::atan2f((float)v31 * rm::sinf(v34), v33 * cos29 * rm::cosf(v34) - (float)v32 * rm::sinf(v29) * rm::sinf(v34));
     v36 = v36 + pi;
     if (v36 < 0) v36 += 2 * pi;
     else if (v36 > 2 * pi) v36 -= 2 * pi;

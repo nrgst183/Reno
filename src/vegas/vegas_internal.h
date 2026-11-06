@@ -125,12 +125,15 @@ struct MediaRec {
     bool video = false, audio = false;
     double subStart = 0, subLen = 0;
     bool subReversed = false;
+    bool sequence = false;          // an image sequence ("META:\Image Sequence\{first picture} (0)[count][digits]"); path is the first picture
     OfxRecord generator;
     size_t generatorOff = 0;        // where the generator's record starts in the media chunk
     bool generatorOk = false;
     std::string generatorName;      // "VEGAS Titles & Text"
     std::vector<std::pair<OfxRecord, size_t>> mediaFx;    // the media's own video effects (VEGAS's Media FX), and where
+    std::vector<size_t> otherFx;    // where the media's own effects of the older kinds (managed, DirectX-era) start in the media chunk
     int genW = 0, genH = 0;
+    double seqFps = 0;              // an image sequence: its frame rate (a 12-byte record, u32 0xc and an f64, ahead of the stream records)
     uint64_t renoId = 0;
 };
 
@@ -174,8 +177,9 @@ private:
     void readSummary(const Chunk& c);
     void readMixer(const Chunk& c);
     void readMedia(const Chunk& list);
-    uint64_t mediaItemForFile(const std::string& path, const std::string& name);
+    uint64_t mediaItemForFile(const std::string& path, const std::string& name, bool sequence = false);
     void readBuses(const Chunk& list);
+    void readVideoOutFx(const Chunk& list);
     void readTrack(const Chunk& t, int index);
     void readAudioTrackSettings(const Chunk& tc, Track& t, const std::string& label, bool automation, const bool* hasEnvelope);
     void readVideoTrackSettings(const Chunk& tc, Track& t, const std::string& label, bool automation, const bool* hasEnvelope);
@@ -183,6 +187,7 @@ private:
                           std::vector<VegHidden>& hidden, const FxChain* chain = nullptr);
     bool readEvent(const Chunk& ev, Track& track, const std::string& where, Event& out);
     void readEventAudioSettings(const Chunk& ev, Event& e, const std::string& where);
+    void readEventTransition(const Chunk& vd, Event& e, const std::string& where);
     void readEventVideoFx(const Chunk& ev, Event& e, VegEventOrigin& eo, const MediaRec& m, const std::string& where);
     void readEventPanCrop(const Chunk& ev, Event& e, const MediaRec& m, const std::string& where);
     void readGroups(const Chunk& list);
@@ -191,8 +196,10 @@ private:
     FxSlot fxSlotOf(const OfxRecord& r, const std::string& where, const Chunk* chunk, size_t off, bool mediaFx);
     // VEGAS managed effects (CoreGraphics: Rays, Glint): true if Reno has a stand-in for the chunk ('out' is its slot)
     bool managedFxSlotOf(const Chunk& chunk, const std::string& where, FxSlot& out);
+    bool managedFxSlotAt(const Chunk& chunk, size_t off, const std::string& where, FxSlot& out, bool mediaFx);
     bool noteSkippedManagedFx(const Chunk& chunk, const std::string& where);
     void audioChain(const Chunk* chunk, size_t off, const std::string& where, FxChain& into);
+    void nameUnnamedAudioFx();
     void unknown(const std::string& where) { ++unknownChunks_[where]; }
 };
 

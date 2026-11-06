@@ -6,6 +6,7 @@
 // Rows: the kernels' image row 0 is the bottom of the picture; the functions take the row counted from the BOTTOM (yk) like the kernels do, Reno's
 // buffers count from the top (yk = H - 1 - y). All arithmetic is float with no fused multiply-add (mad is a * b + c), as the kernel shim does it.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -347,7 +348,7 @@ inline void noiseRow(const Noise& k, const unsigned char* perm, const float (*gr
     pos[2] = k.z;
     pos[3] = step * k.freq[0];
     for (int layer = 0; layer < L.count; ++layer) {
-        const float scale = std::pow(2.0f, (float)layer);
+        const float scale = rm::pow(2.0f, (float)layer);
         float v48[4] = {pos[0] * scale, pos[1] * scale, pos[2] * scale, pos[3] * scale};
         const float s = v48[3];
         v48[0] += 10000.0f;

@@ -66,3 +66,24 @@ Guesses the comparison settles:
 
 The scripts also assume that track motion positions are pixels from the frame centre with y up, and that VEGAS's scripting
 gives a take's offset as stored in the file (timeline time), not as a position in the media.
+
+
+Checking the editing commands (RenoEdits.cs)
+--------------------------------------------
+RenoEdits.cs checks Split, Trim Start / End, Trim, Delete, Cut / Copy / Paste, Paste Insert, ripple, slip / slide trims,
+AdjustStartLength, rate changes, looping events (loop_* scenarios: split at / before / after a loop point, Loop off, trims, fades)
+and overlap cross-fades against VEGAS. First run: the API scenarios with sound worked; the video ones did not (the test AVI had a
+wrong header size, now fixed; if VEGAS still refuses it the script uses a PNG sequence or generated media, and the log says which)
+and every Vegas.InvokeCommand did nothing (the script now tries the keyboard-map contexts, pumps messages and falls back to the
+scripting API: the op then has "viaApi": true). The log's first lines after "====" say which way worked: look for
+"InvokeCommand works as section=".
+
+  1. Save your work and close VEGAS projects you care about (the script closes the open project WITHOUT saving, once per
+     scenario).
+  2. Tools > Scripting > Run Script... and pick RenoEdits.cs. Pick or make an empty output folder when asked.
+  3. Wait a few minutes (about 30 scenarios; it writes a 20 s WAV and AVI first). A message lists how many scenarios ran.
+  4. Zip the output folder (one folder per scenario: before.veg, after.veg, result.json, plus run.log) and upload it.
+  5. Then do the parts that need hand and eye work: docs/EDIT_CHECKLIST.md (C01-C40).
+
+Back in Reno, tests/ui/editparity_replay.cpp redoes each scenario's operations on its before.veg in Reno and writes the same
+JSON; tools/vegas/editparity_compare.py <VEGAS folder> <Reno folder> lists the differences field by field.

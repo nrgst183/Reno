@@ -1,5 +1,6 @@
 // Fast algorithms behind the slow built-in effects, part 2: box filters along a line at any angle (Linear Blur, Glint, Starburst) and smears towards or away
 // from a centre in polar coordinates (Radial Blur, Light Rays, Rays); see builtins_fast.h.
+#include "../core/rmath.h"
 #include "builtins_fast.h"
 #include "vkfilters.h"
 #include "builtins_vec.h"
@@ -189,7 +190,7 @@ PolarGeom polarGeom(int W, int H, double px0, double py0, double density)
     double far = 0;
     const double xs[2] = {0.0, (double)W}, ys[2] = {0.0, (double)H};
     for (double x : xs)
-        for (double y : ys) far = std::max(far, std::hypot(x - px0, y - py0));
+        for (double y : ys) far = std::max(far, rm::hypot(x - px0, y - py0));
     g.rN = (int)std::ceil(far) + 3;
     double nt = 2 * kPi * g.rN * density;
     const double cap = 12e6 / g.rN;
@@ -201,7 +202,7 @@ PolarGeom polarGeom(int W, int H, double px0, double py0, double density)
     const bool inside = px0 >= 0 && px0 <= W && py0 >= 0 && py0 <= H;
     for (int i = 0; i < g.nT; ++i) {
         const double a = 2 * kPi * i / g.nT;
-        const double c = std::cos(a), s = std::sin(a);
+        const double c = rm::cos(a), s = rm::sin(a);
         g.cs[(size_t)i] = (float)c;
         g.sn[(size_t)i] = (float)s;
         if (inside) {
@@ -307,7 +308,7 @@ void lineBoxBlur(const Buf& in, Buf& out, double ux, double uy, const double* le
     double capped[4];
     for (int i = 0; i < nbox && i < 4; ++i) capped[i] = std::max(0.0, std::min(lens[i], 3.0 * std::max(in.w, in.h)));
     lens = capped;
-    const double n = std::hypot(ux, uy);
+    const double n = rm::hypot(ux, uy);
     if (n < 1e-9) { ux = 1; uy = 0; } else { ux /= n; uy /= n; }
     if (ux < 0) { ux = -ux; uy = -uy; }
     if (std::fabs(uy) > ux) {
@@ -347,7 +348,7 @@ void radialBlurFast(const Buf& src, Buf& out, double px0, double py0, int type, 
     if (type == 2) {
         double s0 = 0, s2 = 0;
         for (int i = -500; i <= 500; ++i) {
-            const double u = i / 500.0, wgt = std::exp(-2 * u * u);
+            const double u = i / 500.0, wgt = rm::exp(-2 * u * u);
             s0 += wgt; s2 += wgt * u * u;
         }
         boxW = std::sqrt(12.0 * (s2 / s0) * fixedH * fixedH / 3.0);

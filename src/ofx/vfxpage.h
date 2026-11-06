@@ -16,6 +16,7 @@
 #include <climits>
 #include <cmath>
 #include <cstdint>
+#include "../core/rmath.h"
 
 namespace reno {
 namespace ofx {
@@ -152,8 +153,8 @@ inline void peelSample(const Geo& g, const PeelSetup& s, const Img& paper, float
             t.v = b;
             t.alpha = 1.0f;
         } else {
-            const float th = std::asin((a1 - s.flatEnd) * s.iR);
-            const float cs = std::cos(th);
+            const float th = rm::asinf((a1 - s.flatEnd) * s.iR);
+            const float cs = rm::cosf(th);
             t.alpha = s.opacity + (s.inv * (kPi - th)) * 0.318309886184f;
             const float u = s.R * th + s.flatEnd;
             const float sc = s.persp * (cs - 1.0f) + 1.0f;
@@ -172,8 +173,8 @@ inline void peelSample(const Geo& g, const PeelSetup& s, const Img& paper, float
             t.alpha = s.opacity;
             sc = s.persp * -2.0f + 1.0f;
         } else {
-            const float th = std::asin((a1 - s.flatEnd) * s.iR);
-            const float cs = std::cos(th);
+            const float th = rm::asinf((a1 - s.flatEnd) * s.iR);
+            const float cs = rm::cosf(th);
             t.light = s.lightBase - std::fabs(th - 0.785398163397f) * s.lightScale;
             t.alpha = s.opacity + (s.inv * th) * 0.318309886184f;
             u = -s.R * th + s.c4c;
@@ -218,8 +219,8 @@ inline void loopSample(const Geo& g, const LoopSetup& s, const Img& paper, float
         t.alpha = s.alphaFlat;
         t.light = 0.f;
         if (1.0f > s.p && a >= s.x0) {
-            const float th = std::asin((a - s.x0) * iRamp);
-            const float gm = 1.0f - (1.0f - std::cos(th)) * s.persp;
+            const float th = rm::asinf((a - s.x0) * iRamp);
+            const float gm = 1.0f - (1.0f - rm::cosf(th)) * s.persp;
             t.u = gm * ((s.x0 + s.circ) + (th * s.ramp - s.shift));
             t.v = gm * b;
             t.alpha = mixf(s.alphaFlat, s.alphaEnd, th * 0.636619772368f);
@@ -230,8 +231,8 @@ inline void loopSample(const Geo& g, const LoopSetup& s, const Img& paper, float
     if (a > s.lo && a < s.hi) {
         const bool neg = a < s.x0;
         const float d = neg ? s.x0 - a : a - s.x0;
-        const float th = std::asin(d * iR);
-        const float cs = std::cos(th);
+        const float th = rm::asinf(d * iR);
+        const float cs = rm::cosf(th);
         const float lightAmount = s.lightScale * (1.0f - std::fabs((th - 0.785398163397f) * 1.273239544735f));
         t.alpha = mixf(s.alphaFlat, s.alphaEnd, th * 0.636619772368f);
         // layer 1: the near half
@@ -288,10 +289,10 @@ inline void rollSample(const Geo& g, const RollSetup& s, const Img& paper, float
             t.v = b;
             t.alpha = 1.0f;
         } else {
-            const float th = std::asin((a1 - s.D) * s.iR);
+            const float th = rm::asinf((a1 - s.D) * s.iR);
             t.alpha = s.inv * ((kPi - th) * 0.3183098862f) + s.opacity;
             const float u = s.R * th + s.D;
-            const float sc = (std::cos(th) - 1.0f) * s.persp + 1.0f;
+            const float sc = (rm::cosf(th) - 1.0f) * s.persp + 1.0f;
             t.u = u * sc;
             t.v = b * sc;
         }
@@ -301,11 +302,11 @@ inline void rollSample(const Geo& g, const RollSetup& s, const Img& paper, float
     if (a1 >= s.D - s.R && a1 < s.D + s.R2) {
         const bool neg = a1 < s.D;
         const float d = neg ? s.D - a1 : a1 - s.D;
-        const float th = std::asin(d * (neg ? s.iR : s.iR2));
+        const float th = rm::asinf(d * (neg ? s.iR : s.iR2));
         const float w = neg ? kPi - th : th + 6.2831853072f;
         const float base = neg ? s.c7c : s.D;
         const float u = s.R * w + base;
-        const float sc = (std::cos(th) - 1.0f) * s.persp + 1.0f;
+        const float sc = (rm::cosf(th) - 1.0f) * s.persp + 1.0f;
         t.light = 0.f;
         t.alpha = s.inv * ((kPi - th) * 0.3183098862f) + s.opacity;
         t.u = u * sc;
@@ -320,13 +321,13 @@ inline void rollSample(const Geo& g, const RollSetup& s, const Img& paper, float
         if (!(a1 >= s.D - Rl && a1 < hi)) continue;
         const bool neg = a1 < s.D;
         const float d = neg ? s.D - a1 : a1 - s.D;
-        const float th = std::asin(d * iRl);
+        const float th = rm::asinf(d * iRl);
         t.lightCol = neg ? black : s.lightCol;
         const float v80 = neg ? (1.5707963268f - th) * 0.5f : std::fabs(th - 0.7853981634f);
         const float v81 = neg ? th : -th;
         t.light = s.lightScale * -v80 + s.lightBase;
         const float u = layer == 2 ? Rl * (3.0f * 3.1415926536f + v81) + s.D : Rl * v81 + s.c7c;
-        const float sc = s.persp * -(1.0f + std::cos(th)) + 1.0f;
+        const float sc = s.persp * -(1.0f + rm::cosf(th)) + 1.0f;
         t.alpha = s.inv * (th * 0.3183098862f) + s.opacity;
         t.u = u * sc;
         t.v = b * sc;
@@ -347,15 +348,15 @@ inline float roundLikeCrt(double t)
     if (std::fabs(t - mid) < 1e-3 * std::fabs((double)o - (double)f)) return std::fabs(o) > std::fabs(f) ? o : f;
     return f;
 }
-inline float crtSin(float a) { return roundLikeCrt(std::sin((double)a)); }
-inline float crtCos(float a) { return roundLikeCrt(std::cos((double)a)); }
+inline float crtSin(float a) { return roundLikeCrt(rm::sin((double)a)); }
+inline float crtCos(float a) { return roundLikeCrt(rm::cos((double)a)); }
 
 // The direction of travel: (360 - angle) degrees, turned into 0..2 pi when it points to the right (the pixel aspect, square here, enters there in VEGAS)
 inline float travelAngle(float a)
 {
     const float cs = crtCos(a);
     if (cs > 1e-6f) {
-        float r = std::atan2(crtSin(a), cs);
+        float r = rm::atan2f(crtSin(a), cs);
         if (r < 0) r += 6.2831854820251465f;
         return r;
     }
@@ -370,8 +371,8 @@ inline float spanLoop(float ang, float W, float H)
     const int m = ic - (ic / 1800) * 1800;
     float phi = (float)m * 0.001745329238474369f;
     if (phi > 1.5707963705062866f) phi = 3.1415927410125732f - phi;
-    phi -= std::atan2(H, W);
-    return std::cos(phi) * diag;
+    phi -= rm::atan2f(H, W);
+    return rm::cosf(phi) * diag;
 }
 inline float spanPeel(float ang, float W, float H)
 {
@@ -381,8 +382,8 @@ inline float spanPeel(float ang, float W, float H)
     const int m = ic - (ic / 1800) * 1800;
     float phi = (float)(m * kPi / 1800.0);
     if (phi > 1.5707963705062866f) phi = (float)(kPi - (double)phi);
-    phi -= std::atan2(H, W);
-    return diag * std::cos(phi);
+    phi -= rm::atan2f(H, W);
+    return diag * rm::cosf(phi);
 }
 inline float spanRoll(float ang, float W, float H)
 {
@@ -392,8 +393,8 @@ inline float spanRoll(float ang, float W, float H)
     const int m = ic - (ic / 1800) * 1800;
     float phi = ((float)m * PIf) / 1800.f;
     if (phi > 1.5707963705062866f) phi = PIf - phi;
-    phi -= std::atan2(H, W);
-    return diag * std::cos(phi);
+    phi -= rm::atan2f(H, W);
+    return diag * rm::cosf(phi);
 }
 
 inline void lightRgba(const double* rgb, float* o)
@@ -435,7 +436,7 @@ inline LoopSetup loopSetup(int w, int h, double progress, double angleDeg, doubl
     const float half = span * 0.5f;
     const float Rset = half * Rr;
     const float circ = Rset * 6.2831854820251465f;
-    const float ramp = (half - x0) / std::sin(1.3962634f);
+    const float ramp = (half - x0) / rm::sinf(1.3962634f);
     const float op = ((1.f - O) * (p * p) + O) * 255.f;
     s.sn = crtSin(ang); s.cs = crtCos(ang);
     s.p = p; s.x0 = x0; s.R = Rset; s.circ = circ; s.ramp = ramp;

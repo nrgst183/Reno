@@ -10,6 +10,7 @@
 //   5. the outgoing picture is looked up at x + progress * movement and the incoming one at x - (1 - progress) * movement (bilinear with weights in 1/1024),
 //      and the two are blended by progress (an empty-alpha side gives way to the other).
 // The tracker's own details (it tries several starting guesses per corner) are not known, so a movement of a few pixels can differ from VEGAS's by a fraction of a pixel.
+#include "../core/rmath.h"
 #include "builtins_mask_internal.h"
 #include "builtins_more_internal.h"
 #include <algorithm>
@@ -246,7 +247,7 @@ void findPairs(const Buf& A, const Buf& B, std::vector<Pt>& from, std::vector<Pt
         std::stable_sort(c.begin(), c.end(), [&](int a, int b) { return score[a] > score[b]; });
         for (size_t k = 0; k < c.size() && k < 4; ++k) chosen.push_back(c[k]);
     }
-    int levels = 1 + (int)(std::log2((double)W / 240.0) + 0.5);
+    int levels = 1 + (int)(rm::log2((double)W / 240.0) + 0.5);
     if (levels < 2) levels = 2;
     const Pyr pa = buildPyr(ga, W, H, levels), pb = buildPyr(gb, W, H, levels);
     for (int ci : chosen) {
@@ -550,8 +551,8 @@ void warpFlowWith(Ctx& c, bool showField)
                 const double dx = fld.f[((size_t)y * W + x) * 2], dy = fld.f[((size_t)y * W + x) * 2 + 1];
                 float* o = c.out.at(x, y);
                 float r, g, b;
-                hueToRgb(std::atan2(dy, dx) / (2 * kPi) + 0.5, r, g, b);
-                const float m = (float)std::min(1.0, std::hypot(dx / W, dy / H) * 8);
+                hueToRgb(rm::atan2(dy, dx) / (2 * kPi) + 0.5, r, g, b);
+                const float m = (float)std::min(1.0, rm::hypot(dx / W, dy / H) * 8);
                 o[0] = r * m; o[1] = g * m; o[2] = b * m; o[3] = 1.f;
             }
         });

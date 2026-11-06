@@ -1,4 +1,5 @@
 // Built-in blur effects (Quick Blur, Radial Blur, Defocus, Unsharp Mask, Median, Min and Max, Chroma Blur); see builtins_more.cpp.
+#include "../core/rmath.h"
 #include <cstring>
 #include "vegas8.h"
 #include "builtins_more_internal.h"
@@ -70,8 +71,8 @@ void radialBlurSetup(Ctx& c, int W, int H, RbSetup& g)
     if (g.pass) return;
     g.q8 = c.levels;
     const double k = std::min(W, H) / 300.0;
-    g.s0 = std::pow(st, 2.0) + 1.0; g.s1 = std::pow(st, 1.5) * 0.018 / k;
-    const double wd = std::pow(std::pow(st, 1.0 / k), 0.25) * 65536.0;
+    g.s0 = rm::pow(st, 2.0) + 1.0; g.s1 = rm::pow(st, 1.5) * 0.018 / k;
+    const double wd = rm::pow(rm::pow(st, 1.0 / k), 0.25) * 65536.0;
     g.wi = (long long)wd; g.iwi = 65536 - g.wi;
     g.wf = wd / 65536.0; g.iwf = 1.0 - g.wf;
     int cx = (int)(W * pcx), cy = (int)(H * pcy);
@@ -173,9 +174,9 @@ void radialBlurOclParams(Ctx& c, int H, RbOclParams& r)
 {
     const double Hd = H;
     const double st = c.d("Strength"), k = Hd / 300.0;
-    r.s0 = (float)(std::pow(st, 2.0) + 1.0);
-    r.s1 = (float)(std::pow(st, 1.5) * 0.018 / k);
-    r.w = (float)std::pow(std::pow(st, 1.0 / k), 0.25);
+    r.s0 = (float)(rm::pow(st, 2.0) + 1.0);
+    r.s1 = (float)(rm::pow(st, 1.5) * 0.018 / k);
+    r.w = (float)rm::pow(rm::pow(st, 1.0 / k), 0.25);
     double pcx, pcy;
     c.xy("Center", pcx, pcy);
     r.v56x = (float)(2 * pcx - 1);
@@ -196,7 +197,7 @@ static void radialBlurOpenCl(Ctx& c, const RbSetup& g, int W, int H)
         for (int x = 0; x < W; ++x) {
             const float xn = (float)x / (float)W, yn = (float)y / (float)H;
             const float a = (xn / 0.5f - 1.f) * pi, r = yn * two;
-            float px = r * std::sin(a) + v56x, py = r * std::cos(a) + v56y;
+            float px = r * rm::sin(a) + v56x, py = r * rm::cos(a) + v56y;
             px = (px / 2.f + 0.5f) * (float)W; py = (py / 2.f + 0.5f) * (float)H;
             float* o = &P[((size_t)y * W + x) * 4];
             oclLinear4(src, W, H, px, py, o);
@@ -230,7 +231,7 @@ static void radialBlurOpenCl(Ctx& c, const RbSetup& g, int W, int H)
         for (int x = 0; x < W; ++x) {
             const float xn = (float)x / (float)W, yn = (float)y / (float)H;
             const float vx = (xn / 0.5f - 1.f) - v56x, vy = (yn / 0.5f - 1.f) - v56y;
-            const float a2 = std::atan2(vx, vy), r2 = std::sqrt(vx * vx + vy * vy);
+            const float a2 = rm::atan2(vx, vy), r2 = std::sqrt(vx * vx + vy * vy);
             const float u = ((a2 / pi) / 2.f + 0.5f) * (float)W, vv = (r2 / two) * (float)H;
             float* o = &out[((size_t)y * W + x) * 4];
             oclLinear4(buf, W, H, u, vv, o);
@@ -349,7 +350,7 @@ double unsharpSigma(double radius, int W, int H, bool& none)
     const double r = radius < 0 ? 0.0 : std::min(1.0, radius);
     const double s = (double)std::max(W, H) * r;
     none = std::fabs((float)s) <= 1e-6f || std::fabs((float)radius) <= 1e-6f;
-    return std::max(0.6, (s + 1.5) / std::sqrt(-2.0 * std::log(1.0 / 255.0)));
+    return std::max(0.6, (s + 1.5) / std::sqrt(-2.0 * rm::log(1.0 / 255.0)));
 }
 void unsharpMask(Ctx& c)
 {
@@ -433,7 +434,7 @@ static MinMaxKernel minMaxCircleKernel(float rxf, float ryf)
         const double h = std::sqrt((q * x) * x + B2);
         const double tw = twoQ * x;
         const double t = (h * tw) / d4q;
-        asinPart = std::asin(tw / s) * c;
+        asinPart = rm::asin(tw / s) * c;
         return t + asinPart;
     };
     for (int j = 0; j < k.ny; ++j)
@@ -851,8 +852,8 @@ static void gaussTaps(double sigma, std::vector<float>& k)
     const int n = std::max(1, (int)std::ceil(4.5 * sigma));
     k.assign((size_t)(2 * n + 1), 0.f);
     double sum = 0;
-    for (int i = -n; i <= n; ++i) sum += std::exp(-(double)i * i / (2.0 * sigma * sigma));
-    for (int i = -n; i <= n; ++i) k[(size_t)(i + n)] = (float)(std::exp(-(double)i * i / (2.0 * sigma * sigma)) / sum);
+    for (int i = -n; i <= n; ++i) sum += rm::exp(-(double)i * i / (2.0 * sigma * sigma));
+    for (int i = -n; i <= n; ++i) k[(size_t)(i + n)] = (float)(rm::exp(-(double)i * i / (2.0 * sigma * sigma)) / sum);
 }
 static void chromaBlur8(Ctx& c)
 {

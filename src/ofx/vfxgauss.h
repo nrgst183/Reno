@@ -5,6 +5,7 @@
 // The filter along one line of n values x (all four channels at once): causal  y[i] = sum n[k] x[i-k] - sum d[k] y[i-k]  and anti-causal  z[i] = sum m[k] x[i+k] - sum d[k] z[i+k], the
 // line's edge values taken to continue for ever (bn / bm are the edge terms); the result is y + z. The kernels hold the sums as a delay line of partial sums (the form below).
 #pragma once
+#include "../core/rmath.h"
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -27,10 +28,10 @@ inline Coefs build(double sigma)
     double xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm0, xmm1, xmm2, xmm3, xmm4, xmm5;
     if (!(s > 100.0)) {
         xmm6 = 1.475 / s;
-        xmm8 = std::sin(xmm6) * 1.021;
-        xmm10 = std::exp(-1.512 / s);
-        xmm9 = std::cos(xmm6);
-        xmm12 = std::exp(-1.556 / s);
+        xmm8 = rm::sin(xmm6) * 1.021;
+        xmm10 = rm::exp(-1.512 / s);
+        xmm9 = rm::cos(xmm6);
+        xmm12 = rm::exp(-1.556 / s);
         xmm1 = xmm9 * 3.796;
         xmm11 = xmm10 * xmm8;
         xmm6 = xmm9 * 0.8929;
@@ -40,8 +41,8 @@ inline Coefs build(double sigma)
         xmm0 = xmm10 * xmm6;
         xmm11 = xmm11 + xmm1;
         xmm11 = xmm11 + xmm0;
-        xmm7 = std::exp(-3.024 / s);
-        xmm0 = std::exp(-3.068 / s);
+        xmm7 = rm::exp(-3.024 / s);
+        xmm0 = rm::exp(-3.068 / s);
         xmm1 = xmm0 * xmm6;
         xmm0 = xmm0 * xmm8;
         xmm4 = -xmm12;
@@ -81,13 +82,13 @@ inline Coefs build(double sigma)
         D[4] = 0.0;
     } else {
         xmm6 = 0.8448 / s;
-        xmm10 = std::cos(xmm6);
-        xmm0 = std::exp(-1.26 / s);
+        xmm10 = rm::cos(xmm6);
+        xmm0 = rm::exp(-1.26 / s);
         xmm8 = 0.9629;
         xmm7 = xmm0;
         xmm9 = xmm10 * xmm8;
         xmm9 = xmm9 * xmm0;
-        xmm0 = std::sin(xmm6);
+        xmm0 = rm::sin(xmm6);
         xmm0 = xmm0 * 1.942;
         xmm10 = xmm10 + xmm10;
         xmm0 = xmm0 * xmm7;
@@ -96,7 +97,7 @@ inline Coefs build(double sigma)
         xmm0 = -2.52 / s;
         xmm9 = -xmm9;
         xmm10 = -xmm10;
-        xmm0 = std::exp(xmm0);
+        xmm0 = rm::exp(xmm0);
         xmm2 = xmm9 + xmm8;
         xmm1 = xmm10 + 1.0;
         xmm3 = xmm0;

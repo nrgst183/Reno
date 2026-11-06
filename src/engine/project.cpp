@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <cmath>
+#include <cctype>
 
 namespace reno {
 
@@ -295,6 +296,97 @@ std::string eventFxResample(const Event& e)
     return slowMotionParam(*s, "Quality", 1) < 0.5 ? "force" : "optical";           // Blend: low quality blends, the rest follow the motion
 }
 
+double eventMediaAdvance(const Event& e, double u)
+{
+    if (u < 0) {        // before the start the speed is the one it starts with
+        const double h = 1e-6;
+        return u * (eventVelocityIntegral(e, h) / h) * e.rate * eventFxRate(e);
+    }
+    return eventVelocityIntegral(e, u) * e.rate * eventFxRate(e);
+}
+
+double offsetAfterStartMove(const Event& e, double d)
+{
+    return e.reverse ? e.offset : e.offset + eventMediaAdvance(e, d);
+}
+
+double offsetAfterEndMove(const Event& e, double d)
+{
+    if (!e.reverse) return e.offset;
+    return e.offset + eventMediaAdvance(e, e.length) - eventMediaAdvance(e, e.length + d);
+}
+
+void adjustEventEdges(Event& e, double newStart, double newLength, bool keepMedia)
+{
+    if (keepMedia) {
+        const double delta = newStart - e.start;
+        const double endChange = (newStart + newLength) - e.end();
+        const double was = e.offset;
+        // the start edge first (as a trim of the start), then the end edge on what is left
+        Event t = e;
+        t.offset = offsetAfterStartMove(e, delta);
+        t.start = newStart;
+        t.length = e.length - delta;
+        for (Envelope& env : t.envelopes) for (EnvPoint& pt : env.points) pt.time -= delta;
+        t.offset = offsetAfterEndMove(t, endChange);
+        const double moved = t.offset - was;
+        e.offset = t.offset;
+        for (Take& k : e.takes) if (!k.reverse) k.offset += moved;
+        for (Envelope& env : e.envelopes) for (EnvPoint& pt : env.points) pt.time -= delta;
+        for (PanCropKey& k : e.panCrop) k.time -= delta;
+        for (MaskKey& k : e.mask) k.time -= delta;
+    }
+    e.start = newStart;
+    e.length = newLength;
+}
+
+Event splitEventAt(Project& p, Event& e, double t)
+{
+    Event right;
+    if (!(t > e.start + 1e-9 && t < e.end() - 1e-9)) return right;
+    const double u = t - e.start;
+    const double headMedia = eventMediaAdvance(e, u);                   // media the left half plays
+    const double restMedia = eventMediaAdvance(e, e.length) - headMedia;    // media the right half plays
+    right = e;
+    right.id = p.newId();
+    right.start = t;
+    right.length = e.end() - t;
+    // A looping event repeats its media, so VEGAS keeps the take offset of a half inside the media: a half that starts past a
+    // loop point starts at the media position modulo the media's length (split_audio_loop: a 30 s looping event of a 20 s
+    // file split at 25 s gives a right half whose take starts 5 s in, not 25 s). The picture shown is the same either way.
+    auto inMedia = [&](double off, uint64_t mediaId) {
+        if (!e.loop) return off;
+        const MediaItem* m = p.findMedia(mediaId);
+        const double dur = (m && !m->info.isStill && !m->generated) ? m->info.duration : 0.0;
+        if (!(dur > 0)) return off;
+        off = std::fmod(off, dur);
+        return off < 0 ? off + dur : off;
+    };
+    // The other takes' media moves the same way (a take that is itself reversed keeps its place, as scripts always had it).
+    if (!e.reverse) {
+        right.offset = inMedia(e.offset + headMedia, e.mediaId);
+        for (Take& k : right.takes) if (!k.reverse) k.offset = inMedia(k.offset + headMedia, k.mediaId);
+    } else {
+        // played from its top down: the later half is the lower media, so only the left half's offset moves
+        e.offset = inMedia(e.offset + restMedia, e.mediaId);
+        for (Take& k : e.takes) if (!k.reverse) k.offset = inMedia(k.offset + restMedia, k.mediaId);
+    }
+    // points and keys stay where they are on the timeline: counted from the right half's own start
+    for (Envelope& env : right.envelopes) for (EnvPoint& pt : env.points) pt.time -= u;
+    for (PanCropKey& k : right.panCrop) k.time -= u;
+    for (MaskKey& k : right.mask) k.time -= u;
+    right.fadeIn = 0;
+    right.transition = FxSlot();
+    for (FxSlot& s : right.fx) s.id = p.newId();
+    e.length = u;
+    e.fadeOut = 0;
+    // A fade never runs longer than the half it is on (RenoEdits split_audio_fades: a split 1 s into a 2 s fade-in leaves the left
+    // half a fade-in of 1 s, a split 1 s before the end of a 2 s fade-out leaves the right half a fade-out of 1 s).
+    e.fadeIn = std::min(e.fadeIn, e.length);
+    right.fadeOut = std::min(right.fadeOut, right.length);
+    return right;
+}
+
 double eventMediaTime(const Event& e, const MediaItem* m, double t)
 {
     // How far the media has moved on: the rate times the speed (velocity envelope) summed over the event's time.
@@ -326,12 +418,12 @@ double mediaSampleTime(double seconds, const MediaItem& m)
     return std::floor(seconds * sr + 0.5 + 1e-7) / sr;
 }
 
-double eventFade(const Event& e, double t)
+double eventFade(const Event& e, double t, bool skipIn, bool skipOut)
 {
     double f = 1.0;
     const double in = t - e.start, out = e.end() - t;
-    if (e.fadeIn > 0 && in < e.fadeIn) f = std::min(f, curveShape(e.fadeInCurve, std::max(0.0, in / e.fadeIn)));
-    if (e.fadeOut > 0 && out < e.fadeOut) f = std::min(f, 1.0 - curveShape(e.fadeOutCurve, 1.0 - std::max(0.0, out / e.fadeOut)));
+    if (!skipIn && e.fadeIn > 0 && in < e.fadeIn) f = std::min(f, curveShape(e.fadeInCurve, std::max(0.0, in / e.fadeIn)));
+    if (!skipOut && e.fadeOut > 0 && out < e.fadeOut) f = std::min(f, 1.0 - curveShape(e.fadeOutCurve, 1.0 - std::max(0.0, out / e.fadeOut)));
     return f;
 }
 
@@ -517,6 +609,7 @@ static Json fxToJson(const FxSlot& s)
     if (s.kind == "ofx" || s.kind == "builtin") j["plugin"] = s.pluginId;
     else j["audio"] = s.audio.toJson();
     j["bypass"] = s.bypass;
+    if (!s.preset.empty()) j["preset"] = s.preset;
     if (s.beforePanCrop) j["beforePanCrop"] = true;
     if (s.afterComposite) j["afterComposite"] = true;
     if (s.bypassAutomation) j["bypassAutomation"] = true;
@@ -532,7 +625,22 @@ static FxSlot fxFromJson(const Json& j)
     s.name = j.get("name").asString();
     s.pluginId = j.get("plugin").asString();
     if (j.has("audio")) s.audio = AudioPluginDesc::fromJson(j.get("audio"));
+    // the VEGAS export script's note of how VEGAS names a VST2 plug-in: "vegas": {"classId": "5741746e-b84e-e5dc-0269-0007e95d36fa"}
+    if (s.kind == "audio" && s.audio.format == "VST2" && s.audio.vegasClsid.empty() && j.get("vegas").has("classId")) {
+        std::string hex;
+        for (char c : j.get("vegas").get("classId").asString())
+            if (std::isxdigit((unsigned char)c)) hex += (char)std::tolower((unsigned char)c);
+        if (hex.size() == 32) {
+            // a GUID's first three fields are stored little-endian
+            auto flip = [&](size_t at, size_t bytes) { for (size_t i = 0; i < bytes / 2; ++i) std::swap_ranges(hex.begin() + at + 2 * i, hex.begin() + at + 2 * i + 2, hex.begin() + at + 2 * (bytes - 1 - i)); };
+            flip(0, 4);
+            flip(8, 2);
+            flip(12, 2);
+            s.audio.vegasClsid = hex;
+        }
+    }
     s.bypass = j.get("bypass").asBool();
+    s.preset = j.get("preset").asString();
     s.beforePanCrop = j.get("beforePanCrop").asBool();
     s.afterComposite = j.get("afterComposite").asBool();
     s.bypassAutomation = j.get("bypassAutomation").asBool();

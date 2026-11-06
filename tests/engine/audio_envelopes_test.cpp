@@ -180,8 +180,7 @@ static void referenceRender(MediaPool& pool, const Project& p, int64_t start, in
                 float g = gain;
                 if (fades) {
                     const double t = (double)(start + a + k) / rate;
-                    g *= (float)eventFade(e, t);
-                    if (overlaps) g *= (float)overlapWeight(tr, e, t);
+                    g *= (float)(overlaps ? overlapFade(tr, e, t) : eventFade(e, t));
                 }
                 tl_[(size_t)(a + k)] += el_[(size_t)k] * g;
                 tr_[(size_t)(a + k)] += er_[(size_t)k] * g;

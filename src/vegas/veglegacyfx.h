@@ -31,10 +31,20 @@
 //     Radius Y, Feather, Tint colour r g b, Blend, Noise. The static block equals the OpenFX preset "Weak Light
 //     Rays".
 //   TV Simulator (8): Detail zoom, Aperture grill, Interlacing, Line sync, Vertical sync, Scan phasing,
-//     Phosphorescence, Static, but NOT in OpenFX units (GUESSED): off is all 0, Detail zoom is the magnification
-//     itself (1 = none), and the two sync settings count the trouble (0 = in sync), the opposite of OpenFX. So the
-//     built-in's zoom z is (number - 1) / 1.5 (it magnifies by 1 + 1.5 z) and Line sync and Vertical sync are
-//     1 - number. Unknown whether the OpenFX "TV Look" preset matches this record's static block.
+//     Phosphorescence, Static. Detail zoom is the magnification itself (1 = none), so the built-in's zoom z is
+//     (number - 1) / 3 (it magnifies by 1 + 3 z) (GUESSED); the other seven are the OpenFX numbers as they are. That
+//     includes Line sync and Vertical sync (1 = in sync): the coverage run's "TV Look" record holds 1, 1 for them, as the
+//     OpenFX preset of that name does, and Reno's picture with them taken so matches VEGAS's snapshot of it (mean 0.06 levels;
+//     taken as 1 - number it was far off). The older samples' static block of 0 for both is VEGAS's unused default, not what
+//     the keys use (keys hold 1.0 and 0.43..0.75).
+// Not mapped yet (the same record frame, class GUIDs and flags 0x30e / 0x21c / 0x304; read from the coverage run's presets, all with one key equal to the
+// static block, flags stored as 64-bit whole numbers, 1 = 5e-324):
+//   Deform {f4205ab4-e8c1-468f-9ad2-4feb8df04538}, 14 doubles: 0 Amount, 1 Center Image (flag), 4 Shear Horizontal, 5 Shear Vertical, 6 Squeeze Top (the other
+//     slots are 0 in "Reset to None", "Shear Horizontally", "Shear Vertically" and "Squeeze Top"; which are Squeeze Left / Right / Bottom and the Curves is not shown).
+//   Film Effects {d9a65ba3-0d06-11d2-9aac-00a0c99b12c5}, 35 doubles: 0 Grain, 1 Convert To Greyscale (flag), 2 Tint, 3..5 tint colour blue, green, red, 6 always 1.0, then
+//     seven groups of four from 7 (a 32-bit-float number as a double, the second, a third, an on flag): vfxfilm.h's Preset table holds the same numbers.
+//   Gradient Map {300f2f5f-d7c7-48be-b796-90fc740b654e}, 38 doubles: 0 Amount (1), 1 a 64-bit mode word, the gradient stops from 2 as 32-bit floats packed in doubles
+//     ("Night Vision" holds 0.41, 0.0078 ..., not worked out).
 // Bypass: bit 0x01 of the word at 0x2c is taken as "switched off", as in the OpenFX record. No sample has it set:
 // inferred, not seen.
 #pragma once

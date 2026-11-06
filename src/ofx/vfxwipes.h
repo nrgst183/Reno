@@ -5,6 +5,7 @@
 // Pictures are RGBA floats. The kernels number their rows from the BOTTOM row; Pic::topFirst says the memory has the top row first (Reno's Buf), and x, y given
 // to the pixel functions are the kernel's (y = 0 is the bottom row). Every number is a float, in the order the kernel does it.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -333,7 +334,7 @@ struct Slide {
         const double s = (x1 + 1.0) * (1.0 - tc) - x1;
         const double z = (zoom - 1.0) * s + 1.0;
         const double a = angleDeg * 0.017453292519943;
-        const double sn = std::sin(a), cs = std::cos(a);
+        const double sn = rm::sin(a), cs = rm::cos(a);
         const double k = s / std::fmax(std::fabs(sn), std::fabs(cs));
         B[0] = 0; B[1] = 0; B[2] = Wf; B[3] = Hf;
         if (!(k < 0.0)) {
@@ -363,7 +364,7 @@ struct Slide {
         if (inside(r, x, y)) d = std::fmin(d20, d21);
         else if (r[0] < x && x < r[2]) d = d21;
         else if (r[1] < y && y < r[3]) d = d20;
-        else d = std::hypot(d20, d21);
+        else d = rm::hypot(d20, d21);
         return d;
     }
     // f6: outside the outer rectangle, or outside the inner one by more than the border

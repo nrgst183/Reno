@@ -9,6 +9,7 @@
 // Glint: luma through a soft threshold (0 at threshold - 0.05, full at the threshold); each of Streaks streaks (180 / n degrees apart, first
 //        vertical) blurs it along its direction into its own channel (length from the two radii, as a fraction of the width), scaled by
 //        1 + boost (2 boost above 0), coloured by the colour gradient and screened over the picture.
+#include "../core/rmath.h"
 #include "vkfft.h"
 #include "builtins_more_internal.h"
 #include "../core/base.h"
@@ -113,14 +114,14 @@ double colourCurve(double x)
 void lchToSrgb(float L, float C, float H, float rgb[3])
 {
     const double h = (double)H * kPiV / 180.0;
-    const float a = (float)(std::cos(h) * (double)C), b = (float)(std::sin(h) * (double)C);
+    const float a = (float)(rm::cos(h) * (double)C), b = (float)(rm::sin(h) * (double)C);
     const double fy = ((double)L + 16.0) / 116.0, fx = (double)a / 500.0 + fy, fz = fy - (double)b / 200.0;
     auto inv = [](double t) { const double t3 = t * t * t; return t3 > 0.008856 ? t3 : (t - 0.13793103448275862) / 7.787; };
     const float X = (float)(95.047 * inv(fx)), Y = (float)(100.0 * inv(fy)), Z = (float)(108.883 * inv(fz));
     const float m[9] = {3.241f, -1.5374f, -0.4986f, -0.9692f, 1.876f, 0.0416f, 0.0556f, -0.204f, 1.057f};
     for (int k = 0; k < 3; ++k) {
         const float v = m[k * 3] * X + m[k * 3 + 1] * Y + m[k * 3 + 2] * Z;
-        rgb[k] = v > 0.0030400000978261232f ? (float)(1.055 * std::pow((double)v, 0.4166666666666667) - 0.055) : (float)(12.92 * (double)v);
+        rgb[k] = v > 0.0030400000978261232f ? (float)(1.055 * rm::pow((double)v, 0.4166666666666667) - 0.055) : (float)(12.92 * (double)v);
     }
 }
 
@@ -344,7 +345,7 @@ void maskCoverage(const Ctx& c, int typeIndex, const char* const* typeNames, std
     const double blur = std::max(0.0, c.d("MaskSoftness"));
     const double strength = clampd(c.d("MaskStrength") / 100.0, 0.0, 2.0);
     const double angle = c.d("MaskAngle") * 2 * kPiV;
-    const double ca = std::cos(angle), sa = std::sin(angle);
+    const double ca = rm::cos(angle), sa = rm::sin(angle);
     const double mw = std::max(0.0, c.d("MaskWidth")) / 100.0, mh = std::max(0.0, c.d("MaskHeight")) / 100.0;
     const double progress = clampd(c.d("MaskProgress") / 100.0, 0.0, 1.5), falloff = std::max(0.0, c.d("MaskFalloff"));
     const bool ellipse = std::strcmp(type, "Ellipse") == 0, rect = std::strcmp(type, "Rectangle") == 0, bar = std::strcmp(type, "Bar") == 0;
@@ -360,7 +361,7 @@ void maskCoverage(const Ctx& c, int typeIndex, const char* const* typeNames, std
             double cover;
             if (bar) {
                 const double d = std::fabs((x + 0.5 - cx) * -sa + (y + 0.5 - cy) * ca);
-                const double hw = mw * std::hypot((double)W, (double)H) / 2;
+                const double hw = mw * rm::hypot((double)W, (double)H) / 2;
                 cover = d <= hw ? 1.0 : 0.0;
             } else {
                 const double diag = std::fabs(W * ca) + std::fabs(H * sa);
@@ -509,10 +510,10 @@ void directionalGeom(int W, int H, double angleDeg, double diameter, DbGeom& o)
     const int q = std::max(0, std::min(3, (int)(a + 90) / 45));
     o.cols = q == 0 || q == 3;
     double tn;
-    if (q == 0) tn = std::tan((a + 90.0) * kPiV / 180.0);
-    else if (q == 1) tn = std::tan(-a * kPiV / 180.0);
-    else if (q == 2) tn = std::tan(a * kPiV / 180.0);
-    else tn = std::tan((90.0 - a) * kPiV / 180.0);
+    if (q == 0) tn = rm::tan((a + 90.0) * kPiV / 180.0);
+    else if (q == 1) tn = rm::tan(-a * kPiV / 180.0);
+    else if (q == 2) tn = rm::tan(a * kPiV / 180.0);
+    else tn = rm::tan((90.0 - a) * kPiV / 180.0);
     const double dim = o.cols ? (double)W : (double)H;
     o.t = (tn * dim) / dim;
     o.rev = q <= 1;
@@ -632,7 +633,7 @@ struct ColorMatrix {
         rad = (float)(6.283185307179586 - std::fmod((double)rad, 6.283185307179586));
         ColorMatrix t;
         const float r2 = (float)std::sqrt(2.0), r3 = (float)std::sqrt(3.0);
-        const float sn = (float)std::sin((double)rad), cs = (float)std::cos((double)rad);
+        const float sn = (float)rm::sin((double)rad), cs = (float)rm::cos((double)rad);
         const float v6 = 1.f / r2, v7 = 1.f / r2;
         rot(t, 0, -v6, v7);
         const float v8 = -1.f / r3, v9 = r2 / r3;
@@ -684,7 +685,7 @@ struct FftTwiddles {
     {
         for (int len = 2; len <= n; len <<= 1) {
             const double ang = 2 * kPiV / len * (inverse ? 1 : -1);
-            const double lr = std::cos(ang), li = std::sin(ang);
+            const double lr = rm::cos(ang), li = rm::sin(ang);
             double wr = 1, wi = 0;
             for (int k = 0; k < len / 2; ++k) {
                 w.push_back(wr);
@@ -853,7 +854,7 @@ std::vector<std::array<double, 2>> starOutline(int n, double inner, double varia
     if (n < 2) n = 2;
     auto rot = [](double x, double y, double deg, double& ox, double& oy) {
         const double a = deg / 180.0 * kPiV;
-        const float sn = (float)std::sin(a), cs = (float)std::cos(a);
+        const float sn = (float)rm::sin(a), cs = (float)rm::cos(a);
         ox = (double)((float)(cs * x) - (float)(sn * y));
         oy = (double)((float)(sn * x) + (float)(cs * y));
     };
@@ -936,8 +937,8 @@ bool raysSetup(Ctx& c, int W, int H, RaysSetup& o)
         const float cx = (float)(px * W), cy = (float)((1 - py) * H);
         const double k = 1.45 + 0.25 * (1.0 - quality);
         const double L = std::max(W, H) * amount * 4.0 * std::sqrt(2.0);
-        const int n = L > 1 ? (int)std::nearbyint(std::log(L) / std::log(k)) : 0;
-        double s = amount * 4.0 / std::pow(k, n);
+        const int n = L > 1 ? (int)std::nearbyint(rm::log(L) / rm::log(k)) : 0;
+        double s = amount * 4.0 / rm::pow(k, n);
         const int passes = std::min(n, steps);
         auto axis = [](int dn, float c0, float scale, std::vector<int>& i0, std::vector<float>& fr) {
             const float r0 = c0 - scale * c0, rw = scale * (float)dn;
@@ -1090,9 +1091,9 @@ bool glintSetup(Ctx& c, int W, int H, GlintSetup& o)
     for (int i = 0; i < o.n; ++i) {
         const double ang = i * 180.0 / o.n;
         const double a = ang * kPiV / 180.0;
-        const double rx = -std::sin(a) * dy, ry = std::cos(a) * dy;
+        const double rx = -rm::sin(a) * dy, ry = rm::cos(a) * dy;
         const double sxf = dy > 0 ? dx / dy : 0.0;
-        const double blur = std::hypot(rx * sxf, ry);
+        const double blur = rm::hypot(rx * sxf, ry);
         directionalGeom(W, H, ang + rotation, blur * W, o.streaks[(size_t)i]);
     }
     return true;
@@ -1153,9 +1154,9 @@ void glintVelvet(Ctx& c)
     for (int i = 0; i < n; ++i) {
         const double ang = i * 180.0 / n;
         const double a = ang * kPiV / 180.0;
-        const double rx = -std::sin(a) * dy, ry = std::cos(a) * dy;
+        const double rx = -rm::sin(a) * dy, ry = rm::cos(a) * dy;
         const double sxf = dy > 0 ? dx / dy : 0.0;
-        const double blur = std::hypot(rx * sxf, ry);
+        const double blur = rm::hypot(rx * sxf, ry);
         parallelTasks(n, [&](int j) { directionalBlur(streaks[(size_t)j], W, H, ang + rotation, blur * W, scale, j == i); });
     }
     forRows(H, W, [&](int y) {
@@ -1576,7 +1577,7 @@ void starburstVelvet(Ctx& c)
     double sx = 1.0, sy = 1.0;
     if (aspect < 1) sx = aspect; else sy = 1.0 / aspect;
     const double rot = orientation * 360.0 / 180.0 * kPiV;
-    const double cr = std::cos(rot), sr = std::sin(rot);
+    const double cr = rm::cos(rot), sr = rm::sin(rot);
     auto toKernel = [&](const std::vector<std::array<double, 2>>& unit, double scale) {
         std::vector<std::array<double, 2>> o;
         for (const auto& p : unit) {

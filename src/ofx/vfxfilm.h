@@ -8,6 +8,7 @@
 //     the dialog sets the first number to Amount x 0.0002 and the third to Amount x 32 for the group of the chosen type.
 // 'Rows' are in memory order; the 8-bit pictures are B, G, R, A bytes and the float ones B, G, R, A floats (premultiplied), as the code has them.
 #pragma once
+#include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -476,7 +477,7 @@ inline void drawObj(Surf& S, const Obj& o, VegasShiftRandom& rng)
                 const int d = smod(rng.next(), 8) + base;
                 put8(S, clampIndex(x, W), clampIndex(y, H), d);
                 const double wc = unit(rng.next()), wd = unit(rng.next());
-                const double s = std::sin((double)j / (double)n * 3.14 * 2.0 + phase);
+                const double s = rm::sin((double)j / (double)n * 3.14 * 2.0 + phase);
                 x += s * (wc * 1.65);
                 y += (wd + 1.0) * 0.15;
             }
@@ -488,7 +489,7 @@ inline void drawObj(Surf& S, const Obj& o, VegasShiftRandom& rng)
                 const float d = (float)(unit(rng.next()) * 0.0313725508749485) + base;
                 putF(S, clampIndex(x, W), clampIndex(y, H), d);
                 const double wc = unit(rng.next()), wd = unit(rng.next());
-                const double s = std::sin((double)j / (double)n * 3.14 * 2.0 + phase);
+                const double s = rm::sin((double)j / (double)n * 3.14 * 2.0 + phase);
                 x += s * (wc * 1.65);
                 y += (wd + 1.0) * 0.15;
             }

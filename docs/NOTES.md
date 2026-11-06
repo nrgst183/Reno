@@ -80,7 +80,7 @@ above each reader or writer says which parts are confirmed and which are guesses
   does not write.
 - Not written yet, because no sample shows where VEGAS stores them: changed track motion, sends to buses,
   transitions, the Custom compositing mode (a compositing plug-in), track groups, effects and envelopes on the video
-  output and the master, a bus's pan position, a master solo, VST3 plug-ins, surround pans, multichannel channel
+  output and the master, a bus's pan position, a master solo, surround pans, multichannel channel
   choice, Trimmer markers, Red Eye Reduction areas, and keyframe interpolation other than Linear for keys that did
   not come from a `.veg`. The Color Grading panel's effect and adjustment tracks have no VEGAS equivalent.
 - Written from the files of a Settings Matrix run (`tools/scripts/Reno Settings Matrix.cs`, one change per file;
@@ -90,14 +90,27 @@ above each reader or writer says which parts are confirmed and which are guesses
   resampling was not in the run and is still left out.
 - Other `.veg` files used as media (nested projects) are read for frame size, frame rate and length. Edit > Nested
   Timelines creates and opens them.
-- Older (pre-OpenFX) VEGAS effects Swirl, Pinch/Punch, Wave, TV Simulator and Light Rays map to Reno's built-ins of
-  the same names (`src/vegas/veglegacyfx.*`). The "managed" CoreGraphics effects (Rays, Glint, Starburst, Fill
+- Older (pre-OpenFX) VEGAS effects Swirl, Pinch/Punch, Wave, TV Simulator, Light Rays, Threshold and Film Grain map to
+  Reno's built-ins of the same names (`src/vegas/veglegacyfx.*`). Deform, Film Effects and Gradient Map (older records
+  whose layout is not worked out) are kept in the file but not used. A media's own effects (Media FX) of any of the
+  kinds above, or managed ones (Rays), are put at the start of its events' effects; with no Pan/Crop they work on the
+  enlarged frame (VEGAS's snapshots), with Pan/Crop before it. The "managed" CoreGraphics effects (Rays, Glint, Starburst, Fill
   Light, Defocus, Soft Contrast) map to OpenFX stand-ins (`vegmanaged.*`). Which units were guessed is noted in
   those headers.
 - Audio effects: DirectX effects keep exactly the bytes the plug-in saved (VEGAS's own plug-ins refuse them if the
   length prefix is missing). VST effects use a parameter program, or the plug-in's own chunk for plug-ins that
   keep state that way. The tick in VEGAS's effect chain (Effect.Bypass) is the one on/off flag per plug-in.
 - An effect whose plug-in is missing stays in the chain with its settings and is saved back unchanged.
+- VST3 effects: VEGAS Pro has no VST3 host (vegas180.exe, vegas180k.dll and sfvstwrap.dll, the VST wrapper, hold no VST3
+  code or strings; the VEGAS Pro 23 manual speaks only of DirectX and VST effects, .fxp/.fxb), so no `.veg` can hold one
+  and Reno writes nothing for it into the file. Instead Save writes the VST3 audio effects of every chain (track, event,
+  bus, master) to `<project>.veg.reno-vst3`, a JSON file beside the project (plug-in, name, bypass, the host's state
+  exactly as it was, and the chain and place in it), and Open puts them back (`src/vegas/vegvst3side.*`). VEGAS ignores
+  the file. Effects whose track or event is gone (the `.veg` was edited in VEGAS, or copied without the file) are
+  reported on opening and not put back. A VST3 Reno cannot load keeps its state and is written back unchanged. With no
+  VST3 effects left, Save removes the file. If a later VEGAS version does store VST3 effects in a `.veg`, a project
+  with some would show the record (a chain entry whose CLSID is neither a DirectX effect nor a backwards VST id); that
+  would be read like the DirectX entries.
 
 ## Timing details
 
@@ -376,6 +389,38 @@ standalone `main` programs; see the README for how they are built. Notes by area
   (`run_reno.sh`) and compares with VEGAS's renders (`compare.py`: PSNR and SSIM per frame, timing and sound offsets,
   worst frames side by side as a web page). `tools/vegas/Reno Bridge.cs` is a VEGAS script that does the VEGAS side
   unattended; see `tools/vegas/BRIDGE.txt`.
+- **Object-model coverage against VEGAS** (`tools/vegas/RenoCoverage.cs`, `tools/vegcov_compare.py`,
+  `reno_cli model`): the VEGAS script makes projects that cover what the scripting API reaches (tracks, media it writes
+  itself, every generator, transition, video and audio plug-in with presets, every event kind, fades, envelopes,
+  markers, project properties, plus a seeded fuzz mode) and saves each as `.veg` next to a JSON manifest of VEGAS's own
+  object model after creation. `reno_cli model x.veg` prints Reno's reading in the same schema (`reno-model/1`) and
+  `vegcov_compare.py compare <output folder>` compares field by field: times within 0.1 ms, doubles within 1e-5,
+  everything else exact; VEGAS's raw pan/crop corners and track positions are converted to Reno's fractions first;
+  fields only one side reports are listed apart. `vegcov_compare.py roundtrip <folder>` saves each project with Reno's
+  writer and compares Reno's reading of both (nothing Reno reads may change); the copies it leaves in `<out>/resaved`
+  are what the script's "Describe" mode opens in VEGAS, and `compare-describe` then checks VEGAS's reading of Reno's
+  files. `tests/vegas/vegcov_test.sh [vegmodel] [folder]` runs the self test and the round trip; `vegmodel` is the
+  engine-only build of the dump command (`tests/vegas/vegmodel.cpp`). `compare` gives each project a folder of its own holding links
+  to the files of `--media-root` (default `<output folder>/media`) and the other projects: a .veg holds VEGAS's Windows paths, and Reno
+  looks for a missing file next to the project, so the dump then reads the media's size, rate and length as it does for a project moved
+  together with its media (the dump opens stills and image sequences itself; the reader leaves them to the first time they are shown). `vegcov_compare.py roundtrip` resaves into a folder that links to
+  everything beside the original, so media and nested projects are found again; a media file that is still not found reads
+  0 for picture size, sample rate and channels in the copy (a .veg stores none of them; VEGAS reads the file) and those values are
+  counted apart instead of listed as differences. `reno_cli model --resave` prints the save warnings. `tests/vegas/vegrt_test.cpp`
+  (no sample data) checks what the round trip found the writer lost: the ruler format, VST2 effects named by the CLSID kept from
+  the .veg or .reno (`AudioPluginDesc::vegasClsid`; the export script's `"vegas": {"classId"}` note is read), the defaults of an
+  eFX effect with no saved settings, the layout of OpenFX settings of effects the file has no record of (`vegfxlayouts.inc`,
+  made from VEGAS's own records by `tests/vegas/vegfxlayout_gen.cpp`), and `FadeIn.ReciprocalCurve` (always held by a .veg;
+  Reno's "not given" is written as the curve the mixer plays and shown so by the model dump). What stays lost: VST2 effects of which
+  Reno has neither the program nor the plug-in (a .reno from the export script holds no program), VST plug-ins of which
+  no VEGAS file names the CLSID, and settings of effects no sample shows the layout of. `tools/vegas/csheck.py` is a rough lint for the
+  script (no C# compiler is available on the build machine). The script's use is explained in its header comment.
+- **Editing against VEGAS**: `tools/vegas/RenoEdits.cs` (a VEGAS script, also runs in Reno) applies Split, trims, slip / slide,
+  Delete / Cut / Copy / Paste, ripple and so on to small projects and saves before / after `.veg` files and a JSON of ticks;
+  `tests/ui/editparity_replay.cpp` redoes them in Reno and `tools/vegas/editparity_compare.py` compares. What a script cannot
+  do is in `docs/EDIT_CHECKLIST.md`. Reno's own checks: `tests/engine/edit_split_test.cpp` (media shown stays continuous across
+  split / trim for reversed, velocity and rate events; fades, keys, ids) and `tests/ui/edit_parity_test.cpp` (time-selection
+  split / delete / cut / copy, edge drags). All edge splitting goes through `splitEventAt` in `project.cpp`. Results of the first run in VEGAS Pro 18 (build 527) are in the repo only as rules: a looping event's right half keeps its take offset modulo the media's length (30 s loop of a 20 s file split at 25 s: offset 5 s); a fade is cut to the half it ends on; `TrackEvent.Split` outside an event or on a locked one is no error; `AdjustPlaybackRate` / the rate setter keep the event's start and length and the take offset in timeline time. VEGAS also keeps a per-take length (the media after the offset, cut to the event on the left half of a split) that Reno does not model. `Vegas.InvokeCommand(section, name)` takes two strings: the keyboard map's context (Global, TrackView, TrackList, Explorer, Trimmer, Mixer, EditDetails, TrackMotion) and a command name such as `Edit.Split` (the names are in vegas180.exe as UTF-16 text); the first run got no change with section `Global` and the script now pumps messages and tries the other contexts, falling back to the API.
 - **Plug-in hosts**: `tests/ofx/run_tests.sh` builds the OpenFX host test and a test plug-in and runs the suite plain,
   under ASan/UBSan and under TSan. VEGAS's own OpenFX plug-ins can be run through Reno's Windows host under Wine
   (`tests/vegas/vegofx_wine.sh`, `vegaudiofx_wine.sh`). `tests/vst3` checks `vst3_abi.h` against Steinberg's headers
@@ -386,6 +431,36 @@ standalone `main` programs; see the README for how they are built. Notes by area
 - **Media** (`tests/media`): `formats_test` makes sample files of every kind FFmpeg can encode and checks size, rate,
   length, channels, picture and sound content, seeking and transparency; `vegasfiles_test` checks peak and proxy files
   against samples made by VEGAS (a folder named by `RENO_VEGAS_FILES`; not in the repository).
+- **Maths functions** (`src/core/rmath.h`, `tools/rmath_*`): the effects (`src/ofx`) call no C-library maths function directly any
+  more; every call goes to `rm::` (sqrt, floor, ceil, fabs, fmod, fmin/fmax, rounding and the like are exact and stay `std::`).
+  Reno-owned, plain C++ (IEEE operations and `std::fma`, never contracted by the compiler: the header switches contraction off
+  for clang, MSVC and GCC; `rmath_test` passes under g++ and clang++ at -O3 -march=haswell) and giving the bits of glibc 2.39 with
+  FMA on every system: float `sinf cosf atanf atan2f asinf logf expf powf hypotf` and double `exp log pow hypot`. `hypot` is
+  Borges' algorithm (2019 paper) without fused steps, `hypotf` the double square root of the sum of squares rounded to a float.
+  `rm::` takes the argument types of `std::` (float in, float out; double or integer in, double out).
+  **Forwarded to the platform's library** (one call site each, in `rmath.h`, so a Windows build can still differ in the last
+  bit of a double): double `sin cos atan asin atan2` and double/float `tan acos cbrt exp2 log2 log1p`. They cannot be copied
+  from a permissive source with glibc's bits: glibc's sin/cos/tan/atan/asin/acos/atan2 are IBM's Accurate Mathematical
+  Library (LGPL, long tables) and are *not* correctly rounded (measured against binary128: sin and cos differ from the
+  correctly rounded value for 0.14 % of the inputs, tan 0.25 %, atan 0.09 %, cbrt 55 %, hypot 0.4 %), so a correctly
+  rounded implementation (CORE-MATH, MIT) would change Linux output; glibc's cbrtf differs from the correctly rounded
+  float for 10 % of all floats; an acosf written on the asinf polynomial misses glibc's for 0.1 %.
+  Tests: `tools/rmath_check.cpp` compares a function with the installed library bit for bit (every float: 2^32 inputs; doubles:
+  10^8 random inputs and the edge cases); `tests/engine/rmath_test.cpp` checks fixed sample hashes (same on every OS, and
+  against the library on glibc 2.39); `tools/rmath_gpu_test.py` runs the kernel versions (`tools/rmath_gpu.py`: the same
+  steps in the Vulkan kernel code, with a double fused multiply-add made from error-free transformations) in a numpy
+  emulation against the library: sinf cosf atanf asinf atan2f logf expf powf. In the kernels `S.exp`, `S.log`, `S.pow` and
+  `fpow` are glibc's expf/logf/powf; `S.sin/S.cos/S.atan2` are the double function rounded to a float (what the effects that
+  cast to double compute) and `rmath_gpu.sin_f/cos_f/atan2_f/atan_f/asin_f` the float ones (Spherize, Tiny Planet, Page
+  transitions, stereographic projection, Add Noise use those). No kernel uses the driver's own Sin/Cos/Exp/Log/Pow/Atan:
+  `tools/spvlint.py` fails on any (Sqrt, Atan2 and Fma only where listed in its ALLOWED_USERS, as the start of an exact
+  correction or for the operands the exact code does not take).
+  The kernels' float division is the exact IEEE one whatever the card's divide does (`tools/fdiv_exact.py`, checked by
+  `tools/fdiv_test.py` against a divide that is wrong by 2 ulp): the older one-step correction was wrong for about one
+  division in two million when the card's divide is off by an ulp or two, which never shows in a software driver and can
+  show as a single pixel on a real GPU.
+  Audio (`src/audiofx`) and the engine's transforms (`src/engine`) still call the library: pow 94, exp 41, sin 36, cos 29,
+  log10 17, logf 11, tanh 9, tan 6 in the audio effects; engine_video.cpp, builtinfx.cpp, colormgmt.cpp, lut.cpp.
 - **Performance** (`tests/perf`, parts of `tests/ui`): benchmarks and tests that fail if the interface thread stalls or
   playback drops frames, including a synthetic project generator (`gen_big.cpp`).
 
@@ -472,3 +547,16 @@ Scratch files go to the system temp folder.
   rendering are done: see Recording, the Mixing Console and Smart rendering.)
 - Windows-only code (DirectX hosting, the .NET scripting host, SAPI, MIDI timecode, the 32-bit bridge's real use) is
   built but can only be exercised on Windows.
+- Second coverage run, pictures (`tools/vegcov_render.py /home/claude/cov2 --cli reno_cli`; 240 snapshots): what is known
+  about the remaining differences. VEGAS without the AI bundle shows "This plugin requires additional data..." in place
+  of Colorization / Style Transfer (and Smart Upscale is an AI upscaler Reno only sharpens), so those scenarios are marked
+  "explained" in the report; Add Noise is random; VEGAS's snapshot of a project with output rotation 90/270 is composed
+  unrotated at the swapped size (Reno's still is the rotated one, "nocmp"); a project with a pixel aspect ratio is
+  snapshotted at width x ratio with another resampler (the pictures agree). Reduce Interlace Flicker only blurs in an
+  interlaced project (a progressive checkerboard with the flag on has hard edges in VEGAS). A compositing parent's Parent
+  Motion is in a list b12f5229 after the track motion list; the nesting level (u32 at 0xac) is any depth. Not
+  understood: Titles & Text with a plain (non-RTF) "Reno 80" text and a keyed Scale is a transparent frame in VEGAS (one
+  snapshot); 2D Glow/Shadow of a track whose keys hold blur 0.4 / intensity 0.7 (the file holds 0.004 / 0.007, but VEGAS
+  draws a strong glow); the 3D Source Alpha track at z 120 is smaller in VEGAS's picture, bigger in Reno's; Median as a
+  media effect (the same effect on an event matches). Use `reno_cli --only-track N` and `--vout-keep LIST` to look at one
+  track or one Video Output FX of such a project.

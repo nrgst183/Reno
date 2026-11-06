@@ -15,6 +15,7 @@
 // frames are not pulled sideways.
 //
 // Parameter names, labels, choices, defaults and ranges are the plug-ins' own; what they do with them is worked out from VEGAS's manual, and the rest is Reno's own.
+#include "../core/rmath.h"
 #include "builtins_analysis_internal.h"
 #include "../core/base.h"
 #include <algorithm>
@@ -183,9 +184,9 @@ Comp decompose(const Xf& m)
     Comp c;
     c.tx = m.tx;
     c.ty = m.ty;
-    c.sx = std::hypot(m.a, m.c);
+    c.sx = rm::hypot(m.a, m.c);
     if (!(c.sx > 1e-6)) { c.sx = 1; return c; }
-    c.th = std::atan2(m.c, m.a);
+    c.th = rm::atan2(m.c, m.a);
     const double ct = m.a / c.sx, st = m.c / c.sx;
     const double k = m.b * ct + m.d * st;
     c.sy = -m.b * st + m.d * ct;
@@ -196,7 +197,7 @@ Comp decompose(const Xf& m)
 
 Xf compose(const Comp& c)
 {
-    const double ct = std::cos(c.th), st = std::sin(c.th);
+    const double ct = rm::cos(c.th), st = rm::sin(c.th);
     const double k = c.sh * c.sy;
     Xf m;
     m.a = ct * c.sx;
@@ -246,7 +247,7 @@ Xf smoothedAt(const State& st, long n, int hw, double sigma, long fLo, long fHi)
     pathAround(st, n, jlo, jhi, path);
     double acc[6] = {0, 0, 0, 0, 0, 0}, sw = 0;
     for (int j = -hw; j <= hw; ++j) {
-        double w = std::exp(-0.5 * (double)j * j / (sigma * sigma));
+        double w = rm::exp(-0.5 * (double)j * j / (sigma * sigma));
         Vec6 val;
         if (j >= jlo && j <= jhi) {
             val = Vec6(path[(size_t)(j - jlo)]);
@@ -278,8 +279,8 @@ Xf maskComponents(const Xf& s, const Settings& set)
     if (!set.lock[4]) c.sy = 1;
     if (!set.lock[5]) c.sh = 0;
     c.th *= set.rotAmt;
-    c.sx = std::exp(std::log(std::max(c.sx, 1e-3)) * set.scaleAmt);
-    c.sy = std::exp(std::log(std::max(c.sy, 1e-3)) * set.scaleAmt);
+    c.sx = rm::exp(rm::log(std::max(c.sx, 1e-3)) * set.scaleAmt);
+    c.sy = rm::exp(rm::log(std::max(c.sy, 1e-3)) * set.scaleAmt);
     return compose(c);
 }
 
@@ -289,7 +290,7 @@ struct Extras {
     Xf forward() const
     {
         Xf e;
-        const double ct = std::cos(rot) * zoom, st = std::sin(rot) * zoom;
+        const double ct = rm::cos(rot) * zoom, st = rm::sin(rot) * zoom;
         e.a = ct; e.b = st; e.c = -st; e.d = ct;
         e.tx = tu; e.ty = tv;
         return e;
@@ -642,7 +643,7 @@ void stabilizeRender(Ctx& c, const Settings& S, bool oldPlugin)
     if (S.rolling) { rsx = rawX * 0.6; rsy = rawY * 0.6; }
     double blurLen = 0, bdx = 0, bdy = 0;
     if (S.blur) {
-        const double sp = std::hypot(velX, velY);
+        const double sp = rm::hypot(velX, velY);
         if (sp > S.blurThr && sp > 1e-6) {
             blurLen = std::min(sp, S.blurMax) * 0.5;
             bdx = velX / sp; bdy = velY / sp;

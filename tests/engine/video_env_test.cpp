@@ -44,6 +44,8 @@ public:
             for (int x = 0; x < w; ++x, d += 4) {
                 if (kind == "frames") {
                     d[0] = (uint8_t)frame; d[1] = 7; d[2] = 200; d[3] = 255;
+                } else if (kind == "tophalf") {
+                    if (y < h / 2) d[0] = d[1] = d[2] = d[3] = 255;      // (y counts from the top)
                 } else if (kind == "half") {
                     if (x < w / 2) d[0] = d[1] = d[2] = d[3] = 255;
                 } else if (kind == "move") {
@@ -72,7 +74,7 @@ static std::unique_ptr<MediaReader> testOpen(const std::string& path, std::strin
     if (r->kind == "frames" || r->kind == "move") {
         r->mi.fps = 30;
         r->mi.duration = 10;
-    } else if (r->kind == "solid" || r->kind == "half") {
+    } else if (r->kind == "solid" || r->kind == "half" || r->kind == "tophalf") {
         r->mi.isStill = true;
         if (r->kind == "solid") std::sscanf(path.c_str() + 6, "%d,%d,%d,%d", &r->solid[0], &r->solid[1], &r->solid[2], &r->solid[3]);
     } else {
@@ -584,6 +586,24 @@ int main(int argc, char** argv)
               "and both give the same picture", pxs(inverted) + " / " + pxs(pixel(eight, 10, 10)));
         p.tracks[0].events[0].fx.clear();
         fx.releaseExcept({});
+    }
+
+    // ---------------------------------------------------------------- Reduce Interlace Flicker
+    {
+        // a hard edge between rows: VEGAS blurs it vertically only in an interlaced project (its progressive projects keep hard edges)
+        Project p;
+        p.settings.width = 320;
+        p.settings.height = 180;
+        const uint64_t m = addMedia(p, "tophalf:");
+        Event& e = addEvent(p, addTrack(p), m, 0, 5);
+        e.reduceFlicker = true;
+        ImagePtr img = video.render(p, 1.0, final);
+        auto rowValue = [&](int y) { return pixel(img, 50, y).g; };
+        check(rowValue(88) == 255 && rowValue(89) == 255 && rowValue(90) == 0 && rowValue(91) == 0, "Reduce Interlace Flicker leaves a progressive project's edge hard",
+              std::to_string(rowValue(89)) + " / " + std::to_string(rowValue(90)));
+        p.settings.fieldOrder = "lower";
+        img = video.render(p, 1.0, final);
+        check(rowValue(89) > 0 && rowValue(89) < 255 && rowValue(90) > 0 && rowValue(90) < 255, "and softens it in an interlaced one", std::to_string(rowValue(89)) + " / " + std::to_string(rowValue(90)));
     }
 
     std::printf("SUMMARY: %d passed, %d failed\n", gPass, gFail);

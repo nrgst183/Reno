@@ -21,8 +21,20 @@ EXACT = {"Round", "RoundEven", "Trunc", "FAbs", "SAbs", "FSign", "Floor", "Ceil"
 # built-ins with driver-specific precision
 RISKY = {"Radians", "Degrees", "Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Sinh", "Cosh", "Tanh", "Atan2", "Pow", "Exp", "Log", "Exp2", "Log2", "Sqrt", "InverseSqrt",
          "FMix", "Step", "SmoothStep", "Length", "Distance", "Cross", "Normalize"}
-# Sqrt and Atan2 are only a starting value / special-case answer behind the software double (spvdsl.py: sqrt_hw, atan2_f); that use is audited by the kernel's test
+# Where the driver's own built-in may still appear, and why (each use must be in a kernel of the list; a new use fails the lint until it is audited and added):
+#   Sqrt   only for the operands the software square root does not handle (zero, negative, non-finite, denormal; spvdsl.py sqrt()), or as the starting value of a Newton step
+#          in the software double (sf64.py), whose result does not depend on it (the correction is exact)
+#   Atan2  only the starting guess of sf64.sf_atan2 (one Newton step on the doubles' sine and cosine follows: the error left is the cube of the guess's error, about 1e-20)
+#   Fma    only where the CPU calls fmaf (oclt_pixelate); every kernel has its own fused step otherwise (rmath_gpu.sf_fma, error-free transformations)
+# Everything else of RISKY is an error: Sin Cos Tan Asin Acos Atan Pow Exp Log Exp2 Log2 InverseSqrt FMix Radians Degrees Step SmoothStep Length Distance Cross Normalize.
 ALLOWED = {"Sqrt", "Atan2", "Fma"}
+ALLOWED_USERS = {
+    "Atan2": {"colorcorrectorsecondary", "lensflare", "lfo_draw", "o_ccs", "oclt_starwipe", "rpix_out", "tpr", "wipe_clock", "wipe_clock8", "wipe_clock_f"},
+    "Fma": {"oclt_pixelate"},
+}
+# built-ins whose result for an out-of-range or NaN operand is left to the driver (Vulkan) and differs from the CPU's cvttss2si: counted in --list so a kernel that
+# feeds them unchecked values can be found
+CONVERT_OPS = {"ConvertFToS": 110, "ConvertFToU": 109}
 FLOAT_ARITH = {"FAdd": 129, "FSub": 131, "FMul": 133, "FDiv": 136, "FRem": 140, "FMod": 141, "VectorTimesScalar": 142, "Dot": 148}
 
 def words(path):
@@ -52,6 +64,9 @@ def scan(w):
             ext[nm] += 1
         if op in (1, 2) and False: pass
     usesnan = any(op in (156, 157) for op, a in insts)       # IsNan IsInf
+    for nm, code in CONVERT_OPS.items():
+        c = sum(1 for op, a in insts if op == code)
+        if c: ops[nm] = c
     return ops, ext, undecorated, usesnan
 
 def main():
@@ -70,6 +85,7 @@ def main():
         for k in ext:
             if k in RISKY and k not in ALLOWED: probs.append("built-in %s x%d (driver-specific precision)" % (k, ext[k]))
             elif k not in EXACT and k not in RISKY and k not in ALLOWED: probs.append("unknown built-in %s" % k)
+            elif k in ALLOWED_USERS and name not in ALLOWED_USERS[k]: probs.append("built-in %s x%d in a kernel not audited for it (see ALLOWED in spvlint.py)" % (k, ext[k]))
         if listing: print("%-28s %s %s%s" % (name, dict(ops), dict(ext), " nan-tests" if nan else ""))
         for p in probs:
             print("LINT %s: %s" % (name, p)); bad += 1

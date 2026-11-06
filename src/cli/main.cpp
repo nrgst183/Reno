@@ -17,6 +17,9 @@
 #include "../ofx/ofxhost.h"
 #include "../vegas/vegas.h"
 #include "plugincheck.h"
+// "model": a project as JSON for tools/vegcov_compare.py. Included rather than listed as a source of its own so the
+// build scripts that name main.cpp and plugincheck.cpp only need no change.
+#include "modeldump.cpp"
 
 extern "C" {
 #include <libavutil/log.h>
@@ -158,6 +161,8 @@ const char* kHelp =
     "                           picture's hash to FILE), to check that an engine change leaves them unchanged\n"
     "  --full-size-fx           with --profile: run effects without multi-resolution support at the project size\n"
     "                           (default: the preview size, as VEGAS does)\n"
+    "  --only-track N           mute every track except the N-th (from 1); to see what one track of a project makes\n"
+    "  --vout-keep LIST         keep only these effects (numbers from 1, e.g. 1,3) of the Video Output FX; to find which one makes a difference\n"
     "  --no-fx                  bypass every effect (events, tracks, buses, master, video output; not inside nested\n"
     "                           projects), for timing comparisons\n"
     "  --strict                 stop before rendering if any media file or plug-in is missing (without it they are\n"
@@ -556,6 +561,9 @@ std::vector<std::string> counted(const std::vector<std::string>& lines)
 struct Options {
     std::string input, output, templ, listFilter, logFile;
     bool list = false, overwrite = false, strict = false, noScan = false, noFx = false;
+    std::string voutKeep;                   // --vout-keep LIST
+    bool hasVoutKeep = false;
+    int onlyTrack = 0;                      // --only-track N
     bool audioOnly = false, videoOnly = false;
     // overrides
     bool sizeProject = false, fpsProject = false, rateProject = false;
@@ -626,6 +634,8 @@ bool parseArgs(const std::vector<std::string>& args, Options& o, std::string* pr
         else if (a == "-y" || a == "--overwrite") o.overwrite = true;
         else if (a == "--strict") o.strict = true;
         else if (a == "--no-fx") o.noFx = true;
+        else if (a == "--vout-keep") { if (!need(k, a, &o.voutKeep)) return false; o.hasVoutKeep = true; }
+        else if (a == "--only-track") { std::string v; if (!need(k, a, &v)) return false; o.onlyTrack = atoi(v.c_str()); }
         else if (a == "--no-scan") o.noScan = true;
         else if (a == "-q" || a == "--quiet") gQuiet = true;
         else if (a == "-v" || a == "--verbose") gVerbose = true;
@@ -1628,6 +1638,17 @@ int openJobInput(const Options& o, AppState& app, const Job& job, int* pluginCou
                 if (fileExists(alt)) { m.path = alt; m.offline = false; }
             }
         });
+    if (o.onlyTrack > 0)
+        app.edit("Solo track", [&](Project& p) {
+            for (size_t i = 0; i < p.tracks.size(); ++i) p.tracks[i].mute = (int)i + 1 != o.onlyTrack;
+        });
+    if (o.hasVoutKeep)
+        app.edit("Keep some Video Output FX", [&](Project& p) {
+            FxChain keep;
+            for (size_t i = 0; i < p.videoOut.size(); ++i)
+                if (("," + o.voutKeep + ",").find("," + std::to_string(i + 1) + ",") != std::string::npos) keep.push_back(p.videoOut[i]);
+            p.videoOut = keep;
+        });
     if (o.noFx)
         app.edit("Bypass All Effects", [](Project& p) {
             auto off = [](FxChain& c) { for (FxSlot& s : c) s.bypass = true; };
@@ -2005,6 +2026,11 @@ int main(int argc, char** argv)
             return runPluginCheckCommand(cmd, args);
         }
         return runPluginCheckCommand(cmd, args);
+    }
+    // model: the project as JSON in the schema of tools/vegas/RenoCoverage.cs (no Qt)
+    if (!args.empty() && args[0] == "model") {
+        args.erase(args.begin());
+        return runModelCommand(args);
     }
     // vkcheck: Vulkan devices and GPU effects against their CPU code (no Qt)
     if (!args.empty() && args[0] == "vkcheck") {

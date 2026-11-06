@@ -81,7 +81,10 @@ void compositeOver(Image& dst, const Image& src, float opacity);
 void blendImages(Image& dst, const Image& a, const Image& b, float t);
 // Copies 'src' into the middle of a new w x h frame (transparent border), scaling it to fit inside while keeping its
 // shape.
-ImagePtr fitImage(const Image& src, int w, int h);
+// cornerAligned: the way VEGAS scales a picture up (checked against its snapshots): the first and last pixel of the
+// scaled picture sit on the first and last pixel of the source (position x * (srcW - 1) / (dstW - 1)), not on the
+// pixel centres' even spacing ((x + 0.5) * srcW / dstW - 0.5). Only changes the bilinear (not the box-averaged) case.
+ImagePtr fitImage(const Image& src, int w, int h, bool cornerAligned = false);
 
 // Runs fn(first, end) over rows [0, rows) split into bands, on the processor's cores at once (a pool of threads kept
 // for it), and returns when all are done.

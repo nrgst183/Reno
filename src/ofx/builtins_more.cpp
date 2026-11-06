@@ -4,6 +4,7 @@
 //
 // This file turns the spec text into definitions and registers the effects. The effects are in builtins_more_blur.cpp, _colour.cpp, _creative.cpp and _light.cpp,
 // with shared helpers in builtins_more_internal.h.
+#include "../core/rmath.h"
 #include "builtins_vfxdata.h"
 #include "builtins_more_internal.h"
 #include <algorithm>
@@ -97,7 +98,7 @@ void tinyPlanet(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     const double tilt = (c.d("Latitude") - 90.0) * kPi / 180.0, lon = c.d("Longitude") * kPi / 180.0, zoom = std::max(0.05, c.d("Z"));
-    const double ct = std::cos(tilt), st = std::sin(tilt);
+    const double ct = rm::cos(tilt), st = rm::sin(tilt);
     const double R = 0.5 * c.frameH * zoom;
     forRows(H, W, [&](int y) {
         for (int x = 0; x < W; ++x) {
@@ -105,7 +106,7 @@ void tinyPlanet(Ctx& c)
             const double r2 = px * px + py * py, k = 1.0 / (1.0 + r2);
             const double X = 2 * px * k, Z = 2 * py * k, Y = (r2 - 1.0) * k;
             const double Y2 = Y * ct - Z * st, Z2 = Y * st + Z * ct;
-            const double lonS = std::atan2(X, Z2) + lon, latS = std::asin(clampd(Y2, -1, 1));
+            const double lonS = rm::atan2(X, Z2) + lon, latS = rm::asin(clampd(Y2, -1, 1));
             double u = 0.5 + lonS / (2 * kPi);
             u -= std::floor(u);
             const double v = 0.5 - latS / kPi;

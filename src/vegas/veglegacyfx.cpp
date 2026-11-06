@@ -10,7 +10,7 @@ namespace veg {
 
 namespace {
 
-enum class Kind { Swirl, Punch, Wave, Tv, LightRays };
+enum class Kind { Swirl, Punch, Wave, Tv, LightRays, Threshold, FilmGrain };
 
 // How one of Reno's settings is made from the record's numbers (not Swirl and Pinch/Punch, which have their own code).
 enum class Conv { Same, OneMinus, Zoom, Flag };
@@ -28,6 +28,7 @@ struct Effect {
     size_t count;                       // numbers in a block
     std::vector<const char*> params;    // Reno's parameters, in the order the state lists them
     std::vector<Slot> slots;            // for the kinds without code of their own
+    size_t elem = 8;                    // bytes per number: 8 (a double), 4 (a float: Threshold)
 };
 
 const std::vector<Effect>& effects()
@@ -44,7 +45,7 @@ const std::vector<Effect>& effects()
         {"b892d510-9487-4022-b261-738123b55e47", Kind::Tv, "com.vegascreativesoftware:tvsimulator", 8,
          {"DetailZoom", "ApertureGrill", "Interlacing", "LineSync", "VerticalSync", "ScanPhasing", "Phosphorescence", "Static"},
          {{"DetailZoom", 0, 1, Conv::Zoom}, {"ApertureGrill", 1, 1, Conv::Same}, {"Interlacing", 2, 1, Conv::Same},
-          {"LineSync", 3, 1, Conv::OneMinus}, {"VerticalSync", 4, 1, Conv::OneMinus}, {"ScanPhasing", 5, 1, Conv::Same},
+          {"LineSync", 3, 1, Conv::Same}, {"VerticalSync", 4, 1, Conv::Same}, {"ScanPhasing", 5, 1, Conv::Same},
           {"Phosphorescence", 6, 1, Conv::Same}, {"Static", 7, 1, Conv::Same}}},
         {"1ef9e213-8361-48f6-9911-7221ed1dbc4a", Kind::LightRays, "com.vegascreativesoftware:lightrays", 13,
          {"LightSource", "TintColor", "group0Sensitivity", "group0Strength", "group1BoundRadius", "group1RadiusX", "group1RadiusY", "group1Feather",
@@ -52,6 +53,12 @@ const std::vector<Effect>& effects()
          {{"LightSource", 0, 2, Conv::Same}, {"group0Strength", 2, 1, Conv::Same}, {"group0Sensitivity", 3, 1, Conv::Same},
           {"group1BoundRadius", 4, 1, Conv::Flag}, {"group1RadiusX", 5, 1, Conv::Same}, {"group1RadiusY", 6, 1, Conv::Same},
           {"group1Feather", 7, 1, Conv::Same}, {"TintColor", 8, 3, Conv::Same}, {"group2Blend", 11, 1, Conv::Same}, {"group2Noise", 12, 1, Conv::Same}}},
+        // Threshold: one 32-bit float, the level (the coverage run's preset "25 %" holds 0.25; Reno's built-in has the same 0..1 setting)
+        {"c3062be8-e69d-11d1-9aa9-00a0c99b12c5", Kind::Threshold, "com.vegascreativesoftware:threshold", 1, {"Threshold"},
+         {{"Threshold", 0, 1, Conv::Same}}, 4},
+        // Film Grain: three doubles; the coverage run's preset "Subtle" holds 0.312, 0.14, 0 (Reno's built-in defaults for Amount, Granularity, Chromaticity)
+        {"b78cbe2c-9292-4c7c-9682-5d8a71cc984b", Kind::FilmGrain, "com.vegascreativesoftware:filmgrain", 3, {"Amount", "Granularity", "Chormaticity"},
+         {{"Amount", 0, 1, Conv::Same}, {"Granularity", 1, 1, Conv::Same}, {"Chormaticity", 2, 1, Conv::Same}}},
     };
     return list;
 }
@@ -180,7 +187,7 @@ bool isLegacyFxAt(const Bytes& b, size_t off)
     const Effect* fx = effectOfGuid(b.guid(off + 4));
     if (!fx) return false;
     const uint32_t staticBytes = b.u32(off + 0x14), nameBytes = b.u32(off + 0x34);
-    return (staticBytes == 0 || staticBytes == fx->count * 8) && nameBytes <= 0x1000 && b.has(off + 0x38, (size_t)nameBytes + staticBytes);
+    return (staticBytes == 0 || staticBytes == fx->count * fx->elem) && nameBytes <= 0x1000 && b.has(off + 0x38, (size_t)nameBytes + staticBytes);
 }
 
 bool readLegacyFx(const Bytes& b, size_t off, LegacyFxRecord& out)
@@ -194,15 +201,15 @@ bool readLegacyFx(const Bytes& b, size_t off, LegacyFxRecord& out)
     out.flags = b.u32(off + 0x2c);
     out.preset = b.text(off + 0x38, nameBytes);
     size_t p = off + 0x38 + nameBytes;
-    for (uint32_t i = 0; i < staticBytes / 8; ++i) out.statik.push_back(b.f64(p + 8 * (size_t)i));
+    for (uint32_t i = 0; i < staticBytes / fx->elem; ++i) out.statik.push_back(fx->elem == 4 ? (double)b.f32(p + 4 * (size_t)i) : b.f64(p + 8 * (size_t)i));
     p += staticBytes;
-    const size_t keyBytes = fx->count * 8;
+    const size_t keyBytes = fx->count * fx->elem;
     for (uint32_t i = 0; i < count; ++i) {
         if (!b.has(p, 0x1c + keyBytes) || b.u32(p) != 0x1c || b.u32(p + 0x18) != keyBytes) return false;
         LegacyFxKey k;
         k.time = b.i64(p + 4);
         k.extra.assign((const char*)b.data() + p + 12, 12);
-        for (size_t j = 0; j < fx->count; ++j) k.v.push_back(b.f64(p + 0x1c + 8 * j));
+        for (size_t j = 0; j < fx->count; ++j) k.v.push_back(fx->elem == 4 ? (double)b.f32(p + 0x1c + 4 * j) : b.f64(p + 0x1c + 8 * j));
         out.keys.push_back(std::move(k));
         p += 0x1c + keyBytes;
     }
@@ -219,18 +226,21 @@ std::string writeLegacyFx(const Bytes& original, size_t originalOff, const Legac
 {
     const uint32_t nameBytes = original.u32(originalOff + 0x34);
     std::string s((const char*)original.data() + originalOff, std::min<size_t>(original.size() - originalOff, 0x38 + (size_t)nameBytes));
-    setU32(s, 0x14, (uint32_t)rec.statik.size() * 8);
+    const Effect* fx = effectOfGuid(rec.classGuid);
+    const size_t elem = fx ? fx->elem : 8;
+    auto addNum = [&](double d) { if (elem == 4) { float f = (float)d; uint32_t u; std::memcpy(&u, &f, 4); addU32(s, u); } else addF64(s, d); };
+    setU32(s, 0x14, (uint32_t)(rec.statik.size() * elem));
     setU32(s, 0x18, (uint32_t)rec.keys.size());
     setU32(s, 0x2c, rec.flags);
-    for (double d : rec.statik) addF64(s, d);
+    for (double d : rec.statik) addNum(d);
     for (const auto& k : rec.keys) {
         addU32(s, 0x1c);
         addU64(s, (uint64_t)k.time);
         std::string extra = k.extra;
         extra.resize(12, '\0');
         s += extra;
-        addU32(s, (uint32_t)k.v.size() * 8);
-        for (double d : k.v) addF64(s, d);
+        addU32(s, (uint32_t)(k.v.size() * elem));
+        for (double d : k.v) addNum(d);
     }
     return s;
 }
@@ -241,9 +251,15 @@ std::string legacyPluginId(const LegacyFxRecord& r)
     return fx ? fx->pluginId : std::string();
 }
 
+// "Apply before pan/crop" in a legacy or managed record. VEGAS Pro 18 wrote 0x41 in the word at 0x2c for every such effect that a
+// script both bypassed and set to apply before pan/crop (coverage run, 13 effect kinds: the plain record is 0x30c/0x30e/...),
+// so 0x01 is the bypass bit (as for OpenFX effects) and 0x40 is taken as this setting. Older samples hold one record
+// with 0x80 (a Swirl) and one with 0x40 (a TV Simulator), both in second place behind an effect applied before pan/crop; 0x80
+// was taken as the setting before the coverage run, so it still counts. Bypass alone and the setting alone are not told apart by
+// that run (RenoCoverage.cs should set them one at a time).
 bool recordBeforePanCrop(const Bytes& b, size_t off)
 {
-    return b.has(off, 0x30) && (b.u32(off + 0x2c) & 0x80u) != 0;
+    return b.has(off, 0x30) && (b.u32(off + 0x2c) & 0xC0u) != 0;
 }
 
 static void setFlagBit(std::string& record, uint32_t bit, bool on)
@@ -255,7 +271,14 @@ static void setFlagBit(std::string& record, uint32_t bit, bool on)
     setU32(record, 0x2c, f);
 }
 
-void setRecordBeforePanCrop(std::string& record, bool on) { setFlagBit(record, 0x80u, on); }
+void setRecordBeforePanCrop(std::string& record, bool on)
+{
+    if (record.size() < 0x30) return;
+    uint32_t f = 0;
+    std::memcpy(&f, record.data() + 0x2c, 4);
+    if (on == ((f & 0xC0u) != 0)) return;           // as it was (a record that has 0x80 keeps it)
+    setFlagBit(record, on ? 0x40u : 0xC0u, on);
+}
 
 bool legacyBypass(const LegacyFxRecord& r) { return (r.flags & 0x01u) != 0; }
 
