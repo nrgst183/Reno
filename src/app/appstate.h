@@ -439,6 +439,10 @@ void shiftEventEnvelopes(Event& e, double delta);
 // Same for Event Pan/Crop keyframes and mask keyframes when a split makes the event start later.
 void shiftEventKeyframes(Event& e, double delta);
 
+// A track hint for AppState::addMediaToTimeline: put the media on new tracks after the last one, even if a free track of
+// the kind exists (media dropped on the empty area below the tracks; the Vegas 8 tutorial, 35:18-35:22).
+const uint64_t kNewTracksAtEnd = ~0ull;
+
 // "00:00:12;15"-style time (hours:minutes:seconds;frames).
 std::string timecode(double seconds, double fps);
 

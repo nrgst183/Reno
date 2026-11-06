@@ -432,6 +432,7 @@ enum class DropKind { None, Media, Files, VideoFx, AudioFx, Generator, Transitio
 struct Ghost {
     uint64_t track = 0;
     bool video = true;
+    bool atEnd = false;  // goes on a new track after the last one (dropped on the empty area below the tracks)
     double start = 0, length = 0;
 };
 
@@ -496,6 +497,17 @@ const char* const kCurveNames[] = {"Linear", "Fast", "Slow", "Smooth", "Sharp", 
 
 }
 using namespace tl;
+
+// "3.09" - a length as whole seconds and frames, the way VEGAS labels how far an event was dragged and how long a cross-fade is
+// (Vegas 8 tutorial 20:14 and 23:44). A negative length keeps its sign.
+inline QString secondsFramesLabel(double secs, double fps, bool signedPlus = false)
+{
+    const double fr = 1.0 / std::max(1.0, fps), ad = std::fabs(secs);
+    long whole = (long)std::floor(ad + 1e-9);
+    long fn = (long)std::lround((ad - (double)whole) / fr);
+    if (fn >= (long)std::lround(fps)) { ++whole; fn = 0; }
+    return QString::fromStdString(strfmt("%s%ld.%02ld", secs < 0 ? "-" : (signedPlus ? "+" : ""), whole, fn));
+}
 
 struct TimelineWidget::Impl {
     TimelineWidget* q;
@@ -562,6 +574,10 @@ struct TimelineWidget::Impl {
     struct EnvClip { std::string kind; std::vector<EnvPoint> points; double span = 0; } envClip;
     std::set<int> selPoints;
     QString envLabel;
+    // while events are dragged: how far they have moved ("+1.06" = 1 s 6 frames), drawn in the band above the ruler with a
+    // line from where the grabbed event started to where it is now (Vegas 8 tutorial, 20:14-20:17)
+    QString moveLabel;
+    double moveFromT = 0, moveToT = 0;
     QPointF envLabelAt;
 
     // ---- the timeline as last painted, kept while playing. While only the cursor moves (a hundred times a second)
@@ -928,6 +944,7 @@ struct TimelineWidget::Impl {
     } notedOverlays;
 
     QRectF envLabelBox() const;
+    void drawMoveLabel(QPainter& p);
     Overlays currentOverlays() const;
     void overlaysChanged();
 

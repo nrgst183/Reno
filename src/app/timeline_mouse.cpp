@@ -1449,6 +1449,11 @@ void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers 
         followSyncLinks(p, links, moving);
     });
     app.status("Move: " + timecode(g.start + delta, fps()));
+    {
+        moveLabel = secondsFramesLabel(delta, fps(), true);
+        moveFromT = g.start;
+        moveToT = g.start + delta;
+    }
 }
 
 // An event's gain line was pressed: the drag that follows pulls it up or down. All the selected events of the same kind
@@ -1643,7 +1648,21 @@ void TimelineWidget::Impl::updateEdge(const QPointF& pos, Qt::KeyboardModifiers 
             e->fadeOut = std::min(e->fadeOut, std::max(0.0, e->length - e->fadeIn));
         }
     });
+    if (kind == Drag::TrimLeft || kind == Drag::TrimRight || kind == Drag::StretchLeft || kind == Drag::StretchRight) {
+        // the same box above the ruler as for a move: how far the edge went ("-1.18"), with a line back to where it was
+        // (Vegas 8 tutorial 43:52-43:59)
+        const double from = (kind == Drag::TrimLeft || kind == Drag::StretchLeft) ? g.start : g.end();
+        moveLabel = secondsFramesLabel(edge - from, fps(), true);
+        moveFromT = from;
+        moveToT = edge;
+    }
     if (kind != Drag::FadeIn && kind != Drag::FadeOut) edgePreview(edge);
+    else {
+        // a small label beside the pointer with the fade's length (the Vegas 8 tutorial shows "Fade offset 00:00:13.08"
+        // while a fade handle is dragged)
+        envLabel = QString::fromStdString("Fade offset " + timecode(fade, fps()));
+        envLabelAt = pos;
+    }
     app.status(say);
 }
 

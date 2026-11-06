@@ -387,6 +387,10 @@ int main(int argc, char** argv)
         t = contextAt(tl, QPoint(tl->xAt(9.0), a1.center().y()), m);
         check(!t.contains("Insert Empty Event") && t.contains("Insert Audio Track") && t.contains("Select All After Cursor"),
               "empty audio track area outside the time selection", t.join(" | ").toStdString());
+        // the empty video lane ends with the Insert group (beginner tutorial, 33:40)
+        t = contextAt(tl, QPoint(tl->xAt(9.0), v1.center().y()), m);
+        checkOrder(t, {"Fade Colors", "-", "Insert Empty Event", "Insert Text Media...", "Insert Generated Media...", "Insert Slideshow..."},
+                   "empty video lane outside the time selection: Insert Empty Event / Text Media / Generated Media / Slideshow at the end");
         // the ruler area: the marker bar, a marker, the time selection's bar, the ruler
         t = contextAt(tl, QPoint(tl->xAt(9.0), tl->markerBarRect().center().y()), m);
         checkOrder(t, {"Loop Playback", "-", "Set Selection to View", "Set Selection to Project", "Set Selection to All", "Select Loop Region", "-",

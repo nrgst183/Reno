@@ -110,9 +110,10 @@ std::vector<Ghost> TimelineWidget::Impl::planMedia(const MediaItem& m, double ti
         g.video = type == TrackType::Video;
         g.start = start;
         g.length = len;
+        g.atEnd = hint == kNewTracksAtEnd;
         for (const Track& t : p.tracks)
             if (t.id == hint && t.type == type && isFree(t)) g.track = t.id;
-        if (!g.track)
+        if (!g.track && !g.atEnd)
             for (const Track& t : p.tracks)
                 if (t.type == type && isFree(t)) { g.track = t.id; break; }
         out.push_back(g);
@@ -150,7 +151,9 @@ void TimelineWidget::Impl::planDrop(const QMimeData* md, const QPointF& pos, Qt:
     case DropKind::Files:
     case DropKind::Generator: {
         if (!inLanes) return;
-        if (drop.kind == DropKind::Generator && !(tr && tr->type == TrackType::Video)) return;
+        // the empty area below the last track: the media gets new tracks after it (the first item only; the rest follow it on them)
+        if (!tr && !rows.empty() && pos.y() >= rowTop(rows.back()) + rows.back().h) drop.track = kNewTracksAtEnd;
+        else if (drop.kind == DropKind::Generator && !(tr && tr->type == TrackType::Video)) return;
         if ((mods & Qt::ControlModifier) && h.onEvent() && drop.kind != DropKind::Generator) {
             const Event* e = pr.findEvent(h.event);
             if (!e) return;
@@ -182,7 +185,7 @@ void TimelineWidget::Impl::planDrop(const QMimeData* md, const QPointF& pos, Qt:
                 const MediaItem* m = pr.findMedia(s.toULongLong());
                 if (!m || std::find(drop.media.begin(), drop.media.end(), m->id) != drop.media.end()) continue;
                 drop.media.push_back(m->id);
-                for (const Ghost& g : planMedia(*m, t, drop.track)) drop.ghosts.push_back(g);
+                for (const Ghost& g : planMedia(*m, t, drop.media.size() == 1 ? drop.track : 0)) drop.ghosts.push_back(g);
                 t += mediaLength(*m) - autoOverlap(mediaLength(*m));
             }
             drop.ok = !drop.media.empty();
@@ -315,7 +318,7 @@ std::set<uint64_t> TimelineWidget::Impl::addMediaAs(const std::vector<uint64_t>&
             const MediaItem* mi = app.project().findMedia(m);
             if (!mi) continue;
             const double len = mediaLength(*mi);
-            each.push_back(addOne(m, t, track));
+            each.push_back(addOne(m, t, each.empty() || track != kNewTracksAtEnd ? track : 0));
             for (uint64_t e : each.back()) made.insert(e);
             if (mode == 0) t += len;
         }
@@ -423,7 +426,7 @@ void TimelineWidget::Impl::dropped(QDropEvent* ev)
             const MediaItem* mi = app.project().findMedia(m);
             if (!mi) continue;
             const double len = mediaLength(*mi);
-            each.push_back(app.addMediaToTimeline(m, t, dr.track));
+            each.push_back(app.addMediaToTimeline(m, t, each.empty() ? dr.track : 0));
             for (uint64_t e : each.back()) made.insert(e);
             t += len;
         }
@@ -445,7 +448,7 @@ void TimelineWidget::Impl::dropped(QDropEvent* ev)
                 continue;
             }
             const double len = mediaLength(*mi);
-            eachFile.push_back(app.addMediaToTimeline(m, t, dr.track));
+            eachFile.push_back(app.addMediaToTimeline(m, t, eachFile.empty() ? dr.track : 0));
             for (uint64_t e : eachFile.back()) made.insert(e);
             t += len;
         }

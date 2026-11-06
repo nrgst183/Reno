@@ -3175,6 +3175,7 @@ private:
             q.y = pressFrac_.y();
             if (open < 0) {
                 MaskPath m;
+                m.featherType = 0;   // a path drawn in the editor starts with Feather type None (VEGAS)
                 m.closed = false;
                 ps.push_back(m);
                 open = (int)ps.size() - 1;
@@ -3331,6 +3332,7 @@ private:
     static MaskPath rectPath(double l, double t, double r, double b)
     {
         MaskPath m;
+        m.featherType = 0;   // a path drawn in the editor starts with Feather type None (VEGAS)
         for (const auto& c : {std::make_pair(l, t), std::make_pair(r, t), std::make_pair(r, b), std::make_pair(l, b)}) {
             MaskPoint q;
             q.x = c.first;
@@ -3343,6 +3345,7 @@ private:
     {
         const double R = 0.2 * std::min((r - l) * sw, (b - t) * sh), rx = R / std::max(1.0, sw), ry = R / std::max(1.0, sh), k = 0.5523;
         MaskPath m;
+        m.featherType = 0;   // a path drawn in the editor starts with Feather type None (VEGAS)
         auto pt = [](double x, double y, double ix, double iy, double ox, double oy) {
             MaskPoint q;
             q.x = x; q.y = y; q.inX = ix; q.inY = iy; q.outX = ox; q.outY = oy;
@@ -3362,6 +3365,7 @@ private:
     {
         const double cx = (l + r) / 2, rx = (r - l) / 2, ry = b - t, k = 0.5523;
         MaskPath m;
+        m.featherType = 0;   // a path drawn in the editor starts with Feather type None (VEGAS)
         MaskPoint a, top, c;
         a.x = l; a.y = b; a.outX = 0; a.outY = -k * ry;
         top.x = cx; top.y = t; top.inX = -k * rx; top.outX = k * rx;
@@ -3374,6 +3378,7 @@ private:
         // four points with the handles of a circle's Bezier (0.5523 of the radius)
         const double cx = (l + r) / 2, cy = (t + b) / 2, rx = (r - l) / 2, ry = (b - t) / 2, k = 0.5523;
         MaskPath m;
+        m.featherType = 0;   // a path drawn in the editor starts with Feather type None (VEGAS)
         auto pt = [](double x, double y, double ix, double iy) {
             MaskPoint q;
             q.x = x; q.y = y; q.inX = ix; q.inY = iy; q.outX = -ix; q.outY = -iy;
@@ -3449,6 +3454,7 @@ private:
             pickData(featherTypeBox_, QString::number(m.featherType));
             opacityBox_->showValue(m.opacity * 100.0);
             featherBox_->showValue(m.feather);
+            featherBox_->setEnabled(m.featherType != 0);   // VEGAS greys Feather (%) while the type is None
         }
         const bool pos = row_ == PositionRow;
         for (QWidget* w : std::initializer_list<QWidget*>{wBox_, hBox_, xBox_, yBox_, rotBox_, pivotXBox_, pivotYBox_}) if (w) w->setEnabled(pos);

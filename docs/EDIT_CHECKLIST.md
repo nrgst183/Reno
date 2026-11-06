@@ -57,6 +57,36 @@ differs from what is written, write down what happened in a text file with the s
 | C38 | Edit > Paste Repeat (5 times, end to end; and every 2 s with events 3 s long) | Save. |
 | C39 | Edit > Paste Event Attributes / Selectively Paste with each box | Which attributes changed. |
 | C40 | Heal/Split of a placeholder (offline) event | Optional. |
+| C41 | Automatic Crossfades on: drag event B 1 s onto the end of event A (video and audio), then drag B away again to leave a gap | Vegas 8 (tutorial video 20:14-20:17) keeps a 1 s fade-in curve on B and shows no fade-out on A. Save before and after: B's fade-in length / curve, A's fade-out length. (Reno leaves the stored fades alone and draws the crossfade from the overlap only.) |
+| C42 | Drag a fade-in handle (top left corner of an event) and a fade-out handle; also just hover over each | Write down the exact tooltip text that follows the pointer while dragging (Vegas 8: "Fade offset 00:00:13.08", the fade's length) and the one when hovering (maybe "Fade-in offset ... Drag to adjust the length of the fade applied to this event"). Reno shows "Fade offset <time>" while dragging. |
+| C43 | Drag an event along the timeline (slowly, a few seconds) | Is there a small box above the ruler with how far it has moved ("+1.06", "-1.24": seconds.frames) and a line back to where it started? Which text, where, is it also shown while snapping? Reno draws it in the band above the ruler. |
+| C44 | Empty timeline with one empty video and one empty audio track: drag a clip from Project Media to the blank area below the tracks and drop it; then drop another onto the empty tracks | Vegas 8 (35:18-35:22) made two NEW tracks after the existing ones (video then audio below) and did not use the empty ones. Which tracks does VEGAS 18 use, and in which order? Where does the drop outline show? |
+| C45 | Select two video events whose audio is not grouped with them, drag them far to the right | Vegas 8 (tutorial 46:32-46:44, after Event > Group > Remove From, then dragging only the video event right) tints the whole audio event pale red for as long as the video event is dragged away from it (also shown at 42:47). While they are in step it is the blue selected look. What is the tint (out-of-sync mark? ghost?), does it stay after the drop, does VEGAS 18 do it? Screenshot. |
+| C46 | Pan slider of an audio track header while dragging and the pan envelope tooltip | Vegas 8 writes "18 % L" (a space before the %); Reno writes "18% L". Which does VEGAS 18 write? |
+
+## Items from the tutorial re-watch (tut3b)
+
+| # | Do this in VEGAS | Write down |
+|---|---|---|
+| C47 | Overlap two events by about 3 s (auto crossfades on), look at the overlap in the video and the audio row | Vegas 8 (tutorial 23:44) puts a small white box with the overlap length ("3.09", seconds.frames) in the middle of the crossfade in both rows. Reno now draws it too. Does VEGAS 18 show it in both rows, always or only when selected, in which format (hours? frames only?) |
+| C48 | Drag the left edge of a crossfade (or the start of the later event) leftwards to lengthen the overlap | Vegas 8 (23:43-23:44) grew the crossfade to the left with the cursor and selection left alone. Which edge did VEGAS move, did the later event's start trim, does the label follow? |
+| C49 | A clip dropped with picture and sound: click only the audio half, then only the picture half (no group changes) | Vegas 8 shows only the clicked half in the selected look in some frames (13:53, 17:42, 19:48, 16:04) and both in others (15:59). Which halves select in VEGAS 18? Screenshot of each. |
+| C50 | Drag an audio event's gain line all the way down | Vegas 8 tooltip reads "Gain is -Inf. dB" (with a full stop after Inf, tutorial 45:06); Reno writes "Gain is -Inf dB". What does VEGAS 18 write? |
+| C51 | Group a picture+audio pair, use Event > Group > Remove From on the picture, drag the picture away and drop it, look at the audio event | Vegas 8 (46:40-46:44, 42:47, 47:54) shows part of the audio event pale red where its picture used to be. Extent of the tint, does it stay after the drop, does it show a number? (Extends C45.) |
+
+## Items from the tutorial re-watch (tut3a)
+
+| # | Do this in VEGAS | Write down |
+|---|---|---|
+| T1 | Drag an event over the end of its neighbour on the same track (Automatic Crossfades on) and keep the button down | The beginner tutorial shows a white fade-in curve and a white box with the overlap length (seconds.frames) on the dragged event, and a signed amount ("-0.16", "+0.05", frames after the dot) on the strip above the ruler. Reno does the same; check that the number is the overlap, that it is the amount moved since the press, and whether the curve turns into the blue X only when the button is let go. Screenshot while holding. |
+| T2 | The same drag amount while trimming an edge and while Ctrl+dragging an edge (time stretch) | The tutorial shows it for the stretch ("-0.19"): is it the change of the edge position in time, and is it the same for a plain trim, for Alt+drag (slip) and for a fade handle (which has its own tooltip)? |
+| T3 | Event Pan/Crop: Anchor Creation tool, draw a mask and close it | New path: Feather type should read None with Feather (%) greyed (the tutorial). Does Apply to FX start at No, Mode Positive, Anti alias Yes, Opacity 100? While the path is still open the picture should not be dimmed; once closed, everything outside goes dark. |
+| T4 | Alt+drag the body of an event (slip) | The tutorial's illustration shows the preview split into "In Point" and "Out Point" frames and an orange bar over the event. Does the preview show both frames while slipping? Screenshot while holding. |
+| T5 | Expanded Edit (double-click an event edge, or Numpad 5) and drag the cut | What does the preview show (both frames of the two events at the cut?) and how do the events look? Does Update 482's preference exist to turn the double-click off? |
+| T6 | Right-click an empty part of an audio track | The video lane ends with Insert Empty Event / Insert Text Media... / Insert Generated Media... / Insert Slideshow... Which of these does an audio lane show, and does Insert Empty Event appear inside a time selection at the top or the bottom? |
+| T7 | Drag a transition from the Transitions tab onto the timeline and hold | The tutorial (38:24-38:28) shows a popup grid of small preset tiles under the pointer while dragging, one tile highlighted blue under the pointer. What is it (a preset picker shown on drop?), where does the transition land (on a cut, on an event start), and how long is it? |
+| T8 | Event Pan/Crop: move the gizmo with the cursor not at the event start | The tutorial's text (27:00): any adjustment made away from the first keyframe adds a keyframe at that time; to change the whole look, edit the first keyframe. Check that Reno's Pan/Crop does the same and that it also happens when Anchor/Position boxes are typed. |
+| T9 | Audio FX: try Automate (envelope for a plug-in parameter) on a plug-in in an audio EVENT FX chain, a TRACK FX chain and the master FX | The tutorial (49:50-50:30) says audio plug-ins cannot be automated at the "Audio FX level" (event FX); only track-level FX offer Automate. Which of the three offers it, and which plug-ins (DirectX, VST) are listed? |
 
 ## What to send back
 

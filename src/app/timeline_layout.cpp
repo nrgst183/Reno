@@ -910,6 +910,26 @@ void TimelineWidget::Impl::drawEnvelopeLabel(QPainter& p)
     p.restore();
 }
 
+void TimelineWidget::Impl::drawMoveLabel(QPainter& p)
+{
+    if ((drag.kind != Drag::Move && drag.kind != Drag::TrimLeft && drag.kind != Drag::TrimRight && drag.kind != Drag::StretchLeft && drag.kind != Drag::StretchRight) || !drag.started || moveLabel.isEmpty()) return;
+    const double x0 = xAtF(moveFromT), x1 = xAtF(moveToT);
+    const double h = kLoopH, y = kLoopTop;
+    p.save();
+    p.setClipRect(QRect(headerW, 0, viewW(), kTopH));
+    p.setFont(smallFont);
+    const double w = smallFm.horizontalAdvance(moveLabel) + 8.0;
+    // VEGAS Pro 18 draws the line blue (beginner tutorial, 38:xx); Vegas 8 drew it grey
+    p.setPen(QPen(QColor(60, 130, 230), 2.0));
+    p.drawLine(QPointF(std::floor(x0) + 0.5, y + h / 2), QPointF(std::floor(x1) + 0.5, y + h / 2));
+    const QRectF box(x1 >= x0 ? x1 : x1 - w, y, w, h);
+    p.setPen(QColor(20, 20, 20));
+    p.setBrush(QColor(255, 255, 255));
+    p.drawRect(box);
+    p.drawText(box, Qt::AlignCenter, moveLabel);
+    p.restore();
+}
+
 Hit TimelineWidget::Impl::hitTest(const QPointF& pos) const
 {
     Hit h;

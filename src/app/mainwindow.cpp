@@ -1098,6 +1098,15 @@ MainWindow::MainWindow() : a_(new Actions())
             if (o.id == trackId) t = &o;
         if (t && t->type == TrackType::Video) compositingMenu(menu, trackId);
     };
+    timeline_->onLaneInsertMenu = [this](QMenu* menu) {
+        const struct { const char* id; const char* text; } items[] = {{"insertText", "Insert Text Media..."}, {"generatedMedia", "Insert Generated Media..."}, {"insertSlideshow", "Insert Slideshow..."}};
+        for (const auto& it : items) {
+            QAction* src = vegasAction(it.id);
+            if (!src) continue;
+            QAction* a = menu->addAction(it.text);
+            QObject::connect(a, &QAction::triggered, this, [src] { src->trigger(); });
+        }
+    };
     timeline_->onTrackCompositing = [this](QMenu* menu, uint64_t trackId) { compositingMenu(menu, trackId); };
     timeline_->onTrackDefaults = [this](QMenu* menu, uint64_t trackId) {
         addTrackDefaultsItem(menu, trackId, this);

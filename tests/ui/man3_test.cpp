@@ -448,6 +448,7 @@ int main(int argc, char** argv)
             drag(view, at(view, 0.1, 0.1), at(view, 0.4, 0.4), Qt::AltModifier);
             const auto* e = ev(V);
             const size_t n1 = e->mask.empty() ? 0 : e->mask[0].paths.size();
+            check(n1 == 1 && e->mask[0].paths[0].featherType == 0, "mask: a path drawn in the editor starts with Feather type None (tutorial, 23:50)");
             check(n1 == 1 && e->mask[0].paths[0].points.size() == 8, "mask: Alt+drag with the Rectangle tool makes a rectangle with round corners (8 points)",
                   n1 ? std::to_string(e->mask[0].paths[0].points.size()) : "no mask");
             oval->click();

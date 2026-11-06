@@ -676,6 +676,24 @@ int main(int argc, char** argv)
         check(sel.size() == 2 && onV1 && onAudio, "dropped media lands where it was dropped, picture and sound, and is selected");
         st().undo();
 
+        // dropped on the empty area below the last track: new tracks after it, even though V1 and the audio tracks have room
+        // (Vegas 8 tutorial 35:18-35:22: two empty tracks, the clip went on two new ones below them)
+        {
+            const size_t n0 = st().project().tracks.size();
+            const QPoint blank(target.x(), w.headerRect(ids.a2).bottom() + 12);
+            bool acc2 = false;
+            dragEnter(&w, &md, blank, &acc2);
+            const bool took = acc2 && dragMove(&w, &md, blank);
+            uitest::shot(&w, out + "/tl_drop_below.png");
+            dropAt(&w, &md, blank);
+            const Project& q = st().project();
+            check(took && q.tracks.size() == n0 + 2 && q.tracks[n0].type == TrackType::Video && q.tracks[n0].events.size() == 1 &&
+                      q.tracks[n0 + 1].type == TrackType::Audio && q.tracks[n0 + 1].events.size() == 1,
+                  "media dropped below the last track goes on a new video and a new audio track after it", strfmt("%zu tracks, was %zu", q.tracks.size(), n0));
+            st().undo();
+            check(st().project().tracks.size() == n0, "(undone in one step)");
+        }
+
         // a video effect onto a video event
         QMimeData fx;
         fx.setData(kMimeVideoFx, QByteArray("reno.test.nosuch\nNo Such Effect"));
@@ -720,6 +738,16 @@ int main(int argc, char** argv)
         dropAt(&w, &tr, at(w, ids.v2, 13.0, 60));
         check(ev(ids.e6)->transition.pluginId == "reno.test.wipe" && ev(ids.e5)->transition.kind.empty(), "and set on the later event");
         check(menuPick(&w, at(w, ids.v2, 13.0, 60), "Remove Transition") && ev(ids.e6)->transition.kind.empty(), "Remove Transition from the menu");
+        {
+            // the overlap carries its length in a small white box ("2.00" = 2 s 0 frames; Vegas 8 tutorial 23:44)
+            const QImage img = uitest::shot(&w, out + "/tl_crossfade_label.png");
+            const QRect hr = w.headerRect(ids.v2);
+            int white = 0;
+            for (int y = hr.top(); y < hr.bottom(); ++y)
+                for (int x = (int)w.xAt(12.2); x < (int)w.xAt(13.8); ++x)
+                    if (x >= 0 && y >= 0 && x < img.width() && y < img.height() && (img.pixel(x, y) & 0xffffff) == 0xffffff) ++white;
+            check(white > 60, "a cross-fade shows its length in a white box", strfmt("%d white pixels", white));
+        }
         st().undo();
         // files from the desktop
         const QString wav = QDir(out).absoluteFilePath("drop.wav");

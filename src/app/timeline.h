@@ -79,6 +79,7 @@ public:
     // A video track's menu is being put together: more items can be added to it (the window adds the compositing
     // modes).
     std::function<void(QMenu* menu, uint64_t trackId)> onTrackMenu;
+    std::function<void(QMenu* menu)> onLaneInsertMenu;   // Insert Text Media... / Generated Media... / Slideshow... on an empty video lane's menu
     // A video track's hamburger menu (and its right-click menu's tail): the window adds Compositing Mode and Make
     // Compositing Parent / Child (onTrackCompositing), and Set Default Track Properties (onTrackDefaults, after
     // Expand Track Layers as in VEGAS).

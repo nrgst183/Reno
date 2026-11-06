@@ -635,6 +635,7 @@ void TimelineWidget::Impl::paint(QPainter& p, const QRect& clip)
     paintLanes(p, clip);
     paintHeaders(p, clip);
     paintRuler(p, clip);
+    drawMoveLabel(p);
     paintCursor(p, clip);
     paintCorners(p, clip);
     paintedCursor = app.cursor();
@@ -1548,7 +1549,27 @@ void TimelineWidget::Impl::drawCrossFade(QPainter& p, const Row& row, const Even
     const bool narrow = x1 - x0 < 12.0;
     if (narrow) p.setRenderHint(QPainter::Antialiasing, false);
     drawFade(p, x0, x1, rb.top() + 1, rb.bottom() - 1, narrow ? CurveLinear : (b.fadeInRecipCurve >= 0 ? b.fadeInRecipCurve : a.fadeOutCurve), false, l, rr, false);
+    // an event being dragged over its neighbour: VEGAS draws the new cross-fade's fade-in curve white until the button is let go
+    bool live = false;
+    if (drag.started && drag.kind == Drag::Move && !transition)
+        for (const Mover& m : drag.movers)
+            if (m.id == b.id) live = true;
+    if (live) p.setPen(QPen(QColor(255, 255, 255), 1.6));
     drawFade(p, x0, x1, rb.top() + 1, rb.bottom() - 1, narrow ? CurveLinear : b.fadeInCurve, true, l, rr, false);
+    {
+        // the cross-fade's length in a small white box in the middle ("3.09" = 3 s 9 frames; Vegas 8 tutorial 23:44)
+        const QString len = secondsFramesLabel(a.end() - b.start, fps());
+        const double w = smallFm.horizontalAdvance(len) + 6.0, h = smallFm.height() + 1.0;
+        if (x1 - x0 > w + 6.0 && rb.height() > h + 6.0) {
+            const QRectF box((x0 + x1 - w) * 0.5, rb.bottom() - h - 3.0, w, h);
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.setPen(QColor(20, 20, 20));
+            p.setBrush(QColor(255, 255, 255));
+            p.drawRect(box.adjusted(0.5, 0.5, -0.5, -0.5));
+            p.setFont(smallFont);
+            p.drawText(box, Qt::AlignCenter, len);
+        }
+    }
     if (transition && x1 - x0 > 34.0) {
         const QFontMetrics fm(smallFont);
         const bool bad = !app.fx.error(b.transition.id).empty();
@@ -1736,11 +1757,14 @@ void TimelineWidget::Impl::paintDrop(QPainter& p, const QRect& c, int tracksBott
         QRectF r;
         QString label;
         if (const Row* row = rowOf(g.track)) r = QRectF(x, rowTop(*row) + 1.0, w, row->h - 3.0);
-        else if (g.video) {
+        else if (g.video && !g.atEnd) {
             r = QRectF(x, kTopH + 2.0, w, 16.0);
             label = "New Video Track";
+        } else if (g.video) {
+            r = QRectF(x, tracksBottom + 3.0, w, 16.0);
+            label = "New Video Track";
         } else {
-            r = QRectF(x, tracksBottom + 3.0, w, kBelow - 8.0);
+            r = QRectF(x, tracksBottom + 3.0 + (g.atEnd ? 18.0 : 0.0), w, kBelow - 8.0 - (g.atEnd ? 18.0 : 0.0));
             label = "New Audio Track";
         }
         r = QRectF(QPointF(std::max(r.left(), c.left() - 8.0), r.top()), QPointF(std::min(r.right(), c.right() + 8.0), r.bottom()));

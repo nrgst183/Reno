@@ -182,6 +182,69 @@ int main(int argc, char** argv)
               strfmt("fade in %.3f -> %.3f, gain %.3f", fi0, ev(pic)->fadeIn, ev(pic)->gain));
         app.undo();
         uitest::settle(30);
+        // while the handle is dragged a "Fade offset <time>" label floats beside the pointer (Vegas 8 tutorial, 40:39); it goes on release
+        const QPoint to = handle + QPoint(30, 0);
+        uitest::mousePress(&w, handle);
+        uitest::mouseMove(&w, handle + QPoint(10, 0));
+        uitest::mouseMove(&w, to);
+        uitest::settle(30);
+        const QImage during = uitest::shot(&w, out + "/fade_label_drag.png");
+        uitest::mouseRelease(&w, to);
+        uitest::settle(30);
+        const QImage after = uitest::shot(&w, out + "/fade_label_after.png");
+        int diff = 0;
+        for (int y = std::max(0, to.y() - 30); y < std::min(during.height(), to.y() + 10); ++y)
+            for (int x = to.x() + 8; x < std::min(during.width(), to.x() + 130); ++x)
+                if (during.pixel(x, y) != after.pixel(x, y)) ++diff;
+        check(diff > 150, "a fade label is drawn beside the pointer while a fade handle is dragged", strfmt("%d pixels differ", diff));
+        app.undo();
+        uitest::settle(30);
+    }
+
+    // ---------------------------------------------------------------- the offset label above the ruler while events are moved
+    {
+        const QRect r = rect(pic);
+        const QPoint from(r.left() + r.width() / 2, r.top() + r.height() * 3 / 5), to = from + QPoint(60, 0);
+        const double s0 = ev(pic)->start;
+        uitest::mousePress(&w, from);
+        uitest::mouseMove(&w, from + QPoint(20, 0));
+        uitest::mouseMove(&w, to);
+        uitest::settle(30);
+        const QImage during = uitest::shot(&w, out + "/move_label_drag.png");
+        const bool moved = ev(pic)->start > s0 + 0.2;
+        uitest::mouseRelease(&w, to);
+        uitest::settle(30);
+        const QImage after = uitest::shot(&w, out + "/move_label_after.png");
+        int diff = 0;
+        for (int y = 0; y < 40; ++y)  // the band above the ruler's numbers
+            for (int x = 0; x < during.width(); ++x)
+                if (during.pixel(x, y) != after.pixel(x, y)) ++diff;
+        check(moved && diff > 100, "a moved event shows its offset in a box above the ruler while it is dragged", strfmt("%d pixels differ", diff));
+        app.undo();
+        uitest::settle(30);
+    }
+
+    // ---------------------------------------------------------------- the same box while an event's end is trimmed
+    {
+        const QRect r = rect(pic);
+        const QPoint from(r.right() - 2, r.top() + r.height() * 3 / 5), to = from - QPoint(60, 0);
+        const double len0 = ev(pic)->length;
+        uitest::mousePress(&w, from);
+        uitest::mouseMove(&w, from - QPoint(20, 0));
+        uitest::mouseMove(&w, to);
+        uitest::settle(30);
+        const QImage during = uitest::shot(&w, out + "/trim_label_drag.png");
+        const bool trimmed = ev(pic)->length < len0 - 0.2;
+        uitest::mouseRelease(&w, to);
+        uitest::settle(30);
+        const QImage after = uitest::shot(&w, out + "/trim_label_after.png");
+        int diff = 0;
+        for (int y = 0; y < 40; ++y)
+            for (int x = 0; x < during.width(); ++x)
+                if (during.pixel(x, y) != after.pixel(x, y)) ++diff;
+        check(trimmed && diff > 100, "a trimmed edge shows how far it went in a box above the ruler while it is dragged", strfmt("%d pixels differ, length %.2f -> %.2f", diff, len0, ev(pic)->length));
+        app.undo();
+        uitest::settle(30);
     }
 
     // ---------------------------------------------------------------- several events selected: they change together

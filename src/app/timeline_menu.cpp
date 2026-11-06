@@ -838,7 +838,17 @@ void TimelineWidget::Impl::trackMenu(QMenu& menu, const Hit& h, bool lane, doubl
         add(*colors, "Top...", [this, id] { q->fadeColorDialog(id, true); });
         add(*colors, "Bottom...", [this, id] { q->fadeColorDialog(id, false); });
     }
-    if (lane) return;
+    if (lane) {
+        // VEGAS 18 ends the empty-lane menu with the Insert group (seen in the beginner tutorial, right-click on an empty
+        // part of a video track): Insert Empty Event, Insert Text Media..., Insert Generated Media..., Insert Slideshow...
+        if (video && q->onLaneInsertMenu) {
+            menu.addSeparator();
+            const bool shownAbove = time >= 0 && app.loopEnd > app.loopStart && time >= app.loopStart && time <= app.loopEnd;
+            if (!shownAbove) add(menu, "Insert Empty Event", [this] { q->insertEmptyEvent(); });
+            q->onLaneInsertMenu(&menu);
+        }
+        return;
+    }
     if (video) {
         // VEGAS 18's Expand Track Layers: the track's events on an A roll, a B roll and a transition roll (again:
         // collapsed)

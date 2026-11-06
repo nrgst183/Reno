@@ -945,9 +945,10 @@ std::vector<uint64_t> AppState::addMediaToTimeline(uint64_t mediaId, double time
         auto place = [&](TrackType type, int first = -1, int count = 0) {
             madeTrack = false;
             Track* target = nullptr;
+            const bool atEnd = trackHint == kNewTracksAtEnd;
             if (Track* hint = p.findTrack(trackHint))
                 if (hint->type == type && rangeFree(*hint, start, end)) target = hint;
-            if (!target)
+            if (!target && !atEnd)
                 for (auto& t : p.tracks)
                     if (t.type == type && rangeFree(t, start, end)) { target = &t; break; }
             if (!target) {
@@ -956,7 +957,7 @@ std::vector<uint64_t> AppState::addMediaToTimeline(uint64_t mediaId, double time
                 t.type = type;
                 if (type == TrackType::Audio) t.panType = "add";
                 size_t at = p.tracks.size();
-                if (type == TrackType::Video) at = 0;
+                if (type == TrackType::Video && !atEnd) at = 0;
                 p.tracks.insert(p.tracks.begin() + (std::ptrdiff_t)at, t);
                 target = &p.tracks[at];
                 madeTrack = true;
