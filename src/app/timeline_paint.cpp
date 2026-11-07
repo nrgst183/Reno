@@ -415,8 +415,8 @@ void TimelineWidget::Impl::changed(int changes)
                 scrollViewTo(std::max(0.0, to));
             }
         }
-        if (app.loopStart != paintedLoopA || app.loopEnd != paintedLoopB || app.loopOn != paintedLoopOn) {
-            const bool had = paintedLoopB > paintedLoopA, has = app.loopEnd > app.loopStart;
+        if (app.loopStart != paintedLoopA || app.loopEnd != paintedLoopB || app.loopOn != paintedLoopOn || app.timeSel() != paintedTimeSel) {
+            const bool had = paintedTimeSel, has = app.timeSel();
             part |= QRect(headerW, 0, viewW(), kTopH);
             auto span = [&](double a, double b) {
                 const double x0 = clampd(xAtF(std::min(a, b)), headerW - 10.0, lanesRight() + 10.0);
@@ -640,6 +640,7 @@ void TimelineWidget::Impl::paint(QPainter& p, const QRect& clip)
     paintCorners(p, clip);
     paintedCursor = app.cursor();
     paintedLoopA = app.loopStart;
+    paintedTimeSel = app.timeSel();
     paintedLoopB = app.loopEnd;
     paintedLoopOn = app.loopOn;
 }
@@ -1075,7 +1076,7 @@ int TimelineWidget::Impl::sliverOf(const Row& row, const Event& e, const QRect& 
 // whether most of this stretch of the timeline is in the time selection
 bool TimelineWidget::Impl::inTimeSelection(const QRectF& v) const
 {
-    if (!(app.loopEnd > app.loopStart)) return false;
+    if (!(app.timeSel())) return false;
     const double mid = (v.left() + v.right()) * 0.5;
     return mid >= xAtF(app.loopStart) && mid <= xAtF(app.loopEnd);
 }
@@ -1134,7 +1135,7 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     // events). An audio event's part in it is drawn as a selected one (reversed: the dark background and the light
     // waveform) under a blue wash, the waveform drawn again on top; a video event's background turns blue between its
     // thumbnails, the thumbnails themselves untinted.
-    if (app.loopEnd > app.loopStart) {
+    if (app.timeSel()) {
         const double x0 = std::max(vd.left(), xAtF(app.loopStart)), x1 = std::min(vd.right(), xAtF(app.loopEnd));
         if (x1 > x0) {
             const QRectF ts(QPointF(x0, vd.top()), QPointF(x1, vd.bottom()));
@@ -1778,7 +1779,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
     const int tracksBottom = kTopH + contentH - kBelow - scrollY;
     dense = countDense();
     paintGrid(p, c, tracksBottom);
-    if (app.loopEnd > app.loopStart) {
+    if (app.timeSel()) {
         const double x0 = clampd(xAtF(app.loopStart), c.left() - 2.0, c.right() + 2.0), x1 = clampd(xAtF(app.loopEnd), c.left() - 2.0, c.right() + 2.0);
         p.fillRect(QRectF(x0, kTopH, x1 - x0, tracksBottom - kTopH), kSelectionWash);
     }
@@ -1828,7 +1829,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         paintTrackKeys(p, r, tr, c);
     }
     for (const EnvLane& L : envLanes()) drawEnvelope(p, L, c);
-    if (app.loopEnd > app.loopStart) {
+    if (app.timeSel()) {
         const QColor edge = app.loopOn ? QColor(kLoopOn.red(), kLoopOn.green(), kLoopOn.blue(), 150) : QColor(255, 255, 255, 90);
         p.fillRect(QRectF(std::floor(xAtF(app.loopStart)), kTopH, 1.0, tracksBottom - kTopH), edge);
         p.fillRect(QRectF(std::floor(xAtF(app.loopEnd)), kTopH, 1.0, tracksBottom - kTopH), edge);

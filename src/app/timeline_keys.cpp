@@ -87,7 +87,7 @@ bool TimelineWidget::Impl::key(QKeyEvent* ev)
         else if (shift) {
             const double c = app.cursor();
             double anchor = c;
-            if (app.loopEnd > app.loopStart) {
+            if (app.timeSel()) {
                 if (std::fabs(c - app.loopEnd) < 1e-9) anchor = app.loopStart;
                 else if (std::fabs(c - app.loopStart) < 1e-9) anchor = app.loopEnd;
             }

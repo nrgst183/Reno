@@ -1289,7 +1289,7 @@ void AppState::splitAtCursor()
     // event's group are split with it and the right halves form a new group, and afterwards the right halves are the ones
     // selected.
     std::vector<double> cuts;
-    if (loopEnd > loopStart + 1e-9) {
+    if (timeSel()) {
         cuts.push_back(loopStart);
         cuts.push_back(loopEnd);
     } else {
@@ -1350,7 +1350,7 @@ static bool overlapsRange(const Event& e, double a, double b)
 
 bool AppState::timeSelectionEdit() const
 {
-    if (!(loopEnd > loopStart + 1e-9)) return false;
+    if (!timeSel()) return false;
     if (selection_.empty()) return true;
     for (const Track& t : project_.tracks)
         for (const Event& e : t.events)

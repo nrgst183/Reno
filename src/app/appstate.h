@@ -261,6 +261,24 @@ public:
     double cursor() const { return cursor_; }
     void setCursor(double seconds);                         // clamped to >= 0
     double loopStart = 0, loopEnd = 0;                      // loopEnd <= loopStart: no region
+    // VEGAS: a click in the timeline ends the time selection but leaves the loop region (for loop playback, its bar
+    // above the ruler): the region as it was then is kept here, and it is a time selection again once it changes
+    double inactiveLoopA = -1, inactiveLoopB = -1;
+    // a time selection: the loop region, unless a click has let it go (no blue over the tracks, no edits to it)
+    bool timeSel() const { return loopEnd > loopStart + 1e-9 && !(loopStart == inactiveLoopA && loopEnd == inactiveLoopB); }
+    void endTimeSel()
+    {
+        if (!timeSel()) return;
+        inactiveLoopA = loopStart;
+        inactiveLoopB = loopEnd;
+        notify(kCursor);
+    }
+    void resumeTimeSel()
+    {
+        if (inactiveLoopA < 0) return;
+        inactiveLoopA = inactiveLoopB = -1;
+        notify(kCursor);
+    }
     bool loopOn = false;
     void setLoop(double a, double b);
     bool snapping = true;

@@ -20,7 +20,7 @@ void TimelineWidget::Impl::pressEnvelope(const Hit& h, Qt::KeyboardModifiers mod
     const int n = (int)L.env->points.size();
     // VEGAS's Time selection envelope fades: a drag inside the time selection moves all the envelope there, with fades
     // in and out of it (Preferences > Editing). Alt (moving points in time) and Shift work as before.
-    if (app.prefs.timeSelEnvFades && app.loopEnd > app.loopStart && !(mods & (Qt::ShiftModifier | Qt::AltModifier)) && drag.pressTime >= app.loopStart &&
+    if (app.prefs.timeSelEnvFades && app.timeSel() && !(mods & (Qt::ShiftModifier | Qt::AltModifier)) && drag.pressTime >= app.loopStart &&
         drag.pressTime <= app.loopEnd) {
         pressEnvelopeInSelection(L, h);
         return;
@@ -34,7 +34,7 @@ void TimelineWidget::Impl::pressEnvelope(const Hit& h, Qt::KeyboardModifiers mod
         } else if (!selPoints.count(h.point)) {
             selPoints = {h.point};
             const double t = L.origin + L.env->points[(size_t)h.point].time;
-            if (app.loopEnd > app.loopStart && t >= app.loopStart - 1e-9 && t <= app.loopEnd + 1e-9)
+            if (app.timeSel() && t >= app.loopStart - 1e-9 && t <= app.loopEnd + 1e-9)
                 for (int i = 0; i < n; ++i) {
                     const double ti = L.origin + L.env->points[(size_t)i].time;
                     if (ti >= app.loopStart - 1e-9 && ti <= app.loopEnd + 1e-9) selPoints.insert(i);
@@ -288,7 +288,7 @@ std::set<int> TimelineWidget::Impl::envCommandPoints(const EnvelopeRef& ref) con
     EnvLane L;
     double origin = 0;
     if (envLaneOf(ref, &L)) origin = L.origin;
-    if (app.loopEnd > app.loopStart) {
+    if (app.timeSel()) {
         for (size_t i = 0; i < e->points.size(); ++i) {
             const double t = origin + e->points[i].time;
             if (t >= app.loopStart - 1e-9 && t <= app.loopEnd + 1e-9) out.insert((int)i);
@@ -463,13 +463,13 @@ bool TimelineWidget::Impl::copyEnvelopePoints()
     const double origin = envLaneOf(ref, &L) ? L.origin : 0.0;
     envClip = EnvClip();
     envClip.kind = ref.kind;
-    const double from = app.loopEnd > app.loopStart ? app.loopStart - origin : e->points[(size_t)*pts.begin()].time;
+    const double from = app.timeSel() ? app.loopStart - origin : e->points[(size_t)*pts.begin()].time;
     for (int i : pts) {
         EnvPoint pt = e->points[(size_t)i];
         pt.time -= from;
         envClip.points.push_back(pt);
     }
-    envClip.span = app.loopEnd > app.loopStart ? app.loopEnd - app.loopStart : envClip.points.back().time;
+    envClip.span = app.timeSel() ? app.loopEnd - app.loopStart : envClip.points.back().time;
     app.status(QString("%1 envelope point(s) copied").arg(envClip.points.size()).toStdString());
     return true;
 }
@@ -835,10 +835,15 @@ void TimelineWidget::Impl::release(QMouseEvent* ev)
     struct Done { bool& flag; ~Done() { flag = false; } } done{releasing};
     const Row* row = rowOf(was.hit.track);
     const bool video = row && row->video;
-    // Preferences > Editing "Collapse loop region when no time selection is present": a click in the timeline (no time
-    // selection made) clears the loop region too
-    if (was.kind == Drag::LoopRange && !was.started && was.hit.part != Part::LoopStrip && vprefs::on("prefs/collapseLoop") && app.loopEnd > app.loopStart)
-        app.setLoop(0, 0);
+    // A click in the timeline (no time selection made) ends the time selection, as in VEGAS: the loop region stays
+    // (its bar above the ruler, loop playback) but the tracks are no longer blue and edits no longer act on it; with
+    // Preferences > Editing "Collapse loop region when no time selection is present" the loop region goes too. A click
+    // on the loop region's bar makes it the time selection again.
+    if ((was.kind == Drag::LoopRange || was.kind == Drag::RubberBand) && !was.started && app.loopEnd > app.loopStart) {
+        if (was.hit.part == Part::LoopStrip) app.resumeTimeSel();
+        else if (vprefs::on("prefs/collapseLoop")) app.setLoop(0, 0);
+        else app.endTimeSel();
+    }
     switch (was.kind) {
     case Drag::TrackHeight:
         if (was.started) app.endDrag(was.heights.size() > 1 ? "Track Heights" : "Track Height");

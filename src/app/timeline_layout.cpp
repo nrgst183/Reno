@@ -494,7 +494,7 @@ void TimelineWidget::Impl::zoomBy(double factor)
 
 void TimelineWidget::Impl::zoomLarge(bool in)
 {
-    if (in && app.loopEnd > app.loopStart) {
+    if (in && app.timeSel()) {
         const double len = app.loopEnd - app.loopStart;
         pps = clampd(viewW() / (len * 1.1), minPps(), maxPps());
         setViewStart(app.loopStart - len * 0.05);

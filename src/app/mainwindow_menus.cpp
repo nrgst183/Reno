@@ -215,7 +215,7 @@ void MainWindow::buildVegasMenus()
     rename("prevMarker", "Move Left by M&arker/Region");
     rename("nextMarker", "Move Rig&ht by Marker/Region");
     act("timeSelectRightMarker", "Time Sele&ct Right by Marker/Region", QList<QKeySequence>(), [tl, &app] {
-        const double from = app.loopEnd > app.loopStart && std::fabs(app.cursor() - app.loopEnd) < 1e-9 ? app.loopStart : app.cursor();
+        const double from = app.timeSel() && std::fabs(app.cursor() - app.loopEnd) < 1e-9 ? app.loopStart : app.cursor();
         tl->cursorToMarker(1);
         if (app.cursor() > from) app.setLoop(from, app.cursor());
     });
@@ -232,7 +232,7 @@ void MainWindow::buildVegasMenus()
     });
     rename("prevEdge", "Select Event Sta&rt");
     act("zoomSelection", "&Zoom Selection", QList<QKeySequence>(), [tl, &app] {
-        if (app.loopEnd > app.loopStart) tl->zoomLarge(true);
+        if (app.timeSel()) tl->zoomLarge(true);
         else app.status("Make a time selection first: Zoom Selection fits it to the view.");
     });
     act("selectionToView", "Set Selection to &View", QList<QKeySequence>(), [tl] { tl->setSelectionToView(); });
@@ -430,7 +430,7 @@ void MainWindow::buildVegasMenus()
     act("insertSlideshow", "&Slideshow...", QList<QKeySequence>(), [this] { runSlideshowCreator(this); });
     act("insertTime", "&Time...", QList<QKeySequence>(), [this, &app] {
         const double fps = app.project().settings.fps();
-        const double len = app.loopEnd > app.loopStart ? app.loopEnd - app.loopStart : 1.0;
+        const double len = app.timeSel() ? app.loopEnd - app.loopStart : 1.0;
         // VEGAS's Insert Time box: 281 x 105 with its frame (positions below are the capture's less the 1, 31 of the frame)
         QDialog dlg(this);
         dlg.setObjectName("insertTimeDialog");
@@ -1126,10 +1126,10 @@ void MainWindow::updateVegasCommands()
     }
     set("undoAll", app.canUndo(), false);
     set("clearHistory", app.canUndo() || app.canRedo(), false);
-    set("zoomSelection", app.loopEnd > app.loopStart, false);
+    set("zoomSelection", app.timeSel(), false);
     for (QAction* x : findChildren<QAction*>())
         if (x->property("vegasUnavailable").toBool()) x->setEnabled(false);
-    set("insertEmptyEvent", app.currentTrack != 0 && app.loopEnd > app.loopStart, false);
+    set("insertEmptyEvent", app.currentTrack != 0 && app.timeSel(), false);
     {
         const std::string f = p.settings.rulerFormat;
         for (const TimeFormatInfo& tf : timeFormats()) {

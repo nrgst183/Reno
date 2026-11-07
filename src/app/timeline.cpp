@@ -426,7 +426,7 @@ QRect TimelineWidget::markerTagRect(uint64_t markerId) const
 QString TimelineWidget::loopLengthLabel() const
 {
     const AppState& app = AppState::get();
-    return app.loopEnd > app.loopStart ? d->selectionLengthText(app.loopEnd - app.loopStart) : QString();
+    return app.timeSel() ? d->selectionLengthText(app.loopEnd - app.loopStart) : QString();
 }
 QRect TimelineWidget::loopBarRect() const { return QRect(d->headerW, kLoopTop, d->viewW(), kLoopH); }
 QRect TimelineWidget::markerBarRect() const { return QRect(d->headerW, kMarkerTop, d->viewW(), kMarkerH); }
@@ -614,6 +614,7 @@ void TimelineWidget::Impl::paintFromLayer(QPainter& p, const QRegion& region)
     }
     paintedCursor = app.cursor();
     paintedLoopA = app.loopStart;
+    paintedTimeSel = app.timeSel();
     paintedLoopB = app.loopEnd;
     paintedLoopOn = app.loopOn;
 }
@@ -824,7 +825,7 @@ void TimelineWidget::insertEmptyEvent()
     for (const Track& x : app.project().tracks)
         if (x.id == app.currentTrack) t = &x;
     if (!t) { app.status("Insert Empty Event: select a track first."); return; }
-    if (!(app.loopEnd > app.loopStart)) { app.status("Insert Empty Event: make a time selection for it first."); return; }
+    if (!(app.timeSel())) { app.status("Insert Empty Event: make a time selection for it first."); return; }
     app.insertEmptyEvent(t->id, app.loopStart, app.loopEnd - app.loopStart);
 }
 
@@ -836,7 +837,7 @@ void TimelineWidget::insertAdjustmentEvent()
         if (x.id == app.currentTrack) t = &x;
     if (!t || t->type != TrackType::Video) { app.status("Insert Adjustment Event: select a video track first (an adjustment event works on the tracks below it)."); return; }
     double start = app.cursor(), length = std::max(0.1, app.prefs.stillLength);
-    if (app.loopEnd > app.loopStart) { start = app.loopStart; length = app.loopEnd - app.loopStart; }
+    if (app.timeSel()) { start = app.loopStart; length = app.loopEnd - app.loopStart; }
     app.insertEmptyEvent(t->id, start, length, true);
 }
 

@@ -172,7 +172,7 @@ void TimelineWidget::Impl::trimEnd()
 
 void TimelineWidget::Impl::trimToSelection()
 {
-    if (!(app.loopEnd > app.loopStart)) { app.status("Make a time selection first: Ctrl+T trims the selected events to it."); return; }
+    if (!(app.timeSel())) { app.status("Make a time selection first: Ctrl+T trims the selected events to it."); return; }
     const std::set<uint64_t> ids = withGroups(app.selection());
     if (ids.empty()) return;
     const double a = app.loopStart, b = app.loopEnd, fr = frame();
@@ -345,7 +345,7 @@ void TimelineWidget::Impl::nameNewMarker(uint64_t id)
 
 void TimelineWidget::Impl::insertRegion()
 {
-    if (!(app.loopEnd > app.loopStart)) { app.status("Make a time selection first: R makes a region of it."); return; }
+    if (!(app.timeSel())) { app.status("Make a time selection first: R makes a region of it."); return; }
     const double a = app.loopStart, b = app.loopEnd;
     uint64_t made = 0;
     app.edit("Insert Region", [&](Project& p) {
@@ -1309,7 +1309,7 @@ void TimelineWidget::Impl::addMarkerOfKind(const char* kind, double at, double l
 void TimelineWidget::Impl::insertCdTrack()
 {
     double a = quantized(app.cursor()), b = 0;
-    if (app.loopEnd > app.loopStart) {
+    if (app.timeSel()) {
         a = app.loopStart;
         b = app.loopEnd;
     } else {

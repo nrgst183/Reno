@@ -280,7 +280,7 @@ void TimelineWidget::Impl::envelopeMenu(QMenu& menu, const Hit& h, double t)
         const std::string kind = ref.kind;
         change("Flip Envelope", [&](Envelope& x) { for (EnvPoint& pt : x.points) pt.value = fracToEnv(kind, 1.0 - envToFrac(kind, pt.value)); });
     });
-    const bool inSel = !envCommandPoints(ref).empty() && app.loopEnd > app.loopStart;
+    const bool inSel = !envCommandPoints(ref).empty() && app.timeSel();
     add(menu, "Flip Selected Points", [this, ref] { flipEnvelopePoints(ref); }, inSel && ref.kind != "mute");
     add(menu, "Thin All Points", [this, ref] { thinEnvelope(ref, false); }, n > 2 && ref.kind != "mute");
     add(menu, "Thin Selected Points", [this, ref] { thinEnvelope(ref, true); }, inSel && envCommandPoints(ref).size() > 2 && ref.kind != "mute");
@@ -460,11 +460,11 @@ bool TimelineWidget::Impl::fillMenu(QMenu& menu, const Hit& hitIn, double time)
     } else if (h.part == Part::MarkerTag || h.part == Part::RegionEndTag) {
         if (!markerMenu(menu, h)) return false;
     } else if (h.part == Part::LoopStrip) {
-        add(menu, "Insert Region\tR", [this] { insertRegion(); }, app.loopEnd > app.loopStart);
+        add(menu, "Insert Region\tR", [this] { insertRegion(); }, app.timeSel());
         menu.addSeparator();
         command(menu, "loop", "Loop Playback");
         menu.addSeparator();
-        add(menu, "Zoom Selection", [this] { zoomLarge(true); }, app.loopEnd > app.loopStart);
+        add(menu, "Zoom Selection", [this] { zoomLarge(true); }, app.timeSel());
         add(menu, "Set Selection to View", [this] { q->setSelectionToView(); });
         add(menu, "Set Selection to Project", [this] { q->setSelectionToProject(); });
         add(menu, "Select Loop Region\tShift+Q", [this] { selectLoopRegion(); });
@@ -483,10 +483,10 @@ bool TimelineWidget::Impl::fillMenu(QMenu& menu, const Hit& hitIn, double time)
         menu.addSeparator();
         QMenu* mr = menu.addMenu("Markers/Regions");
         add(*mr, "Insert Marker\tM", [this] { insertMarker(); });
-        add(*mr, "Insert Region\tR", [this] { insertRegion(); }, app.loopEnd > app.loopStart);
+        add(*mr, "Insert Region\tR", [this] { insertRegion(); }, app.timeSel());
         mr->addSeparator();
         add(*mr, "Delete All", [this] { deleteMarkers(false); }, !app.project().markers.empty());
-        add(*mr, "Delete All in Selection", [this] { deleteMarkers(true); }, !app.project().markers.empty() && app.loopEnd > app.loopStart);
+        add(*mr, "Delete All in Selection", [this] { deleteMarkers(true); }, !app.project().markers.empty() && app.timeSel());
         menu.addSeparator();
         command(menu, "quantize", "Quantize to Frames");
         menu.addSeparator();
@@ -769,7 +769,7 @@ void TimelineWidget::Impl::trackMenu(QMenu& menu, const Hit& h, bool lane, doubl
     const bool video = r->video;
     const bool hasSel = !app.selection().empty();
     if (lane) {
-        if (time >= 0 && app.loopEnd > app.loopStart && time >= app.loopStart && time <= app.loopEnd) {
+        if (time >= 0 && app.timeSel() && time >= app.loopStart && time <= app.loopEnd) {
             add(menu, "Insert Empty Event", [this] { q->insertEmptyEvent(); });
             if (t && t->type == TrackType::Video) add(menu, "Insert Adjustment Event", [this] { q->insertAdjustmentEvent(); });
             add(menu, "Zoom Selection", [this] { zoomLarge(true); });
@@ -778,7 +778,7 @@ void TimelineWidget::Impl::trackMenu(QMenu& menu, const Hit& h, bool lane, doubl
         add(menu, "Paste\tCtrl+V", [this] { q->paste(); }, app.hasClipboard());
         menu.addSeparator();
         add(menu, "Delete\tDelete", [this] { removeSelection(false); }, hasSel);
-        add(menu, "Trim\tCtrl+T", [this] { q->trimToTimeSelection(); }, hasSel && app.loopEnd > app.loopStart);
+        add(menu, "Trim\tCtrl+T", [this] { q->trimToTimeSelection(); }, hasSel && app.timeSel());
         add(menu, "Trim Start\tAlt+[", [this] { q->trimStartToCursor(); }, hasSel);
         add(menu, "Trim End\tAlt+]", [this] { q->trimEndToCursor(); }, hasSel);
         add(menu, "Split\tS", [this] { app.splitAtCursor(); });
@@ -843,7 +843,7 @@ void TimelineWidget::Impl::trackMenu(QMenu& menu, const Hit& h, bool lane, doubl
         // part of a video track): Insert Empty Event, Insert Text Media..., Insert Generated Media..., Insert Slideshow...
         if (video && q->onLaneInsertMenu) {
             menu.addSeparator();
-            const bool shownAbove = time >= 0 && app.loopEnd > app.loopStart && time >= app.loopStart && time <= app.loopEnd;
+            const bool shownAbove = time >= 0 && app.timeSel() && time >= app.loopStart && time <= app.loopEnd;
             if (!shownAbove) add(menu, "Insert Empty Event", [this] { q->insertEmptyEvent(); });
             q->onLaneInsertMenu(&menu);
         }
@@ -1089,11 +1089,11 @@ bool TimelineWidget::Impl::eventMenu(QMenu& menu, const Hit& h, double time)
         add(menu, "Selectively Paste Event Attributes...", [] {}, false);
     menu.addSeparator();
     add(menu, "Delete\tDelete", [this] { removeSelection(false); });
-    add(menu, "Trim\tCtrl+T", [this] { q->trimToTimeSelection(); }, app.loopEnd > app.loopStart);
+    add(menu, "Trim\tCtrl+T", [this] { q->trimToTimeSelection(); }, app.timeSel());
     add(menu, "Trim Start\tAlt+[", [this] { q->trimStartToCursor(); });
     add(menu, "Trim End\tAlt+]", [this] { q->trimEndToCursor(); });
     add(menu, "Split\tS", [this] { app.splitAtCursor(); });
-    if (video) add(menu, "Smart Split\tAlt+S", [this] { smartSplit(); }, app.loopEnd > app.loopStart);
+    if (video) add(menu, "Smart Split\tAlt+S", [this] { smartSplit(); }, app.timeSel());
     add(menu, "Event Heal", [this] { app.healEvents(app.selection()); });
     add(menu, "Close Gaps", [this] { app.closeGaps(app.selection()); });
     menu.addSeparator();

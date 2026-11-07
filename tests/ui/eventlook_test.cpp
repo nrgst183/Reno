@@ -179,6 +179,21 @@ int main(int argc, char** argv)
         check(in.blue() > in.red() + 40 && in.lightness() < 170, "time selection: the event is blue inside it", in.name().toStdString());
         check(outside == grey, "time selection: the event stays grey outside it", outside.name().toStdString());
     }
+    // VEGAS: a click in the timeline outside the time selection ends it - the loop region stays (its bar, loop
+    // playback), but the tracks are no longer blue; a click on the loop region's bar makes it the selection again
+    {
+        const int xin = w.eventRectOf(ev).left() + (int)std::lround((1.5 - 0.5) / 3.0 * r.width());
+        auto blueAt = [&]() { const QColor c = im.pixelColor(xin, sep + 4); return c.blue() > c.red() + 40; };
+        check(blueAt() && st().timeSel(), "time selection: blue before the click");
+        uitest::mouseClick(&w, QPoint(std::max(w.xAt(0.25), r.left() - 6), r.center().y()));  // the empty lane before the event
+        shot();
+        check(!st().timeSel(), "a click outside it ends the time selection", std::to_string(st().loopStart) + ".." + std::to_string(st().loopEnd));
+        check(!blueAt(), "a click outside it: the tracks are no longer blue", im.pixelColor(xin, sep + 4).name().toStdString());
+        check(st().loopStart == 1.0 && st().loopEnd == 2.0, "the loop region stays");
+        uitest::mouseClick(&w, QPoint(w.xAt(1.5), 22));  // the loop region bar (kLoopTop 17, 12 high)
+        shot();
+        check(blueAt() && st().timeSel(), "a click on the loop region's bar makes it the time selection again");
+    }
     // a narrow event (a stutter's piece) in the time selection is tinted as well
     {
         uint64_t piece = 0;

@@ -600,6 +600,7 @@ struct TimelineWidget::Impl {
     void paintFromLayer(QPainter& p, const QRegion& region);
     double paintedCursor = -1;
     double paintedLoopA = 0, paintedLoopB = 0;
+    bool paintedTimeSel = false;
     bool paintedLoopOn = false;
 
     Hit hover;
