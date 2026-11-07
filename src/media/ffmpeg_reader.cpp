@@ -32,6 +32,23 @@ const size_t kFrameCacheBytes = 128u * 1024u * 1024u;
 const size_t kBackBufferBytes = 192u * 1024u * 1024u;
 // ...and of those decoded going forwards (for a reversed event or a stutter going back over what was just played).
 const size_t kForwardKeepBytes = 96u * 1024u * 1024u;
+// All open files together keep no more than this in the two above: a project with many files open at once (nested
+// projects each have their own readers, a dozen per file) would otherwise keep a few hundred megabytes per reader and
+// run out of memory. Past it, each reader lets its own oldest frames go as it keeps new ones.
+const int64_t kAllReadersBytes = 768ll * 1024 * 1024;
+std::atomic<int64_t> gReadersHeld{0};
+// bytes one reader keeps, counted in the total of all readers (and taken off it when the reader goes)
+struct HeldBytes {
+    size_t n = 0;
+    void add(size_t b) { n += b; gReadersHeld += (int64_t)b; }
+    void sub(size_t b) { n -= b; gReadersHeld -= (int64_t)b; }
+    void zero() { gReadersHeld -= (int64_t)n; n = 0; }
+    HeldBytes() = default;
+    HeldBytes(const HeldBytes&) = delete;
+    HeldBytes& operator=(const HeldBytes&) = delete;
+    ~HeldBytes() { gReadersHeld -= (int64_t)n; }
+};
+bool overAllReaders() { return gReadersHeld.load(std::memory_order_relaxed) > kAllReadersBytes; }
 // A jump forwards of no more than this is always decoded through, never seeked.
 const double kForwardDecodeSeconds = 0.25;
 // A jump forwards of more than this seeks, when the file has no index to say where its key frames are.
@@ -455,6 +472,8 @@ public:
     bool audioPick(int64_t start, int frames, int sampleRate, int first, int count, float* left, float* right) override;
     bool audioChannels(int64_t start, int frames, int sampleRate, int channels, float* const* out) override;
     void setDeinterlace(int mode) override;
+    void releaseVideo() override;
+    bool ensureVideo();
     void setFieldOrder(const std::string& order) override { fieldOverride_ = order; }
     int videoCost(double seconds, int maxW, int maxH) override;
     std::string hardwareDecoder() const override { return v_.hw ? v_.hw->name : std::string(); }
@@ -556,6 +575,7 @@ private:
     int64_t vExpectedPts_ = kNoPts; // where the next frame should start if it carries no time stamp
     int64_t vSeekTs_ = 0;           // where the last seek aimed
     bool hwTry_ = true;             // the graphics card may decode this file
+    bool videoReleased_ = false;    // releaseVideo(): the picture decoder is closed until a frame is asked for
     int64_t decodeTarget_ = kNoPts;     // the frame locate() is decoding on to
     int64_t decodeKeepTicks_ = 0;       // frames this much before it are kept going forwards, on the card
     bool keepThis_ = false;         // decodeVideoFrame
@@ -566,9 +586,9 @@ private:
     size_t tmpBytes_ = 0;
     std::list<CacheEntry> lru_;     // most recently used first
     std::map<CacheKey, std::list<CacheEntry>::iterator> cacheIndex_;
-    size_t cacheBytes_ = 0;
+    HeldBytes cacheBytes_;
     std::map<int64_t, BackFrame> back_;     // frames kept for going backwards, by when they start
-    size_t backBytes_ = 0;
+    HeldBytes backBytes_;
     bool collecting_ = false;       // decoding after a seek backwards
     int64_t lastBackPts_ = kNoPts;  // the last frame kept
     uint64_t backRun_ = 1;          // counts the stretches decoded (BackFrame::run)
@@ -1015,7 +1035,7 @@ void FFReader::cacheInsert(int w, int h, int64_t pts, int64_t until, const Image
     k.pts = pts;
     auto old = cacheIndex_.find(k);
     if (old != cacheIndex_.end()) {
-        cacheBytes_ -= old->second->img->byteSize();
+        cacheBytes_.sub(old->second->img->byteSize());
         lru_.erase(old->second);
         cacheIndex_.erase(old);
     }
@@ -1025,10 +1045,10 @@ void FFReader::cacheInsert(int w, int h, int64_t pts, int64_t until, const Image
     e.img = img;
     lru_.push_front(e);
     cacheIndex_[k] = lru_.begin();
-    cacheBytes_ += img->byteSize();
-    while (cacheBytes_ > kFrameCacheBytes && lru_.size() > 1) {
+    cacheBytes_.add(img->byteSize());
+    while ((cacheBytes_.n > kFrameCacheBytes || overAllReaders()) && lru_.size() > 1) {
         CacheEntry& last = lru_.back();
-        cacheBytes_ -= last.img->byteSize();
+        cacheBytes_.sub(last.img->byteSize());
         cacheIndex_.erase(last.key);
         lru_.pop_back();
     }
@@ -1038,7 +1058,7 @@ void FFReader::cacheClear()
 {
     lru_.clear();
     cacheIndex_.clear();
-    cacheBytes_ = 0;
+    cacheBytes_.zero();
 }
 
 void FFReader::setDeinterlace(int mode)
@@ -1068,15 +1088,15 @@ void FFReader::keepForBackwards(const AVFrame* f, int64_t pts)
     for (int k = 0; k < AV_NUM_DATA_POINTERS; ++k)
         if (b.f->buf[k]) b.bytes += b.f->buf[k]->size;
     b.run = backRun_;
-    backBytes_ += b.bytes;
+    backBytes_.add(b.bytes);
     back_[pts] = std::move(b);
     // Too many: those of the stretches decoded before this one go first.
     const size_t most = collecting_ ? kBackBufferBytes : kForwardKeepBytes;
-    while (backBytes_ > most && back_.size() > 1) {
+    while ((backBytes_.n > most || overAllReaders()) && back_.size() > 1) {
         auto drop = back_.begin();
         for (auto it = back_.begin(); it != back_.end(); ++it)
             if (it->second.run < drop->second.run) drop = it;
-        backBytes_ -= drop->second.bytes;
+        backBytes_.sub(drop->second.bytes);
         back_.erase(drop);
     }
 }
@@ -1100,7 +1120,7 @@ ImagePtr FFReader::videoFrameSpan(double seconds, int maxW, int maxH, double* sp
 {
     *spanFrom = 1.0;
     *spanUntil = 0.0;
-    if (!info_.hasVideo || !v_.dec) return nullptr;
+    if (!ensureVideo() || !info_.hasVideo || !v_.dec) return nullptr;
     if (!(seconds == seconds)) seconds = 0.0;       // NaN
     int ow = 0, oh = 0;
     outputSize(maxW, maxH, ow, oh);
@@ -1146,7 +1166,7 @@ ImagePtr FFReader::videoFrameSpan(double seconds, int maxW, int maxH, double* sp
 // (see MediaReader::harvestKept) The frames kept from the stretch just decoded that nobody has been given yet, latest first.
 int FFReader::harvestKept(int maxW, int maxH, int most, const std::function<void(double, double, const ImagePtr&)>& put)
 {
-    if (!info_.hasVideo || info_.isStill || most <= 0) return 0;
+    if (!info_.hasVideo || info_.isStill || most <= 0 || videoReleased_) return 0;
     int ow = 0, oh = 0;
     outputSize(maxW, maxH, ow, oh);
     int done = 0;
@@ -1178,6 +1198,7 @@ int FFReader::harvestKept(int maxW, int maxH, int most, const std::function<void
 // (see MediaReader::videoCost) Looks only: nothing is decoded, and the cache's order is left as it is.
 int FFReader::videoCost(double seconds, int maxW, int maxH)
 {
+    if (videoReleased_) return 2;
     if (!info_.hasVideo || !v_.dec) return 0;
     if (!(seconds == seconds)) seconds = 0.0;
     int ow = 0, oh = 0;
@@ -1213,6 +1234,7 @@ int FFReader::videoCost(double seconds, int maxW, int maxH)
 // the usual way, converted.
 ImagePtr FFReader::videoFrameInDepth(double seconds, int maxW, int maxH, PixelDepth depth)
 {
+    if (!ensureVideo()) return nullptr;
     if (depth != PixelDepth::Float || info_.bitDepth <= 8 || rotation_ != 0 || deint_ != 0 || !info_.hasVideo || !v_.dec)
         return MediaReader::videoFrameInDepth(seconds, maxW, maxH, depth);
     if (!(seconds == seconds)) seconds = 0.0;
@@ -1417,6 +1439,28 @@ ImagePtr FFReader::convertFloat(const AVFrame* f, int ow, int oh)
         }
     }
     return img;
+}
+
+void FFReader::releaseVideo()
+{
+    if (vIndex_ < 0 || !v_.dec || videoReleased_) return;
+    cacheClear();
+    resetVideoState(true, kNoPts);
+    v_ = Demux();
+    videoReleased_ = true;
+}
+
+// Opens the picture decoder again after releaseVideo() (false: it can't be).
+bool FFReader::ensureVideo()
+{
+    if (!videoReleased_) return true;
+    Demux fresh;
+    if (!openInput(info_.path, fresh.fmt, nullptr) || !openStream(fresh, vIndex_, AVMEDIA_TYPE_VIDEO, nullptr, hwTry_)) return false;
+    v_ = std::move(fresh);
+    keepOnly(v_.fmt.get(), vIndex_, -1);
+    resetVideoState(true, kNoPts);
+    videoReleased_ = false;
+    return true;
 }
 
 void FFReader::resetVideoState(bool atStart, int64_t seekTs)

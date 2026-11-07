@@ -123,6 +123,7 @@ extern QColor kRulerText;
 extern QColor kLoopOn;
 extern QColor kLoopOff;
 extern QColor kSelectionWash;
+extern QColor kEventSelectionWash;
 extern QColor kMarkerColor;
 extern QColor kRegionColor;
 extern QColor kTimeText;
@@ -258,6 +259,7 @@ public:
     void requestThumb(const ThumbKey& key, const MediaItem& m, double seconds, int w, int h);
     std::shared_ptr<Peaks> peaks(int user, const MediaItem& m, int first = -1, int count = 0);
     double duration(const MediaItem& m);
+    int channels(const MediaItem& m);
     std::vector<std::string> takeProbed();
     std::set<int> takeDropped();
     void forgetMedia(int user, const std::string& path);
@@ -977,6 +979,7 @@ struct TimelineWidget::Impl {
     void drawThumbNumber(QPainter& p, const QRectF& target, double mt, double mediaFps, const std::string& how);
     void drawThumbs(QPainter& p, const Event& e, const MediaItem& m, const QRectF& r, const QRectF& content, const QRect& c);
     void drawWave(QPainter& p, const Event& e, const MediaItem& m, const QRectF& content, const QColor& color, const QRect& c);
+    void drawWaveRow(QPainter& p, const Event& e, const MediaItem& m, const QRectF& content, const QColor& color, const QRect& c, int first, int count);
 
     template <class Fn>
     static void outlined(QPainter& p, Fn draw)
@@ -1051,7 +1054,7 @@ struct TimelineWidget::Impl {
     void drawFadeLengths(QPainter& p, const EventPaint& ev);
     void drawFadeHandles(QPainter& p, const EventPaint& ev);
     void drawEventButtons(QPainter& p, const EventPaint& ev);
-    void drawEventExtras(QPainter& p, const Event& e, const QRectF& r, const QRectF& v);
+    void drawEventExtras(QPainter& p, const Event& e, const QRectF& r, const QRectF& v, bool audioEvent);
     static QColor markerColor(const Project::Marker& m);
     void drawCrossFade(QPainter& p, const Row& row, const Event& a, const Event& b, const QRect& c);
     void paintGrid(QPainter& p, const QRect& c, int tracksBottom);

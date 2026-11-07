@@ -120,6 +120,15 @@ double Loader::duration(const MediaItem& m)
     return p == s_->probed.end() ? 0.0 : p->second.duration;
 }
 
+// the media's channel count (0: not known yet; a .veg names its media without it, the probe finds it)
+int Loader::channels(const MediaItem& m)
+{
+    if (m.info.channels > 0) return m.info.channels;
+    std::lock_guard<std::mutex> lk(s_->mutex);
+    auto p = s_->probed.find(m.path);
+    return p == s_->probed.end() ? 0 : p->second.channels;
+}
+
 std::vector<std::string> Loader::takeProbed()
 {
     std::vector<std::string> out;

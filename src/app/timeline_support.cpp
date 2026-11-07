@@ -25,13 +25,15 @@ QColor kRulerBg(55, 55, 55);
 QColor kRulerText(214, 214, 214);
 QColor kLoopOn(240, 228, 20);
 QColor kLoopOff(214, 204, 64);
-QColor kSelectionWash(255, 255, 255, 34);
+// the time selection over the empty lanes (and, kEventSelectionWash, over the events): VEGAS 18's blue
+QColor kSelectionWash(28, 140, 248, 115);
+QColor kEventSelectionWash(34, 153, 255, 91);
 QColor kMarkerColor(255, 152, 32);
 QColor kRegionColor(76, 176, 76);
 QColor kTimeText(222, 222, 222);
 QColor kFxOn(110, 210, 120);
 QColor kFxBad(230, 90, 76);
-QColor kFadeHandle(28, 40, 255);
+QColor kFadeHandle(0, 0, 255);  // VEGAS 18 (a screenshot of its timeline): pure blue
 
 // Colors tracks get in turn when they have none of their own (in the spirit of VEGAS's defaults: muted blue, deep
 // red, ...); sound events are filled with them.

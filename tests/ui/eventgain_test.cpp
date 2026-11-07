@@ -292,14 +292,14 @@ int main(int argc, char** argv)
         uitest::mouseClick(&w, QPoint(rect(sound).center().x(), rect(sound).center().y() + 4));
         uitest::settle(50);
         uitest::shot(&w, out + "/gain_look.png");
-        // the line is drawn: a bright row at the gain's height across the middle of the event
+        // the line is drawn: VEGAS 18's one-pixel blue row at the gain's height across the middle of the event
         const QImage img = w.grab().toImage();
         const QRect r = rect(sound);
         const int ly = (int)std::lround(r.top() + 0.5 * r.height());
         int bright = 0;
         for (int dy = -2; dy <= 3; ++dy)
-            if (qGray(img.pixel(r.center().x() + 40, ly + dy)) > 215) ++bright;
-        check(bright >= 1, "the gain line is drawn across the event at the gain's height", strfmt("%d bright pixels near y %d", bright, ly));
+            if (const QColor b = img.pixelColor(r.center().x() + 40, ly + dy); b.blue() > 230 && b.red() < 90 && b.green() < 90) ++bright;  // (lit up when selected)
+        check(bright >= 1, "the gain line is drawn across the event at the gain's height", strfmt("%d blue pixels near y %d", bright, ly));
     }
 
     return uitest::summary();

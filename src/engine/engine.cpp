@@ -297,6 +297,9 @@ MediaPool::EntryPtr MediaPool::get(std::vector<EntryPtr>& list, size_t limit, si
         else ++stats_.audioOpened;
         std::string err;
         e->reader = opener(m.readPath(), &err);
+        // a reader for the sound of a file that also has pictures: its picture decoder (threads and frames) is let go
+        // (a project whose sound comes from many video files otherwise holds a video decoder open per sound reader)
+        if (e->reader && &list == &audio_) e->reader->releaseVideo();
         if (!e->reader) {
             e->failed = true;
             logf("media: %s: %s", m.path.c_str(), err.c_str());
@@ -1096,7 +1099,14 @@ struct NestedShared {
     {
         std::lock_guard<std::mutex> lk(mutex);
         frames.push_front({frame, generation, img});
-        while (frames.size() > 12) frames.pop_back();
+        // a dozen frames, but no more than 64 MB of them (a dozen full-size deep frames are hundreds of megabytes, in
+        // every nested project used)
+        size_t bytes = 0;
+        for (const CachedFrame& f : frames) bytes += f.img ? f.img->byteSize() : 0;
+        while (frames.size() > 1 && (frames.size() > 12 || bytes > (64u << 20))) {
+            bytes -= frames.back().img ? frames.back().img->byteSize() : 0;
+            frames.pop_back();
+        }
     }
 
     // A mixer for one reader. A final render always gets a new one; otherwise an idle one is reused only if it stopped

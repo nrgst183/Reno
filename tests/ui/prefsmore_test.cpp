@@ -504,7 +504,8 @@ int main(int argc, char** argv)
         auto bodyLight = [&]() {
             const QRect r = tl->eventRectOf(audioEvent);
             const QImage img = tl->grab().toImage();
-            const QColor c = img.pixelColor(std::min(img.width() - 1, r.left() + 3), std::min(img.height() - 1, r.bottom() - 3));
+            // past the snap offset flag and the group's link mark in the bottom-left corner
+            const QColor c = img.pixelColor(std::min(img.width() - 1, r.left() + 30), std::min(img.height() - 1, r.bottom() - 2));
             return c.lightness();
         };
         const int before = bodyLight();
@@ -513,11 +514,13 @@ int main(int argc, char** argv)
         const int after = bodyLight();
         check(after > before + 30, "reverse event background: an audio event's background is lighter", std::to_string(before) + " -> " + std::to_string(after));
         {
-            // VEGAS's colours: light grey (selected: light pink), the waveform in the track's colour
+            // VEGAS's colours: light grey (selected: a dark shade of the track's colour), the waveform in the track's colour
+            // (the bottom-left corner holds the snap offset flag: sampled past it)
             const QRect r = tl->eventRectOf(audioEvent);
             const QImage img = tl->grab().toImage();
-            const QColor c = img.pixelColor(std::min(img.width() - 1, r.left() + 3), std::min(img.height() - 1, r.bottom() - 3));
-            check(c == QColor(216, 216, 216) || c == QColor(221, 176, 176), "reverse event background: VEGAS's light grey (or pink when selected)",
+            const QColor c = img.pixelColor(std::min(img.width() - 1, r.left() + 30), std::min(img.height() - 1, r.bottom() - 2));
+            const bool sel = app.selection().count(audioEvent) != 0;
+            check(sel ? c.lightness() < 140 : c == QColor(216, 216, 216), "reverse event background: VEGAS's light grey (dark when selected)",
                   c.name().toStdString());
         }
         prefs(*w, [](QDialog* d) { setCheck(d, "reverseEventBg", false); });

@@ -677,6 +677,18 @@ void verifyClip(const std::string& path, const Clip& clip, const std::vector<flo
 
     if (clip.video && i.hasVideo) {
         verifyPictures(*r, name, clip.tol);
+        // a reader kept for its sound lets its picture decoder go (MediaPool's sound readers): asked for a picture
+        // after all, it opens it again and gives the same one
+        std::unique_ptr<MediaReader> s2 = openMedia(path, &error);
+        if (s2) {
+            const int want = kFrames / 2;
+            ImagePtr before = s2->videoFrame((want + 0.5) / kFps, kW, kH);
+            s2->releaseVideo();
+            ImagePtr after = s2->videoFrame((want + 0.5) / kFps, kW, kH);
+            ImagePtr again = s2->videoFrame((want + 2.5) / kFps, kW, kH);
+            check(before && after && again && frameNumber(after.get()) == frameNumber(before.get()) && frameNumber(again.get()) == frameNumber(before.get()) + 2,
+                  "%s after its picture decoder was let go gives the same pictures", n);
+        }
     } else if (!clip.video) {
         check(r->videoFrame(1.0, kW, kH) == nullptr, "%s gives no picture, as it has none", n);
     }

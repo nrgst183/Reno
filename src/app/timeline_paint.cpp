@@ -842,17 +842,45 @@ void TimelineWidget::Impl::drawThumbs(QPainter& p, const Event& e, const MediaIt
     p.setRenderHint(QPainter::SmoothPixmapTransform, false);
 }
 
+// An audio event's waveform. VEGAS 18 draws a multichannel file one row per channel (a stereo file: left above right,
+// swapped when the event's Channels are Swap), the rows split by a grey line; Combine (mono) draws the mix in one row,
+// and so do Left only / Right only (not seen in VEGAS: kept as one row), and an event too short for rows of 10 pixels.
 void TimelineWidget::Impl::drawWave(QPainter& p, const Event& e, const MediaItem& m, const QRectF& content, const QColor& color, const QRect& c)
+{
+    int first = e.mediaChannel, count = e.mediaChannel < 0 ? 0 : e.mediaChannels;
+    int rows = 1;
+    if (!m.generated && e.channels != "left" && e.channels != "right" && e.channels != "combine") {
+        const int nch = first >= 0 ? std::max(1, count) : loader->channels(m);
+        if (nch >= 2) rows = std::min(nch, 8);
+    }
+    const double rowH = rows > 1 ? std::floor((content.height() - (rows - 1)) / rows) : content.height();
+    if (rows > 1 && rowH < 10.0) rows = 1;
+    if (rows == 1) {
+        drawWaveRow(p, e, m, content, color, c, first, count);
+        return;
+    }
+    const int base = first >= 0 ? first : 0;
+    for (int k = 0; k < rows; ++k) {
+        const double top = std::floor(content.top()) + k * (rowH + 1.0);
+        const double h = k == rows - 1 ? content.bottom() - top : rowH;
+        int ch = k;
+        if (e.channels == "swap" && rows == 2) ch = 1 - k;
+        drawWaveRow(p, e, m, QRectF(content.left(), top, content.width(), h), color, c, base + ch, 1);
+        if (k + 1 < rows) p.fillRect(QRectF(content.left(), top + rowH, content.width(), 1.0), QColor(80, 80, 80));
+    }
+}
+
+void TimelineWidget::Impl::drawWaveRow(QPainter& p, const Event& e, const MediaItem& m, const QRectF& content, const QColor& color, const QRect& c, int first, int nch)
 {
     const double mid = std::floor(content.center().y()) + 0.5;
     p.setPen(QColor(color.red(), color.green(), color.blue(), 70));
     p.drawLine(QPointF(content.left(), mid), QPointF(content.right(), mid));
     if (m.generated) return;
     const int key = mediaKeyFast(m);
-    const std::shared_ptr<Peaks> pk = loader->peaks(key, m, e.mediaChannel, e.mediaChannels);
+    const std::shared_ptr<Peaks> pk = loader->peaks(key, m, first, nch);
     if (!pk) return;
     {
-        ShownPeaks& sp = shownPeaks[std::make_tuple(key, e.mediaChannel < 0 ? -1 : e.mediaChannel, e.mediaChannel < 0 ? 0 : e.mediaChannels)];
+        ShownPeaks& sp = shownPeaks[std::make_tuple(key, first < 0 ? -1 : first, first < 0 ? 0 : nch)];
         if (sp.peaks.expired()) {
             sp.peaks = pk;
             sp.seen = pk->complete.load() ? -1 : pk->filled.load();
@@ -1004,6 +1032,11 @@ TimelineWidget::Impl::TitleText& TimelineWidget::Impl::titleText(const Event& e,
     return t;
 }
 
+// VEGAS 18's selected audio event with "Reverse Event Background Color" on (and an event's part in the time selection):
+// the background a dark shade of the track's colour, the waveform halfway to white.
+QColor highlightBody(const QColor& tc) { return mix(tc, QColor(88, 88, 88), 0.4); }
+QColor highlightWave(const QColor& tc) { return mix(tc, QColor(255, 255, 255), 0.5); }
+
 TimelineWidget::Impl::RowLook TimelineWidget::Impl::rowLook(const Row& row) const
 {
     RowLook l;
@@ -1043,9 +1076,10 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     if (r.right() < c.left() - 2 || r.left() > c.right() + 2) return;
     const MediaItem* m = mediaOf(e.mediaId);
     const bool selected = app.selection().count(e.id) != 0;
-    // reversed audio events (rowLook): a selected one is VEGAS's light pink rather than lit up by drawEventOutline
+    // reversed audio events (rowLook): a selected one is drawn as VEGAS 18 draws it - the background a dark shade of the
+    // track's colour and the waveform light (halfway to white), with a yellow rim (drawEventOutline) - rather than lit up
     const bool reversed = !row.video && vprefs::on("prefs/reverseEventBg");
-    const QColor body = reversed && selected ? QColor(221, 176, 176) : look.body;
+    const QColor body = reversed && selected ? highlightBody(look.tc) : look.body;
     // Only the part in view is drawn: zoomed far in, an event can be a very long way wide. It is the part in the
     // whole view, not just in what this paint covers, so a part painted on its own looks exactly as in a whole
     // repaint (its name elided at the same place and so on).
@@ -1069,11 +1103,32 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     const QRectF vd(QPointF(std::max(v.left(), c.left() - 16.0), v.top()), QPointF(std::min(v.right(), c.right() + 16.0), v.bottom()));
     p.fillRect(vd, body);
 
-    const EventPaint ev{row, e, m, c, look, r, v, vd, selected, narrow};
+    RowLook lk = look;
+    if (reversed && selected) lk.wave = highlightWave(look.tc);
+    const EventPaint ev{row, e, m, c, lk, r, v, vd, selected, narrow};
     const double titleH = eventTitleH(r);
     p.save();
     p.setClipRect(vd.intersected(QRectF(c)));
     drawEventContent(p, ev, titleH);
+    // The time selection: VEGAS tints its stretch over the events as well as the empty lanes (kSelectionWash, under the
+    // events). An audio event's part in it is drawn as a selected one (reversed: the dark background and the light
+    // waveform) under a blue wash, the waveform drawn again on top; a video event's background turns blue between its
+    // thumbnails, the thumbnails themselves untinted.
+    if (app.loopEnd > app.loopStart && !narrow) {
+        const double x0 = std::max(vd.left(), xAtF(app.loopStart)), x1 = std::min(vd.right(), xAtF(app.loopEnd));
+        if (x1 > x0) {
+            const QRectF ts(QPointF(x0, vd.top()), QPointF(x1, vd.bottom()));
+            p.save();
+            p.setClipRect(ts, Qt::IntersectClip);
+            RowLook hl = lk;
+            if (reversed) hl.wave = highlightWave(look.tc);
+            p.fillRect(ts, reversed ? highlightBody(look.tc) : body);
+            p.fillRect(ts, kEventSelectionWash);
+            const EventPaint ev2{row, e, m, c, hl, r, v, vd, selected, narrow};
+            drawEventContent(p, ev2, titleH);
+            p.restore();
+        }
+    }
     drawEventTitle(p, ev, titleH);
     drawFadesAndGain(p, ev);
     drawLoopNotches(p, ev);
@@ -1082,7 +1137,7 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     drawFadeLengths(p, ev);
     drawFadeHandles(p, ev);
     drawEventButtons(p, ev);
-    drawEventExtras(p, e, r, v);
+    drawEventExtras(p, e, r, v, !row.video);
     p.restore();
 }
 
@@ -1210,12 +1265,21 @@ void TimelineWidget::Impl::drawFadesAndGain(QPainter& p, const EventPaint& ev)
     const bool lowered = e.gain < 0.9995;
     const bool gainHot = (hover.event == e.id && hover.part == Part::EventGain) ||
                          (drag.kind == Drag::EventGain && drag.started && std::any_of(drag.gains.begin(), drag.gains.end(), [&](const std::pair<uint64_t, double>& g) { return g.first == e.id; }));
+    // an audio event's: VEGAS 18 draws the lowered gain as a one-pixel blue line (at -inf dB along the bottom), and an
+    // unlowered one as a notch in the top edge (drawEventOutline), on every event
+    const bool audio = !ev.row.video;
     if (lowered || (gainHot && !(drag.kind == Drag::EventGain && !drag.started))) {
         p.setRenderHint(QPainter::Antialiasing, false);
-        const double ly = std::floor(gainY) + 1.0;
-        p.setPen(QPen(QColor(255, 255, 255, 240), 2.0, Qt::SolidLine, Qt::FlatCap));
-        p.drawLine(QPointF(v.left() + 1.0, ly), QPointF(v.right() - 1.0, ly));
+        if (audio) {
+            const double ly = std::min(std::floor(gainY), std::floor(r.bottom()) - 1.0);
+            p.fillRect(QRectF(v.left() + 1.0, ly, v.width() - 2.0, 1.0), QColor(0, 0, 255));
+        } else {
+            const double ly = std::floor(gainY) + 1.0;
+            p.setPen(QPen(QColor(255, 255, 255, 240), 2.0, Qt::SolidLine, Qt::FlatCap));
+            p.drawLine(QPointF(v.left() + 1.0, ly), QPointF(v.right() - 1.0, ly));
+        }
     }
+    if (audio && !lowered && !(gainHot && drag.kind == Drag::EventGain && drag.started)) return;
     if (v.width() >= 40.0 && (lowered || ev.selected || gainHot)) {
         const double cx = std::floor((r.left() + r.right()) * 0.5);
         if (cx + 8.0 >= c.left() && cx - 8.0 <= c.right()) {
@@ -1224,8 +1288,8 @@ void TimelineWidget::Impl::drawFadesAndGain(QPainter& p, const EventPaint& ev)
             QPolygonF tab;
             tab << QPointF(cx - w, ty) << QPointF(cx + w, ty) << QPointF(cx + w - h, ty + h) << QPointF(cx - w + h, ty + h);
             p.setRenderHint(QPainter::Antialiasing, false);
-            p.setPen(QPen(QColor(0, 70, 90), 1.0));
-            p.setBrush(gainHot ? QColor(120, 240, 255) : QColor(0, 220, 250));
+            p.setPen(QPen(audio ? QColor(0, 0, 90) : QColor(0, 70, 90), 1.0));
+            p.setBrush(audio ? (gainHot ? QColor(110, 130, 255) : QColor(0, 0, 255)) : (gainHot ? QColor(120, 240, 255) : QColor(0, 220, 250)));
             p.drawPolygon(tab);
         }
     }
@@ -1260,8 +1324,18 @@ void TimelineWidget::Impl::drawEventOutline(QPainter& p, const EventPaint& ev)
     const QRectF &r = ev.r, &v = ev.v, &vd = ev.vd;
     const bool selected = ev.selected, narrow = ev.narrow;
     p.setRenderHint(QPainter::Antialiasing, false);
-    if (selected) {
-        if (ev.row.video || !vprefs::on("prefs/reverseEventBg")) p.fillRect(vd, QColor(255, 255, 255, 58));
+    const bool reversed = !ev.row.video && vprefs::on("prefs/reverseEventBg");
+    if (selected && reversed) {
+        // VEGAS 18: a two-pixel yellow rim, bright outside and darker inside
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QColor(204, 228, 4));
+        p.drawRect(vd.adjusted(0, 0, -1, -1));
+        if (vd.width() > 4 && vd.height() > 4) {
+            p.setPen(QColor(168, 161, 37));
+            p.drawRect(vd.adjusted(1, 1, -2, -2));
+        }
+    } else if (selected) {
+        p.fillRect(vd, QColor(255, 255, 255, 58));
         p.setPen(QColor(236, 236, 236));
         p.setBrush(Qt::NoBrush);
         p.drawRect(vd.adjusted(0, 0, -1, -1));
@@ -1269,9 +1343,44 @@ void TimelineWidget::Impl::drawEventOutline(QPainter& p, const EventPaint& ev)
         if (r.left() >= v.left() - 0.5) p.fillRect(QRectF(std::floor(r.left()), v.top(), 1.0, v.height()), QColor(0, 0, 0, 120));
         if (r.right() <= v.right() + 0.5) p.fillRect(QRectF(std::floor(r.right()) - 1.0, v.top(), 1.0, v.height()), QColor(0, 0, 0, 120));
     }
-    if (!narrow) {
+    if (!narrow && !(selected && reversed)) {
         p.fillRect(QRectF(vd.left(), std::floor(r.top()), vd.width(), 1.0), QColor(216, 216, 216));
     }
+    if (ev.row.video || narrow || r.width() < 16.0) return;
+    // VEGAS 18's audio event: its top corners cut off at 45 degrees (six pixels, a dark edge; the fade handles sit in the
+    // cut, drawFadeHandles), and while its gain is not lowered a notch in the middle of its top edge holding the gain
+    // handle (a lowered gain draws its line and handle instead, drawFadesAndGain)
+    const QColor edge(64, 64, 64);
+    const double t = std::floor(r.top());
+    const QRect& c = ev.c;
+    for (int side = 0; side < 2; ++side) {
+        const double x = side == 0 ? std::floor(r.left()) : std::floor(r.right()) - 1.0;
+        if (side == 0 ? r.left() < v.left() - 0.5 : r.right() > v.right() + 0.5) continue;
+        if (x + 8.0 < c.left() || x - 8.0 > c.right()) continue;
+        const double d = side == 0 ? 1.0 : -1.0;
+        for (int i = 0; i < 6; ++i) {
+            const int cut = 6 - i;  // pixels of the row cut off, counted from the event's edge
+            const double x0 = side == 0 ? x : x - (cut - 1);
+            p.fillRect(QRectF(x0, t + i, cut, 1.0), kLane);
+            if (i > 0) p.fillRect(QRectF(x + d * cut, t + i, 1.0, 1.0), edge);
+        }
+    }
+    const Event& e = ev.e;
+    if (e.gain < 0.9995 || v.width() < 40.0) return;
+    const double cx = std::floor((r.left() + r.right()) * 0.5);
+    if (cx + 9.0 < c.left() || cx - 9.0 > c.right() || cx < v.left() + 9.0 || cx > v.right() - 9.0) return;
+    const bool hot = (hover.event == e.id && hover.part == Part::EventGain);
+    p.fillRect(QRectF(cx - 7.0, t, 15.0, 1.0), kLane);
+    p.fillRect(QRectF(cx - 6.0, t + 1.0, 13.0, 1.0), kLane);
+    p.fillRect(QRectF(cx - 5.0, t + 2.0, 11.0, 1.0), kLane);
+    p.fillRect(QRectF(cx - 5.0, t + 3.0, 11.0, 1.0), edge);
+    for (int k = 0; k < 3; ++k) {
+        p.fillRect(QRectF(cx - 8.0 + k, t + k, 1.0, 1.0), edge);
+        p.fillRect(QRectF(cx + 8.0 - k, t + k, 1.0, 1.0), edge);
+    }
+    const QColor tab = hot ? QColor(110, 130, 255) : QColor(0, 0, 255);
+    p.fillRect(QRectF(cx - 5.0, t, 11.0, 1.0), tab);
+    p.fillRect(QRectF(cx - 4.0, t + 1.0, 9.0, 1.0), tab);
 }
 
 void TimelineWidget::Impl::drawFadeLengths(QPainter& p, const EventPaint& ev)
@@ -1363,9 +1472,10 @@ void TimelineWidget::Impl::drawEventButtons(QPainter& p, const EventPaint& ev)
 
 // What the editing adds on an event: the media's own markers, the active take, the lock, and the edge selected for
 // keyboard trimming (a red bracket, as VEGAS marks it).
-void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QRectF& r, const QRectF& v)
+void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QRectF& r, const QRectF& v, bool audioEvent)
 {
-    const bool snapFlag = r.width() > 24.0 && (e.snapOffset > 0 || app.selection().count(e.id) != 0);
+    // the snap offset flag: VEGAS 18 draws it on every audio event (a video event: while selected or moved off its start)
+    const bool snapFlag = r.width() > 24.0 && (audioEvent || e.snapOffset > 0 || app.selection().count(e.id) != 0);
     const bool linked = e.syncLink && app.selection().count(e.syncLink) != 0;
     bool offStart = false, offEnd = false;
     if (opt.showUnquantized) {
@@ -1483,13 +1593,19 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
     }
     if (snapFlag) {
         const double fx = std::floor(xAtF(e.start + clampd(e.snapOffset, 0.0, e.length))) + 0.5;
-        QPolygonF tri;
-        tri << QPointF(fx, r.bottom() - 7.0) << QPointF(fx + 6.0, r.bottom() - 1.0) << QPointF(fx, r.bottom() - 1.0);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(QColor(20, 20, 20), 1.0));
-        p.setBrush(QColor(250, 250, 250));
-        p.drawPolygon(tri);
+        // VEGAS's: a white right triangle six pixels high with a black edge, its corner on the event's bottom edge
+        const double bx = std::floor(fx), by = std::floor(r.bottom()) - 1.0;
         p.setRenderHint(QPainter::Antialiasing, false);
+        for (int i = 0; i <= 6; ++i) {
+            const double y = by - 6.0 + i;
+            if (i == 6) {
+                p.fillRect(QRectF(bx, y, 7.0, 1.0), QColor(0, 0, 0));
+                continue;
+            }
+            p.fillRect(QRectF(bx, y, 1.0, 1.0), QColor(0, 0, 0));
+            if (i >= 2) p.fillRect(QRectF(bx + 1.0, y, i - 1, 1.0), QColor(255, 255, 255));
+            if (i >= 1) p.fillRect(QRectF(bx + i, y, 1.0, 1.0), QColor(0, 0, 0));
+        }
     }
     if (linked) {
         p.setBrush(Qt::NoBrush);

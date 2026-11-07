@@ -141,6 +141,9 @@ public:
 
     // What videoFrame() does with interlaced frames: 0 shows them as they are (the default), 1 blends the two fields
     // together, 2 keeps the first field and fills the other's lines in from it (VEGAS's deinterlace methods).
+    // A reader kept only for its sound frees its picture decoder (and the decoder's threads and frames); the decoder is
+    // opened again if a frame is asked for after all.
+    virtual void releaseVideo() {}
     virtual void setDeinterlace(int mode) { (void)mode; }
     // Media Properties' Field order override: "" as the file says; "none" (the frames are progressive, whatever the
     // file says: nothing is deinterlaced), "upper" or "lower" (interlaced, that field first).
