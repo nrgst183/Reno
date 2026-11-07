@@ -179,5 +179,23 @@ int main(int argc, char** argv)
         check(in.blue() > in.red() + 40 && in.lightness() < 170, "time selection: the event is blue inside it", in.name().toStdString());
         check(outside == grey, "time selection: the event stays grey outside it", outside.name().toStdString());
     }
+    // a narrow event (a stutter's piece) in the time selection is tinted as well
+    {
+        uint64_t piece = 0;
+        st().edit("Piece", [&](Project& p) {
+            Event e = *p.findEvent(ev);
+            e.id = p.newId();
+            e.start = 1.45;
+            e.length = 0.04;
+            e.name.clear();
+            piece = e.id;
+            p.findEvent(ev)->length = 0.9;
+            p.tracks[0].events.push_back(e);
+        });
+        shot();
+        const QRect pr = w.eventRectOf(piece);
+        const QColor c = im.pixelColor(pr.center().x(), sep + 4);
+        check(pr.width() >= 2 && c.blue() > c.red() + 30, "time selection: a narrow event in it is blue too", c.name().toStdString() + " w " + std::to_string(pr.width()));
+    }
     return uitest::summary();
 }

@@ -1032,6 +1032,7 @@ struct TimelineWidget::Impl {
         QColor tc, body, title, wave;
     };
     RowLook rowLook(const Row& row) const;
+    bool inTimeSelection(const QRectF& v) const;
     int sliverOf(const Row& row, const Event& e, const QRect& c, const RowLook& look, QRectF* rect, QColor* color) const;
     void drawEvent(QPainter& p, const Row& row, const Event& e, const QRect& c, const RowLook& look);
     struct EventPaint {

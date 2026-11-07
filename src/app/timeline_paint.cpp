@@ -1036,6 +1036,7 @@ TimelineWidget::Impl::TitleText& TimelineWidget::Impl::titleText(const Event& e,
 // the background a dark shade of the track's colour, the waveform halfway to white.
 QColor highlightBody(const QColor& tc) { return mix(tc, QColor(88, 88, 88), 0.4); }
 QColor highlightWave(const QColor& tc) { return mix(tc, QColor(255, 255, 255), 0.5); }
+QColor timeSelectedSliver(const QColor& body, bool reversed, const QColor& tc);
 
 TimelineWidget::Impl::RowLook TimelineWidget::Impl::rowLook(const Row& row) const
 {
@@ -1067,7 +1068,25 @@ int TimelineWidget::Impl::sliverOf(const Row& row, const Event& e, const QRect& 
     if (selected) return 2;
     *rect = v;
     *color = row.video ? look.tc : look.body;
+    if (inTimeSelection(v)) *color = timeSelectedSliver(*color, !row.video && vprefs::on("prefs/reverseEventBg"), look.tc);
     return 1;
+}
+
+// whether most of this stretch of the timeline is in the time selection
+bool TimelineWidget::Impl::inTimeSelection(const QRectF& v) const
+{
+    if (!(app.loopEnd > app.loopStart)) return false;
+    const double mid = (v.left() + v.right()) * 0.5;
+    return mid >= xAtF(app.loopStart) && mid <= xAtF(app.loopEnd);
+}
+
+// a sliver's color in the time selection: as the wider events there (drawEvent), the blue wash over the background
+QColor timeSelectedSliver(const QColor& body, bool reversed, const QColor& tc)
+{
+    const QColor b = reversed ? highlightBody(tc) : body;
+    const double a = kEventSelectionWash.alphaF();
+    return QColor::fromRgbF(b.redF() * (1 - a) + kEventSelectionWash.redF() * a, b.greenF() * (1 - a) + kEventSelectionWash.greenF() * a,
+                            b.blueF() * (1 - a) + kEventSelectionWash.blueF() * a);
 }
 
 void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e, const QRect& c, const RowLook& look)
@@ -1090,6 +1109,7 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
         if (e.mute) p.setOpacity(0.42);
         p.fillRect(v, row.video ? look.tc : body);
         if (selected && !reversed) p.fillRect(v, QColor(255, 255, 255, 80));
+        if (inTimeSelection(v)) p.fillRect(v, timeSelectedSliver(row.video ? look.tc : body, reversed, look.tc));
         if (e.mute) p.setOpacity(opacity);
         return;
     }
@@ -1114,7 +1134,7 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     // events). An audio event's part in it is drawn as a selected one (reversed: the dark background and the light
     // waveform) under a blue wash, the waveform drawn again on top; a video event's background turns blue between its
     // thumbnails, the thumbnails themselves untinted.
-    if (app.loopEnd > app.loopStart && !narrow) {
+    if (app.loopEnd > app.loopStart) {
         const double x0 = std::max(vd.left(), xAtF(app.loopStart)), x1 = std::min(vd.right(), xAtF(app.loopEnd));
         if (x1 > x0) {
             const QRectF ts(QPointF(x0, vd.top()), QPointF(x1, vd.bottom()));
