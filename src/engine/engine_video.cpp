@@ -29,6 +29,53 @@ static double frameNumber(double seconds, double fps)
 
 static const double kDegrees = 3.14159265358979323846 / 180.0;
 
+// A media frame fitted to the frame's size, kept for the next render: a decoded frame comes back as the same shared
+// image from its reader while it is in the reader's cache, and while editing (each step of a drag renders the frame at
+// the cursor again) fitting the same pictures again was most of the work. Keyed by the decoded image itself (kept by a
+// weak pointer, so an entry is useless once the decoder lets the frame go) and the size; a few dozen MB at most.
+namespace {
+struct FitEntry {
+    std::weak_ptr<Image> src;
+    const Image* key = nullptr;
+    int w = 0, h = 0;
+    bool corner = false;
+    ImagePtr out;
+};
+std::mutex gFitMutex;
+std::vector<FitEntry> gFits;  // most recent first
+const size_t kFitBytes = 64u << 20;
+}  // namespace
+
+static ImagePtr fitCached(const ImagePtr& src, int w, int h, bool corner)
+{
+    if (!src) return src;
+    {
+        std::lock_guard<std::mutex> lk(gFitMutex);
+        for (size_t i = 0; i < gFits.size(); ++i) {
+            FitEntry& f = gFits[i];
+            if (f.key != src.get() || f.w != w || f.h != h || f.corner != corner) continue;
+            ImagePtr alive = f.src.lock();
+            if (alive != src) continue;
+            ImagePtr out = f.out;
+            if (i) std::rotate(gFits.begin(), gFits.begin() + (std::ptrdiff_t)i, gFits.begin() + (std::ptrdiff_t)i + 1);
+            return out;
+        }
+    }
+    ImagePtr out = fitImage(*src, w, h, corner);
+    if (!out) return out;
+    std::lock_guard<std::mutex> lk(gFitMutex);
+    gFits.insert(gFits.begin(), FitEntry{src, src.get(), w, h, corner, out});
+    size_t bytes = 0, keep = 0;
+    for (; keep < gFits.size(); ++keep) {
+        if (gFits[keep].src.expired()) continue;
+        bytes += gFits[keep].out->byteSize();
+        if (bytes > kFitBytes && keep > 0) break;
+    }
+    gFits.resize(keep);
+    gFits.erase(std::remove_if(gFits.begin(), gFits.end(), [](const FitEntry& f) { return f.src.expired(); }), gFits.end());
+    return out;
+}
+
 // ---------------------------------------------------------------------- keyframes
 // The value of a list of keys (sorted by time or not) at 'time'.
 template <class Key, class Mix, class Path>
@@ -2157,7 +2204,7 @@ struct VideoEngine::Pass {
                     }
                     ImagePtr f = eventFrame(e, *m, mt, rw, rh);
                     if (f && rw == 0 && (f->w > W || f->h > H)) f = eventFrame(e, *m, mt, W, H);
-                    if (f) out = (f->w == W && f->h == H) ? f : fitImage(*f, W, H, true);
+                    if (f) out = (f->w == W && f->h == H) ? f : fitCached(f, W, H, true);
                 } else {
                     out = panCropMedia(e, *m, mt, t);
                 }

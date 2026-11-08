@@ -469,11 +469,15 @@ int main(int argc, char** argv)
         buildProject();
         w.zoomToFit();
         uitest::settle(20);
-        const QPoint m(w.xAt(8.0), w.trackRect(ids.v1).top() + 40);
-        const double t0 = w.timeAt(m.x()), span0 = w.timeAt(1300) - w.timeAt(300);
+        // the wheel zooms about the playhead (VEGAS: the user's report), wherever the mouse is
+        st().setCursor(8.0);
+        const QPoint m(w.xAt(3.0), w.trackRect(ids.v1).top() + 40);
+        const double span0 = w.timeAt(1300) - w.timeAt(300);
         uitest::wheel(&w, m, 120);
         const double span1 = w.timeAt(1300) - w.timeAt(300);
-        check(span1 < span0 * 0.9 && near(w.timeAt(m.x()), t0, 0.02), "the wheel zooms in about the mouse", num(span0) + " " + num(span1) + " " + num(w.timeAt(m.x())));
+        const double mid = (w.viewStartTime() + w.viewEndTime()) * 0.5;
+        check(span1 < span0 * 0.9 && near(mid, 8.0, 0.02 * (w.viewEndTime() - w.viewStartTime())), "the wheel zooms in about the playhead",
+              num(span0) + " " + num(span1) + " " + num(mid));
         uitest::wheel(&w, m, -120);
         check(near(w.timeAt(1300) - w.timeAt(300), span0, span0 * 0.01), "and back out");
         uitest::wheel(&w, m, -120 * 30);

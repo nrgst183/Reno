@@ -3226,10 +3226,13 @@ void MainWindow::refresh(int changes)
         if (changes & kFile) showDiskSpace();
         a.get("render")->setEnabled(app.project().length() > 0);
     }
-    if (changes & (kSelection | kProject)) {
+    if (changes & (kSelection | kProject | kCursor)) {
         const bool sel = !app.selection().empty();
-        for (const char* n : {"cut", "copy", "delete", "group", "ungroup", "clearGroup", "selectGroup", "eventFx", "eventProperties", "trim", "trimStart", "trimEnd", "lockEvent"})
+        for (const char* n : {"group", "ungroup", "clearGroup", "selectGroup", "eventFx", "eventProperties", "trimStart", "trimEnd", "lockEvent"})
             a.get(n)->setEnabled(sel);
+        // with a time selection these act on it even with no event selected (Delete takes that stretch out of every
+        // track's events, as in VEGAS)
+        for (const char* n : {"cut", "copy", "delete", "trim"}) a.get(n)->setEnabled(sel || app.timeSel());
         a.get("trackFx")->setEnabled(app.currentTrack != 0);
         a.get("paste")->setEnabled(app.hasClipboard() || timeline_->hasEnvelopeClip());
         if (timeline_->options().tool == EditTool::Envelope) a.get("copy")->setEnabled(true);

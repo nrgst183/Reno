@@ -485,11 +485,11 @@ void TimelineWidget::Impl::setZoom(double newPps, double anchorTime, double anch
     q->update();
 }
 
+// Zooming (the Up/Down keys, the zoom buttons, the mouse wheel) centres on the playhead, as in VEGAS (near the
+// project's start, where the view can't scroll further left, it stays as near the middle as it can).
 void TimelineWidget::Impl::zoomBy(double factor)
 {
-    const double cx = xAtF(app.cursor());
-    if (cx >= headerW && cx <= lanesRight()) setZoom(pps * factor, app.cursor(), cx);
-    else setZoom(pps * factor, timeAtF(headerW + viewW() * 0.5), headerW + viewW() * 0.5);
+    setZoom(pps * factor, app.cursor(), headerW + viewW() * 0.5);
 }
 
 void TimelineWidget::Impl::zoomLarge(bool in)
@@ -1034,10 +1034,16 @@ Hit TimelineWidget::Impl::hitTest(const QPointF& pos) const
             if (hasFxButton(er) && fxButtonRect(er).contains(pos)) consider(Part::EventFx, -1.0);
             if (hasCropButton(er, r.video) && cropButtonRect(er).contains(pos)) consider(Part::EventCrop, -1.0);
         }
+        // The fade handles: while an event has no fade, only its small corner triangles (VEGAS's blue handles, 6 pixels
+        // down and in) - on and past the event's edge the edge is taken hold of, so lengthening an event from near its
+        // top doesn't start a fade instead. A fade's handle (where the fade ends, inside the event) as before.
         if (hasFadeHandles(er) && y < er.top() + kHandlePx) {
             const double fi = std::floor(xAtF(e.start + e.fadeIn)), fo = std::floor(xAtF(e.end() - e.fadeOut));
-            if (x >= fi - 5 && x <= fi + (e.fadeIn > 0 ? 5 : 8)) consider(Part::FadeIn, std::fabs(x - fi) - 0.25);
-            if (x <= fo + 5 && x >= fo - (e.fadeOut > 0 ? 5 : 8)) consider(Part::FadeOut, std::fabs(x - fo) - 0.25);
+            const bool corner = y < er.top() + 6.0;
+            if (e.fadeIn > 0 ? (x >= fi - 5 && x <= fi + 5) : (corner && x >= er.left() + 2.0 && x <= fi + 8))
+                consider(Part::FadeIn, std::fabs(x - fi) - 0.25);
+            if (e.fadeOut > 0 ? (x <= fo + 5 && x >= fo - 5) : (corner && x <= er.right() - 2.0 && x >= fo - 8))
+                consider(Part::FadeOut, std::fabs(x - fo) - 0.25);
         }
         if (!gainEvent && inside && hasGainLine(er) && x > er.left() + 6.0 && x < er.right() - 6.0 && std::fabs(y - gainLineY(er, e.gain)) <= kGainGrabPx)
             gainEvent = e.id;

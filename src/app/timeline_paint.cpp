@@ -629,6 +629,7 @@ const QImage* TimelineWidget::Impl::thumb(const ThumbKey& key, const MediaItem& 
 
 void TimelineWidget::Impl::paint(QPainter& p, const QRect& clip)
 {
+    reverseBg = vprefs::on("prefs/reverseEventBg");  // read once per paint (it was read for every event)
     ++paintCount;
     updateFonts();
     ensureIndex(true);
@@ -734,6 +735,31 @@ void TimelineWidget::Impl::drawLinkMark(QPainter& p, const QPointF& at, const QC
     p.drawRoundedRect(QRectF(at.x(), at.y() - 2.5, 7.0, 5.0), 2.5, 2.5);
     p.drawRoundedRect(QRectF(at.x() + 4.5, at.y() - 2.5, 7.0, 5.0), 2.5, 2.5);
     p.setRenderHint(QPainter::Antialiasing, false);
+}
+
+// The group mark at the bottom of a grouped event: the link drawn white over a black outline (outlined, five
+// antialiased strokes of two rounded rectangles) - for a stutter edit's hundreds of grouped events most of a repaint.
+// Drawn once into a small image per screen scale and quarter-pixel position, and copied.
+void TimelineWidget::Impl::drawOutlinedLinkMark(QPainter& p, const QPointF& at)
+{
+    const qreal dpr = p.device() ? p.device()->devicePixelRatioF() : 1.0;
+    const double bx = std::floor(at.x()), by = std::floor(at.y());
+    const int qx = std::min(3, (int)std::floor((at.x() - bx) * 4.0 + 0.5)), qy = std::min(3, (int)std::floor((at.y() - by) * 4.0 + 0.5));
+    static std::map<std::tuple<int, int, int>, QPixmap> tiles;
+    const auto key = std::make_tuple((int)std::lround(dpr * 100), qx, qy);
+    auto it = tiles.find(key);
+    if (it == tiles.end()) {
+        // the mark reaches 1 pixel left of 'at' (outline) to about 13 right, 4 above to 4 below
+        QPixmap pm(QSize((int)std::ceil(18 * dpr), (int)std::ceil(12 * dpr)));
+        pm.setDevicePixelRatio(dpr);
+        pm.fill(Qt::transparent);
+        QPainter tp(&pm);
+        const QPointF o(3.0 + qx * 0.25, 6.0 + qy * 0.25);
+        outlined(tp, [&](const QColor& col) { drawLinkMark(tp, o, col); });
+        tp.end();
+        it = tiles.emplace(key, pm).first;
+    }
+    p.drawPixmap(QPointF(bx - 3.0, by - 6.0), it->second);
 }
 
 // How finely thumbnails are told apart in time, given how much media one of them stands for: coarse enough that
@@ -1048,7 +1074,7 @@ TimelineWidget::Impl::RowLook TimelineWidget::Impl::rowLook(const Row& row) cons
     l.wave = mix(l.tc, QColor(255, 255, 255), 0.62);
     // Preferences > Display, "Reverse Event Background Color": VEGAS's light grey event with the waveform in the track's
     // colour instead of a track-coloured event with a light waveform (selected events: kReversedSelected, drawEvent)
-    if (!row.video && vprefs::on("prefs/reverseEventBg")) {
+    if (!row.video && reverseBg) {
         l.body = QColor(216, 216, 216);
         l.wave = l.tc;
     }
@@ -1069,7 +1095,7 @@ int TimelineWidget::Impl::sliverOf(const Row& row, const Event& e, const QRect& 
     if (selected) return 2;
     *rect = v;
     *color = row.video ? look.tc : look.body;
-    if (inTimeSelection(v)) *color = timeSelectedSliver(*color, !row.video && vprefs::on("prefs/reverseEventBg"), look.tc);
+    if (inTimeSelection(v)) *color = timeSelectedSliver(*color, !row.video && reverseBg, look.tc);
     return 1;
 }
 
@@ -1098,7 +1124,7 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     const bool selected = app.selection().count(e.id) != 0;
     // reversed audio events (rowLook): a selected one is drawn as VEGAS 18 draws it - the background a dark shade of the
     // track's colour and the waveform light (halfway to white), with a yellow rim (drawEventOutline) - rather than lit up
-    const bool reversed = !row.video && vprefs::on("prefs/reverseEventBg");
+    const bool reversed = !row.video && reverseBg;
     const QColor body = reversed && selected ? highlightBody(look.tc) : look.body;
     // Only the part in view is drawn: zoomed far in, an event can be a very long way wide. It is the part in the
     // whole view, not just in what this paint covers, so a part painted on its own looks exactly as in a whole
@@ -1202,21 +1228,45 @@ void TimelineWidget::Impl::drawEventContent(QPainter& p, const EventPaint& ev, d
     }
 }
 
+// The zigzag of a stretched event (playback rate changed): a black-edged white line, 4 pixels up and down every 4
+// pixels from the event's start. Drawn as an antialiased stroke along the whole width it took most of a repaint of a
+// project whose events are all stretched, so one 8-pixel period is drawn once (per screen scale) and tiled.
+static const QPixmap& stretchTile(qreal dpr)
+{
+    static QPixmap tile;
+    static qreal tileDpr = 0;
+    if (tile.isNull() || tileDpr != dpr) {
+        QPixmap pm(QSize((int)std::ceil(8 * dpr), (int)std::ceil(8 * dpr)));
+        pm.setDevicePixelRatio(dpr);
+        pm.fill(Qt::transparent);
+        QPainter tp(&pm);
+        tp.setRenderHint(QPainter::Antialiasing, true);
+        // y0 = 2, y1 = 6 in the tile (the line's top is 2 pixels above the zigzag's); the neighbouring periods drawn
+        // too so the joins at the tile's edges are as in one long line
+        QPolygonF zig;
+        for (int k = -2; k <= 4; ++k) zig << QPointF(4.0 * k, k % 2 ? 6.0 : 2.0);
+        tp.setPen(QPen(QColor(0, 0, 0, 160), 2.6));
+        tp.drawPolyline(zig);
+        tp.setPen(QPen(QColor(255, 255, 255, 220), 1.1));
+        tp.drawPolyline(zig);
+        tp.end();
+        tile = pm;
+        tileDpr = dpr;
+    }
+    return tile;
+}
+
 void TimelineWidget::Impl::drawStretchMark(QPainter& p, const EventPaint& ev, const QRectF& content)
 {
     const QRect& c = ev.c;
-    QPolygonF zig;
-    const double y0 = content.top() + 2.0, y1 = content.top() + 6.0;
-    const double xs = ev.r.left(), to = std::min(content.right(), c.right() + 8.0);
-    long long k = (long long)std::ceil((std::max(content.left(), c.left() - 8.0) - xs) / 4.0);
-    for (double x = xs + 4.0 * k; x <= to; x += 4.0, ++k) zig << QPointF(x, k % 2 ? y1 : y0);
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(QColor(0, 0, 0, 160), 2.6));
-    p.drawPolyline(zig);
-    p.setPen(QPen(QColor(255, 255, 255, 220), 1.1));
-    p.drawPolyline(zig);
-    p.restore();
+    const double top = content.top();  // the zigzag between top + 2 and top + 6
+    const double xs = ev.r.left();
+    const double from = std::max(content.left(), c.left() - 8.0), to = std::min(content.right(), c.right() + 8.0);
+    if (to <= from) return;
+    const qreal dpr = p.device() ? p.device()->devicePixelRatioF() : 1.0;
+    double phase = std::fmod(from - xs, 8.0);
+    if (phase < 0) phase += 8.0;
+    p.drawTiledPixmap(QRectF(from, top, to - from, 8.0), stretchTile(dpr), QPointF(phase, 0.0));
 }
 
 void TimelineWidget::Impl::drawEventTitle(QPainter& p, const EventPaint& ev, double titleH)
@@ -1259,9 +1309,7 @@ void TimelineWidget::Impl::drawEventTitle(QPainter& p, const EventPaint& ev, dou
     } else if (e.group && v.width() > 40) {
         const double lx = std::max(r.left(), (double)headerW) + 4.0;
         if (lx - 3.0 < c.right() + 1 && lx + 16.0 > c.left()) {
-            p.save();
-            outlined(p, [&](const QColor& col) { drawLinkMark(p, QPointF(lx, v.bottom() - 7.0), col); });
-            p.restore();
+            drawOutlinedLinkMark(p, QPointF(lx, v.bottom() - 7.0));
         }
     }
 }
@@ -1345,7 +1393,7 @@ void TimelineWidget::Impl::drawEventOutline(QPainter& p, const EventPaint& ev)
     const QRectF &r = ev.r, &v = ev.v, &vd = ev.vd;
     const bool selected = ev.selected, narrow = ev.narrow;
     p.setRenderHint(QPainter::Antialiasing, false);
-    const bool reversed = !ev.row.video && vprefs::on("prefs/reverseEventBg");
+    const bool reversed = !ev.row.video && reverseBg;
     if (selected && reversed) {
         // VEGAS 18: a two-pixel yellow rim, bright outside and darker inside
         p.setBrush(Qt::NoBrush);

@@ -683,18 +683,38 @@ ImagePtr fitImage(const Image& src, int w, int h, bool cornerAligned)
     }
     // When shrinking by more than 2x, average a small box of source pixels so that the result does not shimmer.
     const int box = std::max(1, (int)(1.0 / s + 0.5));
+    // What each output column reads (its source columns and weight) is the same on every row: worked out once here, by
+    // the same arithmetic as per pixel, so the result is identical (this ran for every pixel of every frame fitted).
+    std::vector<int> colX0(dw), colX1(dw);
+    std::vector<float> colTx(dw);
+    for (int x = 0; x < dw; ++x) {
+        if (box >= 2) {
+            colX0[x] = (int)(x / s);
+            continue;
+        }
+        double fx = (x + 0.5) / s - 0.5;
+        if (cornerAligned && dw > 1 && src.w > 1) fx = x * (double)(src.w - 1) / (dw - 1);
+        int x0 = (int)std::floor(fx);
+        colTx[x] = (float)(fx - x0);
+        colX1[x] = std::min(src.w - 1, std::max(0, x0 + 1));
+        colX0[x] = std::min(src.w - 1, std::max(0, x0));
+    }
     parallelRows(dh, (size_t)dw * 4 * (size_t)(box * box), [&](int ya, int yb) {
     for (int y = ya; y < yb; ++y) {
         double fy = (y + 0.5) / s - 0.5;
         if (cornerAligned && dh > 1 && src.h > 1) fy = y * (double)(src.h - 1) / (dh - 1);
+        int by0 = (int)std::floor(fy);
+        const float ty = (float)(fy - by0);
+        const int y1 = std::min(src.h - 1, std::max(0, by0 + 1)), y0c = std::min(src.h - 1, std::max(0, by0));
+        const int yBox = (int)(y / s);
+        uint8_t* drow = out->row(oy + y);
         for (int x = 0; x < dw; ++x) {
-            double fx = (x + 0.5) / s - 0.5;
-            if (cornerAligned && dw > 1 && src.w > 1) fx = x * (double)(src.w - 1) / (dw - 1);
             float acc[4] = {0, 0, 0, 0};
             if (box >= 2) {
-                int x0 = (int)(x / s), y0 = (int)(y / s), cnt = 0;
+                const int x0 = colX0[x];
+                int cnt = 0;
                 for (int by = 0; by < box; ++by) {
-                    int sy = std::min(src.h - 1, y0 + by);
+                    int sy = std::min(src.h - 1, yBox + by);
                     for (int bx = 0; bx < box; ++bx) {
                         int sx = std::min(src.w - 1, x0 + bx);
                         if (isByte) {
@@ -709,28 +729,25 @@ ImagePtr fitImage(const Image& src, int w, int h, bool cornerAligned)
                 }
                 for (int k = 0; k < ch; ++k) acc[k] /= (float)cnt;
             } else {
-                int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
-                float tx = (float)(fx - x0), ty = (float)(fy - y0);
-                int x1 = std::min(src.w - 1, std::max(0, x0 + 1)), y1 = std::min(src.h - 1, std::max(0, y0 + 1));
-                x0 = std::min(src.w - 1, std::max(0, x0));
-                y0 = std::min(src.h - 1, std::max(0, y0));
+                const int x0 = colX0[x], x1 = colX1[x];
+                const float tx = colTx[x];
                 for (int k = 0; k < ch; ++k) {
                     float p00, p10, p01, p11;
                     if (isByte) {
-                        p00 = src.row(y0)[x0 * 4 + k]; p10 = src.row(y0)[x1 * 4 + k];
+                        p00 = src.row(y0c)[x0 * 4 + k]; p10 = src.row(y0c)[x1 * 4 + k];
                         p01 = src.row(y1)[x0 * 4 + k]; p11 = src.row(y1)[x1 * 4 + k];
                     } else {
-                        p00 = ((const float*)src.row(y0))[x0 * 4 + k]; p10 = ((const float*)src.row(y0))[x1 * 4 + k];
+                        p00 = ((const float*)src.row(y0c))[x0 * 4 + k]; p10 = ((const float*)src.row(y0c))[x1 * 4 + k];
                         p01 = ((const float*)src.row(y1))[x0 * 4 + k]; p11 = ((const float*)src.row(y1))[x1 * 4 + k];
                     }
                     acc[k] = (p00 * (1 - tx) + p10 * tx) * (1 - ty) + (p01 * (1 - tx) + p11 * tx) * ty;
                 }
             }
             if (isByte) {
-                uint8_t* d = out->row(oy + y) + (ox + x) * 4;
+                uint8_t* d = drow + (ox + x) * 4;
                 for (int k = 0; k < ch; ++k) d[k] = (uint8_t)std::min(255.f, acc[k] + 0.5f);
             } else {
-                float* d = (float*)out->row(oy + y) + (ox + x) * 4;
+                float* d = (float*)drow + (ox + x) * 4;
                 for (int k = 0; k < ch; ++k) d[k] = acc[k];
             }
         }

@@ -850,7 +850,7 @@ void TimelineWidget::Impl::release(QMouseEvent* ev)
         break;
     case Drag::Move:
         if (was.started) {
-            app.endDrag("Move Events");
+            app.endDrag(was.copies.empty() ? "Move Events" : "Copy Events");
             if (!was.ripple && !was.movers.empty()) {
                 const Mover& g = was.movers[std::min(was.grabbed, was.movers.size() - 1)];
                 const Track* t = nullptr;
@@ -864,6 +864,10 @@ void TimelineWidget::Impl::release(QMouseEvent* ev)
                 }
                 if (e && t && tracks.count(t->id)) rememberEdit(tracks, from, e->start - g.start, ids);
             }
+        } else if (was.ctrlUntoggle) {
+            std::set<uint64_t> sel = app.selection();
+            for (uint64_t g : withGroup(was.hit.event)) sel.erase(g);
+            app.setSelection(sel);
         } else if (was.collapseOnRelease) selectGroupOf(was.hit.event);
         break;
     case Drag::TrimLeft:
@@ -1284,8 +1288,7 @@ void TimelineWidget::Impl::wheel(QWheelEvent* ev)
     } else if (mods & Qt::ShiftModifier) {
         setViewStart(viewStart - notches * viewW() * 0.12 / pps);
     } else {
-        const double x = clampd(pos.x(), headerW, lanesRight());
-        setZoom(pps * std::pow(1.25, notches), timeAtF(x), x);
+        zoomBy(std::pow(1.25, notches));
     }
     ev->accept();
 }

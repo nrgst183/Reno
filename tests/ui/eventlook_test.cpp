@@ -16,6 +16,7 @@
 #include <QFile>
 #include <QImage>
 #include <QSettings>
+#include <QWheelEvent>
 #include <cmath>
 #include <cstring>
 
@@ -211,6 +212,23 @@ int main(int argc, char** argv)
         const QRect pr = w.eventRectOf(piece);
         const QColor c = im.pixelColor(pr.center().x(), sep + 4);
         check(pr.width() >= 2 && c.blue() > c.red() + 30, "time selection: a narrow event in it is blue too", c.name().toStdString() + " w " + std::to_string(pr.width()));
+    }
+    // Zooming centres on the playhead (VEGAS): the Up key / zoom buttons and the mouse wheel alike
+    {
+        st().setCursor(2.0);
+        w.zoomIn();
+        w.zoomIn();
+        uitest::settle(50);
+        double mid = (w.viewStartTime() + w.viewEndTime()) * 0.5;
+        check(std::fabs(mid - 2.0) < 0.02 * (w.viewEndTime() - w.viewStartTime()), "zoom in: the playhead in the middle of the view",
+              std::to_string(w.viewStartTime()) + ".." + std::to_string(w.viewEndTime()));
+        QWheelEvent wheel(QPointF(w.headerWidth() + 20, 60), w.mapToGlobal(QPointF(w.headerWidth() + 20, 60)), QPoint(), QPoint(0, 120), Qt::NoButton,
+                          Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&w, &wheel);
+        uitest::settle(50);
+        mid = (w.viewStartTime() + w.viewEndTime()) * 0.5;
+        check(std::fabs(mid - 2.0) < 0.02 * (w.viewEndTime() - w.viewStartTime()), "wheel zoom: the playhead in the middle, not the mouse",
+              std::to_string(w.viewStartTime()) + ".." + std::to_string(w.viewEndTime()));
     }
     return uitest::summary();
 }

@@ -601,6 +601,7 @@ struct TimelineWidget::Impl {
     double paintedCursor = -1;
     double paintedLoopA = 0, paintedLoopB = 0;
     bool paintedTimeSel = false;
+    bool reverseBg = false;  // Preferences > Display "Reverse Event Background Color", as of this paint
     bool paintedLoopOn = false;
 
     Hit hover;
@@ -612,6 +613,13 @@ struct TimelineWidget::Impl {
         double pressTime = 0;
         Hit hit;
         bool collapseOnRelease = false;
+        // Ctrl+drag of events (VEGAS): copies are moved, the originals stay. copies: (original, copy) ids, the copies'
+        // ids worked out when the drag starts (each update starts again from the project as it was then, so they come
+        // out the same every time); copyGroups: a group of originals -> the copies' new group
+        bool copy = false;
+        bool ctrlUntoggle = false;  // Ctrl+click on a selected event: unselected on release if no drag followed
+        std::vector<std::pair<uint64_t, uint64_t>> copies;
+        std::map<uint64_t, uint64_t> copyGroups;
         bool resumePlayback = false;
         std::vector<std::pair<uint64_t, double>> gains;
         bool gainVideo = false;
@@ -976,6 +984,7 @@ struct TimelineWidget::Impl {
     static void drawRamp(QPainter& p, double xa, double ya, double xb, double yb, double clipL, double clipR, bool shade, double shadeTo);
     static void drawFade(QPainter& p, double xa, double xb, double top, double bottom, int curve, bool in, double clipL, double clipR, bool shade);
     static void drawLinkMark(QPainter& p, const QPointF& at, const QColor& color);
+    void drawOutlinedLinkMark(QPainter& p, const QPointF& at);
     static double thumbGrain(double tileSeconds, double mediaFps);
     void drawThumbNumber(QPainter& p, const QRectF& target, double mt, double mediaFps, const std::string& how);
     void drawThumbs(QPainter& p, const Event& e, const MediaItem& m, const QRectF& r, const QRectF& content, const QRect& c);

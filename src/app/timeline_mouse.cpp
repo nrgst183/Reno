@@ -649,12 +649,15 @@ void TimelineWidget::Impl::pressEvent(const Hit& h, Qt::KeyboardModifiers mods)
     const bool was = sel.count(h.event) != 0;
     bool canMove = true;
     if (ctrl) {
-        for (uint64_t g : withGroup(h.event)) {
-            if (was) sel.erase(g);
-            else sel.insert(g);
+        // VEGAS: Ctrl+click adds the event (its group with it) to the selection or takes it out; Ctrl+drag copies the
+        // selected events and moves the copies (a selected event clicked is taken out only if no drag follows)
+        if (!was) {
+            for (uint64_t g : withGroup(h.event)) sel.insert(g);
+            app.setSelection(sel);
+        } else {
+            drag.ctrlUntoggle = true;
         }
-        app.setSelection(sel);
-        canMove = !was;
+        drag.copy = true;
     } else if (shift) {
         // VEGAS: Shift+click selects the range from the event clicked last to this one (the events between them in time,
         // on the tracks between them)
@@ -1336,6 +1339,25 @@ bool TimelineWidget::Impl::beginMove()
                 ids.insert(e.id);
             }
     drag.snaps = snapTargets(ids, true);
+    if (drag.copy) {
+        // Ctrl+drag: the copies get the next ids (and grouped originals a new group each), in the order the updates make
+        // them; from here on the drag moves the copies
+        uint64_t next = pr.nextId;
+        drag.copies.clear();
+        drag.copyGroups.clear();
+        for (Mover& m : drag.movers) {
+            drag.copies.emplace_back(m.id, next);
+            m.id = next++;
+        }
+        for (const auto& c : drag.copies)
+            if (const Event* e = pr.findEvent(c.first))
+                if (e->group && !drag.copyGroups.count(e->group)) drag.copyGroups[e->group] = next++;
+        drag.ripple = false;
+        drag.envFollow.clear();
+        app.beginDrag();
+        drag.started = true;
+        return true;
+    }
     // Lock Envelopes to Events: the points of the tracks' envelopes that lie under a moved event go with it (unless an
     // envelope is locked to the timeline)
     drag.envFollow.clear();
@@ -1416,7 +1438,24 @@ void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers 
     const bool ripple = drag.ripple && shift == 0, quantize = opt.quantize;
     const Followers followers = drag.followers;
     const std::vector<DragState::EnvFollow> envFollow = shift == 0 ? drag.envFollow : std::vector<DragState::EnvFollow>();
+    const std::vector<std::pair<uint64_t, uint64_t>> copies = drag.copies;
+    const std::map<uint64_t, uint64_t> copyGroups = drag.copyGroups;
     app.dragUpdate([&](Project& p) {
+        // Ctrl+drag: the copies are made first, where the originals are (the movers then move them)
+        for (const auto& c : copies) {
+            Track* t = nullptr;
+            const Event* o = p.findEvent(c.first, &t);
+            if (!o || !t) continue;
+            Event e = *o;
+            e.id = p.newId();  // == c.second (beginMove)
+            if (e.group) {
+                auto g = copyGroups.find(e.group);
+                e.group = g == copyGroups.end() ? 0 : g->second;
+            }
+            t->events.push_back(e);
+        }
+        for (const auto& g : copyGroups) p.nextId = std::max(p.nextId, g.second + 1);
+        for (Track& t : p.tracks) t.sortEvents();
         const std::map<uint64_t, double> links = syncMemo(p);
         if (ripple) followers.apply(p, delta, quantize);
         std::set<std::pair<uint64_t, size_t>> touched;
@@ -1448,7 +1487,13 @@ void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers 
         for (const Mover& m : movers) moving.insert(m.id);
         followSyncLinks(p, links, moving);
     });
-    app.status("Move: " + timecode(g.start + delta, fps()));
+    if (!copies.empty()) {
+        // the copies are the selection, as in VEGAS
+        std::set<uint64_t> made;
+        for (const auto& c : copies) made.insert(c.second);
+        if (app.selection() != made) app.setSelection(made);
+    }
+    app.status((copies.empty() ? "Move: " : "Copy: ") + timecode(g.start + delta, fps()));
     {
         moveLabel = secondsFramesLabel(delta, fps(), true);
         moveFromT = g.start;
