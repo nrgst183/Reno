@@ -1469,6 +1469,10 @@ void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers 
             std::vector<EnvPoint>& pts = p.findTrack(te.first)->envelopes[te.second].points;
             std::stable_sort(pts.begin(), pts.end(), [](const EnvPoint& a, const EnvPoint& b) { return a.time < b.time; });
         }
+        // events going to another track are taken out and put in after the loop, one pass per track (an erase for every
+        // event of every step was quadratic: seconds a step with thousands of events dragged down a track)
+        std::vector<std::pair<size_t, Event>> carried;
+        std::map<Track*, std::set<uint64_t>> leaving;
         for (const Mover& m : movers) {
             Track* from = nullptr;
             Event* e = p.findEvent(m.id, &from);
@@ -1477,12 +1481,14 @@ void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers 
             if (m.ordinal >= 0 && shift != 0) {
                 const int to = kindTracks[(size_t)(m.ordinal + shift)];
                 if ((size_t)to < p.tracks.size() && &p.tracks[(size_t)to] != from) {
-                    const Event moved = *e;
-                    from->events.erase(from->events.begin() + (e - from->events.data()));
-                    p.tracks[(size_t)to].events.push_back(moved);
+                    carried.emplace_back((size_t)to, *e);
+                    leaving[from].insert(m.id);
                 }
             }
         }
+        for (auto& l : leaving)
+            l.first->events.erase(std::remove_if(l.first->events.begin(), l.first->events.end(), [&](const Event& e) { return l.second.count(e.id) != 0; }), l.first->events.end());
+        for (auto& c : carried) p.tracks[c.first].events.push_back(std::move(c.second));
         std::set<uint64_t> moving;
         for (const Mover& m : movers) moving.insert(m.id);
         followSyncLinks(p, links, moving);
@@ -1498,6 +1504,7 @@ void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers 
         moveLabel = secondsFramesLabel(delta, fps(), true);
         moveFromT = g.start;
         moveToT = g.start + delta;
+        overlaysChanged();
     }
 }
 
@@ -1700,6 +1707,7 @@ void TimelineWidget::Impl::updateEdge(const QPointF& pos, Qt::KeyboardModifiers 
         moveLabel = secondsFramesLabel(edge - from, fps(), true);
         moveFromT = from;
         moveToT = edge;
+        overlaysChanged();
     }
     if (kind != Drag::FadeIn && kind != Drag::FadeOut) edgePreview(edge);
     else {

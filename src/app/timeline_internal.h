@@ -942,7 +942,7 @@ struct TimelineWidget::Impl {
     // rectangle, a held slider, the edge selected for trimming, selected envelope points and tracks), as last painted.
     struct Overlays {
         double snap = -1;
-        QRect label, band;
+        QRect label, band, moveBox;
         uint64_t sliderTrack = 0;
         bool gapHeld = false;
         EnvelopeRef dragEnv, front, selEnv;
@@ -956,6 +956,8 @@ struct TimelineWidget::Impl {
 
     QRectF envLabelBox() const;
     void drawMoveLabel(QPainter& p);
+    bool moveLabelShown() const;
+    QRect moveLabelRect() const;
     Overlays currentOverlays() const;
     void overlaysChanged();
 
@@ -1385,6 +1387,7 @@ struct TimelineWidget::Impl {
     void endRename(bool keep);
 
     std::set<uint64_t> withGroups(const std::set<uint64_t>& ids) const;
+    std::set<uint64_t> withSameEdge(const std::set<uint64_t>& ids, bool atEnd, double fr) const;
 
     static double mediaDuration(const Project& p, const Event& e)
     {

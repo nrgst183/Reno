@@ -481,6 +481,51 @@ static void session(Playback& pb, const QString& shots, bool quick)
             uitest::settle(20);
             if (app.revision() != rev) app.undo();
             app.setSelection({});
+
+            // everything on the first two tracks selected (Ctrl+A over a stutter edit) and dragged along: a step builds and moves
+            // every one of them
+            std::set<uint64_t> many;
+            int used = 0;
+            for (const Track& t : app.project().tracks) {
+                if (t.events.empty()) continue;
+                for (const Event& e : t.events) many.insert(e.id);
+                if (++used >= 2) break;
+            }
+            if (many.size() > 20 && wanted("dragall_")) {
+                app.setSelection(many);
+                uitest::settle(20);
+                const uint64_t rev2 = app.revision();
+                uitest::mousePress(gTl, g);
+                Measure da = frames("dragall_" + lv, 20, [&](int k) { uitest::mouseMove(gTl, g + QPoint(4 + k * 3, 0), Qt::LeftButton); });
+                report(da);
+                uitest::mouseRelease(gTl, g + QPoint(4 + 19 * 3, 0));
+                uitest::settle(20);
+                if (app.revision() != rev2) app.undo();
+                // the same dragged down a track (every step moves the events from track to track)
+                {
+                    const uint64_t rev3 = app.revision();
+                    uitest::mousePress(gTl, g);
+                    Measure dv = frames("dragalldown_" + lv, 10, [&](int k) { uitest::mouseMove(gTl, g + QPoint(4 + k * 3, 70), Qt::LeftButton); });
+                    report(dv);
+                    uitest::mouseRelease(gTl, g + QPoint(4 + 9 * 3, 70));
+                    uitest::settle(20);
+                    if (app.revision() != rev3) app.undo();
+                    app.setSelection(many);
+                }
+                // the commands that work on the selection, once each (and undone)
+                auto cmd = [&](const char* name, const std::function<void()>& fn) {
+                    Measure m = frames(name + std::string("_") + lv, 1, [&](int) { fn(); });
+                    report(m);
+                    app.undo();
+                    app.setSelection(many);
+                };
+                cmd("cmd_nudge", [&] { gTl->nudgeSelection(1, 0, 0); });
+                cmd("cmd_nudgetrack", [&] { gTl->nudgeSelection(0, 0, 1); });
+                cmd("cmd_trimstart", [&] { gTl->trimStartToCursor(); });
+                cmd("cmd_trimend", [&] { gTl->trimEndToCursor(); });
+                cmd("cmd_delete", [&] { gTl->deleteSelection(); });
+                app.setSelection({});
+            }
         }
     }
 

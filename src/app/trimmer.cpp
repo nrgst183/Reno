@@ -357,7 +357,7 @@ struct TrimmerWindow::Impl {
     uint64_t generation = 0;
     std::vector<MediaItem::Marker> marks;
     bool marksSaved = true;
-    bool autoSave = QSettings().value("trimmer/autoSaveMarkers", false).toBool();
+    bool autoSave = vprefs::on("trimmer/autoSaveMarkers");
     bool toPreview = QSettings().value("trimmer/videoInPreview", false).toBool();
     QLabel* marksLbl = nullptr;
     bool overwrite = QSettings().value("trimmer/overwrite", false).toBool();
@@ -1166,7 +1166,7 @@ bool TrimmerWindow::markersSaved() const { return d->marksSaved; }
 void TrimmerWindow::setAutoSaveMarkers(bool on)
 {
     d->autoSave = on;
-    QSettings().setValue("trimmer/autoSaveMarkers", on);
+    vprefs::set("trimmer/autoSaveMarkers", on);   // through the cache the Preferences dialog reads
     AppState::get().status(on ? "Auto-Save Trimmer Markers/Regions: on (each marker or region is saved with the media as it is made)"
                               : "Auto-Save Trimmer Markers/Regions: off (S saves them)");
     if (on && !d->marksSaved) saveMarkers();

@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <unordered_map>
 
 namespace reno {
 
@@ -138,8 +139,8 @@ std::string Json::dump(int indent) const
     return out;
 }
 
-namespace {
-struct Parser {
+// (a friend of Json: it fills a parsed object's members in one go)
+struct JsonParser {
     const char* p;
     const char* end;
     std::string err;
@@ -189,11 +190,18 @@ struct Parser {
                 case 'u': {
                     unsigned cp;
                     if (!hex4(cp)) return fail("bad \\u escape");
-                    if (cp >= 0xD800 && cp < 0xDC00 && end - p >= 6 && p[0] == '\\' && p[1] == 'u') {
-                        p += 2;
-                        unsigned lo;
-                        if (!hex4(lo)) return fail("bad \\u escape");
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    if (cp >= 0xD800 && cp < 0xDC00) {
+                        // a high surrogate takes the low one after it; anything else leaves it alone (and it stands for no character)
+                        const char* save = p;
+                        unsigned lo = 0;
+                        if (end - p >= 6 && p[0] == '\\' && p[1] == 'u') {
+                            p += 2;
+                            if (!hex4(lo)) return fail("bad \\u escape");
+                        }
+                        if (lo >= 0xDC00 && lo < 0xE000) cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        else { p = save; cp = 0xFFFD; }
+                    } else if (cp >= 0xDC00 && cp < 0xE000) {
+                        cp = 0xFFFD;
                     }
                     utf8(s, cp);
                     break;
@@ -217,6 +225,10 @@ struct Parser {
         if (c == '{') {
             ++p;
             out = Json::object();
+            std::vector<std::pair<std::string, Json>> mem;
+            // Finding a repeated key by looking through the ones before it takes time with the square of their number: a big object
+            // (thousands of keys) keeps an index of its keys instead.
+            std::unordered_map<std::string, size_t> index;
             ws();
             if (p < end && *p == '}') ++p;
             else for (;;) {
@@ -228,12 +240,25 @@ struct Parser {
                 ++p;
                 Json v;
                 if (!value(v)) { ok = false; break; }
-                out[k] = v;
+                size_t at = mem.size();
+                if (mem.size() >= 16) {
+                    if (index.empty()) for (size_t i = 0; i < mem.size(); ++i) index.emplace(mem[i].first, i);
+                    auto f = index.emplace(k, at);
+                    if (!f.second) at = f.first->second;
+                } else {
+                    for (size_t i = 0; i < mem.size(); ++i) if (mem[i].first == k) { at = i; break; }
+                }
+                if (at < mem.size()) mem[at].second = std::move(v);
+                else mem.emplace_back(std::move(k), std::move(v));
                 ws();
                 if (p < end && *p == ',') { ++p; continue; }
                 if (p < end && *p == '}') { ++p; break; }
                 ok = fail("expected ',' or '}'");
                 break;
+            }
+            if (!mem.empty()) {
+                out.d_ = std::make_shared<Json::Data>();
+                out.d_->obj = std::move(mem);
             }
         } else if (c == '[') {
             ++p;
@@ -267,11 +292,10 @@ struct Parser {
         return ok;
     }
 };
-}  // namespace
 
 bool Json::parse(const std::string& text, Json& out, std::string* error)
 {
-    Parser ps;
+    JsonParser ps;
     ps.p = text.data();
     ps.end = text.data() + text.size();
     if (text.size() >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ps.p += 3;

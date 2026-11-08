@@ -18,6 +18,8 @@
 
 using namespace reno;
 
+namespace reno { size_t testNestedSharedEntries(); }      // (engine.cpp, for this test)
+
 static int gPass = 0, gFail = 0;
 static void check(bool ok, const std::string& name, const std::string& detail = std::string())
 {
@@ -586,6 +588,20 @@ int main(int argc, char** argv)
         check(mediaSignature(once) != mediaSignature(red) && !mediaSignature(once).empty() && mediaSignature(pathJoin(dir, "none.reno")).empty(),
               "its signature (for caches on disk) is its own; a missing file has none");
         setProjectFileLoader(ProjectFileLoader());
+    }
+
+    // many different projects used in turn: the table of shared ones does not keep a dead entry for each
+    {
+        std::vector<std::string> paths;
+        for (int i = 0; i < 60; ++i) {
+            const std::string f = pathJoin(dir, strfmt("many_%d.reno", i));
+            Project p = showing(red, 1.0);
+            p.save(f, &err);
+            std::unique_ptr<MediaReader> rd = openMediaOrProject(f, nullptr);
+            if (!rd) check(false, "a project opens", f);
+        }
+        const size_t entries = testNestedSharedEntries();
+        check(entries <= 40, "the table of shared nested projects drops entries of projects gone", strfmt("%d entries after 60 projects", (int)entries));
     }
 
     std::printf("SUMMARY: %d passed, %d failed\n", gPass, gFail);

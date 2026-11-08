@@ -35,6 +35,7 @@
 #include <csignal>
 #include <csetjmp>
 #include <cxxabi.h>
+#include <malloc.h>
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <pthread.h>
@@ -528,11 +529,14 @@ int main(int argc, char** argv)
     const QString media = QDir(args[2]).absolutePath();
     QString samples = qEnvironmentVariable("RENO_SAMPLES");
     bool bench = false, profile = false;
+    int cycles = 0;     // --cycles N: open and close the last project N more times, printing memory, threads and widgets (a leak shows as growth)
+    QString lastPath;
     double limit = 600;
     QStringList names;
     for (int k = 3; k < args.size(); ++k) {
         if (args[k] == "--samples" && k + 1 < args.size()) samples = args[++k];
         else if (args[k] == "--bench") bench = true;
+        else if (args[k] == "--cycles" && k + 1 < args.size()) cycles = args[++k].toInt();
         else if (args[k] == "--profile") profile = bench = true;
         else if (args[k] == "--limit" && k + 1 < args.size()) limit = args[++k].toDouble();
         else names << args[k];
@@ -571,6 +575,7 @@ int main(int argc, char** argv)
         const QString folder = out + "/" + QFileInfo(orig).absoluteDir().dirName();
         makeStandinFolder(orig, samples, media, folder);
         const QString path = folder + "/" + name;
+        lastPath = path;
         AppState::get().newProject(true);
         uitest::settle(200);
         const Result r = session(w, path);
@@ -603,6 +608,24 @@ int main(int argc, char** argv)
             check(r.openMs < 10000, n + " opens in under 10 s", strfmt("%.0f ms", r.openMs));
             check(r.longest < limit, n + strfmt(" interface never stalls over %.0f ms", limit), strfmt("%.0f ms (%s)", r.longest, r.longestWhat.c_str()));
         }
+    }
+    for (int c = 0; c < cycles && !lastPath.isEmpty(); ++c) {
+        AppState::get().newProject(true);
+        uitest::settle(1500);
+        {
+            const struct mallinfo2 mi = mallinfo2();
+            std::printf("CYCLE %2d closed: memory_mb %8.0f  malloc in use %.0f MB, free-but-held %.0f MB, mmapped %.0f MB\n", c, memoryNowMb(), mi.uordblks / 1048576.0,
+                        mi.fordblks / 1048576.0, mi.hblkhd / 1048576.0);
+        }
+        w.openProject(lastPath);
+        uitest::settle(1500);
+        int threads = 0;
+        QFile st("/proc/self/status");
+        if (st.open(QIODevice::ReadOnly))
+            for (const QByteArray& line : st.readAll().split('\n'))
+                if (line.startsWith("Threads:")) threads = line.mid(8).trimmed().toInt();
+        std::printf("CYCLE %2d memory_mb %8.0f threads %3d widgets %6d\n", c, memoryNowMb(), threads, (int)QApplication::allWidgets().size());
+        std::fflush(stdout);
     }
     AppState::get().newProject(true);
     uitest::settle(200);

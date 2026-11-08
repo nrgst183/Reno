@@ -33,9 +33,10 @@ public:
 
     bool asBool(bool def = false) const { return (type_ == Bool || type_ == Number) ? num_ != 0 : def; }
     double asDouble(double def = 0) const { return (type_ == Number || type_ == Bool) ? num_ : def; }
-    int asInt(int def = 0) const { return (type_ == Number || type_ == Bool) ? (int)num_ : def; }
-    int64_t asInt64(int64_t def = 0) const { return (type_ == Number || type_ == Bool) ? (int64_t)num_ : def; }
-    uint64_t asUInt64(uint64_t def = 0) const { return (type_ == Number || type_ == Bool) ? (uint64_t)num_ : def; }
+    // (a number outside the integer's range, or not a number, is cut to it: converting it as it is has no defined result)
+    int asInt(int def = 0) const { return (type_ == Number || type_ == Bool) ? (num_ >= 2147483647.0 ? 2147483647 : (num_ <= -2147483648.0 ? (-2147483647 - 1) : (num_ == num_ ? (int)num_ : def))) : def; }
+    int64_t asInt64(int64_t def = 0) const { return (type_ == Number || type_ == Bool) ? (num_ >= 9.2233720368547758e18 ? INT64_MAX : (num_ <= -9.2233720368547758e18 ? INT64_MIN : (num_ == num_ ? (int64_t)num_ : def))) : def; }
+    uint64_t asUInt64(uint64_t def = 0) const { return (type_ == Number || type_ == Bool) ? (num_ >= 1.8446744073709552e19 ? UINT64_MAX : (num_ > 0 ? (uint64_t)num_ : (num_ == num_ ? 0 : def))) : def; }
     const std::string& asString() const { return str_; }
     std::string asString(const std::string& def) const { return type_ == String ? str_ : def; }
 
@@ -55,6 +56,7 @@ public:
     static bool parse(const std::string& text, Json& out, std::string* error = nullptr);
 
 private:
+    friend struct JsonParser;
     void write(std::string& out, int indent, int depth) const;
     struct Data;
     void detach();      // the contents become this value's own before it changes them

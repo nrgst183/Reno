@@ -168,6 +168,8 @@ int main(int argc, char** argv)
         const Out a = renderRange(p, 0, total, 1024);
         check(same(ref, a), "played from the cache (1024-sample blocks) = made block by block");
         check(AudioEngine::eventCacheBytes() > 0, "the events were kept", std::to_string(AudioEngine::eventCacheBytes() / 1024) + " KB");
+        check(AudioEngine::eventCacheBytes() >= AudioEngine::eventCacheHeldBytes(), "the bytes counted cover the memory the sounds hold",
+              std::to_string(AudioEngine::eventCacheBytes()) + " counted, " + std::to_string(AudioEngine::eventCacheHeldBytes()) + " held");
         const Out b = renderRange(p, 0, total, 333);
         check(same(ref, b), "same from the cache with odd blocks (333)");
         AudioEngine::clearEventCache();
@@ -217,9 +219,10 @@ int main(int argc, char** argv)
             steady = (now == last && now > 0) ? steady + 1 : 0;
             last = now;
         }
-        // (four stretched or resampled events: about 1.2 + 0.9 + 0.8 + 1.6 + 0.7 s of stereo floats)
+        // (four stretched or resampled events: about 1.2 + 0.9 + 0.8 + 1.6 + 0.7 s of stereo floats; the count is of the memory the
+        // vectors hold, which grows in steps, so up to twice that)
         const size_t expect = (size_t)((1.2 + 0.9 + 0.8 + 1.6 + 0.7) * kRate) * 8;
-        check(last >= expect - expect / 100 && last <= expect + expect / 100, "prefetch made all the events ahead", std::to_string(last) + " of " + std::to_string(expect) + " bytes");
+        check(last >= expect - expect / 100 && last <= expect * 2, "prefetch made all the events ahead", std::to_string(last) + " of " + std::to_string(expect) + " bytes");
         const Out a = renderRange(p, 0, total, 1024, true, &audio, &pool);
         check(same(ref, a), "played after prefetch = made block by block");
     }
@@ -231,6 +234,7 @@ int main(int argc, char** argv)
         AudioEngine::setEventCacheLimit(limit);
         const Out a = renderRange(p, 0, total, 1024);
         check(same(ref, a), "with a small cache: the same sound");
+        check(AudioEngine::eventCacheHeldBytes() <= limit + (size_t)(4096 * 8 * 8 * 2), "the memory held stays near the limit", std::to_string(AudioEngine::eventCacheHeldBytes()) + " of " + std::to_string(limit));
         check(AudioEngine::eventCacheBytes() <= limit + (size_t)(4096 * 8 * 8), "the cache stays near its limit", std::to_string(AudioEngine::eventCacheBytes()) + " of " + std::to_string(limit));
         AudioEngine::setEventCacheLimit((size_t)256 << 20);
     }

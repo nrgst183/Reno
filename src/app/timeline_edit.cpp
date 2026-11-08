@@ -126,19 +126,34 @@ void TimelineWidget::Impl::pasteInsert()
     app.edit("Paste Insert", [&](Project& p) { f.apply(p, len, quantize); });
 }
 
+// 'ids' and those events grouped with them whose start (or end) is the same as that of one of 'ids' (within half a frame).
+std::set<uint64_t> TimelineWidget::Impl::withSameEdge(const std::set<uint64_t>& ids, bool atEnd, double fr) const
+{
+    std::set<uint64_t> all = ids;
+    const Project& p = app.project();
+    std::vector<double> edges;
+    for (uint64_t s : ids)
+        if (const Event* o = p.findEvent(s)) edges.push_back(atEnd ? o->end() : o->start);
+    std::sort(edges.begin(), edges.end());
+    for (uint64_t id : withGroups(ids)) {
+        const Event* e = p.findEvent(id);
+        if (!e) continue;
+        const double edge = atEnd ? e->end() : e->start;
+        // the nearest of the selected events' edges is on one side of 'edge' or the other
+        const auto it = std::lower_bound(edges.begin(), edges.end(), edge);
+        if ((it != edges.end() && std::fabs(*it - edge) < fr * 0.5) || (it != edges.begin() && std::fabs(*(it - 1) - edge) < fr * 0.5)) all.insert(id);
+    }
+    return all;
+}
+
 void TimelineWidget::Impl::trimStart()
 {
     const std::set<uint64_t> ids = app.selection();
     if (ids.empty()) return;
     const double c = quantized(app.cursor()), fr = frame();
-    std::set<uint64_t> all = ids;
-    for (uint64_t id : withGroups(ids)) {
-        const Event* e = app.project().findEvent(id);
-        if (!e) continue;
-        for (uint64_t s : ids)
-            if (const Event* o = app.project().findEvent(s))
-                if (std::fabs(o->start - e->start) < fr * 0.5) all.insert(id);
-    }
+    // the events grouped with the selected ones that start together with one of them go along (the others of a group keep
+    // their edges): the nearest start among the selected ones is looked for, not each against all (n x n lookups, 2 s for 6000)
+    const std::set<uint64_t> all = withSameEdge(ids, false, fr);
     app.edit("Trim Start", [&](Project& p) {
         for (uint64_t id : all)
             if (Event* e = p.findEvent(id))
@@ -155,14 +170,7 @@ void TimelineWidget::Impl::trimEnd()
     const std::set<uint64_t> ids = app.selection();
     if (ids.empty()) return;
     const double c = quantized(app.cursor()), fr = frame();
-    std::set<uint64_t> all = ids;
-    for (uint64_t id : withGroups(ids)) {
-        const Event* e = app.project().findEvent(id);
-        if (!e) continue;
-        for (uint64_t s : ids)
-            if (const Event* o = app.project().findEvent(s))
-                if (std::fabs(o->end() - e->end()) < fr * 0.5) all.insert(id);
-    }
+    const std::set<uint64_t> all = withSameEdge(ids, true, fr);
     app.edit("Trim End", [&](Project& p) {
         for (uint64_t id : all)
             if (Event* e = p.findEvent(id))
@@ -290,15 +298,25 @@ void TimelineWidget::Impl::nudge(int frames, int pixels, int tracks)
                     const int to = ord + tracks;
                     if (to >= 0 && to < (int)same.size()) moves.emplace_back(e.id, same[(size_t)to]);
                 }
+            // the events are taken out of their tracks in one pass each and put in the new ones with one sort each (an erase
+            // and a sort for every event was quadratic in the events moved)
+            std::vector<std::pair<size_t, Event>> carried;
+            std::map<Track*, std::set<uint64_t>> leaving;
             for (const auto& m : moves) {
                 Track* from = nullptr;
                 Event* e = p.findEvent(m.first, &from);
                 if (!e || !from || &p.tracks[m.second] == from) continue;
-                const Event moved = *e;
-                from->events.erase(from->events.begin() + (e - from->events.data()));
-                p.tracks[m.second].events.push_back(moved);
-                p.tracks[m.second].sortEvents();
+                carried.emplace_back(m.second, *e);
+                leaving[from].insert(m.first);
             }
+            for (auto& l : leaving)
+                l.first->events.erase(std::remove_if(l.first->events.begin(), l.first->events.end(), [&](const Event& e) { return l.second.count(e.id) != 0; }), l.first->events.end());
+            std::set<size_t> into;
+            for (auto& c : carried) {
+                p.tracks[c.first].events.push_back(std::move(c.second));
+                into.insert(c.first);
+            }
+            for (size_t k : into) p.tracks[k].sortEvents();
         });
         return;
     }

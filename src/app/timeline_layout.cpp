@@ -910,9 +910,26 @@ void TimelineWidget::Impl::drawEnvelopeLabel(QPainter& p)
     p.restore();
 }
 
+bool TimelineWidget::Impl::moveLabelShown() const
+{
+    return (drag.kind == Drag::Move || drag.kind == Drag::TrimLeft || drag.kind == Drag::TrimRight || drag.kind == Drag::StretchLeft || drag.kind == Drag::StretchRight) && drag.started && !moveLabel.isEmpty();
+}
+
+// Where the move label (the blue line from where the drag began to where it is, and the box with the amount) is drawn,
+// for invalidating it as it moves.
+QRect TimelineWidget::Impl::moveLabelRect() const
+{
+    if (!moveLabelShown()) return QRect();
+    const double x0 = clampd(xAtF(moveFromT), -1e7, 1e7), x1 = clampd(xAtF(moveToT), -1e7, 1e7);   // (far zoomed in, a time is a very long way off screen)
+    const double w = smallFm.horizontalAdvance(moveLabel) + 8.0;
+    const double left = std::min(std::min(x0, x1), x1 >= x0 ? x1 : x1 - w), right = std::max(std::max(x0, x1), x1 >= x0 ? x1 + w : x1);
+    const QRect r = QRectF(left - 2, kLoopTop - 2, right - left + 4, kLoopH + 4).toAlignedRect();
+    return r.intersected(QRect(headerW, 0, viewW(), kTopH));
+}
+
 void TimelineWidget::Impl::drawMoveLabel(QPainter& p)
 {
-    if ((drag.kind != Drag::Move && drag.kind != Drag::TrimLeft && drag.kind != Drag::TrimRight && drag.kind != Drag::StretchLeft && drag.kind != Drag::StretchRight) || !drag.started || moveLabel.isEmpty()) return;
+    if (!moveLabelShown()) return;
     const double x0 = xAtF(moveFromT), x1 = xAtF(moveToT);
     const double h = kLoopH, y = kLoopTop;
     p.save();

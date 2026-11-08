@@ -123,6 +123,8 @@ public:
     bool useProxies() const { return useProxies_.load(); }
     // Playing (the preview's pool; renders and exports never do).
     void setShareFrames(bool on, size_t bytes = 96u * 1024u * 1024u);
+    // TEST ONLY (tests/engine/frameshare_test.cpp): see engine.cpp. Not for use by the program.
+    static void testFrameShare(const std::vector<std::pair<double, double>>& spans, int w, int h, size_t limit, size_t* bytes, size_t* entries);
 
 private:
     // One open reader. Readers aren't tied to one user. An event takes the reader of its media that has the frame (or
@@ -275,6 +277,9 @@ public:
     // caching, events are rendered as they play).
     static void setEventCacheLimit(size_t bytes);
     static size_t eventCacheBytes(); // bytes cached now
+    // TEST ONLY (audiocache_test): the memory the cached sounds really hold (their vectors' capacity), which
+    // eventCacheBytes() must account for, since that is what the limit is meant to keep down.
+    static size_t eventCacheHeldBytes();
     static void clearEventCache();
     struct CachedEvent; // engine_audio.cpp
     struct EventPlan;

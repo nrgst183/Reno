@@ -33,6 +33,13 @@
 #  include <malloc.h>
 #endif
 
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#  include <emmintrin.h>
+#  define FIT_SSE2 1
+#else
+#  define FIT_SSE2 0
+#endif
+
 namespace fs = std::filesystem;
 
 namespace reno {
@@ -698,6 +705,77 @@ ImagePtr fitImage(const Image& src, int w, int h, bool cornerAligned)
         colTx[x] = (float)(fx - x0);
         colX1[x] = std::min(src.w - 1, std::max(0, x0 + 1));
         colX0[x] = std::min(src.w - 1, std::max(0, x0));
+    }
+    if (box < 2) {
+        // The plain bilinear case, worked as above per output pixel but with the row pointers and the (1 - tx) weights taken
+        // out of the pixel loop and the byte and float frames in loops of their own.
+        std::vector<float> colOmTx(dw);
+        for (int x = 0; x < dw; ++x) colOmTx[x] = 1 - colTx[x];
+        parallelRows(dh, (size_t)dw * 4, [&](int ya, int yb) {
+        for (int y = ya; y < yb; ++y) {
+            double fy = (y + 0.5) / s - 0.5;
+            if (cornerAligned && dh > 1 && src.h > 1) fy = y * (double)(src.h - 1) / (dh - 1);
+            const int by0 = (int)std::floor(fy);
+            const float ty = (float)(fy - by0);
+            const float omty = 1 - ty;
+            const int y1 = std::min(src.h - 1, std::max(0, by0 + 1)), y0c = std::min(src.h - 1, std::max(0, by0));
+            uint8_t* drow = out->row(oy + y);
+            if (isByte) {
+#if FIT_SSE2
+                const uint8_t* r0 = src.row(y0c);
+                const uint8_t* r1 = src.row(y1);
+                uint8_t* d = drow + (size_t)ox * 4;
+                const __m128i zero = _mm_setzero_si128();
+                const __m128 vOmTy = _mm_set1_ps(omty), vTy = _mm_set1_ps(ty), v255 = _mm_set1_ps(255.f), vHalf = _mm_set1_ps(0.5f);
+                auto load4 = [&](const uint8_t* p) {
+                    int v;
+                    std::memcpy(&v, p, 4);
+                    return _mm_cvtepi32_ps(_mm_unpacklo_epi16(_mm_unpacklo_epi8(_mm_cvtsi32_si128(v), zero), zero));
+                };
+                for (int x = 0; x < dw; ++x, d += 4) {
+                    const size_t o0 = (size_t)colX0[x] * 4, o1 = (size_t)colX1[x] * 4;
+                    const __m128 vtx = _mm_set1_ps(colTx[x]), vomtx = _mm_set1_ps(colOmTx[x]);
+                    const __m128 top = _mm_add_ps(_mm_mul_ps(load4(r0 + o0), vomtx), _mm_mul_ps(load4(r0 + o1), vtx));
+                    const __m128 bot = _mm_add_ps(_mm_mul_ps(load4(r1 + o0), vomtx), _mm_mul_ps(load4(r1 + o1), vtx));
+                    __m128 acc = _mm_add_ps(_mm_mul_ps(top, vOmTy), _mm_mul_ps(bot, vTy));
+                    acc = _mm_min_ps(_mm_add_ps(acc, vHalf), v255);
+                    const __m128i q = _mm_cvttps_epi32(acc);
+                    const __m128i w16 = _mm_packs_epi32(q, q);
+                    const int out32 = _mm_cvtsi128_si32(_mm_packus_epi16(w16, w16));
+                    std::memcpy(d, &out32, 4);
+                }
+#else
+                const uint8_t* r0 = src.row(y0c);
+                const uint8_t* r1 = src.row(y1);
+                uint8_t* d = drow + (size_t)ox * 4;
+                for (int x = 0; x < dw; ++x, d += 4) {
+                    const uint8_t* a0 = r0 + (size_t)colX0[x] * 4;
+                    const uint8_t* a1 = r0 + (size_t)colX1[x] * 4;
+                    const uint8_t* b0 = r1 + (size_t)colX0[x] * 4;
+                    const uint8_t* b1 = r1 + (size_t)colX1[x] * 4;
+                    const float tx = colTx[x], omtx = colOmTx[x];
+                    for (int k = 0; k < 4; ++k) {
+                        const float v = (a0[k] * omtx + a1[k] * tx) * omty + (b0[k] * omtx + b1[k] * tx) * ty;
+                        d[k] = (uint8_t)std::min(255.f, v + 0.5f);
+                    }
+                }
+#endif
+            } else {
+                const float* r0 = (const float*)src.row(y0c);
+                const float* r1 = (const float*)src.row(y1);
+                float* d = (float*)drow + (size_t)ox * 4;
+                for (int x = 0; x < dw; ++x, d += 4) {
+                    const float* a0 = r0 + (size_t)colX0[x] * 4;
+                    const float* a1 = r0 + (size_t)colX1[x] * 4;
+                    const float* b0 = r1 + (size_t)colX0[x] * 4;
+                    const float* b1 = r1 + (size_t)colX1[x] * 4;
+                    const float tx = colTx[x], omtx = colOmTx[x];
+                    for (int k = 0; k < 4; ++k) d[k] = (a0[k] * omtx + a1[k] * tx) * omty + (b0[k] * omtx + b1[k] * tx) * ty;
+                }
+            }
+        }
+        });
+        return out;
     }
     parallelRows(dh, (size_t)dw * 4 * (size_t)(box * box), [&](int ya, int yb) {
     for (int y = ya; y < yb; ++y) {

@@ -63,7 +63,8 @@ public:
     // closed while it was being decoded) is not kept: it would stay until the next project's frames push it out.
     void put(uint64_t media, uint64_t shape, double from, double until, const ImagePtr& img, uint64_t generation)
     {
-        if (!img || !(from <= until)) return;
+        // (a span with no width - a file whose frames repeat a time stamp - can never be found again, so it is not kept)
+        if (!img || !(from < until)) return;
         std::lock_guard<std::mutex> lk(m_);
         if (generation != generation_) return;
         auto& g = groups_[Key{media, shape}];
@@ -80,6 +81,12 @@ public:
         sp.until = until;
         sp.img = img;
         sp.used = ++clock_;
+        // (nothing should be left at 'from' now; if something is, it is replaced and its bytes go with it)
+        auto same = g.find(from);
+        if (same != g.end()) {
+            bytes_ -= same->second.img->byteSize();
+            g.erase(same);
+        }
         g[from] = sp;
         bytes_ += img->byteSize();
         if (bytes_ > limit_) evict();
@@ -100,6 +107,13 @@ public:
     {
         std::lock_guard<std::mutex> lk(m_);
         return bytes_;
+    }
+    size_t entries() const
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        size_t n = 0;
+        for (const auto& g : groups_) n += g.second.size();
+        return n;
     }
 private:
     struct Key {
@@ -142,6 +156,18 @@ private:
     uint64_t clock_ = 0;
     uint64_t generation_ = 0;
 };
+
+// Test only: puts frames of w x h (byte depth) with the given [from, until) spans into a shared-frames store of 'limit'
+// bytes, one media and shape, and says how many bytes it counts and how many frames it holds afterwards.
+void MediaPool::testFrameShare(const std::vector<std::pair<double, double>>& spans, int w, int h, size_t limit, size_t* bytes, size_t* entries)
+{
+    FrameShare share(limit);
+    ImagePtr img = Image::make(w, h, PixelDepth::Byte, true);
+    const uint64_t gen = share.generation();
+    for (const auto& sp : spans) share.put(1, 1, sp.first, sp.second, img, gen);
+    *bytes = share.bytes();
+    *entries = share.entries();
+}
 
 void MediaPool::setShareFrames(bool on, size_t bytes)
 {
@@ -1171,6 +1197,11 @@ std::shared_ptr<NestedShared> nestedShared(const std::string& path, std::string*
     const std::string key = samePath(path);
     std::shared_ptr<NestedShared> dropped;
     std::lock_guard<std::mutex> lk(gSharedMutex);
+    // (entries whose project has gone are dropped here, or the map would keep a path for every project ever used)
+    for (auto it = gShared.begin(); it != gShared.end();) {
+        if (it->first != key && it->second.expired()) it = gShared.erase(it);
+        else ++it;
+    }
     std::weak_ptr<NestedShared>& slot = gShared[key];
     std::shared_ptr<NestedShared> sh = slot.lock();
     if (!sh || sh->project != proj) {
@@ -2166,6 +2197,13 @@ bool exportProject(const Project& p, FxRuntime& fx, const EncodeSettings& settin
     }
     if (!w->finish(&err)) return fail(err);
     return true;
+}
+
+// Test only (nested_test): how many nested projects the shared table has an entry for.
+size_t testNestedSharedEntries()
+{
+    std::lock_guard<std::mutex> lk(gSharedMutex);
+    return gShared.size();
 }
 
 }  // namespace reno

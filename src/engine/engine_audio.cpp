@@ -47,7 +47,38 @@ void envelopeSamples(const Envelope& env, int64_t s0, int rate, double origin, i
         std::fill(out, out + n, t0 >= pts.back().time ? pts.back().value : pts.front().value);
         return;
     }
-    for (int k = 0; k < n; ++k) out[k] = env.valueAt((double)(s0 + k) / rate - origin, 0.0);
+    // The same arithmetic as Envelope::valueAt for each sample, but the segment is found once and then walked along (the
+    // samples only go forward), and the "mute" check is made once. Points out of order fall back to valueAt.
+    for (size_t i = 1; i < pts.size(); ++i)
+        if (pts[i].time < pts[i - 1].time) {
+            for (int k = 0; k < n; ++k) out[k] = env.valueAt((double)(s0 + k) / rate - origin, 0.0);
+            return;
+        }
+    const bool hold = env.kind == "mute";
+    const double first = pts.front().time, last = pts.back().time;
+    size_t lo = 0;
+    bool placed = false;
+    for (int k = 0; k < n; ++k) {
+        const double t = (double)(s0 + k) / rate - origin;
+        if (t <= first) { out[k] = pts.front().value; continue; }
+        if (t >= last) { out[k] = pts.back().value; continue; }
+        if (!placed) {
+            // the last point at or before t (as valueAt finds it)
+            size_t hi = pts.size() - 1;
+            while (hi - lo > 1) {
+                const size_t mid = (lo + hi) / 2;
+                if (pts[mid].time <= t) lo = mid; else hi = mid;
+            }
+            placed = true;
+        } else {
+            while (pts[lo + 1].time <= t && lo + 2 < pts.size()) ++lo;
+        }
+        const EnvPoint& a = pts[lo];
+        const EnvPoint& b = pts[lo + 1];
+        const double span = b.time - a.time;
+        if (!(span > 0)) { out[k] = b.value; continue; }
+        out[k] = a.value + (b.value - a.value) * curveShape(hold ? CurveHold : a.curve, (t - a.time) / span);
+    }
 }
 
 // An event's channel mapping (VEGAS's Channels: Both, Left Only, Right Only, Swap, Combine), in place.
@@ -331,7 +362,17 @@ struct AudioEngine::CachedEvent {
     bool got = false;
     std::atomic<uint64_t> lastUse{0};
     bool started = false;
-    ~CachedEvent() { eventStore().bytes.fetch_sub((size_t)filled.load() * 2 * sizeof(float)); }
+    // What the cache has counted for this sound: the memory its vectors hold (they grow in steps, so that is more than
+    // the samples made), so that the cache's limit keeps the real memory down.
+    std::atomic<size_t> counted{0};
+    void recount()
+    {
+        const size_t now = (l.capacity() + r.capacity()) * sizeof(float);
+        const size_t was = counted.exchange(now);
+        if (now >= was) eventStore().bytes.fetch_add(now - was);
+        else eventStore().bytes.fetch_sub(was - now);
+    }
+    ~CachedEvent() { eventStore().bytes.fetch_sub(counted.load()); }
 };
 
 namespace {
@@ -394,6 +435,17 @@ void AudioEngine::setEventCacheLimit(size_t bytes)
     if (bytes == 0) clearEventCache();
 }
 size_t AudioEngine::eventCacheBytes() { return eventStore().bytes.load(); }
+size_t AudioEngine::eventCacheHeldBytes()
+{
+    EventCacheStore& st = eventStore();
+    std::lock_guard<std::mutex> lk(st.mutex);
+    size_t n = 0;
+    for (const auto& kv : st.map) {
+        std::lock_guard<std::mutex> ck(kv.second->mutex);
+        n += (kv.second->l.capacity() + kv.second->r.capacity()) * sizeof(float);
+    }
+    return n;
+}
 void AudioEngine::clearEventCache()
 {
     EventCacheStore& st = eventStore();
@@ -451,7 +503,7 @@ void AudioEngine::fillCached(CachedEvent& c, int64_t upTo, const std::atomic<boo
             c.got = st.got;
         }
         c.filled.store(at + n);
-        eventStore().bytes.fetch_add((size_t)n * 2 * sizeof(float));
+        c.recount();
         lk.unlock();
         trimEventCache();
     }

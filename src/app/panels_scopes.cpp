@@ -97,8 +97,16 @@ inline double crOf(int r, int g, int b) { return 0.5 * r - 0.4542 * g - 0.0458 *
 // CIE L*a*b* of an sRGB pixel: L 0..100, a and b about -128..127.
 void labOf(int r8, int g8, int b8, double& L, double& a, double& b)
 {
-    auto lin = [](double c) { c /= 255.0; return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4); };
-    const double r = lin(r8), g = lin(g8), bl = lin(b8);
+    // sRGB to linear for each of the 256 levels, worked out once (the pow was most of an analysis' time: three a pixel)
+    static const std::vector<double> table = [] {
+        std::vector<double> t(256);
+        for (int k = 0; k < 256; ++k) {
+            const double c = k / 255.0;
+            t[(size_t)k] = c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+        }
+        return t;
+    }();
+    const double r = table[(size_t)(r8 & 255)], g = table[(size_t)(g8 & 255)], bl = table[(size_t)(b8 & 255)];
     const double X = (0.4124 * r + 0.3576 * g + 0.1805 * bl) / 0.95047, Y = 0.2126 * r + 0.7152 * g + 0.0722 * bl, Z = (0.0193 * r + 0.1192 * g + 0.9505 * bl) / 1.08883;
     auto f = [](double t) { return t > 0.008856 ? std::cbrt(t) : 7.787 * t + 16.0 / 116.0; };
     const double fx = f(X), fy = f(Y), fz = f(Z);

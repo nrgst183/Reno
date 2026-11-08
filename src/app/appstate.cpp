@@ -118,6 +118,9 @@ void AppState::afterChange(int extra)
     ++revision_;
     autoproxy::Worker::get().projectChanged(snapshot());
     int more = 0;
+    // looked up through the const project: the non-const findEvent hands out an event to change, which makes the track's events
+    // its own copy (every step of a drag copied the dragged track's events a second time, only to read them)
+    const Project& cproject = project_;
     if (selection_.size() > 8) {
         std::vector<uint64_t> have;
         project_.collectEventIds(have);
@@ -128,7 +131,7 @@ void AppState::afterChange(int extra)
         }
     } else
     for (auto it = selection_.begin(); it != selection_.end();) {
-        if (!project_.findEvent(*it)) { it = selection_.erase(it); more = kSelection; }
+        if (!cproject.findEvent(*it)) { it = selection_.erase(it); more = kSelection; }
         else ++it;
     }
     if (currentTrack && !project_.findTrack(currentTrack)) currentTrack = 0;
@@ -1367,13 +1370,17 @@ void AppState::removeTimeSelection(Project& p, std::map<uint64_t, TimeRanges>* r
         for (const Event& e : tr.events)
             if (!e.locked && (all ? overlapsRange(e, a, b) : selection_.count(e.id) != 0)) ids.push_back(e.id);
     std::map<uint64_t, uint64_t> groups;
+    // The events to take out and the pieces to add are collected per track and put through once after the loop: doing it
+    // per event (an erase and a re-sort each time) was quadratic, 1.8 s for a time selection over 4000 pieces.
+    std::map<Track*, std::vector<Event>> added;
+    std::map<Track*, std::set<uint64_t>> dead;
     for (uint64_t id : ids) {
         Track* tr = nullptr;
         Event* e = p.findEvent(id, &tr);
         if (!e || !tr) continue;
         if (!overlapsRange(*e, a, b)) {         // selected, but outside the time selection: goes whole
             if (removed) (*removed)[tr->id].emplace_back(e->start, e->end());
-            tr->events.erase(std::remove_if(tr->events.begin(), tr->events.end(), [&](const Event& o) { return o.id == id; }), tr->events.end());
+            dead[tr].insert(id);
             continue;
         }
         const double lo = std::max(a, e->start), hi = std::min(b, e->end());
@@ -1394,8 +1401,16 @@ void AppState::removeTimeSelection(Project& p, std::map<uint64_t, TimeRanges>* r
             if (mid.id) { middle = mid.id; made.push_back(mid); }
         }
         if (removed) (*removed)[tr->id].emplace_back(lo, hi);
-        for (const Event& m : made) tr->events.push_back(m);
-        tr->events.erase(std::remove_if(tr->events.begin(), tr->events.end(), [&](const Event& o) { return o.id == middle; }), tr->events.end());
+        for (Event& m : made) added[tr].push_back(std::move(m));
+        dead[tr].insert(middle);
+    }
+    std::set<Track*> touched;
+    for (const auto& kv : added) touched.insert(kv.first);
+    for (const auto& kv : dead) touched.insert(kv.first);
+    for (Track* tr : touched) {
+        for (Event& m : added[tr]) tr->events.push_back(std::move(m));
+        const std::set<uint64_t>& gone = dead[tr];
+        tr->events.erase(std::remove_if(tr->events.begin(), tr->events.end(), [&](const Event& o) { return gone.count(o.id) != 0; }), tr->events.end());
         tr->sortEvents();
     }
 }
@@ -2077,34 +2092,48 @@ int AppState::healEvents(const std::set<uint64_t>& ids)
     edit("Event Heal", [&](Project& p) {
         for (Track& t : p.tracks) {
             t.sortEvents();
-            for (size_t k = 0; k + 1 < t.events.size();) {
-                Event& a = t.events[k];
-                const Event& b = t.events[k + 1];
-                if ((all.count(a.id) || all.count(b.id)) && continues(a, b, fps)) {
-                    // the joined event keeps the first one's effects and settings, the second one's end and fade-out;
-                    // the second one's envelopes join after the first one's
-                    const double shift = b.start - a.start;
-                    for (const Envelope& env : b.envelopes) {
-                        Envelope* into = reno::findEnvelope(a.envelopes, env.kind, env.target);
-                        if (!into || env.kind == "fx") continue;
-                        for (EnvPoint pt : env.points)
-                            if (pt.time >= 0) {
-                                pt.time += shift;
-                                into->points.push_back(pt);
-                            }
-                        std::stable_sort(into->points.begin(), into->points.end(), [](const EnvPoint& x, const EnvPoint& y) { return x.time < y.time; });
-                    }
-                    a.length = b.end() - a.start;
-                    a.fadeOut = b.fadeOut;
-                    a.fadeOutCurve = b.fadeOutCurve;
-                    if (keep.count(b.id)) keep.insert(a.id);
-                    keep.erase(b.id);
-                    all.insert(a.id);
-                    t.events.erase(t.events.begin() + (std::ptrdiff_t)k + 1);
-                } else {
-                    ++k;
-                }
+            // a track with nothing to join stays as it is (shared with the undo step); one pass over it joins each run
+            // of pieces into the first, moving what is kept down (an erase per join was quadratic: 1.1 s for 4000 pieces)
+            bool any = false;
+            {
+                const CowVec<Event>& cv = t.events;
+                for (size_t k = 0; k + 1 < cv.size() && !any; ++k)
+                    any = (all.count(cv[k].id) || all.count(cv[k + 1].id)) && continues(cv[k], cv[k + 1], fps);
             }
+            if (!any) continue;
+            std::vector<Event>& v = t.events.mut();
+            size_t w = 0;
+            for (size_t r = 0; r < v.size(); ++r) {
+                if (w > 0) {
+                    Event& a = v[w - 1];
+                    const Event& b = v[r];
+                    if ((all.count(a.id) || all.count(b.id)) && continues(a, b, fps)) {
+                        // the joined event keeps the first one's effects and settings, the second one's end and fade-out;
+                        // the second one's envelopes join after the first one's
+                        const double shift = b.start - a.start;
+                        for (const Envelope& env : b.envelopes) {
+                            Envelope* into = reno::findEnvelope(a.envelopes, env.kind, env.target);
+                            if (!into || env.kind == "fx") continue;
+                            for (EnvPoint pt : env.points)
+                                if (pt.time >= 0) {
+                                    pt.time += shift;
+                                    into->points.push_back(pt);
+                                }
+                            std::stable_sort(into->points.begin(), into->points.end(), [](const EnvPoint& x, const EnvPoint& y) { return x.time < y.time; });
+                        }
+                        a.length = b.end() - a.start;
+                        a.fadeOut = b.fadeOut;
+                        a.fadeOutCurve = b.fadeOutCurve;
+                        if (keep.count(b.id)) keep.insert(a.id);
+                        keep.erase(b.id);
+                        all.insert(a.id);
+                        continue;
+                    }
+                }
+                if (w != r) v[w] = std::move(v[r]);
+                ++w;
+            }
+            v.erase(v.begin() + (std::ptrdiff_t)w, v.end());
         }
     });
     setSelection(keep);
