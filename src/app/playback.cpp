@@ -1757,20 +1757,27 @@ bool RamFrameStore::put(uint64_t stamp, bool current, int64_t frame, double scal
 
 // Over the limit: the frame with the worst score goes, until it fits. Score: how far its frame is from the cursor
 // plus how long since it was used (in uses of the store), counted alike. Pinned frames stay.
+// (The scores don't change while frames go, so they are worked out once into a heap, worst on top and of equal scores
+// the first in the map's order: the same frames go as when the worst was searched for again after each, without a
+// pass over the whole store for every frame that goes - a smaller limit in Preferences took thousands of passes over
+// thousands of frames, under the lock the interface thread takes.)
 void RamFrameStore::evictLocked(const Key*)
 {
-    while (bytes_ > limit_) {
-        auto worst = map_.end();
-        double worstScore = -1;
-        for (auto it = map_.begin(); it != map_.end(); ++it) {
-            if (it->second.pinned) continue;
-            const double score = (double)std::llabs(it->first.first - cursor_) + 0.5 * (double)(tick_ - it->second.used);
-            if (score > worstScore) {
-                worstScore = score;
-                worst = it;
-            }
-        }
-        if (worst == map_.end()) break;
+    if (bytes_ <= limit_) return;
+    struct Cand { double score; size_t order; std::map<Key, Entry>::iterator it; };
+    std::vector<Cand> heap;
+    heap.reserve(map_.size());
+    size_t n = 0;
+    for (auto it = map_.begin(); it != map_.end(); ++it, ++n) {
+        if (it->second.pinned) continue;
+        heap.push_back({(double)std::llabs(it->first.first - cursor_) + 0.5 * (double)(tick_ - it->second.used), n, it});
+    }
+    const auto lower = [](const Cand& a, const Cand& b) { return a.score < b.score || (a.score == b.score && a.order > b.order); };
+    std::make_heap(heap.begin(), heap.end(), lower);
+    while (bytes_ > limit_ && !heap.empty()) {
+        std::pop_heap(heap.begin(), heap.end(), lower);
+        const std::map<Key, Entry>::iterator worst = heap.back().it;
+        heap.pop_back();
         bytes_ -= (size_t)worst->second.image.sizeInBytes();
         map_.erase(worst);
         ++evicted_;

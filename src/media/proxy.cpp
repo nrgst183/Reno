@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <random>
 #include <thread>
 
 namespace reno {
@@ -119,7 +120,12 @@ bool createVideoProxy(const std::string& mediaPath, const VideoProxyOptions& opt
     const double k = std::min(1.0, std::min((double)std::max(2, opt.maxWidth) / mi.width, (double)std::max(2, opt.maxHeight) / mi.height));
     int w = std::max(2, (int)std::lround(mi.width * k)) & ~1, h = std::max(2, (int)std::lround(mi.height * k)) & ~1;
     EncodeSettings es;
-    const std::string final = opt.outputPath.empty() ? videoProxyPath(mediaPath) : opt.outputPath, part = final + ".part.mp4";
+    // (the half-made file's name is this call's own: two made at once for the same file - the automatic proxies and the menu
+    // command, or two programs - wrote into one file, and the proxy put in place was unreadable)
+    static std::atomic<unsigned> calls{0};
+    static const unsigned tag = std::random_device()();
+    const std::string final = opt.outputPath.empty() ? videoProxyPath(mediaPath) : opt.outputPath,
+                      part = final + strfmt(".%08x%u.part.mp4", tag, calls.fetch_add(1));
     es.path = part;
     {
         std::error_code mk;

@@ -190,6 +190,21 @@ static void nestedProjectSavedAgain(const std::string& dir)
     check(nestedProjectsGeneration() == gen, "nested: nothing more changes when nothing more is saved");
 }
 
+// readFile given a folder: on Linux the folder opens and its "size" is whatever the file system says, so the string was
+// resized to it and threw (a project or preset path that names a folder took the program down).
+static void readFileOfFolder(const std::string& dir)
+{
+    std::string s = "x";
+    bool ok = true, threw = false;
+    try { ok = readFile(dir, s); } catch (...) { threw = true; }
+    check(!threw && !ok, "readFile of a folder: false, no exception");
+    Project p;
+    std::string err;
+    threw = false;
+    try { ok = p.load(dir, &err); } catch (...) { threw = true; }
+    check(!threw && !ok, "loading a folder as a project: fails, no exception", err);
+}
+
 int main(int argc, char** argv)
 {
     const std::string dir = argc > 1 ? argv[1] : "bugs_engine_out";
@@ -198,6 +213,7 @@ int main(int argc, char** argv)
     saveKeepsOldOnFailure(dir);
     damagedProxyDoesNotHang(dir);
     nestedProjectSavedAgain(dir);
+    readFileOfFolder(dir);
     std::printf("SUMMARY: %d passed, %d failed\n", gPass, gFail);
     return gFail ? 1 : 0;
 }

@@ -8,6 +8,7 @@
 #include "vfxlevelsconv.h"
 #include "vfxhslwb.h"
 #include "vkblur.h"
+#include "../core/base.h"
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -776,22 +777,17 @@ bool planBezierMasking(Ctx& c, Plan& p)
         p.passes.back().setPush(pc);
         return true;
     }
-    static std::mutex m;
-    static std::string cached;
-    static std::vector<float> total;
-    std::lock_guard<std::mutex> lock(m);
     // (the masks' total is cut to whole levels in an 8-bit picture and left as it is in a float one: the same settings give two totals)
     key += c.levels ? "|8" : "|f";
-    if (cached != key || total.size() != (size_t)p.w * p.h) {
-        cached.clear();
+    key += strfmt("|%ux%u", p.w, p.h);
+    const KeptMap total = keptMap(c.owner, "bezier masking", key, [&](std::vector<float>& t) {
         int md; bool inv; float bl; std::string k2;
-        bezierMaskGpu(c, (int)p.w, (int)p.h, md, inv, bl, k2, &total);
-        if (total.size() != (size_t)p.w * p.h) total.assign((size_t)p.w * p.h, 0.f);
-        cached = key;
-    }
+        bezierMaskGpu(c, (int)p.w, (int)p.h, md, inv, bl, k2, &t);
+        if (t.size() != (size_t)p.w * p.h) t.assign((size_t)p.w * p.h, 0.f);
+    });
     P::BzApply pc = {p.w, p.h, invert ? 1u : 0u, blend};
     Pass& ps = p.add("bz_apply", 0, 1, p.w, p.h);
-    ps.table = p.addTable(std::vector<float>(total));
+    ps.table = p.addTable(std::vector<float>(*total));
     ps.setPush(pc);
     return true;
 }
@@ -1075,7 +1071,7 @@ bool planStabilization360(Ctx& c, Plan& p)
         SceneSetup ss;
         if (stabilizationSceneGpu(c, (int)p.w, (int)p.h, ss)) {
             Pass& ps = p.add("scene_gather", 0, 1, p.w, p.h);
-            ps.table = p.addTable(ss.map);
+            ps.table = p.addTable(std::move(ss.map));
             ps.setPush(P::SceneGather{p.w, p.h, ss.stereo != 0 ? 1u : 0u, ss.levels ? 1u : 0u});
             return true;
         }
@@ -1087,7 +1083,7 @@ bool planStabilization360(Ctx& c, Plan& p)
         return true;
     }
     const int pol = p.addBuf(4, 1, 4);
-    const int tab = p.addTable(su.map);
+    const int tab = p.addTable(std::move(su.map));
     for (int k = 0; k < su.n; ++k) {
         const uint32_t pw = (uint32_t)su.pw, ph = (uint32_t)su.ph, px = (uint32_t)su.px[k], py = (uint32_t)su.py[k], part = (uint32_t)k;
         p.add("pano_pole", 0, pol, 2, 1).setPush(P::PanoPole{p.w, p.h, pw, ph, px, py, part, 0u});
@@ -1105,7 +1101,7 @@ bool planSceneRotation(Ctx& c, Plan& p)
     SceneSetup su;
     if (!sceneRotationSetupGpu(c, (int)p.w, (int)p.h, su)) return false;
     Pass& ps = p.add("scene_gather", 0, 1, p.w, p.h);
-    ps.table = p.addTable(su.map);
+    ps.table = p.addTable(std::move(su.map));
     ps.setPush(P::SceneGather{p.w, p.h, su.stereo != 0 ? 1u : 0u, su.levels ? 1u : 0u});
     return true;
 }

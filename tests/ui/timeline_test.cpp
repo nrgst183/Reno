@@ -645,6 +645,13 @@ int main(int argc, char** argv)
               "Delete Track from a header");
         st().undo();
         st().undo();
+        // the track list's Delete (the selected tracks) with the current track among them: the first track is current after
+        check(menuPick(&w, at(w, ids.a1, 12.0, 30), "Insert Audio Track") && st().currentTrack == st().project().tracks[2].id, "a track inserted is current");
+        check(menuPick(&w, headerMenuSpot(w, st().project().tracks[2].id), "Delete") && st().project().tracks.size() == tracks &&
+              st().currentTrack == st().project().tracks.front().id,
+              "Delete of the selected tracks makes the first track current when the current one goes", strfmt("current %llu", (unsigned long long)st().currentTrack));
+        st().undo();
+        st().undo();
         check(menuPick(&w, headerMenuSpot(w, ids.a2), "Rename"), "Rename from the menu");
         uitest::settle(30);
         bool open = false;

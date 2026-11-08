@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -46,7 +47,7 @@ template <class T> bool readValue(std::ifstream& f, uint64_t at, T& v) { return 
 PeKind inspectPeFile(const std::string& path)
 {
     PeKind k;
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(std::filesystem::u8path(path), std::ios::binary);       // (UTF-8: a narrow name is the ANSI code page on Windows)
     if (!f) return k;
     uint16_t mz = 0;
     uint32_t peAt = 0, sig = 0;

@@ -851,7 +851,7 @@ void TimelineWidget::Impl::drawEnvelope(QPainter& p, const EnvLane& L, const QRe
     // exactly as in a whole repaint
     const QRectF clip = L.clip.intersected(QRectF(lanesRect()).adjusted(-6, -6, 6, 6));
     p.save();
-    p.setClipRect(L.clip.adjusted(0, -1, 0, 1).intersected(QRectF(lanesRect())));
+    p.setClipRect(L.clip.adjusted(0, -1, 0, 1).intersected(QRectF(lanesRect())), Qt::IntersectClip);
     p.setRenderHint(QPainter::Antialiasing, true);
     const bool front = L.ref == frontEnv || hover.env == L.ref || drag.env == L.ref;
     QColor col = envelopeColor(L.ref.kind);
@@ -933,7 +933,7 @@ void TimelineWidget::Impl::drawMoveLabel(QPainter& p)
     const double x0 = xAtF(moveFromT), x1 = xAtF(moveToT);
     const double h = kLoopH, y = kLoopTop;
     p.save();
-    p.setClipRect(QRect(headerW, 0, viewW(), kTopH));
+    p.setClipRect(QRect(headerW, 0, viewW(), kTopH), Qt::IntersectClip);
     p.setFont(smallFont);
     const double w = smallFm.horizontalAdvance(moveLabel) + 8.0;
     // VEGAS Pro 18 draws the line blue (beginner tutorial, 38:xx); Vegas 8 drew it grey

@@ -890,18 +890,11 @@ bool panoramaSetupGpu(Ctx& c, int W, int H, PanoSetup& o)
     if (o.n * o.pw != W && o.pw != W) return false;
     if (o.n * o.ph != H && o.ph != H) return false;
     // (the map is picture-independent: the last one is kept while the turn and the size stay)
-    static std::mutex mu;
-    static std::vector<double> lastKey;
-    static std::vector<float> lastMap;
-    std::vector<double> key(rot.m, rot.m + 9);
-    key.push_back(o.pw);
-    key.push_back(o.ph);
-    std::lock_guard<std::mutex> lock(mu);
-    if (key != lastKey || lastMap.empty()) {
-        panoramaMap(rot, o.pw, o.ph, lastMap);
-        lastKey = key;
-    }
-    o.map = lastMap;
+    std::string key = strfmt("%dx%d", o.pw, o.ph);
+    for (double v : rot.m) key += strfmt(",%a", v);
+    const KeptMap map = keptMap(c.owner, "360 stabilization", key, [&](std::vector<float>& m) { panoramaMap(rot, o.pw, o.ph, m); });
+    if (!map || map->empty()) return false;
+    o.map = *map;
     return true;
 }
 
@@ -916,25 +909,21 @@ static bool sceneSetupGpu(Ctx& c, int W, int H, const float M[9], bool rotate, i
     if (!G.ok) return false;
     if (o.stereo == 1 && G.h * 2 != H) return false;           // (a line or column the kernel leaves alone)
     if (o.stereo == 2 && G.w * 2 != W) return false;
-    static std::mutex mu;
-    static std::vector<float> lastKey;
-    static std::vector<float> lastMap;
-    std::vector<float> key(M, M + 9);
-    key.push_back((float)W); key.push_back((float)H); key.push_back((float)o.stereo); key.push_back(rotate ? 1.f : 0.f); key.push_back(o.levels ? 1.f : 0.f);
-    std::lock_guard<std::mutex> lock(mu);
-    if (key != lastKey || lastMap.empty()) {
-        lastMap.assign((size_t)W * H * 4, 0.f);
+    std::string key = strfmt("%dx%d,%d,%d,%d", W, H, o.stereo, rotate ? 1 : 0, o.levels ? 1 : 0);
+    for (int i = 0; i < 9; ++i) key += strfmt(",%a", (double)M[i]);
+    const KeptMap map = keptMap(c.owner, "scene rotation", key, [&](std::vector<float>& m) {
+        m.assign((size_t)W * H * 4, 0.f);
         forRows(H, W, [&](int y) {
             for (int x = 0; x < W; ++x) {
                 SceneTap t;
                 if (!G.tap(x, y, t)) continue;
-                float* e = &lastMap[((size_t)y * W + (size_t)x) * 4];
+                float* e = &m[((size_t)y * W + (size_t)x) * 4];
                 e[0] = (float)t.x0; e[1] = (float)t.y0; e[2] = t.fx; e[3] = t.fy;
             }
         });
-        lastKey = key;
-    }
-    o.map = lastMap;
+    });
+    if (!map || map->size() != (size_t)W * H * 4) return false;
+    o.map = *map;
     return true;
 }
 

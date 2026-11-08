@@ -580,36 +580,22 @@ void clockWipe8(Ctx& c)
     const bool done = p >= 1.0f;
     const float root2 = 1.4142135381698608f;
     auto to8 = [](float v) { const float x = v * 255.0f + 0.5f; return (int)(x < 0.f ? 0 : x > 255.f ? 255 : (int)x); };
-    // The angle of every pixel round the centre does not depend on the progress or the feather: the last map made is kept for the next frame of the same size and direction.
-    struct AngleKey { int W, H; bool ccw; };
-    static std::mutex angMu;
-    static bool angHave = false;
-    static AngleKey angKey;
-    static std::shared_ptr<const std::vector<float>> angMap;
-    std::shared_ptr<const std::vector<float>> angles;
-    {
-        std::lock_guard<std::mutex> lock(angMu);
-        if (angHave && angKey.W == W && angKey.H == H && angKey.ccw == ccw) angles = angMap;
-    }
-    if (!angles) {
-        auto made = std::make_shared<std::vector<float>>((size_t)W * H);
+    // The angle of every pixel round the centre does not depend on the progress or the feather: the map is kept for the next frames of the same size and direction (keptMap).
+    const KeptMap angles = keptMap(c.owner, "clock wipe", strfmt("%dx%d,%d", W, H, ccw ? 1 : 0), [&](std::vector<float>& made) {
+        made.assign((size_t)W * H, 0.f);
         forRows(H, W, [&](int y) {
             const float Y = (cy + 0.5f) - (float)y;
             float xs = ccw ? cx : -cx;
             const float step = ccw ? -1.0f : 1.0f;
-            float* row = &(*made)[(size_t)y * W];
+            float* row = &made[(size_t)y * W];
             for (int x = 0; x < W; ++x, xs += step) {
                 float a = (float)rm::atan2((double)xs, (double)Y);
                 if (a < 0.0f) a += twoPi;
                 row[x] = a;
             }
         });
-        angles = made;
-        std::lock_guard<std::mutex> lock(angMu);
-        angKey = AngleKey{W, H, ccw};
-        angMap = angles;
-        angHave = true;
-    }
+    });
+    if (!angles || angles->size() != (size_t)W * H) return;
     forRows(H, W, [&](int y) {
         float Y = (cy + 0.5f) - (float)y;
         float xs = ccw ? cx : -cx;
@@ -3757,38 +3743,20 @@ std::vector<float> makeMaskRaw(int w, int h, int arms, int cycles, float ratio, 
     return m;
 }
 
-// The mask depends on the settings and the frame size, not on the progress: the last one made is kept for the next frame of the same transition.
-std::vector<float> makeMask(int w, int h, int arms, int cycles, float ratio, float angle, float cxp, float cyp, bool dir, bool hflip,
+// The mask depends on the settings and the frame size, not on the progress: it is kept for the next frames of the same transition (keptMap; the amplitude after the mask).
+std::vector<float> makeMask(const void* owner, int w, int h, int arms, int cycles, float ratio, float angle, float cxp, float cyp, bool dir, bool hflip,
                             bool vflip, bool hmir, bool vmir, bool tri, float& amp)
 {
-    struct Key {
-        int w, h, arms, cycles;
-        float ratio, angle, cxp, cyp;
-        bool dir, hflip, vflip, hmir, vmir, tri;
-        bool operator==(const Key& o) const
-        {
-            return w == o.w && h == o.h && arms == o.arms && cycles == o.cycles && std::memcmp(&ratio, &o.ratio, 4) == 0 && std::memcmp(&angle, &o.angle, 4) == 0 &&
-                   std::memcmp(&cxp, &o.cxp, 4) == 0 && std::memcmp(&cyp, &o.cyp, 4) == 0 && dir == o.dir && hflip == o.hflip && vflip == o.vflip && hmir == o.hmir &&
-                   vmir == o.vmir && tri == o.tri;
-        }
-    };
-    static std::mutex mu;
-    static bool have = false;
-    static Key lastKey;
-    static std::vector<float> lastMask;
-    static float lastAmp = 1.0f;
-    Key key;
-    key.w = w; key.h = h; key.arms = arms; key.cycles = cycles;
-    key.ratio = ratio; key.angle = angle; key.cxp = cxp; key.cyp = cyp;
-    key.dir = dir; key.hflip = hflip; key.vflip = vflip; key.hmir = hmir; key.vmir = vmir; key.tri = tri;
-    {
-        std::lock_guard<std::mutex> lock(mu);
-        if (have && lastKey == key) { amp = lastAmp; return lastMask; }
-    }
-    std::vector<float> m = makeMaskRaw(w, h, arms, cycles, ratio, angle, cxp, cyp, dir, hflip, vflip, hmir, vmir, tri, amp);
-    std::lock_guard<std::mutex> lock(mu);
-    lastKey = key; lastMask = m; lastAmp = amp; have = true;
-    return m;
+    const std::string key = strfmt("%dx%d,%d,%d,%a,%a,%a,%a,%d%d%d%d%d%d", w, h, arms, cycles, (double)ratio, (double)angle, (double)cxp, (double)cyp, dir ? 1 : 0, hflip ? 1 : 0,
+                                   vflip ? 1 : 0, hmir ? 1 : 0, vmir ? 1 : 0, tri ? 1 : 0);
+    const KeptMap m = keptMap(owner, "star wipe", key, [&](std::vector<float>& v) {
+        float a = 1.0f;
+        v = makeMaskRaw(w, h, arms, cycles, ratio, angle, cxp, cyp, dir, hflip, vflip, hmir, vmir, tri, a);
+        v.push_back(a);
+    });
+    if (!m || m->empty()) return makeMaskRaw(w, h, arms, cycles, ratio, angle, cxp, cyp, dir, hflip, vflip, hmir, vmir, tri, amp);
+    amp = m->back();
+    return std::vector<float>(m->begin(), m->end() - 1);
 }
 
 }  // namespace swx
@@ -3799,7 +3767,7 @@ void starMask8(Ctx& c, std::vector<float>& mask, float& amp)
     const int w = c.frameW, h = c.frameH;
     double cxd, cyd;
     c.xy("Center", cxd, cyd);
-    mask = swx::makeMask(w, h, c.i("Arms"), c.i("Cycles"), (float)c.d("Ratio"), (float)c.d("Angle"), (float)cxd,
+    mask = swx::makeMask(c.owner, w, h, c.i("Arms"), c.i("Cycles"), (float)c.d("Ratio"), (float)c.d("Angle"), (float)cxd,
                                                   1.0f - (float)cyd, c.i("Direction") != 0, c.b("HorizontalFlip"), c.b("VerticalFlip"),
                                                   c.b("HorizontalMirror"), c.b("VerticalMirror"), c.i("Waveform") == 0 ? false : true, amp);
 }
@@ -4012,7 +3980,8 @@ void barndoorFx8(Ctx& c)
 uint16_t transrec::irisWindow(int shape) { return irisWindowMask(shape); }
 float transrec::irisReflectedMax(int W, int H, int nx, int ny, double cxn, double cyn, float cxf, float cyf, int shape, float A, float sx, float sy)
 {
-    return irisReflectedMax(W, H, nx, ny, cxn, cyn, cxf, cyf, shape, A, sx, sy);
+    // (qualified: the plain name inside transrec:: is this function itself, which called itself for ever - Iris on the GPU with VEGAS's GPU acceleration off hung or overflowed the stack)
+    return ::reno::ofx::builtin::irisReflectedMax(W, H, nx, ny, cxn, cyn, cxf, cyf, shape, A, sx, sy);
 }
 void transrec::starField(Ctx& c, std::vector<double>& field) { ::reno::ofx::builtin::starField(c, field); }
 void transrec::starMask(Ctx& c, std::vector<float>& mask, float& amp) { starMask8(c, mask, amp); }

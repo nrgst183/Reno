@@ -337,6 +337,7 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
 {
     if (!d.render) return kOfxStatFailed;
     Ctx c;
+    c.owner = effect;
     bool tiesDown = false;     // an effect VEGAS draws in float into an 8-bit frame: a result exactly half way between two levels goes to the lower one (Levels' captured pictures)
     c.src.px = std::move(gScratch.src);
     c.src2.px = std::move(gScratch.src2);
@@ -600,6 +601,7 @@ OfxStatus dispatch(int index, const char* action, const void* handle, PS inArgs,
     if (!std::strcmp(action, kOfxImageEffectActionDescribeInContext)) return describeInContext(d, effect);
     if (!std::strcmp(action, kOfxActionDestroyInstance)) {
         if (d.destroy) d.destroy(handle);
+        dropKeptMaps(handle);
         return kOfxStatOK;
     }
     if (!std::strcmp(action, kOfxActionCreateInstance)) return instanceCreated(d, effect);

@@ -7,8 +7,18 @@
 #include <cstdio>
 #include <cmath>
 #include <filesystem>
+#include <thread>
 
 using namespace reno;
+
+// a half-made proxy ("<file>.sfvp0.<call>.part.mp4") left in the folder
+static bool partLeft(const std::string& dir)
+{
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+        if (it->path().filename().string().find(".part.mp4") != std::string::npos) return true;
+    return false;
+}
 
 static int gPass = 0, gFail = 0;
 static void check(bool ok, const std::string& name, const std::string& detail = std::string())
@@ -84,7 +94,7 @@ int main(int argc, char** argv)
     check(ok && hasVideoProxy(video), "Create Video Proxy makes <file>.sfvp0", err);
     check(calls > 2 && std::fabs(lastDone - 1) < 1e-9, "progress is reported up to the end", strfmt("%d calls, last %.3f", calls, lastDone));
     check(videoProxyGeneration() != gen0, "and readers are told proxies changed");
-    check(!std::filesystem::exists(videoProxyPath(video) + ".part.mp4"), "no half-made file is left");
+    check(!partLeft(dir), "no half-made file is left");
     {
         auto r = openMedia(videoProxyPath(video), &err);
         check(r && r->info().hasVideo && r->info().width == 960 && r->info().height == 540, "it is a video of at most 960 x 540, keeping the shape",
@@ -110,7 +120,7 @@ int main(int argc, char** argv)
         std::filesystem::remove(videoProxyPath(third));
         int n = 0;
         ok = createVideoProxy(third, [&](double) { return ++n < 2; }, &err);
-        check(!ok && !hasVideoProxy(third) && !std::filesystem::exists(videoProxyPath(third) + ".part.mp4"), "stopped, it leaves nothing behind", err);
+        check(!ok && !hasVideoProxy(third) && !partLeft(dir), "stopped, it leaves nothing behind", err);
     }
     // ---- files that cannot have one
     {
@@ -170,6 +180,20 @@ int main(int argc, char** argv)
         check(near(at(img, 0.2, 0.5), 200, 40, 10), "a proxy that cannot be read: the original", pxs(at(img, 0.2, 0.5)));
         std::filesystem::remove(videoProxyPath(video));
         videoProxiesChanged();
+    }
+    // ---- two made at once for the same file (the automatic proxies and the menu command): they wrote the same half-made file
+    {
+        std::filesystem::remove(videoProxyPath(other));
+        bool okA = false, okB = false;
+        std::string ea, eb;
+        std::thread ta([&] { okA = createVideoProxy(other, [](double) { return true; }, &ea); });
+        std::thread tb([&] { okB = createVideoProxy(other, [](double) { return true; }, &eb); });
+        ta.join();
+        tb.join();
+        auto r = openMedia(videoProxyPath(other), &err);
+        check(okA && okB && r && r->info().hasVideo && std::fabs(r->info().duration - 2.0) < 0.05, "two made at once: both succeed, the proxy is whole",
+              ea + " / " + eb + (r ? strfmt(" %.3f s", r->info().duration) : std::string(" unreadable")));
+        check(!partLeft(dir), "and no half-made file is left");
     }
     fx.releaseExcept({});
     std::printf("SUMMARY: %d passed, %d failed\n", gPass, gFail);

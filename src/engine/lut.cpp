@@ -57,8 +57,10 @@ std::shared_ptr<const Lut3D> readCubeLut(const std::string& path, std::string* e
     static std::mutex mu;
     static std::map<std::string, std::pair<long long, std::shared_ptr<const Lut3D>>> cache;
     long long stamp = 0;
+    // (paths are UTF-8: given as a narrow string, Windows reads it in the ANSI code page and a name outside it is not found)
+    const std::filesystem::path fp = std::filesystem::u8path(path);
     try {
-        stamp = (long long)std::filesystem::file_size(path) * 1000003LL + (long long)std::filesystem::last_write_time(path).time_since_epoch().count() % 1000003LL;
+        stamp = (long long)std::filesystem::file_size(fp) * 1000003LL + (long long)std::filesystem::last_write_time(fp).time_since_epoch().count() % 1000003LL;
     } catch (...) {
         if (error) *error = "The LUT file could not be opened.";
         return nullptr;
@@ -68,7 +70,7 @@ std::shared_ptr<const Lut3D> readCubeLut(const std::string& path, std::string* e
         auto it = cache.find(path);
         if (it != cache.end() && it->second.first == stamp) return it->second.second;
     }
-    std::ifstream in(path);
+    std::ifstream in(fp);
     if (!in) {
         if (error) *error = "The LUT file could not be opened.";
         return nullptr;

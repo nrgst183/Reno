@@ -164,5 +164,67 @@ int main(int argc, char** argv)
         for (size_t k = 0; k < t->events.size(); ++k) ok = ok && std::fabs(t->events[k].start - (double)k * 0.01) < 1e-9;
         check(ok && t->events.size() == (size_t)n / 2, "ripple closes the gaps exactly");
     }
+    // An edit of one track leaves the events of the other tracks shared with the snapshot the engine has (no copy of
+    // them), also on an audio track with an Auto Normalize event, whose events are only looked at
+    {
+        build(n, 0.01, &track, &media);
+        const uint64_t atrack = st.addTrack(TrackType::Audio);
+        st.edit("audio", [&](Project& p) {
+            Track* t = p.findTrack(atrack);
+            for (int k = 0; k < 50; ++k) {
+                Event e;
+                e.id = p.newId();
+                e.mediaId = media;
+                e.start = k * 1.0;
+                e.length = 1.0;
+                e.autoNormalize = k == 0;
+                e.normalize = k == 0;
+                t->events.push_back(e);
+            }
+        });
+        const std::shared_ptr<const Project> before = st.snapshot();
+        const Event* const audioBefore = trackOf(atrack)->events.cbegin();
+        const uint64_t first = trackOf(track)->events[0].id;
+        st.edit("move one", [&](Project& p) { if (Event* e = p.findEvent(first)) e->name = "moved"; });
+        const Track* a = trackOf(atrack);
+        check(a && a->events.cbegin() == audioBefore, "an edit elsewhere leaves an Auto Normalize track's events shared");
+        const Track* sa = nullptr;
+        for (const Track& t : st.snapshot()->tracks) if (t.id == atrack) sa = &t;
+        check(sa && a && sa->events.cbegin() == a->events.cbegin(), "the engine's snapshot shares them too");
+        (void)before;
+    }
+    // A drag step that leaves the effect slots as they were doesn't have FxRuntime look at every slot again; one that
+    // makes a slot (a copy dragged off) does: the new slot's effect is made (here: its error noted, as it isn't installed)
+    {
+        build(n, 0.01, &track, &media);
+        st.edit("effects", [&](Project& p) {
+            for (Event& e : p.findTrack(track)->events) {
+                FxSlot s;
+                s.id = p.newId();
+                s.kind = "ofx";
+                s.pluginId = "com.example.notinstalled";
+                s.name = "missing";
+                e.fx.push_back(s);
+            }
+        });
+        const uint64_t ev = trackOf(track)->events[10].id;
+        const double s0 = trackOf(track)->events[10].start;
+        st.beginDrag();
+        const double t0 = nowMs();
+        for (int k = 0; k < 50; ++k) st.dragUpdate([&](Project& p) { if (Event* e = p.findEvent(ev)) e->start = s0 + (k % 5) * 0.001; });
+        const double ms = (nowMs() - t0) / 50;
+        std::printf("a drag step over %d pieces with an effect each: %.2f ms\n", n, ms);
+        uint64_t copySlot = 0;
+        st.dragUpdate([&](Project& p) {
+            Track* t = p.findTrack(track);
+            Event c = t->events[10];
+            c.id = p.newId();
+            c.start = n * 0.01 + 1.0;
+            c.fx[0].id = copySlot = p.newId();
+            t->events.push_back(c);
+        });
+        check(copySlot && !st.fx.error(copySlot).empty(), "a drag step that makes an effect slot has its effect made", st.fx.error(copySlot));
+        st.endDrag("copy");
+    }
     return uitest::summary();
 }

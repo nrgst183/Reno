@@ -109,6 +109,11 @@ TimelineWidget::Impl::Impl(TimelineWidget* w, Playback* pb) : q(w), playback(pb)
     loader.reset(new Loader(app.mediaOpener, [this] { loaderReady(); }));
     loadOptions();
     listener = app.addListener([this](int changes) { changed(changes); });
+    // the project open now counts as loaded: its minimized tracks are shown so, as when it is opened later (a timeline
+    // made with a project already open showed them at full height)
+    loadedPath = app.path();
+    for (const Track& t : app.project().tracks)
+        if (t.minimized) minimized.insert(t.id);
     layout();
     updateBars();
 }

@@ -385,6 +385,87 @@ static int screenPatches(MainWindow& w, const QString& save = QString())
     return n;
 }
 
+// A repaint of a few pieces far apart (each painted on its own) draws an envelope only inside its piece: the envelope's
+// line was drawn across its whole lane for every piece, its shadow darkening the pieces painted before it in the same
+// paint (found by monkey_test --stale: an 8 px band across the event tops).
+static void envelopePiecesRepaint(MainWindow& w, const QString& out)
+{
+    AppState& app = st();
+    app.newProject();
+    uitest::buildDemoProject();
+    uint64_t tid = 0;
+    for (const Track& t : app.project().tracks)
+        if (t.type == TrackType::Video && !t.events.empty()) { tid = t.id; break; }
+    app.edit("envelope", [&](Project& p) {
+        Track* t = p.findTrack(tid);
+        Envelope e;
+        e.kind = "composite";
+        e.points = {EnvPoint{0.0, 0.85, CurveLinear}, EnvPoint{p.length(), 0.85, CurveLinear}};   // over the colour bars
+        t->envelopes.push_back(e);
+    });
+    TimelineWidget* tl = w.timeline();
+    tl->zoomToFit();
+    uitest::settle(1500);
+    screenPatches(w);
+    const int before = screenPatches(w);
+    // three narrow pieces across the first track's events
+    QRegion pieces;
+    for (int k = 0; k < 3; ++k) pieces |= QRect(tl->width() * (35 + 15 * k) / 100, 0, 30, tl->height());
+    tl->repaint(pieces);
+    const int after = screenPatches(w, out + "/envpieces");
+    check(before == 0 && after == 0, "a repaint of pieces apart draws an envelope once (the timeline on the screen is what a whole repaint draws)",
+          strfmt("%d patches before, %d after", before, after));
+}
+
+// The current track removed by an undo and brought back by redo, then made current again: its header is lit on the
+// screen (the timeline had not seen it stop being current, so becoming current again was no change to it; found by
+// monkey_test --stale after "undo, redo" and a click on an event).
+static void currentTrackBackRepaint(MainWindow& w, const QString& out)
+{
+    AppState& app = st();
+    app.newProject();
+    uitest::buildDemoProject();
+    TimelineWidget* tl = w.timeline();
+    tl->zoomToFit();
+    uitest::settle(800);
+    const uint64_t made = app.addTrack(TrackType::Audio);
+    app.currentTrack = made;
+    app.notify(kSelection);
+    uitest::settle(300);
+    app.undo();
+    uitest::settle(300);
+    app.redo();
+    uitest::settle(300);
+    const int before = screenPatches(w);
+    app.currentTrack = made;      // as a click on the track does (TimelineWidget::Impl::setCurrentTrack)
+    app.notify(kSelection);
+    const int after = screenPatches(w, out + "/currentback");
+    check(before == 0 && after == 0, "a track made current again after undo / redo is lit on the screen", strfmt("%d patches before, %d after", before, after));
+}
+
+// An event's gain dragged and let go where it was (an audio event's gain held at 0 dB, at the top): the lit handle drawn
+// during the drag goes (nothing in the project changed, so nothing repainted it; found by monkey_test --stale).
+static void gainDragUnchangedRepaint(MainWindow& w, const QString& out)
+{
+    AppState& app = st();
+    app.newProject();
+    uitest::buildDemoProject();
+    TimelineWidget* tl = w.timeline();
+    tl->zoomToFit();
+    uitest::settle(1500);
+    uint64_t sound = 0;
+    for (const Track& t : app.project().tracks)
+        if (t.type == TrackType::Audio && !t.events.empty() && t.events[0].gain >= 0.9995) { sound = t.events[0].id; break; }
+    const QRect r = tl->eventRectOf(sound);
+    const QPoint from(r.left() + r.width() / 2, r.top() + 2);
+    const int before = screenPatches(w);
+    uitest::mousePress(tl, from);
+    for (int k = 1; k <= 3; ++k) uitest::mouseMove(tl, from - QPoint(0, 6 * k));
+    uitest::mouseRelease(tl, from - QPoint(0, 18));
+    const int after = screenPatches(w, out + "/gainback");
+    check(sound && before == 0 && after == 0, "a gain drag that changes nothing leaves no lit handle on the screen", strfmt("%d patches before, %d after", before, after));
+}
+
 // Select All / Unselect All: selected events (and their waveforms) must be lit everywhere.
 static void selectAllRepaints(MainWindow& w, const QString& out)
 {
@@ -432,6 +513,9 @@ int main(int argc, char** argv)
     mediaUsageFollowsSplits(w);
     prerenderedFramesLookRight(w, out);
     selectAllRepaints(w, out);
+    envelopePiecesRepaint(w, out);
+    currentTrackBackRepaint(w, out);
+    gainDragUnchangedRepaint(w, out);
 
     st().newProject();
     return uitest::summary();

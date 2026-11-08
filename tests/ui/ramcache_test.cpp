@@ -11,6 +11,7 @@
 #include <QElapsedTimer>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <thread>
 
 using namespace reno;
@@ -112,6 +113,86 @@ static void storeTests()
         check(!s.put(1, true, 1, 1.0, pic(100, 100, 0), false), "nothing unpinned is kept when only pinned ones are there");
         check(!s.put(1, true, 54, 1.0, pic(100, 100, 0), true) && s.frames() == 4 && s.bytes() == 4 * one, "a pinned picture with no room is refused");
         check(!s.put(1, true, 9, 1.0, pic(100, 100, 0), false), "an unpinned one cannot push pinned ones out");
+    }
+    {
+        // the frames that go are the ones the plain rule picks (the worst score searched for again after each one goes),
+        // over random puts, finds, cursor moves and smaller limits; and a much smaller limit over thousands of frames is quick
+        struct Ref {
+            struct E { size_t bytes; uint64_t used; bool pinned; };
+            std::map<std::pair<int64_t, int>, E> m;
+            size_t limit = 0, bytes = 0;
+            uint64_t tick = 0;
+            int64_t cursor = 0;
+            void evict()
+            {
+                while (bytes > limit) {
+                    auto worst = m.end();
+                    double ws = -1;
+                    for (auto it = m.begin(); it != m.end(); ++it) {
+                        if (it->second.pinned) continue;
+                        const double sc = (double)std::llabs(it->first.first - cursor) + 0.5 * (double)(tick - it->second.used);
+                        if (sc > ws) { ws = sc; worst = it; }
+                    }
+                    if (worst == m.end()) break;
+                    bytes -= worst->second.bytes;
+                    m.erase(worst);
+                }
+            }
+        };
+        const size_t one = (size_t)pic(16, 16, 0).sizeInBytes();
+        RamFrameStore s;
+        Ref r;
+        s.setLimit(60 * one);
+        r.limit = 60 * one;
+        uint32_t seed = 12345;
+        auto rnd = [&](int n) { seed = seed * 1664525u + 1013904223u; return (int)((seed >> 8) % (uint32_t)n); };
+        const QImage px = pic(16, 16, 1);
+        bool same = true;
+        for (int step = 0; step < 4000 && same; ++step) {
+            const int what = rnd(10);
+            if (what < 6) {
+                const int64_t f = rnd(200);
+                const bool pin = rnd(20) == 0;
+                if (s.put(1, true, f, 1.0, px, pin)) {}
+                // the reference does what put does: keep, evict, and take back the new one if still over
+                const std::pair<int64_t, int> key(f, 1000);
+                auto it = r.m.find(key);
+                if (it != r.m.end()) { it->second.used = ++r.tick; it->second.pinned = it->second.pinned || pin; }
+                else { r.m[key] = Ref::E{one, ++r.tick, pin}; r.bytes += one; }
+                r.evict();
+                if (r.bytes > r.limit) { auto me = r.m.find(key); if (me != r.m.end()) { r.bytes -= me->second.bytes; r.m.erase(me); } }
+            } else if (what < 8) {
+                const int64_t f = rnd(200);
+                QImage out;
+                if (s.find(1, f, 1.0, out)) {
+                    auto it = r.m.lower_bound(std::make_pair(f, 1000));
+                    if (it != r.m.end() && it->first.first == f) it->second.used = ++r.tick;
+                }
+            } else if (what < 9) {
+                const int64_t c = rnd(200);
+                s.setCursor(c);
+                r.cursor = c;
+            } else {
+                const size_t lim = (size_t)(20 + rnd(60)) * one;
+                s.setLimit(lim);
+                r.limit = lim;
+                r.evict();
+            }
+            std::vector<std::pair<int64_t, double>> a = s.keys();
+            same = a.size() == r.m.size();
+            size_t k = 0;
+            for (auto it = r.m.begin(); same && it != r.m.end(); ++it, ++k) same = a[k].first == it->first.first;
+        }
+        check(same, "the frames dropped are the ones the plain rule drops");
+        RamFrameStore big;
+        big.setLimit(100000 * one);
+        for (int f = 0; f < 8000; ++f) big.put(1, true, f, 1.0, px, false);
+        QElapsedTimer t;
+        t.start();
+        big.setLimit(100 * one);
+        const double ms = t.nsecsElapsed() / 1e6;
+        std::printf("a limit for 100 of 8000 frames: %.1f ms\n", ms);
+        check(big.frames() == 100 && ms < 50, "a much smaller limit over 8000 frames is quick", strfmt("%.1f ms", ms));
     }
 }
 

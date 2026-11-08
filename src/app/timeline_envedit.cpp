@@ -1007,6 +1007,10 @@ QRegion TimelineWidget::Impl::dragVisualsOf(const DragState& d) const
     if (d.kind == Drag::Level || d.kind == Drag::Pan || d.kind == Drag::Fade || d.kind == Drag::SurroundPoint)
         if (const Row* row = rowOf(d.hit.track)) r |= QRect(0, rowTop(*row), headerW, row->h);
     if (d.kind == Drag::HeaderWidth) r |= QRect(headerW - kHeaderGap, kTopH, kHeaderGap, std::max(0, lanesBottom() - kTopH));
+    // the gain handles drawn lit while their gain was dragged (a drag that left the gain as it was changes nothing in
+    // the project, so nothing else repaints them)
+    if (d.kind == Drag::EventGain)
+        for (const std::pair<uint64_t, double>& g : d.gains) r |= eventArea(g.first);
     if (d.env.valid()) {
         EnvLane L;
         if (envLaneOf(d.env, &L)) r |= L.clip.adjusted(-8, -8, 8, 8).toAlignedRect().intersected(lanesRect());

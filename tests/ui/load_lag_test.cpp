@@ -45,6 +45,7 @@
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <ctime>
 #include <memory>
 #include <set>
 
@@ -284,8 +285,15 @@ public:
 #endif
             stalls.push_back({ms, threadCpuMs() - c0, ph, what, s0, s1});
         }
+        if (counting) {
+            std::string what = cls;
+            what += " event " + std::to_string(type);
+            ++counts[what];
+        }
         return r;
     }
+    bool counting = false;                  // (--idle) every event the UI thread handles, counted by receiver class and type
+    std::map<std::string, int> counts;
     bool recording = true;
     std::string phase = "start";
     std::vector<Stall> stalls;
@@ -529,6 +537,7 @@ int main(int argc, char** argv)
     const QString media = QDir(args[2]).absolutePath();
     QString samples = qEnvironmentVariable("RENO_SAMPLES");
     bool bench = false, profile = false;
+    double idleS = 0;   // --idle S: after the projects, three times S seconds with nothing done: the CPU the program uses and what the UI thread wakes up for
     int cycles = 0;     // --cycles N: open and close the last project N more times, printing memory, threads and widgets (a leak shows as growth)
     QString lastPath;
     double limit = 600;
@@ -537,6 +546,7 @@ int main(int argc, char** argv)
         if (args[k] == "--samples" && k + 1 < args.size()) samples = args[++k];
         else if (args[k] == "--bench") bench = true;
         else if (args[k] == "--cycles" && k + 1 < args.size()) cycles = args[++k].toInt();
+        else if (args[k] == "--idle" && k + 1 < args.size()) idleS = args[++k].toDouble();
         else if (args[k] == "--profile") profile = bench = true;
         else if (args[k] == "--limit" && k + 1 < args.size()) limit = args[++k].toDouble();
         else names << args[k];
@@ -626,6 +636,52 @@ int main(int argc, char** argv)
                 if (line.startsWith("Threads:")) threads = line.mid(8).trimmed().toInt();
         std::printf("CYCLE %2d memory_mb %8.0f threads %3d widgets %6d\n", c, memoryNowMb(), threads, (int)QApplication::allWidgets().size());
         std::fflush(stdout);
+    }
+    if (idleS > 0) {
+        // the last project still open, stopped: nothing should run but what a user would see change
+        uitest::settle(3000);
+        // each thread's CPU time (Linux: /proc/self/task/<id>/stat, user + system ticks) by its name
+        auto perThread = [] {
+            std::map<std::string, double> m;
+            for (const QString& id : QDir("/proc/self/task").entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                QFile f("/proc/self/task/" + id + "/stat");
+                if (!f.open(QIODevice::ReadOnly)) continue;
+                const QByteArray st = f.readAll();
+                const int a = st.indexOf('('), b = st.lastIndexOf(')');
+                if (a < 0 || b < a) continue;
+                const QList<QByteArray> rest = st.mid(b + 2).split(' ');
+                if (rest.size() < 13) continue;
+                m[id.toStdString() + " " + st.mid(a + 1, b - a - 1).toStdString()] = (rest[11].toDouble() + rest[12].toDouble()) * 1000.0 / 100.0;
+            }
+            return m;
+        };
+        for (int round = 0; round < 3; ++round) {
+        const std::map<std::string, double> th0 = perThread();
+        struct timespec c0, c1;
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &c0);
+        gApp->counts.clear();
+        gApp->counting = true;
+        uitest::settle((int)(idleS * 1000));
+        gApp->counting = false;
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &c1);
+        const double cpu = (c1.tv_sec - c0.tv_sec) * 1000.0 + (c1.tv_nsec - c0.tv_nsec) / 1e6;
+        int threads = 0, total = 0;
+        QFile st("/proc/self/status");
+        if (st.open(QIODevice::ReadOnly))
+            for (const QByteArray& line : st.readAll().split('\n'))
+                if (line.startsWith("Threads:")) threads = line.mid(8).trimmed().toInt();
+        std::vector<std::pair<int, std::string>> top;
+        for (const auto& kv : gApp->counts) { top.push_back({kv.second, kv.first}); total += kv.second; }
+        std::sort(top.rbegin(), top.rend());
+        std::printf("IDLE %d, %.1f s: cpu_ms %.1f (all threads)  ui_events %d  threads %d  memory_mb %.0f\n", round, idleS, cpu, total, threads, memoryNowMb());
+        for (size_t k = 0; k < top.size() && k < 12; ++k) std::printf("IDLE   %6d  %s\n", top[k].first, top[k].second.c_str());
+        for (const auto& kv : perThread()) {
+            auto it = th0.find(kv.first);
+            const double ms = kv.second - (it != th0.end() ? it->second : 0.0);
+            if (ms >= 20) std::printf("IDLE   thread %-30s cpu_ms %.0f\n", kv.first.c_str(), ms);
+        }
+        std::fflush(stdout);
+        }
     }
     AppState::get().newProject(true);
     uitest::settle(200);

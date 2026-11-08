@@ -105,12 +105,16 @@ void AppState::notify(int changes)
     listeners_.erase(std::remove_if(listeners_.begin(), listeners_.end(), [](const std::pair<int, std::function<void(int)>>& l) { return !l.second; }), listeners_.end());
 }
 
+// (the one AppState's drag: the effect slots at beginDrag, and whether this step leaves them as they were)
+static uint64_t gDragFxSig = 0;
+static bool gSkipFxPrepare = false;
+
 void AppState::afterChange(int extra)
 {
     for (auto& t : project_.tracks) t.sortEvents();
     project_.autoCrossfades = autoCrossfades_;
     project_.quickFade = prefs.quickFadeEdits ? std::min(1000.0, std::max(1.0, prefs.quickFadeMs)) / 1000.0 : 0.0;
-    fx.prepare(project_);
+    if (!gSkipFxPrepare) fx.prepare(project_);
     {
         std::lock_guard<std::mutex> lk(snapMutex_);
         snapshot_ = std::make_shared<const Project>(project_);
@@ -134,7 +138,12 @@ void AppState::afterChange(int extra)
         if (!cproject.findEvent(*it)) { it = selection_.erase(it); more = kSelection; }
         else ++it;
     }
-    if (currentTrack && !project_.findTrack(currentTrack)) currentTrack = 0;
+    // the current track gone (undo of its insertion, say) is a change of the selection too: the timeline notes the current
+    // track it last drew, and it coming back as current later was not seen as a change (its header stayed unlit)
+    if (currentTrack && !project_.findTrack(currentTrack)) {
+        currentTrack = 0;
+        more = kSelection;
+    }
     notify(kProject | extra | more);
 }
 
@@ -165,15 +174,20 @@ void AppState::refreshAutoNormalize(const Project& before)
         bool any = false;
         for (const Event& e : static_cast<const Track&>(t).events) if (e.autoNormalize) { any = true; break; }
         if (!any) continue;
-        for (Event& e : t.events) {
+        // and the events are only taken to change when one of them needs measuring (an edit elsewhere leaves this
+        // track's events shared with the undo step and the engine's snapshot instead of copying them all)
+        const CowVec<Event>& ce = static_cast<const Track&>(t).events;
+        for (size_t k = 0; k < ce.size(); ++k) {
+            const Event& e = ce[k];
             if (!e.autoNormalize) continue;
             const Event* old = before.findEvent(e.id);
             if (old && old->autoNormalize && old->mediaId == e.mediaId && old->offset == e.offset && old->length == e.length && old->rate == e.rate &&
                 old->reverse == e.reverse && old->normalize)
                 continue;
             const double peak = eventPeak(e);
-            e.normalize = true;
-            e.normalizeGain = peak > 1e-6 ? std::min(1000.0, normalizeLevel() / peak) : 1.0;
+            Event& me = t.events[k];
+            me.normalize = true;
+            me.normalizeGain = peak > 1e-6 ? std::min(1000.0, normalizeLevel() / peak) : 1.0;
         }
     }
 }
@@ -255,12 +269,43 @@ void AppState::discardUndoTo(size_t count, bool dirty)
     if (any) notify(kFile);
 }
 
+// Which effect slots the project has, whatever their order: a sum of their ids, each mixed, and their number. A drag
+// step only moves, trims or copies events; copies get new slot ids, so the same signature means the same slots, and
+// the effects made for the project at beginDrag serve it as they are (asking FxRuntime to check every slot was half of
+// a drag step on a stutter project with an effect on each piece).
+static uint64_t fxSlotsSignature(const Project& p)
+{
+    uint64_t sum = 0, n = 0;
+    auto one = [&](uint64_t id) {
+        uint64_t z = id + 0x9e3779b97f4a7c15ull;
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+        sum += z ^ (z >> 31);
+        ++n;
+    };
+    auto chain = [&](const FxChain& c) { for (const FxSlot& s : c) one(s.id); };
+    for (const MediaItem& m : p.media)
+        if (m.generated) one(m.generator.id);
+    for (const Track& t : p.tracks) {
+        chain(t.fx);
+        for (const Event& e : t.events) {
+            chain(e.fx);
+            if (!e.transition.kind.empty()) one(e.transition.id);
+        }
+    }
+    chain(p.videoOut);
+    chain(p.audioOut);
+    for (const Bus& b : p.buses) chain(b.fx);
+    return sum * 31 + n;
+}
+
 void AppState::beginDrag()
 {
     if (dragging_) cancelDrag();
     dragging_ = true;
     dragUpdated_ = false;
     dragBase_ = project_;
+    gDragFxSig = fxSlotsSignature(project_);
 }
 
 void AppState::dragUpdate(const std::function<void(Project&)>& fn)
@@ -269,7 +314,9 @@ void AppState::dragUpdate(const std::function<void(Project&)>& fn)
     dragUpdated_ = true;
     project_ = dragBase_;
     fn(project_);
+    gSkipFxPrepare = fxSlotsSignature(project_) == gDragFxSig;
     afterChange();
+    gSkipFxPrepare = false;
 }
 
 void AppState::endDrag(const std::string& what)

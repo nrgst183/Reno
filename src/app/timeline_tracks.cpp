@@ -94,11 +94,13 @@ void TimelineWidget::Impl::deleteTracks(const std::vector<uint64_t>& ids, const 
 {
     if (ids.empty()) return;
     const std::set<uint64_t> gone(ids.begin(), ids.end());
+    // (looked at before the edit: the edit itself forgets a current track that is gone, which left no track current)
+    const bool currentGone = gone.count(app.currentTrack) != 0;
     app.edit(what, [&](Project& p) {
         p.tracks.erase(std::remove_if(p.tracks.begin(), p.tracks.end(), [&](const Track& t) { return gone.count(t.id) != 0; }), p.tracks.end());
     });
     selTracks.clear();
-    if (gone.count(app.currentTrack)) {
+    if (currentGone) {
         app.currentTrack = app.project().tracks.empty() ? 0 : app.project().tracks.front().id;
         app.notify(kSelection);
     }

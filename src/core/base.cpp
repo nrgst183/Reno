@@ -248,6 +248,9 @@ std::vector<std::string> listDir(const std::string& dir)
 
 bool readFile(const std::string& path, std::string& out)
 {
+    // (a folder opens on Linux, and its "size" is whatever the file system says: resizing the string to it threw)
+    std::error_code ec;
+    if (fs::is_directory(toFsPath(path), ec)) return false;
     std::ifstream f(toFsPath(path), std::ios::binary);
     if (!f) return false;
     f.seekg(0, std::ios::end);

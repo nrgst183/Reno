@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <cmath>
 #include <thread>
+#include <condition_variable>
+#include <chrono>
 #include <set>
 #include <mutex>
 #include <atomic>
@@ -753,25 +755,114 @@ static const OfxMemorySuiteV1 gMemorySuite = {memAlloc, memFree};
 static thread_local unsigned int tThreadIndex = 0;
 static thread_local bool tSpawned = false;
 
+// The threads of multiThread calls are parked between calls instead of made for each one (making 11 threads took about
+// 1 ms a call, and plug-ins call it for every frame). Each call takes parked threads for itself alone and gives them back
+// when they have all finished, so every one of its functions runs at once, as on threads of its own (a plug-in may wait in
+// one for another); a thread that has not been used for kMtParkSeconds ends, so none are left while nothing renders.
+namespace {
+const int kMtParkSeconds = 20;
+struct MtCall {
+    OfxThreadFunctionV1* func = nullptr;
+    unsigned int n = 0;
+    void* arg = nullptr;
+    std::mutex m;
+    std::condition_variable done;
+    unsigned int left = 0;
+};
+struct MtWorker {
+    std::condition_variable cv;
+    MtCall* call = nullptr;     // the call it runs (under mtLock())
+    unsigned int index = 0;
+};
+std::mutex& mtLock()
+{
+    static std::mutex* m = new std::mutex();        // (never destroyed either: a parked thread may wake while exit runs the destructors)
+    return *m;
+}
+std::vector<MtWorker*>& mtParked()
+{
+    static std::vector<MtWorker*>* v = new std::vector<MtWorker*>();       // (never destroyed: threads may end after exit's destructors)
+    return *v;
+}
+void mtWorkerLoop(MtWorker* w)
+{
+    tSpawned = true;
+    std::unique_lock<std::mutex> lk(mtLock());
+    for (;;) {
+        if (!w->call) {
+            w->cv.wait_for(lk, std::chrono::seconds(kMtParkSeconds), [&] { return w->call != nullptr; });
+            if (!w->call) {         // unused for a while: off the list and end (a call takes workers from the list under the same lock)
+                auto& v = mtParked();
+                v.erase(std::remove(v.begin(), v.end(), w), v.end());
+                lk.unlock();
+                delete w;
+                return;
+            }
+        }
+        MtCall* c = w->call;
+        const unsigned int k = w->index;
+        lk.unlock();
+        tThreadIndex = k;
+        c->func(k, c->n, c->arg);
+        lk.lock();
+        w->call = nullptr;
+        mtParked().push_back(w);
+        {
+            std::lock_guard<std::mutex> cl(c->m);       // (the caller's MtCall is gone as soon as it sees left == 0: notified under its lock)
+            if (--c->left == 0) c->done.notify_all();
+        }
+    }
+}
+}  // namespace
+
 static OfxStatus mtMultiThread(OfxThreadFunctionV1 func, unsigned int nThreads, void* customArg)
 {
     if (!func) return kOfxStatFailed;
     if (tSpawned) return kOfxStatErrExists;
     if (nThreads < 1) nThreads = 1;
     if (nThreads > 256) nThreads = 256;
-    std::vector<std::thread> threads;
-    for (unsigned int k = 1; k < nThreads; ++k) {
-        threads.emplace_back([func, k, nThreads, customArg] {
-            tSpawned = true;
-            tThreadIndex = k;
-            func(k, nThreads, customArg);
-        });
+    MtCall call;
+    call.func = func;
+    call.n = nThreads;
+    call.arg = customArg;
+    unsigned int given = 1;         // the parts handed to parked threads are 1 .. given - 1
+    if (nThreads > 1) {
+        std::lock_guard<std::mutex> lk(mtLock());
+        auto& parked = mtParked();
+        for (unsigned int k = 1; k < nThreads; ++k) {
+            MtWorker* w = nullptr;
+            if (!parked.empty()) {
+                w = parked.back();
+                parked.pop_back();
+            } else {
+                w = new MtWorker();
+                try {
+                    std::thread(mtWorkerLoop, w).detach();
+                } catch (...) {         // (no thread to be had: run that part here after our own)
+                    delete w;
+                    w = nullptr;
+                }
+            }
+            if (!w) break;
+            {
+                std::lock_guard<std::mutex> cl(call.m);
+                ++call.left;
+            }
+            w->call = &call;
+            w->index = k;
+            w->cv.notify_one();
+            given = k + 1;
+        }
     }
     tSpawned = true;
+    for (unsigned int k = 0; k < nThreads; k = (k == 0 ? given : k + 1)) {
+        tThreadIndex = k;
+        func(k, nThreads, customArg);
+    }
     tThreadIndex = 0;
-    func(0, nThreads, customArg);
     tSpawned = false;
-    for (auto& t : threads) t.join();
+    std::unique_lock<std::mutex> cl(call.m);
+    call.done.wait(cl, [&] { return call.left == 0; });
     return kOfxStatOK;
 }
 

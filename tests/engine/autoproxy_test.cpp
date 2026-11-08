@@ -16,6 +16,15 @@ using namespace reno;
 using namespace reno::app;
 using namespace reno::app::autoproxy;
 
+// a half-made proxy ("<file>.sfvp0.<call>.part.mp4") left in the folder
+static bool partLeft(const std::string& dir)
+{
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+        if (it->path().filename().string().find(".part.mp4") != std::string::npos) return true;
+    return false;
+}
+
 static int gPass = 0, gFail = 0;
 static void check(bool ok, const std::string& name, const std::string& detail = std::string())
 {
@@ -433,7 +442,7 @@ int main(int argc, char** argv)
         std::lock_guard<std::mutex> lk(mm);
         check(names(madeOrder) == "C.mp4", "worker: D was stopped (the new project does not use it) and only C was made", names(madeOrder));
     }
-    check(!hasVideoProxy(P("D.mp4")) && !std::filesystem::exists(videoProxyPath(P("D.mp4")) + ".part.mp4"), "worker: nothing left of the stopped one");
+    check(!hasVideoProxy(P("D.mp4")) && !partLeft(pathDir(P("D.mp4"))), "worker: nothing left of the stopped one");
     // media that comes in: a hint
     w.hint(P("K.mp4"), false);
     {

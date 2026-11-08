@@ -4139,6 +4139,12 @@ std::map<uint64_t, QPointer<QWidget>>& motionWindows()
     return all;
 }
 
+// The windows closed since are forgotten (a long session opened one for every event and track it ever showed).
+void forgetClosed(std::map<uint64_t, QPointer<QWidget>>& all)
+{
+    for (auto it = all.begin(); it != all.end();) it = it->second ? std::next(it) : all.erase(it);
+}
+
 void raise(QWidget* w)
 {
     w->show();
@@ -4154,6 +4160,7 @@ void openPanCrop(QWidget* parent, Playback* playback, uint64_t eventId)
     const Track* tr = nullptr;
     if (!AppState::get().project().findEvent(eventId, &tr) || !tr || tr->type != TrackType::Video) return;
     auto& all = panCropWindows();
+    forgetClosed(all);
     auto it = all.find(eventId);
     if (it != all.end() && it->second) { raise(it->second); return; }
     PanCropWindow* w = new PanCropWindow(parent, playback, eventId);
@@ -4172,6 +4179,7 @@ void openParentMotion(QWidget* parent, Playback* playback, uint64_t trackId)
     Track* tr = const_cast<Project&>(AppState::get().project()).findTrack(trackId);
     if (!tr || tr->type != TrackType::Video) return;
     auto& all = parentMotionWindows();
+    forgetClosed(all);
     auto it = all.find(trackId);
     if (it != all.end() && it->second) { raise(it->second); return; }
     TrackMotionWindow* w = new TrackMotionWindow(parent, playback, trackId, true);
@@ -4184,6 +4192,7 @@ void openTrackMotion(QWidget* parent, Playback* playback, uint64_t trackId)
     Track* tr = const_cast<Project&>(AppState::get().project()).findTrack(trackId);
     if (!tr || tr->type != TrackType::Video) return;
     auto& all = motionWindows();
+    forgetClosed(all);
     auto it = all.find(trackId);
     if (it != all.end() && it->second) { raise(it->second); return; }
     TrackMotionWindow* w = new TrackMotionWindow(parent, playback, trackId);

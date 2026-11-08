@@ -11,6 +11,7 @@
 #include <vector>
 #include <cstring>
 #include <map>
+#include <memory>
 
 namespace reno {
 namespace gpu { struct Plan; }          // (vkplan.h)
@@ -167,6 +168,7 @@ struct Ctx {
     void xyz(const char* name, double& x, double& y, double& z) const;
     std::string s(const char* name) const;
     const void* instance = nullptr;
+    const void* owner = nullptr;            // the effect instance being rendered, for every effect (instance is set for the temporal ones only); see keptMap
     std::function<bool(double time, Buf& into)> fetch;
     // The source clip's frame range as the host states it (kOfxImageEffectPropFrameRange; 0, 0 when not known); set for effects that fetch other frames.
     double clipFirst = 0, clipLast = 0;
@@ -331,6 +333,15 @@ double gaussianBlurSigma(double range, int frameW);
 void gaussianBlurPlane(std::vector<float>& plane, int w, int h, double sigmaX, double sigmaY);
 // Composites a straight colour through a coverage plane (0..1, w x h) over the frame.
 void fillThrough(Buf& b, const std::vector<float>& cover, const Color& c);
+
+// builtins_kept.cpp: a map an effect makes from its settings and the frame size alone (where every pixel of a 360-degree stitch or turn
+// comes from), kept for the next frames: 'make' fills it when no map of this kind and key is kept. A map is kept while an instance
+// that used it last is alive (dropKeptMaps when it is destroyed) and the maps together stay under a limit (the least recently used
+// are dropped first), instead of the last map of every kind until the program ends (a 4K one is hundreds of MB).
+typedef std::shared_ptr<const std::vector<float>> KeptMap;
+KeptMap keptMap(const void* owner, const char* kind, const std::string& key, const std::function<void(std::vector<float>&)>& make);
+void dropKeptMaps(const void* owner);
+size_t keptMapBytes();          // what the kept maps hold now (for the tests)
 
 }  // namespace builtin
 }  // namespace ofx

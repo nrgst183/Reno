@@ -1561,7 +1561,7 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
         !(edgeSel.event && (edgeSel.event == e.id || (edgeSel.expanded && edgeSel.other == e.id))) && !snapFlag && !linked)
         return;
     p.save();
-    p.setClipRect(v);
+    p.setClipRect(v, Qt::IntersectClip);
     const Project& pr = app.project();
     const MediaItem* m = mediaOf(e.mediaId);
     if (offStart || offEnd) {

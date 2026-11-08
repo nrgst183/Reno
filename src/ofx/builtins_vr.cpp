@@ -324,14 +324,9 @@ bool stitchMapGpu(Ctx& c, int W, int H, std::vector<float>& out, bool& levels, f
     levels = st.pic.levels;
     noGamma = kNoGamma;
     // the map is kept while the settings stay (the planner runs for every frame)
-    static std::mutex m;
-    static std::string cachedKey;
-    static std::vector<float> cached;
     char buf[256];
     std::snprintf(buf, sizeof buf, "%dx%d;%d;%a,%a,%a,%a,%a,%a,%d,%d", W, H, levels ? 1 : 0, st.k.aperture, st.k.factor, st.k.range, st.k.narrowOff, st.k.narrowRad, st.k.eyeRotate, st.k.orient[0], st.k.orient[1]);
-    std::lock_guard<std::mutex> lock(m);
-    if (cachedKey != buf || cached.size() != (size_t)W * H * 12) {
-        cachedKey.clear();
+    const KeptMap map = keptMap(c.owner, "dual fish eye", buf, [&](std::vector<float>& cached) {
         cached.assign((size_t)W * H * 12, 0.f);
         for (int y = 0; y < H; ++y) {
             float cp, sp;
@@ -350,9 +345,9 @@ bool stitchMapGpu(Ctx& c, int W, int H, std::vector<float>& out, bool& levels, f
                 }
             }
         }
-        cachedKey = buf;
-    }
-    out = cached;
+    });
+    if (!map || map->size() != (size_t)W * H * 12) return false;
+    out = *map;
     return true;
 }
 
