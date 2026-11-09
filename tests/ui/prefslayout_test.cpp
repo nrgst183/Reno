@@ -47,7 +47,10 @@ int main(int argc, char** argv)
         QStringList have;
         for (int k = 0; tabs && k < tabs->count(); ++k) have << tabs->tabText(k);
         check(have == want, "VEGAS's 14 tabs in its order, then Reno's own", have.join(", ").toStdString());
-        check(d->width() == 433 && d->height() == 654, "the dialog is VEGAS's 435 x 686 with its frame", QString("%1x%2").arg(d->width()).arg(d->height()).toStdString());
+        // Reno's tab rows are 8 px taller each than VEGAS's (easier to hit), so the dialog and everything under the tabs is 24 px lower
+        const int taller = 24;
+        check(d->width() == 433 && d->height() == 654 + taller, "the dialog is VEGAS's 435 x 686 with its frame (and taller tabs)",
+              QString("%1x%2").arg(d->width()).arg(d->height()).toStdString());
         for (int k = 0; tabs && k < tabs->count() - 1; ++k) {
             tabs->setCurrentIndex(k);
             uitest::settle(60);
@@ -55,7 +58,7 @@ int main(int argc, char** argv)
             const QString section = QString("tab %1 ").arg(k + 1) + tabs->tabText(k).replace("&&", "&");
             const auto wantCells = layoutcmp::readSection(ref, section);
             QWidget* area = page->findChild<QWidget*>("pageArea");
-            const auto haveCells = layoutcmp::collect(area ? area : page, d, QPoint(1, 31));
+            const auto haveCells = layoutcmp::collect(area ? area : page, d, QPoint(1, 31 - taller));
             const auto res = layoutcmp::compare(wantCells, haveCells, 2);
             check(!wantCells.empty() && res.problems.isEmpty(), "tab " + tabs->tabText(k).toStdString() + ": every VEGAS control is there, in its place",
                   QString("%1 of %2: %3").arg(res.matched).arg(res.wanted).arg(res.problems.mid(0, 3).join("; ")).toStdString());

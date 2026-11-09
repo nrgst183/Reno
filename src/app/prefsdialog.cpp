@@ -308,6 +308,8 @@ QColor trackDefaultColor(int k)
 #include "prefs_layout.inc"
 
 constexpr int kFrameX = 1, kFrameY = 31;
+// The tab rows are taller than VEGAS's 18 px, to be easier to hit; everything under the tabs is lower by the difference.
+constexpr int kTabRowH = 26, kTabsTaller = 3 * (kTabRowH - 18);
 
 // Texts compare without the trailing spaces VEGAS leaves in some (the mnemonic & stays in).
 QString trimmed(const char* t) { return QString::fromUtf8(t).trimmed(); }
@@ -550,8 +552,9 @@ private:
     std::vector<bool> used_;
 };
 
-// VEGAS's tab bar: the tabs wrap onto several rows that are stretched to the full width, and the row of the selected tab is
-// the one next to the page (the others keep their order above it).
+// VEGAS's tab bar: the tabs wrap onto several rows that are stretched to the full width. Unlike VEGAS the rows stay in their
+// order when a tab is chosen (VEGAS moves the chosen tab's row next to the page, so the tab under the mouse changes), and
+// they are taller, lit under the mouse.
 class WrapTabBar : public QTabBar {
 public:
     explicit WrapTabBar(QWidget* parent) : QTabBar(parent)
@@ -559,10 +562,14 @@ public:
         setExpanding(false);
         setDrawBase(false);
         setFocusPolicy(Qt::TabFocus);
+        setMouseTracking(true);
+        setAttribute(Qt::WA_Hover, true);
+        // the bar draws and hits its own rows; Qt's scroll arrows (for tabs it thinks don't fit) have no place here
+        setUsesScrollButtons(false);
     }
-    QSize sizeHint() const override { return QSize(421, 3 * 18 + 4); }
+    QSize sizeHint() const override { return QSize(std::max(421, parentWidget() ? parentWidget()->width() : 421), 3 * kTabRowH + 4); }
     QSize minimumSizeHint() const override { return sizeHint(); }
-    // Where the tabs are (bar coordinates): VEGAS's three rows, each stretched to the full width, the selected tab's row last.
+    // Where the tabs are (bar coordinates): VEGAS's three rows, each stretched to the full width.
     // The rows are fixed (General ... VST Effects, Editing ... Sync, the rest) and the tabs share a row's width in the
     // proportions VEGAS gives them, so the bar looks the same whatever the font.
     std::vector<QRect> layoutRects() const
@@ -578,14 +585,8 @@ public:
             auto it = widths.find(tabText(i));
             return it != widths.end() ? it->second : 45;
         };
-        int sel = 0;
-        for (size_t r = 0; r < rows.size(); ++r)
-            for (int i : rows[r])
-                if (i == currentIndex()) sel = (int)r;
-        std::vector<std::vector<int>> order;
-        for (size_t r = 0; r < rows.size(); ++r)
-            if ((int)r != sel) order.push_back(rows[r]);
-        order.push_back(rows[(size_t)sel]);
+        const std::vector<std::vector<int>>& order = rows;
+        const int rowWidth = std::max(kRowWidth, width() - 4);
         std::vector<QRect> out((size_t)n);
         for (size_t r = 0; r < order.size(); ++r) {
             int sum = 0;
@@ -593,8 +594,8 @@ public:
             int x = 2;
             for (size_t k = 0; k < order[r].size(); ++k) {
                 const int i = order[r][k];
-                const int w = k + 1 == order[r].size() ? kRowWidth - (x - 2) : (int)std::lround((double)nat(i) * kRowWidth / std::max(1, sum));
-                out[(size_t)i] = QRect(x, 2 + (int)r * 18, w, 18);
+                const int w = k + 1 == order[r].size() ? rowWidth - (x - 2) : (int)std::lround((double)nat(i) * rowWidth / std::max(1, sum));
+                out[(size_t)i] = QRect(x, 2 + (int)r * kTabRowH, w, kTabRowH);
                 x += w;
             }
         }
@@ -618,8 +619,15 @@ protected:
             const QRect r = rects[(size_t)i];
             // Windows 10's tabs when the dialog is light: grey, white for the selected one, light blue under the mouse
             const bool lightLook = palette().color(QPalette::Window).lightness() > 160;
-            const bool hot = !sel && lightLook && r.contains(mapFromGlobal(QCursor::pos())) && underMouse();
-            p.fillRect(r, sel ? (lightLook ? palette().color(QPalette::Base) : palette().color(QPalette::Window)) : hot ? QColor(216, 234, 249) : lightLook ? QColor(240, 240, 240) : palette().color(QPalette::Window).darker(125));
+            const bool hot = !sel && r.contains(mapFromGlobal(QCursor::pos())) && underMouse();
+            const QColor face = sel ? (lightLook ? palette().color(QPalette::Base) : palette().color(QPalette::Window))
+                                    : lightLook ? (hot ? QColor(216, 234, 249) : QColor(240, 240, 240))
+                                                : (hot ? palette().color(QPalette::Window).lighter(125) : palette().color(QPalette::Window).darker(125));
+            p.fillRect(r, face);
+            if (sel) {
+                // the chosen tab is marked with a bar along its top as well
+                p.fillRect(QRect(r.left() + 1, r.top() + 1, r.width() - 2, 2), palette().color(QPalette::Highlight));
+            }
             p.setPen(lightLook ? QColor(217, 217, 217) : palette().color(QPalette::Mid));
             p.drawRect(r.adjusted(0, 0, -1, sel ? 0 : -1));
             p.setPen(palette().color(QPalette::ButtonText));
@@ -638,6 +646,8 @@ protected:
         if (i >= 0) setCurrentIndex(i);
     }
     void mouseReleaseEvent(QMouseEvent*) override {}
+    void mouseMoveEvent(QMouseEvent*) override { update(); }
+    void leaveEvent(QEvent*) override { update(); }
 
 private:
     static constexpr int kRowWidth = 417;
@@ -778,10 +788,10 @@ public:
         QFont f = font();
         f.setPixelSize(12);
         setFont(f);
-        setFixedSize(435 - 2 * kFrameX, 686 - kFrameY - kFrameX);
+        setFixedSize(435 - 2 * kFrameX, 686 - kFrameY - kFrameX + kTabsTaller);
         tabs_ = new PrefsTabs(this);
         tabs_->setObjectName("tabs");
-        tabs_->setGeometry(7 - kFrameX, 38 - kFrameY, 421, 611);
+        tabs_->setGeometry(7 - kFrameX, 38 - kFrameY, 421, 611 + kTabsTaller);
         tabs_->setDocumentMode(false);
         tabs_->setStyleSheet(lightDialogsOn() ? QString("QTabWidget::pane { border: 1px solid #d9d9d9; margin: 0px; padding: 0px; background: #ffffff; }")
                                               : QString("QTabWidget::pane { border: 1px solid #5a5a5a; margin: 0px; padding: 0px; background: %1; }")
@@ -811,7 +821,7 @@ public:
         auto button = [this](const QString& text, const char* name, int x) {
             QPushButton* b = new QPushButton(text, this);
             b->setObjectName(name);
-            b->setGeometry(x - kFrameX, 655 - kFrameY, 75, 23);
+            b->setGeometry(x - kFrameX, 655 - kFrameY + kTabsTaller, 75, 23);
             return b;
         };
         QPushButton* ok = button("OK", "ok", 191);
@@ -929,9 +939,10 @@ private:
     // wants its top left whatever frame the style draws around the page.
     void alignPages()
     {
+        // (measured from the tab widget, which stays put in the dialog whatever its scroll position)
         for (QWidget* in : inners_) {
-            const QPoint have = in->mapTo(this, QPoint(0, 0));
-            const QPoint want(11 - kFrameX, 96 - kFrameY);
+            const QPoint have = in->mapTo(tabs_, QPoint(0, 0));
+            const QPoint want(11 - 7, 96 - 38 + kTabsTaller);
             if (have != want) in->move(in->pos() + want - have);
         }
     }

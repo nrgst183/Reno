@@ -117,6 +117,7 @@
 #include "../engine/timefmt.h"
 #include "pluginchooser.h"
 #include "dialoglook.h"
+#include "dialogfit.h"
 #include "timeline.h"
 #include "fxwindow.h"
 #include "mixer.h"
@@ -372,6 +373,7 @@ void applyTheme()
         p.setColor(QPalette::Disabled, r, QColor(118, 118, 118));
     QApplication::setPalette(p);
     installDialogLook();   // dialogs shown from now on are light, as VEGAS's older ones (dialoglook.h)
+    installDialogFit();    // and those of a fixed size fit the screen and can be resized (dialogfit.h)
     // VEGAS's window text is Tahoma 8.25 pt (11 px at 96 dpi); see uifont.h (a sans-serif of about the same widths elsewhere)
     QFont f = QApplication::font();
 #ifdef _WIN32
