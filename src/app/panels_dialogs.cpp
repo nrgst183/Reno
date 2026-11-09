@@ -536,7 +536,8 @@ void showAbout(QWidget* parent)
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
         const QImage mark = renoLogo(57);
         p.drawImage((77 - mark.width()) / 2, (77 - mark.height()) / 2, mark);
-        p.setPen(QPen(QColor(18, 176, 255), 3));
+        // the frame in the logo's own orange (VEGAS's box frames its logo in its blue)
+        p.setPen(QPen(QColor(241, 59, 0), 3));
         p.drawRect(QRect(1, 1, 75, 75));
         p.end();
         logo->setPixmap(QPixmap::fromImage(tile));

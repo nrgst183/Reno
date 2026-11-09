@@ -1897,7 +1897,7 @@ void MainWindow::buildActions()
     add("about", "&About Reno", QList<QKeySequence>(), [this] { showAbout(this); });
 
     const struct { const char* name; Ico ico; } pics[] = {
-        {"new", Ico::New}, {"open", Ico::Open}, {"save", Ico::Save}, {"saveAs", Ico::SaveAs}, {"render", Ico::Render}, {"properties", Ico::Properties},
+        {"new", Ico::New}, {"newPlain", Ico::New}, {"open", Ico::Open}, {"save", Ico::Save}, {"saveAs", Ico::SaveAs}, {"render", Ico::Render}, {"properties", Ico::Properties},
         {"cut", Ico::Cut}, {"copy", Ico::Copy}, {"paste", Ico::Paste}, {"undo", Ico::Undo}, {"redo", Ico::Redo}, {"delete", Ico::Delete},
         {"trim", Ico::Trim}, {"trimStart", Ico::TrimStart}, {"trimEnd", Ico::TrimEnd}, {"split", Ico::Split}, {"ignoreGrouping", Ico::IgnoreGroup},
         {"autoRipple", Ico::Ripple}, {"snapping", Ico::Snap}, {"quantize", Ico::Quantize}, {"marker", Ico::Marker}, {"region", Ico::Region},

@@ -78,7 +78,23 @@ QIcon toolbarIcon(Ico k)
         p.drawRect(QRectF(x + 5, y + 2.5, 6, 4));
     };
     switch (k) {
-    case Ico::New: page(3.5, 1.5, 9, 13); break;
+    case Ico::New: {
+        // a blank page, its corner folded down, with a green plus: a new, empty project
+        page(2.5, 1.5, 10, 13);
+        QPainterPath fold;
+        fold.moveTo(9, 1.5);
+        fold.lineTo(9, 5);
+        fold.lineTo(12.5, 5);
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(fold);
+        p.setPen(QPen(rim, 1.0));
+        p.setBrush(green);
+        QPolygonF plus;
+        plus << QPointF(10, 7.5) << QPointF(12, 7.5) << QPointF(12, 9.5) << QPointF(14.5, 9.5) << QPointF(14.5, 11.5) << QPointF(12, 11.5)
+             << QPointF(12, 14) << QPointF(10, 14) << QPointF(10, 11.5) << QPointF(7.5, 11.5) << QPointF(7.5, 9.5) << QPointF(10, 9.5);
+        p.drawPolygon(plus);
+        break;
+    }
     case Ico::Open: {
         QPainterPath f;
         f.moveTo(1.5, 3.5);
@@ -597,7 +613,7 @@ QIcon toolbarIcon(Ico k)
 QIcon commandIcon(const QString& name, const QString& text)
 {
     static const std::map<QString, Ico> named = {
-        {"interactiveTutorials", Ico::Tutorials}, {"whatsThis", Ico::WhatsThis}, {"colorGrading", Ico::ColorGrading},
+        {"newPlain", Ico::New}, {"new", Ico::New}, {"interactiveTutorials", Ico::Tutorials}, {"whatsThis", Ico::WhatsThis}, {"colorGrading", Ico::ColorGrading},
         {"showColorGrading", Ico::ColorGrading}, {"nestParent", Ico::NestParent}, {"nestOpen", Ico::NestOpen}, {"nestCreate", Ico::NestCreate}};
     auto it = named.find(name);
     if (it != named.end()) return toolbarIcon(it->second);
