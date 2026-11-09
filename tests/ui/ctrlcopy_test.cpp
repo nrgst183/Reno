@@ -177,6 +177,42 @@ int main(int argc, char** argv)
         uitest::mouseClick(&w, w.eventRectOf(k.other).center(), Qt::LeftButton, Qt::ControlModifier);
         check(st().selection().count(k.other) == 0 && eventCount() == n0, "Ctrl+click again takes it out; nothing copied");
     }
+    // ---- Ctrl+drag copies snap like a plain move: to the original they came from and to other events
+    {
+        Ids ids = build();
+        // ends off the grid and off whole frames' worth of rounding, so only an event edge can be what it lands on
+        st().edit("Lengths", [&](Project& p) {
+            for (uint64_t id : {ids.ve, ids.ae}) p.findEvent(id)->length = 4.37;
+            p.findEvent(ids.other)->start = 9.0;
+        });
+        st().snapping = true;
+        w.zoomToFit();
+        uitest::settle(100);
+        const double fps = 1.0 / st().project().settings.fps();
+        auto copyStartAfter = [&](uint64_t id, double wantStart, double off) {
+            const QRect r = w.eventRectOf(id);
+            const Event* e0 = st().project().findEvent(id);
+            const double grabT = e0->start + e0->length / 2;
+            const QPoint from(w.xAt(grabT), r.center().y());
+            const QPoint to(w.xAt(wantStart + off + e0->length / 2), r.center().y());
+            st().setSelection(std::set<uint64_t>());
+            uitest::mouseDrag(&w, from, to, 10, Qt::ControlModifier);
+            uitest::settle(50);
+            double s = -1;
+            for (const Event& e : trackOf(ids.a).events)
+                if (e.id != ids.ae && e.id != ids.other) s = e.start;
+            st().undo();
+            return s;
+        };
+        // the audio event (2..6.37 s) copied to just after itself, a few pixels off: lands on its end
+        const double px = 5.0 / ((w.xAt(10.0) - w.xAt(0.0)) / 10.0);
+        double s = copyStartAfter(ids.ae, 6.37, px);
+        check(std::fabs(s - 6.37) < fps * 0.5, "a Ctrl+drag copy snaps to the end of the event it was copied from", std::to_string(s));
+        // the other event (9..11 s) copied to just after 6.37 s: lands on the grouped event's end
+        s = copyStartAfter(ids.other, 6.37, px);
+        check(std::fabs(s - 6.37) < fps * 0.5, "a Ctrl+drag copy snaps to another event's end", std::to_string(s));
+        st().snapping = false;
+    }
     // ---- lengthening an event from near its top takes hold of the edge, not the fade handle
     {
         Ids ids = build();

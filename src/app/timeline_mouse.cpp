@@ -1340,6 +1340,14 @@ bool TimelineWidget::Impl::beginMove()
             }
     drag.snaps = snapTargets(ids, true);
     if (drag.copy) {
+        // Ctrl+drag leaves the originals where they are, so the copies snap to them as to any other event
+        for (const Mover& m : drag.movers) {
+            drag.snaps.push_back(m.start);
+            drag.snaps.push_back(m.end());
+        }
+        std::sort(drag.snaps.begin(), drag.snaps.end());
+    }
+    if (drag.copy) {
         // Ctrl+drag: the copies get the next ids (and grouped originals a new group each), in the order the updates make
         // them; from here on the drag moves the copies
         uint64_t next = pr.nextId;
