@@ -23,6 +23,7 @@ namespace app {
 
 class TimelineWidget;
 class FxWindow;
+class VegasCommandBuilder;
 
 // One line of the keyboard shortcut list (Help > Keyboard Shortcuts).
 struct ShortcutInfo {
@@ -89,8 +90,37 @@ protected:
 
 private:
     struct Actions;
+    class ActionBuilder;
     void buildActions();
+    void addFileActions(ActionBuilder& b);
+    void addEditActions(ActionBuilder& b);
+    void addNavigationActions(ActionBuilder& b);
+    void addGroupToolAndPitchActions(ActionBuilder& b);
+    void addViewActions(ActionBuilder& b);
+    void addInsertActions(ActionBuilder& b);
+    void addToolsActions(ActionBuilder& b);
+    void addOptionsActions(ActionBuilder& b);
+    void addEnvelopeActions(ActionBuilder& b);
+    void addTrackActions(ActionBuilder& b);
+    void addPlaybackActions(ActionBuilder& b);
+    void addMoreEditingActions(ActionBuilder& b);
+    void addHelpActions(ActionBuilder& b);
+    void connectTimeline();
+    void buildStatusBar();
+    void startTimers();
+    void prefsChanged();
+    void restoreWindowLayout();
+    void watchLayoutChanges();
     void buildMenus();
+    void buildFileMenu();
+    void buildEditMenu();
+    void buildViewMenu();
+    void buildInsertMenu();
+    void buildToolsMenu();
+    void buildOptionsMenu();
+    void buildHelpMenu();
+    void fillRecentProjects(QMenu* file, QAction* recentStart);
+    void updateSwitchesMenu(QMenu* sw);
     void buildToolBars();
     void buildDocks();
     QWidget* buildBottomBar();
@@ -133,8 +163,35 @@ public:
     bool openInAudioEditor(uint64_t eventId);
 private:
     void buildToolWindows();            // (mainwindow_tools.cpp)
+    void addToolWindow(QDockWidget* d, const char* actionName, const char* key);
+    void setUpTrimmer(Tools* t);
+    void setUpRecording(Tools* t);
+    void setUpSurroundPanner(Tools* t);
+    void setUpExternalMonitor(Tools* t);
+    void setUpColorGrading(Tools* t);
+    void setUpMidiSync(Tools* t);
+    void setUpPrerender(Tools* t);
+    void addAdjustmentTrackCommand(Tools* t);
     // VEGAS Pro 18's menus (mainwindow_menus.cpp): commands Reno lacked, and every menu in VEGAS's order and names.
     void buildVegasMenus();
+    void addVegasFileCommands(VegasCommandBuilder& cmd);
+    void addVegasEditCommands(VegasCommandBuilder& cmd);
+    void addVegasViewCommands(VegasCommandBuilder& cmd);
+    void addVegasInsertCommands(VegasCommandBuilder& cmd);
+    void addVegasToolsCommands(VegasCommandBuilder& cmd);
+    void addVegasOptionsCommands(VegasCommandBuilder& cmd);
+    void arrangeVegasMenus(VegasCommandBuilder& cmd);
+    void arrangeVegasFileMenu(QMenu* menu);
+    void arrangeVegasEditMenu(QMenu* menu, VegasCommandBuilder& cmd);
+    void arrangeVegasViewMenu(QMenu* menu);
+    void arrangeVegasInsertMenu(QMenu* menu);
+    void arrangeVegasToolsMenu(QMenu* menu);
+    void arrangeVegasOptionsMenu(QMenu* menu);
+    void addVegasAudioCommands(VegasCommandBuilder& cmd);
+    void showMediaFx();
+    void addMissingStreams();
+    void openCopyInAudioEditor();
+    void createEventSubclip();
     void updateVegasCommands();         // their ticks and greying for the current selection and project
     void selectivePasteDialog();        // Edit > Selectively Paste Event Attributes...
 public:

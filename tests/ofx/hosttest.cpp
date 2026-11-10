@@ -10,6 +10,7 @@
 #include "probe.h"
 #include "vegas_ext.h"
 
+#include <filesystem>
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -3017,7 +3018,8 @@ int main(int argc, char** argv)
         if (real) { gFxPath = real; std::free(real); }
     }
     const char* tmp = std::getenv("HOSTTEST_TMP");
-    gScratchDir = tmp ? tmp : (pathDir(gFxPath) + "/hosttest_tmp");
+    // (not beside the plug-in: its copies left there were found by the other tests that look in that folder)
+    gScratchDir = tmp ? tmp : (std::filesystem::temp_directory_path() / ("reno_hosttest_" + std::to_string((long)getpid()))).string();
     if (system(("mkdir -p '" + gScratchDir + "'").c_str()) != 0) return 1;
     if (!gFx.open(gFxPath)) {
         std::printf("FAIL setup: cannot open %s for its log functions: %s\n", gFxPath.c_str(), dlerror());
@@ -3074,5 +3076,9 @@ int main(int argc, char** argv)
         for (auto& f : gFailed) std::printf("  %s\n", f.c_str());
     }
     std::fflush(stdout);
+    if (!tmp) {
+        std::error_code ec;
+        std::filesystem::remove_all(gScratchDir, ec);
+    }
     return gFailN ? 1 : 0;
 }

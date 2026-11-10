@@ -113,6 +113,9 @@ protected:
     void keyPressEvent(QKeyEvent* e) override;
 
 private:
+    QWidget* buildToolBar();
+    QWidget* buildTransportBar();
+    void showStripMenu(const QPoint& at, int mark);
     struct Impl;
     std::unique_ptr<Impl> d;
 };

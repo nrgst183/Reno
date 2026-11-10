@@ -1546,6 +1546,161 @@ void TimelineWidget::Impl::drawEventButtons(QPainter& p, const EventPaint& ev)
 
 // What the editing adds on an event: the media's own markers, the active take, the lock, and the edge selected for
 // keyboard trimming (a red bracket, as VEGAS marks it).
+// A marker's name in a small box beside its line at the top of an event.
+void TimelineWidget::Impl::drawMarkerLabel(QPainter& p, double x, double top, const std::string& name, const QColor& back, const QColor& ink)
+{
+    const QFontMetrics fm(smallFont);
+    const QString text = fm.elidedText(QString::fromStdString(name), Qt::ElideRight, 140);
+    const QRectF box(x + 3.0, top + 1.0, fm.horizontalAdvance(text) + 6.0, fm.height() + 1.0);
+    p.fillRect(box, back);
+    p.setFont(smallFont);
+    p.setPen(ink);
+    p.drawText(box.adjusted(3, 0, -2, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
+}
+
+// The media's own markers and regions where they fall in the event, with their names if marker labels are shown.
+void TimelineWidget::Impl::drawMediaMarkers(QPainter& p, const Event& e, const MediaItem& m, const QRectF& v)
+{
+    if (!(e.rate > 0)) return;
+    for (const auto& mk : m.info.markers) {
+        const double t = e.start + (mk.first - e.offset) / e.rate;
+        if (t < e.start || t > e.end()) continue;
+        const double x = std::floor(xAtF(t)) + 0.5;
+        p.setPen(QPen(QColor(255, 170, 60, 200), 1.0, Qt::DotLine));
+        p.drawLine(QPointF(x, v.top()), QPointF(x, v.bottom()));
+        p.fillRect(QRectF(x - 2.0, v.top(), 5.0, 5.0), QColor(255, 170, 60));
+        if (opt.showMarkerLabels && !mk.second.empty()) drawMarkerLabel(p, x, v.top(), mk.second, QColor(60, 40, 10, 190), QColor(255, 200, 120));
+    }
+    for (const MediaItem::Marker& mk : m.markers) {
+        const double t0 = e.start + (mk.time - e.offset) / e.rate, t1 = t0 + mk.length / e.rate;
+        if (t1 < e.start || t0 > e.end()) continue;
+        const QColor c = mk.length > 0 ? QColor(70, 190, 90) : QColor(255, 170, 60);
+        const double x = std::floor(xAtF(std::max(t0, e.start))) + 0.5;
+        if (mk.length > 0) {
+            const double x2 = std::floor(xAtF(std::min(t1, e.end()))) + 0.5;
+            p.fillRect(QRectF(x, v.top(), x2 - x, v.height()), QColor(70, 190, 90, 35));
+            if (t1 <= e.end()) {
+                p.setPen(QPen(c, 1.0, Qt::DotLine));
+                p.drawLine(QPointF(x2, v.top()), QPointF(x2, v.bottom()));
+            }
+        }
+        if (t0 < e.start) continue;
+        p.setPen(QPen(c, 1.0, Qt::DotLine));
+        p.drawLine(QPointF(x, v.top()), QPointF(x, v.bottom()));
+        p.fillRect(QRectF(x - 2.0, v.top(), 5.0, 5.0), c);
+        if (opt.showMarkerLabels && !mk.name.empty()) drawMarkerLabel(p, x, v.top(), mk.name, QColor(30, 30, 30, 190), c.lighter(130));
+    }
+}
+
+// The event's length at its bottom right, left of its buttons.
+void TimelineWidget::Impl::drawEventLength(QPainter& p, const Event& e, const QRectF& r, const QRectF& v)
+{
+    const QFontMetrics fm(smallFont);
+    const QString text = QString::fromStdString(timecode(e.length, fps()));
+    const double w = fm.horizontalAdvance(text) + 6.0;
+    double right = std::min(r.right(), v.right()) - 2.0;
+    if (opt.showEventButtons) {
+        const Track* et = nullptr;
+        app.project().findEvent(e.id, &et);
+        if (hasCropButton(r, et && et->type == TrackType::Video)) right = std::min(right, cropButtonRect(r).left() - 3.0);
+        else if (hasFxButton(r)) right = std::min(right, fxButtonRect(r).left() - 3.0);
+        else if (hasMenuButton(r)) right = std::min(right, menuButtonRect(r).left() - 3.0);
+    }
+    if (w < right - std::max(r.left(), v.left()) - 20.0) {
+        const QRectF box(right - w, v.bottom() - fm.height() - 4.0, w, fm.height() + 2.0);
+        p.fillRect(box, QColor(0, 0, 0, 150));
+        p.setFont(smallFont);
+        p.setPen(QColor(240, 240, 240));
+        p.drawText(box, Qt::AlignCenter, text);
+    }
+}
+
+// VEGAS's out-of-sync mark: an event of the same file as the video or audio grouped with it but not in step with it:
+// a red bar along the top and how far off it is.
+void TimelineWidget::Impl::drawSyncDrift(QPainter& p, const Event& e, const QRectF& r, const QRectF& v)
+{
+    if (const uint64_t partner = syncPartner(e.id))
+        if (const Event* o = app.project().findEvent(partner)) {
+            const double drift = ((e.offset - e.start * e.rate) - (o->offset - o->start * o->rate)) / std::max(1e-9, e.rate);
+            p.fillRect(QRectF(v.left(), v.top(), v.width(), 3.0), QColor(230, 40, 40));
+            const QString text = QString(drift > 0 ? "-" : "+") + QString::fromStdString(timecode(std::fabs(drift), fps()));
+            const QFontMetrics fm(smallFont);
+            const QRectF box(std::max(r.left(), (double)headerW) + 3.0, v.top() + 4.0, fm.horizontalAdvance(text) + 6.0, fm.height() + 1.0);
+            p.fillRect(box, QColor(150, 20, 20, 200));
+            p.setFont(smallFont);
+            p.setPen(QColor(255, 235, 235));
+            p.drawText(box, Qt::AlignCenter, text);
+        }
+}
+
+// The active take (n of all of them), the name and the playback rate at the bottom left.
+void TimelineWidget::Impl::drawTakeInfo(QPainter& p, const Event& e, const QRectF& r, const QRectF& v)
+{
+    const int n = (int)e.takes.size() + 1;
+    QString text = QString::fromStdString(e.name);
+    if (n > 1) text = QString("Take %1/%2: ").arg(std::min(e.activeTake, n - 1) + 1).arg(n) + text;
+    if (std::fabs(e.rate - 1.0) > 1e-6) text += QString(" (%1%)").arg(e.rate * 100.0, 0, 'f', 1);
+    const QFontMetrics fm(smallFont);
+    const double w = std::min(v.width() - 6.0, (double)fm.horizontalAdvance(text) + 6.0);
+    const QRectF box(std::max(r.left(), (double)headerW) + (e.group ? 18.0 : 3.0), v.bottom() - fm.height() - 4.0, w, fm.height() + 2.0);
+    p.fillRect(box, QColor(0, 0, 0, 150));
+    p.setFont(smallFont);
+    p.setPen(QColor(240, 240, 240));
+    p.drawText(box.adjusted(3, 0, -2, 0), Qt::AlignVCenter | Qt::AlignLeft, fm.elidedText(text, Qt::ElideRight, (int)box.width() - 5));
+}
+
+// The snap offset flag: VEGAS's white right triangle six pixels high with a black edge, its corner on the event's
+// bottom edge.
+void TimelineWidget::Impl::drawSnapFlag(QPainter& p, const Event& e, const QRectF& r)
+{
+    const double fx = std::floor(xAtF(e.start + clampd(e.snapOffset, 0.0, e.length))) + 0.5;
+    const double bx = std::floor(fx), by = std::floor(r.bottom()) - 1.0;
+    p.setRenderHint(QPainter::Antialiasing, false);
+    for (int i = 0; i <= 6; ++i) {
+        const double y = by - 6.0 + i;
+        if (i == 6) {
+            p.fillRect(QRectF(bx, y, 7.0, 1.0), QColor(0, 0, 0));
+            continue;
+        }
+        p.fillRect(QRectF(bx, y, 1.0, 1.0), QColor(0, 0, 0));
+        if (i >= 2) p.fillRect(QRectF(bx + 1.0, y, i - 1, 1.0), QColor(255, 255, 255));
+        if (i >= 1) p.fillRect(QRectF(bx + i, y, 1.0, 1.0), QColor(0, 0, 0));
+    }
+}
+
+// The lock at the top right of a locked event.
+void TimelineWidget::Impl::drawLock(QPainter& p, const QRectF& r, const QRectF& v)
+{
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const double x = std::min(r.right(), v.right()) - 13.0, y = v.top() + 3.0;
+    p.setPen(QPen(QColor(20, 20, 20), 2.6));
+    p.setBrush(Qt::NoBrush);
+    p.drawArc(QRectF(x + 2.0, y, 6.0, 8.0), 0, 180 * 16);
+    p.setPen(QPen(QColor(255, 214, 90), 1.3));
+    p.drawArc(QRectF(x + 2.0, y, 6.0, 8.0), 0, 180 * 16);
+    p.setPen(QPen(QColor(20, 20, 20), 1.0));
+    p.setBrush(QColor(255, 214, 90));
+    p.drawRect(QRectF(x, y + 4.0, 10.0, 7.0));
+}
+
+// The edge selected for keyboard trimming: a red bracket, as VEGAS marks it.
+void TimelineWidget::Impl::drawEdgeSelection(QPainter& p, const Event& e, const QRectF& r, const QRectF& v)
+{
+    std::vector<int> sides;
+    if (!edgeSel.expanded) sides.push_back(edgeSel.side);
+    else if (e.id == edgeSel.event && edgeSel.which <= 0) sides.push_back(1);
+    else if (e.id == edgeSel.other && edgeSel.which >= 0) sides.push_back(-1);
+    p.setRenderHint(QPainter::Antialiasing, false);
+    const QColor red(235, 40, 40);
+    for (int side : sides) {
+        const double x = side < 0 ? std::floor(r.left()) : std::floor(r.right()) - 3.0;
+        p.fillRect(QRectF(x, v.top(), 3.0, v.height()), red);
+        const double tip = side < 0 ? x + 3.0 : x - 5.0;
+        p.fillRect(QRectF(tip, v.top(), 5.0, 3.0), red);
+        p.fillRect(QRectF(tip, v.bottom() - 3.0, 5.0, 3.0), red);
+    }
+}
+
 void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QRectF& r, const QRectF& v, bool audioEvent)
 {
     // the snap offset flag: VEGAS 18 draws it on every audio event (a video event: while selected or moved off its start)
@@ -1562,7 +1717,6 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
         return;
     p.save();
     p.setClipRect(v, Qt::IntersectClip);
-    const Project& pr = app.project();
     const MediaItem* m = mediaOf(e.mediaId);
     if (offStart || offEnd) {
         p.setPen(Qt::NoPen);
@@ -1570,149 +1724,18 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
         if (offStart) p.drawRect(QRectF(std::floor(r.left()), r.top(), 2.0, r.height()));
         if (offEnd) p.drawRect(QRectF(std::floor(r.right()) - 1.0, r.top(), 2.0, r.height()));
     }
-    if (opt.showMediaMarkers && m && e.rate > 0)
-        for (const auto& mk : m->info.markers) {
-            const double t = e.start + (mk.first - e.offset) / e.rate;
-            if (t < e.start || t > e.end()) continue;
-            const double x = std::floor(xAtF(t)) + 0.5;
-            p.setPen(QPen(QColor(255, 170, 60, 200), 1.0, Qt::DotLine));
-            p.drawLine(QPointF(x, v.top()), QPointF(x, v.bottom()));
-            p.fillRect(QRectF(x - 2.0, v.top(), 5.0, 5.0), QColor(255, 170, 60));
-            if (opt.showMarkerLabels && !mk.second.empty()) {
-                const QFontMetrics fm(smallFont);
-                const QString text = fm.elidedText(QString::fromStdString(mk.second), Qt::ElideRight, 140);
-                const QRectF box(x + 3.0, v.top() + 1.0, fm.horizontalAdvance(text) + 6.0, fm.height() + 1.0);
-                p.fillRect(box, QColor(60, 40, 10, 190));
-                p.setFont(smallFont);
-                p.setPen(QColor(255, 200, 120));
-                p.drawText(box.adjusted(3, 0, -2, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
-            }
-        }
-    if (opt.showMediaMarkers && m && e.rate > 0)
-        for (const MediaItem::Marker& mk : m->markers) {
-            const double t0 = e.start + (mk.time - e.offset) / e.rate, t1 = t0 + mk.length / e.rate;
-            if (t1 < e.start || t0 > e.end()) continue;
-            const QColor c = mk.length > 0 ? QColor(70, 190, 90) : QColor(255, 170, 60);
-            const double x = std::floor(xAtF(std::max(t0, e.start))) + 0.5;
-            if (mk.length > 0) {
-                const double x2 = std::floor(xAtF(std::min(t1, e.end()))) + 0.5;
-                p.fillRect(QRectF(x, v.top(), x2 - x, v.height()), QColor(70, 190, 90, 35));
-                if (t1 <= e.end()) {
-                    p.setPen(QPen(c, 1.0, Qt::DotLine));
-                    p.drawLine(QPointF(x2, v.top()), QPointF(x2, v.bottom()));
-                }
-            }
-            if (t0 < e.start) continue;
-            p.setPen(QPen(c, 1.0, Qt::DotLine));
-            p.drawLine(QPointF(x, v.top()), QPointF(x, v.bottom()));
-            p.fillRect(QRectF(x - 2.0, v.top(), 5.0, 5.0), c);
-            if (opt.showMarkerLabels && !mk.name.empty()) {
-                const QFontMetrics fm(smallFont);
-                const QString text = fm.elidedText(QString::fromStdString(mk.name), Qt::ElideRight, 140);
-                const QRectF box(x + 3.0, v.top() + 1.0, fm.horizontalAdvance(text) + 6.0, fm.height() + 1.0);
-                p.fillRect(box, QColor(30, 30, 30, 190));
-                p.setFont(smallFont);
-                p.setPen(c.lighter(130));
-                p.drawText(box.adjusted(3, 0, -2, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
-            }
-        }
-    if (opt.showEventLength && v.width() > 40 && eventTitleH(r) <= 0) {
-        const QFontMetrics fm(smallFont);
-        const QString text = QString::fromStdString(timecode(e.length, fps()));
-        const double w = fm.horizontalAdvance(text) + 6.0;
-        double right = std::min(r.right(), v.right()) - 2.0;
-        if (opt.showEventButtons) {
-            const Track* et = nullptr;
-            pr.findEvent(e.id, &et);
-            if (hasCropButton(r, et && et->type == TrackType::Video)) right = std::min(right, cropButtonRect(r).left() - 3.0);
-            else if (hasFxButton(r)) right = std::min(right, fxButtonRect(r).left() - 3.0);
-            else if (hasMenuButton(r)) right = std::min(right, menuButtonRect(r).left() - 3.0);
-        }
-        if (w < right - std::max(r.left(), v.left()) - 20.0) {
-            const QRectF box(right - w, v.bottom() - fm.height() - 4.0, w, fm.height() + 2.0);
-            p.fillRect(box, QColor(0, 0, 0, 150));
-            p.setFont(smallFont);
-            p.setPen(QColor(240, 240, 240));
-            p.drawText(box, Qt::AlignCenter, text);
-        }
-    }
-    if (opt.showTakeInfo && v.width() > 30 && e.group) {
-        // VEGAS's out-of-sync mark: an event of the same file as the video or audio grouped with it but not in step with
-        // it: a red bar along the top and how far off it is
-        if (const uint64_t partner = syncPartner(e.id))
-            if (const Event* o = pr.findEvent(partner)) {
-                const double drift = ((e.offset - e.start * e.rate) - (o->offset - o->start * o->rate)) / std::max(1e-9, e.rate);
-                p.fillRect(QRectF(v.left(), v.top(), v.width(), 3.0), QColor(230, 40, 40));
-                const QString text = QString(drift > 0 ? "-" : "+") + QString::fromStdString(timecode(std::fabs(drift), fps()));
-                const QFontMetrics fm(smallFont);
-                const QRectF box(std::max(r.left(), (double)headerW) + 3.0, v.top() + 4.0, fm.horizontalAdvance(text) + 6.0, fm.height() + 1.0);
-                p.fillRect(box, QColor(150, 20, 20, 200));
-                p.setFont(smallFont);
-                p.setPen(QColor(255, 235, 235));
-                p.drawText(box, Qt::AlignCenter, text);
-            }
-    }
-    if (opt.showTakeInfo && v.width() > 50) {
-        const int n = (int)e.takes.size() + 1;
-        QString text = QString::fromStdString(e.name);
-        if (n > 1) text = QString("Take %1/%2: ").arg(std::min(e.activeTake, n - 1) + 1).arg(n) + text;
-        if (std::fabs(e.rate - 1.0) > 1e-6) text += QString(" (%1%)").arg(e.rate * 100.0, 0, 'f', 1);
-        const QFontMetrics fm(smallFont);
-        const double w = std::min(v.width() - 6.0, (double)fm.horizontalAdvance(text) + 6.0);
-        const QRectF box(std::max(r.left(), (double)headerW) + (e.group ? 18.0 : 3.0), v.bottom() - fm.height() - 4.0, w, fm.height() + 2.0);
-        p.fillRect(box, QColor(0, 0, 0, 150));
-        p.setFont(smallFont);
-        p.setPen(QColor(240, 240, 240));
-        p.drawText(box.adjusted(3, 0, -2, 0), Qt::AlignVCenter | Qt::AlignLeft, fm.elidedText(text, Qt::ElideRight, (int)box.width() - 5));
-    }
-    if (snapFlag) {
-        const double fx = std::floor(xAtF(e.start + clampd(e.snapOffset, 0.0, e.length))) + 0.5;
-        // VEGAS's: a white right triangle six pixels high with a black edge, its corner on the event's bottom edge
-        const double bx = std::floor(fx), by = std::floor(r.bottom()) - 1.0;
-        p.setRenderHint(QPainter::Antialiasing, false);
-        for (int i = 0; i <= 6; ++i) {
-            const double y = by - 6.0 + i;
-            if (i == 6) {
-                p.fillRect(QRectF(bx, y, 7.0, 1.0), QColor(0, 0, 0));
-                continue;
-            }
-            p.fillRect(QRectF(bx, y, 1.0, 1.0), QColor(0, 0, 0));
-            if (i >= 2) p.fillRect(QRectF(bx + 1.0, y, i - 1, 1.0), QColor(255, 255, 255));
-            if (i >= 1) p.fillRect(QRectF(bx + i, y, 1.0, 1.0), QColor(0, 0, 0));
-        }
-    }
+    if (opt.showMediaMarkers && m) drawMediaMarkers(p, e, *m, v);
+    if (opt.showEventLength && v.width() > 40 && eventTitleH(r) <= 0) drawEventLength(p, e, r, v);
+    if (opt.showTakeInfo && v.width() > 30 && e.group) drawSyncDrift(p, e, r, v);
+    if (opt.showTakeInfo && v.width() > 50) drawTakeInfo(p, e, r, v);
+    if (snapFlag) drawSnapFlag(p, e, r);
     if (linked) {
         p.setBrush(Qt::NoBrush);
         p.setPen(QPen(QColor(178, 92, 255), 2.0));
         p.drawRect(v.adjusted(1, 1, -1, -1));
     }
-    if (e.locked && v.width() > 16) {
-        p.setRenderHint(QPainter::Antialiasing, true);
-        const double x = std::min(r.right(), v.right()) - 13.0, y = v.top() + 3.0;
-        p.setPen(QPen(QColor(20, 20, 20), 2.6));
-        p.setBrush(Qt::NoBrush);
-        p.drawArc(QRectF(x + 2.0, y, 6.0, 8.0), 0, 180 * 16);
-        p.setPen(QPen(QColor(255, 214, 90), 1.3));
-        p.drawArc(QRectF(x + 2.0, y, 6.0, 8.0), 0, 180 * 16);
-        p.setPen(QPen(QColor(20, 20, 20), 1.0));
-        p.setBrush(QColor(255, 214, 90));
-        p.drawRect(QRectF(x, y + 4.0, 10.0, 7.0));
-    }
-    if (edgeSel.event && (edgeSel.event == e.id || (edgeSel.expanded && edgeSel.other == e.id))) {
-        std::vector<int> sides;
-        if (!edgeSel.expanded) sides.push_back(edgeSel.side);
-        else if (e.id == edgeSel.event && edgeSel.which <= 0) sides.push_back(1);
-        else if (e.id == edgeSel.other && edgeSel.which >= 0) sides.push_back(-1);
-        p.setRenderHint(QPainter::Antialiasing, false);
-        const QColor red(235, 40, 40);
-        for (int side : sides) {
-            const double x = side < 0 ? std::floor(r.left()) : std::floor(r.right()) - 3.0;
-            p.fillRect(QRectF(x, v.top(), 3.0, v.height()), red);
-            const double tip = side < 0 ? x + 3.0 : x - 5.0;
-            p.fillRect(QRectF(tip, v.top(), 5.0, 3.0), red);
-            p.fillRect(QRectF(tip, v.bottom() - 3.0, 5.0, 3.0), red);
-        }
-    }
+    if (e.locked && v.width() > 16) drawLock(p, r, v);
+    if (edgeSel.event && (edgeSel.event == e.id || (edgeSel.expanded && edgeSel.other == e.id))) drawEdgeSelection(p, e, r, v);
     p.restore();
 }
 

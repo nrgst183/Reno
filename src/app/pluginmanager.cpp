@@ -1,5 +1,6 @@
 // The Plug-In Manager: see pluginmanager.h.
 #include "pluginmanager.h"
+#include "onshow.h"
 #include "toolwin.h"
 #include <QEvent>
 #include <QHBoxLayout>
@@ -324,18 +325,7 @@ PluginManager::PluginManager(QWidget* parent) : QWidget(parent), d(new Impl())
     d->listener.reset(new Listener([impl](int changes) {
         if (changes & kCatalog) impl->fill();
     }));
-    struct FillOnShow : QObject {
-        std::function<void()> fill;
-        bool eventFilter(QObject*, QEvent* e) override
-        {
-            if (e->type() == QEvent::Show) fill();
-            return false;
-        }
-    };
-    auto* onShow = new FillOnShow();
-    onShow->setParent(this);
-    onShow->fill = [impl] { impl->ensureFilled(); };
-    installEventFilter(onShow);
+    callWhenShown(this, [impl] { impl->ensureFilled(); });
     d->fill();
 }
 

@@ -999,6 +999,82 @@ bool Instance::gpuChainable() const
     return plugin && plugin->binary && plugin->binary->builtin && builtinGpuChainable(plugin->info.id);
 }
 
+namespace {
+
+// One call of an effect's render: the frame's time and size and how it is rendered, and the arguments the plug-in is
+// given for it (the same in IsIdentity, BeginSequenceRender, Render and EndSequenceRender).
+struct RenderCall {
+    Instance& inst;
+    double time;
+    const RenderOptions& opt;
+    int w, h;
+    bool vegas;     // VEGAS's own properties too (Host config)
+
+    void commonArgs(PropertySet& in) const
+    {
+        in.setDouble(kOfxPropTime, time);
+        in.setString(kOfxImageEffectPropFieldToRender, kOfxImageFieldNone);
+        const int win[4] = {0, 0, w, h};
+        for (int k = 0; k < 4; ++k) in.setInt(kOfxImageEffectPropRenderWindow, win[k], k);
+        in.setDouble(kOfxImageEffectPropRenderScale, inst.renderScale[0], 0);
+        in.setDouble(kOfxImageEffectPropRenderScale, inst.renderScale[1], 1);
+        if (vegas) {
+            // VEGAS gives these to IsIdentity and Render alike; its effects read them in both
+            in.setDouble(kVegasPropTimeCode, opt.timelineTime >= 0 ? opt.timelineTime : time);
+            in.setInt(kVegasPropViewsToRender, 1);
+            in.setInt(kVegasPropRenderView, 0);
+        }
+    }
+
+    const char* vegasQuality() const { return opt.draft ? kVegasRenderQualityDraft : (opt.interactive ? kVegasRenderQualityPreview : kVegasRenderQualityBest); }
+
+    // BeginSequenceRender, Render and EndSequenceRender for this one frame ('gl': with OpenGL). False with 'failMsg' set
+    // when the plug-in would not start or failed.
+    bool run(bool gl, std::string& failMsg) const
+    {
+        Plugin* plugin = inst.plugin;
+        PropertySet seq;
+        seq.setDouble(kOfxImageEffectPropFrameRange, time, 0);
+        seq.setDouble(kOfxImageEffectPropFrameRange, time, 1);
+        seq.setDouble(kOfxImageEffectPropFrameStep, 1.0);
+        seq.setInt(kOfxPropIsInteractive, opt.interactive ? 1 : 0);
+        seq.setDouble(kOfxImageEffectPropRenderScale, inst.renderScale[0], 0);
+        seq.setDouble(kOfxImageEffectPropRenderScale, inst.renderScale[1], 1);
+        seq.setInt(kOfxImageEffectPropSequentialRenderStatus, 0);
+        seq.setInt(kOfxImageEffectPropInteractiveRenderStatus, opt.interactive ? 1 : 0);
+        seq.setInt(kOfxImageEffectPropRenderQualityDraft, opt.draft ? 1 : 0);
+        seq.setInt(kOfxImageEffectPropOpenGLEnabled, gl ? 1 : 0);
+        seq.setInt(kRenoOfxImageEffectPropOpenCLEnabled, 0);
+        if (vegas) {
+            seq.setInt(kVegasPropViewsToRender, 1);
+            seq.setInt(kVegasPropRenderView, 0);
+            seq.setString(kVegasPropRenderQuality, vegasQuality());
+        }
+        OfxStatus st = plugin->call(kOfxImageEffectActionBeginSequenceRender, &inst, &seq, nullptr);
+        if (plugin->crashed) { failMsg = plugin->error; return false; }
+        if (st != kOfxStatOK && st != kOfxStatReplyDefault) { failMsg = strfmt("would not start rendering (%s)", plugin->explainStatus(st).c_str()); return false; }
+
+        PropertySet in;
+        commonArgs(in);
+        in.setInt(kOfxImageEffectPropSequentialRenderStatus, 0);
+        in.setInt(kOfxImageEffectPropInteractiveRenderStatus, opt.interactive ? 1 : 0);
+        in.setInt(kOfxImageEffectPropRenderQualityDraft, opt.draft ? 1 : 0);
+        in.setInt(kOfxImageEffectPropOpenGLEnabled, gl ? 1 : 0);
+        in.setInt(kRenoOfxImageEffectPropOpenCLEnabled, 0);
+        if (vegas) in.setString(kVegasPropRenderQuality, vegasQuality());
+        st = plugin->call(kOfxImageEffectActionRender, &inst, &in, nullptr);
+        if (!plugin->crashed) plugin->call(kOfxImageEffectActionEndSequenceRender, &inst, &seq, nullptr);
+        if (plugin->crashed) { failMsg = plugin->error; return false; }
+        if (st != kOfxStatOK) {
+            failMsg = strfmt("failed to render (%s)%s%s", plugin->explainStatus(st).c_str(), inst.persistentMessage.empty() ? "" : ": ", inst.persistentMessage.c_str());
+            return false;
+        }
+        return true;
+    }
+};
+
+}  // namespace
+
 ImagePtr Instance::render(double time, const RenderOptions& opt, std::string* error)
 {
     RenderGate::Hold global;
@@ -1074,24 +1150,11 @@ ImagePtr Instance::render(double time, const RenderOptions& opt, std::string* er
     }
     const bool vegas = Host::get().config.vegasExtensions;
 
-    auto commonArgs = [&](PropertySet& in) {
-        in.setDouble(kOfxPropTime, time);
-        in.setString(kOfxImageEffectPropFieldToRender, kOfxImageFieldNone);
-        const int win[4] = {0, 0, w, h};
-        for (int k = 0; k < 4; ++k) in.setInt(kOfxImageEffectPropRenderWindow, win[k], k);
-        in.setDouble(kOfxImageEffectPropRenderScale, renderScale[0], 0);
-        in.setDouble(kOfxImageEffectPropRenderScale, renderScale[1], 1);
-        if (vegas) {
-            // VEGAS gives these to IsIdentity and Render alike; its effects read them in both
-            in.setDouble(kVegasPropTimeCode, opt.timelineTime >= 0 ? opt.timelineTime : time);
-            in.setInt(kVegasPropViewsToRender, 1);
-            in.setInt(kVegasPropRenderView, 0);
-        }
-    };
+    const RenderCall call{*this, time, opt, w, h, vegas};
 
     {
         PropertySet in, out;
-        commonArgs(in);
+        call.commonArgs(in);
         out.setString(kOfxPropName, "");
         out.setDouble(kOfxPropTime, time);
         OfxStatus st = plugin->call(kOfxImageEffectActionIsIdentity, this, &in, &out);
@@ -1113,48 +1176,6 @@ ImagePtr Instance::render(double time, const RenderOptions& opt, std::string* er
     if (!outputImage) return fail("out of memory");
 
     std::string failMsg;
-    auto runActions = [&](bool gl) -> bool {
-        PropertySet seq;
-        seq.setDouble(kOfxImageEffectPropFrameRange, time, 0);
-        seq.setDouble(kOfxImageEffectPropFrameRange, time, 1);
-        seq.setDouble(kOfxImageEffectPropFrameStep, 1.0);
-        seq.setInt(kOfxPropIsInteractive, opt.interactive ? 1 : 0);
-        seq.setDouble(kOfxImageEffectPropRenderScale, renderScale[0], 0);
-        seq.setDouble(kOfxImageEffectPropRenderScale, renderScale[1], 1);
-        seq.setInt(kOfxImageEffectPropSequentialRenderStatus, 0);
-        seq.setInt(kOfxImageEffectPropInteractiveRenderStatus, opt.interactive ? 1 : 0);
-        seq.setInt(kOfxImageEffectPropRenderQualityDraft, opt.draft ? 1 : 0);
-        seq.setInt(kOfxImageEffectPropOpenGLEnabled, gl ? 1 : 0);
-        seq.setInt(kRenoOfxImageEffectPropOpenCLEnabled, 0);
-        if (vegas) {
-            seq.setInt(kVegasPropViewsToRender, 1);
-            seq.setInt(kVegasPropRenderView, 0);
-            seq.setString(kVegasPropRenderQuality, opt.draft ? kVegasRenderQualityDraft : (opt.interactive ? kVegasRenderQualityPreview : kVegasRenderQualityBest));
-        }
-        OfxStatus st = plugin->call(kOfxImageEffectActionBeginSequenceRender, this, &seq, nullptr);
-        if (plugin->crashed) { failMsg = plugin->error; return false; }
-        if (st != kOfxStatOK && st != kOfxStatReplyDefault) { failMsg = strfmt("would not start rendering (%s)", plugin->explainStatus(st).c_str()); return false; }
-
-        PropertySet in;
-        commonArgs(in);
-        in.setInt(kOfxImageEffectPropSequentialRenderStatus, 0);
-        in.setInt(kOfxImageEffectPropInteractiveRenderStatus, opt.interactive ? 1 : 0);
-        in.setInt(kOfxImageEffectPropRenderQualityDraft, opt.draft ? 1 : 0);
-        in.setInt(kOfxImageEffectPropOpenGLEnabled, gl ? 1 : 0);
-        in.setInt(kRenoOfxImageEffectPropOpenCLEnabled, 0);
-        if (vegas) {
-            in.setString(kVegasPropRenderQuality, opt.draft ? kVegasRenderQualityDraft : (opt.interactive ? kVegasRenderQualityPreview : kVegasRenderQualityBest));
-        }
-        st = plugin->call(kOfxImageEffectActionRender, this, &in, nullptr);
-        OfxStatus st2 = plugin->crashed ? kOfxStatFailed : plugin->call(kOfxImageEffectActionEndSequenceRender, this, &seq, nullptr);
-        (void)st2;
-        if (plugin->crashed) { failMsg = plugin->error; return false; }
-        if (st != kOfxStatOK) {
-            failMsg = strfmt("failed to render (%s)%s%s", plugin->explainStatus(st).c_str(), persistentMessage.empty() ? "" : ": ", persistentMessage.c_str());
-            return false;
-        }
-        return true;
-    };
 
     // On the graphics card when the effect can and the host is set to (gpurender.h); if that fails, on the processor, and the effect is not tried with OpenGL again.
     bool rendered = false;
@@ -1163,7 +1184,7 @@ ImagePtr Instance::render(double time, const RenderOptions& opt, std::string* er
         {
             GpuRender gpu(*this, w, h);
             if (gpu.ready()) {
-                rendered = runActions(true) && gpu.readBack(*outputImage);
+                rendered = call.run(true, failMsg) && gpu.readBack(*outputImage);
                 if (!rendered) glWhy = failMsg.empty() ? gpu.error() : failMsg;
             } else {
                 glWhy = gpu.error();
@@ -1182,7 +1203,7 @@ ImagePtr Instance::render(double time, const RenderOptions& opt, std::string* er
     if (!rendered) {
         // (a built-in effect may leave its picture on the card for the next one: then the host's frame is stale until Image::sync())
         gpu::DeferOutput deferOut(opt.deferGpuOutput && gpuChainable());
-        if (!runActions(false)) return fail(failMsg);
+        if (!call.run(false, failMsg)) return fail(failMsg);
     }
     if (outputImage && gpu::isPending(outputImage->serial)) outputImage->gpuHold = gpu::pendingHold(outputImage->serial);
 

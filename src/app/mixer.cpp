@@ -2447,6 +2447,16 @@ struct MixerWindow::Impl {
         AppState::get().addTrack(TrackType::Audio);
     }
 
+    // the window's parts (the constructor's steps)
+    QWidget* buildToolBar();
+    QWidget* buildSidePane();
+    void buildStrips(QHBoxLayout* body);
+    // the tool bar's commands
+    void fillViewsMenu(QMenu* viewsMenu);
+    static void insertNewBus();
+    void deleteSelectedBus();
+    void insertAssignableChain();
+
     void fillLayoutMenu(QMenu* m)
     {
         m->clear();
@@ -2572,6 +2582,317 @@ struct MixerWindow::Impl {
     }
 };
 
+// A button of the console's tool bar or view controls (checkable ones start checked).
+static QToolButton* makeTool(QWidget* in, QBoxLayout* lay, const char* name, const QString& text, const QString& tip, bool checkable)
+{
+    auto* b = new QToolButton(in);
+    b->setObjectName(name);
+    b->setText(text);
+    b->setToolTip(tip);
+    b->setCheckable(checkable);
+    b->setChecked(checkable);
+    b->setProperty("tool", true);
+    b->setFixedHeight(22);
+    b->setFocusPolicy(Qt::NoFocus);
+    if (lay) lay->addWidget(b);
+    return b;
+}
+
+// The console's tool bar: Views, Properties, Dim, Downmix and the Insert / Delete buttons.
+QWidget* MixerWindow::Impl::buildToolBar()
+{
+    auto* bar = new QWidget(owner);
+    bar->setObjectName("mixerToolbar");
+    bar->setAutoFillBackground(true);
+    QPalette bp = bar->palette();
+    bp.setColor(QPalette::Window, QColor(45, 45, 48));
+    bar->setPalette(bp);
+    auto* tb = new QHBoxLayout(bar);
+    tb->setContentsMargins(6, 4, 6, 4);
+    tb->setSpacing(4);
+    auto sep = [&] {
+        auto* s = new QFrame(bar);
+        s->setFrameShape(QFrame::VLine);
+        s->setStyleSheet("color: #5a5a60;");
+        tb->addWidget(s);
+    };
+    QToolButton* views = makeTool(bar, tb, "views", "Views", "Show or hide the Channel List (Shift+C) and the View Controls (Shift+R)", false);
+    views->setPopupMode(QToolButton::InstantPopup);
+    QMenu* viewsMenu = new QMenu(views);
+    views->setMenu(viewsMenu);
+    QToolButton* layoutBtn = makeTool(bar, tb, "properties", "Properties", "Channels and control regions shown, channel width, meters", false);
+    layoutBtn->setPopupMode(QToolButton::InstantPopup);
+    QMenu* layoutMenu = new QMenu(layoutBtn);
+    layoutBtn->setMenu(layoutMenu);
+    QObject::connect(layoutMenu, &QMenu::aboutToShow, owner, [this, layoutMenu] { fillLayoutMenu(layoutMenu); });
+    sep();
+    dimBtn = makeTool(bar, tb, "dimOutput", "Dim", "Dim Output: what is heard 20 dB quieter (Ctrl+Shift+F12)", true);
+    dimBtn->setChecked(pb && pb->dimmed());
+    sep();
+    downmixBtn = makeTool(bar, tb, "downmixOutput", "Downmix", "Downmix Output: hear the mix in stereo (a 5.1 project) or in mono", false);
+    downmixBtn->setPopupMode(QToolButton::InstantPopup);
+    QMenu* downmixMenu = new QMenu(downmixBtn);
+    downmixBtn->setMenu(downmixMenu);
+    QObject::connect(downmixMenu, &QMenu::aboutToShow, owner, [this, downmixMenu] { reno::app::fillDownmixMenu(downmixMenu, pb); });
+    sep();
+    insertTrack = makeTool(bar, tb, "insertAudioTrack", "Insert Audio Track", "Add an audio track (Ctrl+Q)", false);
+    insertAssignable = makeTool(bar, tb, "insertAssignableFx", "Insert Assignable FX", "Add an assignable effects chain for tracks to send to (Insert > Audio Assignable FX)", false);
+    insertBus = makeTool(bar, tb, "insertBus", "Insert Bus", "Add a bus (Bus A, Bus B ...)", false);
+    insertInput = makeTool(bar, tb, "insertInputBus", "Insert Input Bus", "Add an input bus: sound from a sound card input, mixed with the project (VEGAS Pro 23)", false);
+    deleteBus = makeTool(bar, tb, "deleteBus", "Delete Bus", "Delete Bus", false);
+    tb->addStretch(1);
+    QObject::connect(viewsMenu, &QMenu::aboutToShow, owner, [this, viewsMenu] { fillViewsMenu(viewsMenu); });
+    QObject::connect(insertTrack, &QToolButton::clicked, owner, [this] { insertAudioTrack(); });
+    QObject::connect(dimBtn, &QToolButton::toggled, owner, [this](bool on) {
+        if (owner->onDim) owner->onDim(on);
+        else if (pb) pb->setDim(on);
+    });
+    QObject::connect(insertBus, &QToolButton::clicked, [] { insertNewBus(); });
+    QObject::connect(insertInput, &QToolButton::clicked, [] { reno::app::insertInputBus(); });
+    QObject::connect(deleteBus, &QToolButton::clicked, [this] { deleteSelectedBus(); });
+    // Insert Assignable FX: a new chain (FX 1, FX 2 ...), then its effects chosen (as an empty FX button does)
+    QObject::connect(insertAssignable, &QToolButton::clicked, owner, [this] { insertAssignableChain(); });
+    return bar;
+}
+
+// The side pane: the Channel List and the View Controls (which channels and regions show, the channel width).
+QWidget* MixerWindow::Impl::buildSidePane()
+{
+    side = new QWidget(owner);
+    side->setObjectName("consoleSide");
+    side->setFixedWidth(150);
+    side->setAutoFillBackground(true);
+    QPalette sp = side->palette();
+    sp.setColor(QPalette::Window, QColor(40, 40, 43));
+    side->setPalette(sp);
+    auto* sideLay = new QVBoxLayout(side);
+    sideLay->setContentsMargins(4, 4, 4, 4);
+    sideLay->setSpacing(4);
+    channelPane = new QWidget(side);
+    channelPane->setObjectName("channelListPane");
+    auto* cl = new QVBoxLayout(channelPane);
+    cl->setContentsMargins(0, 0, 0, 0);
+    cl->setSpacing(2);
+    QLabel* clTitle = new QLabel("Channel List", channelPane);
+    clTitle->setStyleSheet("color: #a0a0a6; font-weight: bold;");
+    cl->addWidget(clTitle);
+    channelList = new QListWidget(channelPane);
+    channelList->setObjectName("channelList");
+    channelList->setStyleSheet("QListWidget { background: #2a2a2d; border: 1px solid #1c1c1e; color: #dcdcdc; }");
+    channelList->setFocusPolicy(Qt::NoFocus);
+    cl->addWidget(channelList, 1);
+    sideLay->addWidget(channelPane, 1);
+
+    viewPane = new QWidget(side);
+    viewPane->setObjectName("viewControls");
+    auto* vg = new QGridLayout(viewPane);
+    vg->setContentsMargins(0, 0, 0, 0);
+    vg->setHorizontalSpacing(3);
+    vg->setVerticalSpacing(3);
+    QLabel* vcTitle = new QLabel("View Controls", viewPane);
+    vcTitle->setStyleSheet("color: #a0a0a6; font-weight: bold;");
+    vg->addWidget(vcTitle, 0, 0, 1, 2);
+    auto viewTool = [&](const char* name, const QString& text, const QString& tip, int r, int c, bool region) {
+        QToolButton* b = makeTool(viewPane, nullptr, name, text, tip, true);
+        b->setProperty("tool", QVariant());
+        b->setProperty("region", region);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        b->setStyleSheet("QToolButton:checked { background: #2d4f6e; border-color: #3d84c6; color: white; }");
+        vg->addWidget(b, r, c);
+        return b;
+    };
+    showAll = viewTool("showAll", "Show All", "Show every channel (Q)", 1, 0, false);
+    showAll->setCheckable(false);
+    showTracks = viewTool("showTracks", "Tracks", "Show the audio tracks' strips (A)", 1, 1, false);
+    showBuses = viewTool("showBuses", "Buses", "Show the buses' strips (U)", 2, 0, false);
+    showMaster = viewTool("showMaster", "Master", "Show the master strip (T)", 2, 1, false);
+    showInputs = viewTool("showInputBuses", "Inputs", "Show the input buses' strips", 3, 0, false);
+    showInputs->setChecked(true);
+    showAssign = viewTool("showAssignable", "Assign. FX", "Show the assignable FX chains' strips (E)", 3, 1, false);
+    showPreview = viewTool("showPreview", "Preview", "Show the Preview bus (P): what the Trimmer and Start Preview play goes through it", 4, 0, false);
+    showPreview->setChecked(false);
+    QFrame* line = new QFrame(viewPane);
+    line->setFrameShape(QFrame::HLine);
+    line->setStyleSheet("color: #5a5a60;");
+    vg->addWidget(line, 5, 0, 1, 2);
+    regionFx = viewTool("regionFx", "Insert FX", "The Insert FX region (I)", 6, 0, true);
+    regionSends = viewTool("regionSends", "Sends", "The Sends region (S)", 6, 1, true);
+    regionIO = viewTool("regionIO", "I/O", "The I/O region (H)", 7, 0, true);
+    regionMeters = viewTool("regionMeters", "Meters", "The peak meters (M)", 7, 1, true);
+    regionFaders = viewTool("regionFaders", "Faders", "Pan, mute, solo, arm and the faders (F)", 8, 0, true);
+    regionVu = viewTool("regionVu", "VU Meters", "The VU / PPM meters region (right-click a meter for its kind)", 8, 1, true);
+    QLabel* wl = new QLabel("Channel Width", viewPane);
+    wl->setStyleSheet("color: #a0a0a6;");
+    vg->addWidget(wl, 9, 0, 1, 2);
+    widthSlider = new QSlider(Qt::Horizontal, viewPane);
+    widthSlider->setObjectName("channelWidth");
+    widthSlider->setRange(0, 2);
+    widthSlider->setPageStep(1);
+    widthSlider->setFocusPolicy(Qt::NoFocus);
+    widthSlider->setToolTip("Narrow (N), default (D) or wide (W) channels");
+    vg->addWidget(widthSlider, 10, 0, 1, 2);
+    sideLay->addWidget(viewPane, 0);
+    for (QToolButton* b : {showTracks, showBuses, showMaster, showAssign, showInputs, showPreview})
+        QObject::connect(b, &QToolButton::toggled, [this](bool) { viewChanged(); });
+    QObject::connect(showAll, &QToolButton::clicked, owner, [this] { showAllChannels(); });
+    auto region = [this](QToolButton* b, bool ConsoleView::*field) {
+        QObject::connect(b, &QToolButton::toggled, owner, [this, field](bool on) {
+            view.*field = on;
+            viewChanged();
+        });
+    };
+    region(regionFx, &ConsoleView::fx);
+    region(regionSends, &ConsoleView::sends);
+    region(regionIO, &ConsoleView::io);
+    region(regionMeters, &ConsoleView::meters);
+    region(regionFaders, &ConsoleView::faders);
+    region(regionVu, &ConsoleView::vu);
+    QObject::connect(widthSlider, &QSlider::valueChanged, owner, [this](int v) {
+        view.width = v;
+        viewChanged();
+    });
+    QObject::connect(channelList, &QListWidget::itemChanged, owner, [this](QListWidgetItem* it) {
+        if (filling) return;
+        const QString k = it->data(Qt::UserRole).toString();
+        if (it->checkState() == Qt::Checked) hidden.erase(k);
+        else hidden.insert(k);
+        applyView();
+    });
+    return side;
+}
+
+// The strips (in a scroll area) and, at the right, the Preview and Master strips.
+void MixerWindow::Impl::buildStrips(QHBoxLayout* body)
+{
+    scroll = new QScrollArea(owner);
+    scroll->setObjectName("mixerScroll");
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setFocusPolicy(Qt::NoFocus);
+    row = new QWidget();
+    row->setObjectName("mixerStrips");
+    row->setAutoFillBackground(true);
+    row->setPalette(owner->palette());
+    rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(2, 2, 2, 2);
+    rowLayout->setSpacing(1);
+    empty = new QLabel(row);
+    empty->setAlignment(Qt::AlignCenter);
+    empty->setStyleSheet("color: #8a8a90;");
+    rowLayout->addWidget(empty, 1);
+    rowLayout->addStretch(0);
+    scroll->setWidget(row);
+    body->addWidget(scroll, 1);
+
+    masterBox = new QWidget(owner);
+    masterBox->setObjectName("masterBox");
+    auto* mb = new QHBoxLayout(masterBox);
+    mb->setContentsMargins(0, 2, 2, 2);
+    mb->setSpacing(0);
+    auto* divider = new QFrame(masterBox);
+    divider->setFixedWidth(4);
+    divider->setStyleSheet("background: #18181a;");
+    mb->addWidget(divider);
+    master = new Strip(Strip::MasterStrip, 0, pb, masterBox);
+    master->onFx = [this](const FxTarget& t, uint64_t slot) { openFx(t, slot); };
+    master->onSelect = [this](Strip* st, Qt::KeyboardModifiers m) { select(st, m); };
+    preview = new Strip(Strip::PreviewStrip, 0, pb, masterBox);
+    preview->onSelect = [this](Strip* st, Qt::KeyboardModifiers m) { select(st, m); };
+    preview->fader->onMeterMenu = [this](const QPoint& at) { if (meterMenuFn) meterMenuFn(at); };
+    wireVu(preview);
+    mb->addWidget(preview);
+    mb->addWidget(master);
+    body->addWidget(masterBox);
+    // when the strips need a scroll bar, the master's strip ends where theirs do, so the faders stay in line
+    QObject::connect(scroll->horizontalScrollBar(), &QScrollBar::rangeChanged, [this, mb](int, int max) {
+        mb->setContentsMargins(0, 2, 2, 2 + (max > 0 ? scroll->horizontalScrollBar()->sizeHint().height() : 0));
+    });
+    auto meterMenu = [this](const QPoint& at) {
+        QMenu m(owner);
+        fillMeterMenu(&m);
+        m.exec(at);
+    };
+    meterMenuFn = meterMenu;
+    master->fader->onMeterMenu = meterMenu;
+    wireVu(master);
+}
+
+// Views: the Channel List and View Controls shown or not.
+void MixerWindow::Impl::fillViewsMenu(QMenu* viewsMenu)
+{
+    viewsMenu->clear();
+    QAction* a = viewsMenu->addAction("Channel List\tShift+C");
+    a->setCheckable(true);
+    a->setChecked(!channelPane->isHidden());
+    QObject::connect(a, &QAction::triggered, owner, [this] { owner->handleKey(Qt::Key_C, Qt::ShiftModifier); });
+    QAction* b = viewsMenu->addAction("View Controls\tShift+R");
+    b->setCheckable(true);
+    b->setChecked(!viewPane->isHidden());
+    QObject::connect(b, &QAction::triggered, owner, [this] { owner->handleKey(Qt::Key_R, Qt::ShiftModifier); });
+}
+
+// Insert Bus: Bus A, Bus B ... (the first name not taken).
+void MixerWindow::Impl::insertNewBus()
+{
+    AppState::get().edit("Insert Bus", [&](Project& p) {
+        Bus b;
+        b.id = p.newId();
+        for (int k = 0; k < 26 * 27 && b.name.empty(); ++k) {
+            const std::string name = k < 26 ? strfmt("Bus %c", 'A' + k) : strfmt("Bus %c%c", 'A' + k / 26 - 1, 'A' + k % 26);
+            bool used = false;
+            for (const auto& o : p.buses) used = used || o.name == name;
+            if (!used) b.name = name;
+        }
+        p.buses.push_back(b);
+    });
+}
+
+// Delete Bus: the selected bus or input bus (or else the last bus), with every send and output to it.
+void MixerWindow::Impl::deleteSelectedBus()
+{
+    const Project& pr = AppState::get().project();
+    if (pr.findInputBus(selectedBus)) {
+        const uint64_t id = selectedBus;
+        AppState::get().edit("Delete Input Bus", [&](Project& p) {
+            for (auto& t : p.tracks)
+                if (t.recordInput.inputBus == id) t.recordInput.inputBus = 0;
+            p.inputBuses.erase(std::remove_if(p.inputBuses.begin(), p.inputBuses.end(), [&](const InputBus& b) { return b.id == id; }), p.inputBuses.end());
+        });
+        selectedBus = 0;
+        return;
+    }
+    if (pr.buses.empty()) return;
+    const uint64_t id = pr.findBus(selectedBus) ? selectedBus : pr.buses.back().id;
+    AppState::get().edit("Delete Bus", [&](Project& p) {
+        for (auto& t : p.tracks) {
+            if (t.output == id) t.output = 0;
+            t.sends.erase(std::remove_if(t.sends.begin(), t.sends.end(), [&](const Send& s) { return s.bus == id; }), t.sends.end());
+        }
+        for (auto& b : p.buses)
+            if (b.output == id) b.output = 0;
+        for (auto& b : p.inputBuses) {
+            if (b.output == id) b.output = 0;
+            b.sends.erase(std::remove_if(b.sends.begin(), b.sends.end(), [&](const Send& x) { return x.bus == id; }), b.sends.end());
+        }
+        p.buses.erase(std::remove_if(p.buses.begin(), p.buses.end(), [&](const Bus& b) { return b.id == id; }), p.buses.end());
+    });
+    selectedBus = 0;
+}
+
+// Insert Assignable FX: a new chain, its effects then chosen.
+void MixerWindow::Impl::insertAssignableChain()
+{
+    const uint64_t id = reno::app::insertAssignableFx();
+    if (id && owner->onOpenFx) {
+        FxTarget t;
+        t.kind = FxTarget::Bus;
+        t.id = id;
+        owner->onOpenFx(t, 0);
+    }
+}
+
 MixerWindow::MixerWindow(Playback* playback, QWidget* parent) : QWidget(parent), d(new Impl())
 {
     d->owner = this;
@@ -2587,293 +2908,13 @@ MixerWindow::MixerWindow(Playback* playback, QWidget* parent) : QWidget(parent),
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
-
-    auto* bar = new QWidget(this);
-    bar->setObjectName("mixerToolbar");
-    bar->setAutoFillBackground(true);
-    QPalette bp = bar->palette();
-    bp.setColor(QPalette::Window, QColor(45, 45, 48));
-    bar->setPalette(bp);
-    auto* tb = new QHBoxLayout(bar);
-    tb->setContentsMargins(6, 4, 6, 4);
-    tb->setSpacing(4);
-    auto tool = [&](QWidget* in, QBoxLayout* lay, const char* name, const QString& text, const QString& tip, bool checkable) {
-        auto* b = new QToolButton(in);
-        b->setObjectName(name);
-        b->setText(text);
-        b->setToolTip(tip);
-        b->setCheckable(checkable);
-        b->setChecked(checkable);
-        b->setProperty("tool", true);
-        b->setFixedHeight(22);
-        b->setFocusPolicy(Qt::NoFocus);
-        if (lay) lay->addWidget(b);
-        return b;
-    };
-    auto sep = [&] {
-        auto* s = new QFrame(bar);
-        s->setFrameShape(QFrame::VLine);
-        s->setStyleSheet("color: #5a5a60;");
-        tb->addWidget(s);
-    };
-    QToolButton* views = tool(bar, tb, "views", "Views", "Show or hide the Channel List (Shift+C) and the View Controls (Shift+R)", false);
-    views->setPopupMode(QToolButton::InstantPopup);
-    QMenu* viewsMenu = new QMenu(views);
-    views->setMenu(viewsMenu);
-    QToolButton* layoutBtn = tool(bar, tb, "properties", "Properties", "Channels and control regions shown, channel width, meters", false);
-    layoutBtn->setPopupMode(QToolButton::InstantPopup);
-    QMenu* layoutMenu = new QMenu(layoutBtn);
-    layoutBtn->setMenu(layoutMenu);
-    QObject::connect(layoutMenu, &QMenu::aboutToShow, this, [this, layoutMenu] { d->fillLayoutMenu(layoutMenu); });
-    sep();
-    d->dimBtn = tool(bar, tb, "dimOutput", "Dim", "Dim Output: what is heard 20 dB quieter (Ctrl+Shift+F12)", true);
-    d->dimBtn->setChecked(playback && playback->dimmed());
-    sep();
-    d->downmixBtn = tool(bar, tb, "downmixOutput", "Downmix", "Downmix Output: hear the mix in stereo (a 5.1 project) or in mono", false);
-    d->downmixBtn->setPopupMode(QToolButton::InstantPopup);
-    QMenu* downmixMenu = new QMenu(d->downmixBtn);
-    d->downmixBtn->setMenu(downmixMenu);
-    QObject::connect(downmixMenu, &QMenu::aboutToShow, this, [this, downmixMenu] { reno::app::fillDownmixMenu(downmixMenu, d->pb); });
-    sep();
-    d->insertTrack = tool(bar, tb, "insertAudioTrack", "Insert Audio Track", "Add an audio track (Ctrl+Q)", false);
-    d->insertAssignable = tool(bar, tb, "insertAssignableFx", "Insert Assignable FX", "Add an assignable effects chain for tracks to send to (Insert > Audio Assignable FX)", false);
-    d->insertBus = tool(bar, tb, "insertBus", "Insert Bus", "Add a bus (Bus A, Bus B ...)", false);
-    d->insertInput = tool(bar, tb, "insertInputBus", "Insert Input Bus", "Add an input bus: sound from a sound card input, mixed with the project (VEGAS Pro 23)", false);
-    d->deleteBus = tool(bar, tb, "deleteBus", "Delete Bus", "Delete Bus", false);
-    tb->addStretch(1);
-    root->addWidget(bar);
-
+    root->addWidget(d->buildToolBar());
     auto* body = new QHBoxLayout();
     body->setContentsMargins(0, 0, 0, 0);
     body->setSpacing(0);
-
-    d->side = new QWidget(this);
-    d->side->setObjectName("consoleSide");
-    d->side->setFixedWidth(150);
-    d->side->setAutoFillBackground(true);
-    QPalette sp = d->side->palette();
-    sp.setColor(QPalette::Window, QColor(40, 40, 43));
-    d->side->setPalette(sp);
-    auto* sideLay = new QVBoxLayout(d->side);
-    sideLay->setContentsMargins(4, 4, 4, 4);
-    sideLay->setSpacing(4);
-    d->channelPane = new QWidget(d->side);
-    d->channelPane->setObjectName("channelListPane");
-    auto* cl = new QVBoxLayout(d->channelPane);
-    cl->setContentsMargins(0, 0, 0, 0);
-    cl->setSpacing(2);
-    QLabel* clTitle = new QLabel("Channel List", d->channelPane);
-    clTitle->setStyleSheet("color: #a0a0a6; font-weight: bold;");
-    cl->addWidget(clTitle);
-    d->channelList = new QListWidget(d->channelPane);
-    d->channelList->setObjectName("channelList");
-    d->channelList->setStyleSheet("QListWidget { background: #2a2a2d; border: 1px solid #1c1c1e; color: #dcdcdc; }");
-    d->channelList->setFocusPolicy(Qt::NoFocus);
-    cl->addWidget(d->channelList, 1);
-    sideLay->addWidget(d->channelPane, 1);
-
-    d->viewPane = new QWidget(d->side);
-    d->viewPane->setObjectName("viewControls");
-    auto* vg = new QGridLayout(d->viewPane);
-    vg->setContentsMargins(0, 0, 0, 0);
-    vg->setHorizontalSpacing(3);
-    vg->setVerticalSpacing(3);
-    QLabel* vcTitle = new QLabel("View Controls", d->viewPane);
-    vcTitle->setStyleSheet("color: #a0a0a6; font-weight: bold;");
-    vg->addWidget(vcTitle, 0, 0, 1, 2);
-    auto viewTool = [&](const char* name, const QString& text, const QString& tip, int r, int c, bool region) {
-        QToolButton* b = tool(d->viewPane, nullptr, name, text, tip, true);
-        b->setProperty("tool", QVariant());
-        b->setProperty("region", region);
-        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        b->setStyleSheet("QToolButton:checked { background: #2d4f6e; border-color: #3d84c6; color: white; }");
-        vg->addWidget(b, r, c);
-        return b;
-    };
-    d->showAll = viewTool("showAll", "Show All", "Show every channel (Q)", 1, 0, false);
-    d->showAll->setCheckable(false);
-    d->showTracks = viewTool("showTracks", "Tracks", "Show the audio tracks' strips (A)", 1, 1, false);
-    d->showBuses = viewTool("showBuses", "Buses", "Show the buses' strips (U)", 2, 0, false);
-    d->showMaster = viewTool("showMaster", "Master", "Show the master strip (T)", 2, 1, false);
-    d->showInputs = viewTool("showInputBuses", "Inputs", "Show the input buses' strips", 3, 0, false);
-    d->showInputs->setChecked(true);
-    d->showAssign = viewTool("showAssignable", "Assign. FX", "Show the assignable FX chains' strips (E)", 3, 1, false);
-    d->showPreview = viewTool("showPreview", "Preview", "Show the Preview bus (P): what the Trimmer and Start Preview play goes through it", 4, 0, false);
-    d->showPreview->setChecked(false);
-    QFrame* line = new QFrame(d->viewPane);
-    line->setFrameShape(QFrame::HLine);
-    line->setStyleSheet("color: #5a5a60;");
-    vg->addWidget(line, 5, 0, 1, 2);
-    d->regionFx = viewTool("regionFx", "Insert FX", "The Insert FX region (I)", 6, 0, true);
-    d->regionSends = viewTool("regionSends", "Sends", "The Sends region (S)", 6, 1, true);
-    d->regionIO = viewTool("regionIO", "I/O", "The I/O region (H)", 7, 0, true);
-    d->regionMeters = viewTool("regionMeters", "Meters", "The peak meters (M)", 7, 1, true);
-    d->regionFaders = viewTool("regionFaders", "Faders", "Pan, mute, solo, arm and the faders (F)", 8, 0, true);
-    d->regionVu = viewTool("regionVu", "VU Meters", "The VU / PPM meters region (right-click a meter for its kind)", 8, 1, true);
-    QLabel* wl = new QLabel("Channel Width", d->viewPane);
-    wl->setStyleSheet("color: #a0a0a6;");
-    vg->addWidget(wl, 9, 0, 1, 2);
-    d->widthSlider = new QSlider(Qt::Horizontal, d->viewPane);
-    d->widthSlider->setObjectName("channelWidth");
-    d->widthSlider->setRange(0, 2);
-    d->widthSlider->setPageStep(1);
-    d->widthSlider->setFocusPolicy(Qt::NoFocus);
-    d->widthSlider->setToolTip("Narrow (N), default (D) or wide (W) channels");
-    vg->addWidget(d->widthSlider, 10, 0, 1, 2);
-    sideLay->addWidget(d->viewPane, 0);
-    body->addWidget(d->side);
-
-    d->scroll = new QScrollArea(this);
-    d->scroll->setObjectName("mixerScroll");
-    d->scroll->setFrameShape(QFrame::NoFrame);
-    d->scroll->setWidgetResizable(true);
-    d->scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    d->scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    d->scroll->setFocusPolicy(Qt::NoFocus);
-    d->row = new QWidget();
-    d->row->setObjectName("mixerStrips");
-    d->row->setAutoFillBackground(true);
-    d->row->setPalette(pal);
-    d->rowLayout = new QHBoxLayout(d->row);
-    d->rowLayout->setContentsMargins(2, 2, 2, 2);
-    d->rowLayout->setSpacing(1);
-    d->empty = new QLabel(d->row);
-    d->empty->setAlignment(Qt::AlignCenter);
-    d->empty->setStyleSheet("color: #8a8a90;");
-    d->rowLayout->addWidget(d->empty, 1);
-    d->rowLayout->addStretch(0);
-    d->scroll->setWidget(d->row);
-    body->addWidget(d->scroll, 1);
-
-    d->masterBox = new QWidget(this);
-    d->masterBox->setObjectName("masterBox");
-    auto* mb = new QHBoxLayout(d->masterBox);
-    mb->setContentsMargins(0, 2, 2, 2);
-    mb->setSpacing(0);
-    auto* divider = new QFrame(d->masterBox);
-    divider->setFixedWidth(4);
-    divider->setStyleSheet("background: #18181a;");
-    mb->addWidget(divider);
-    d->master = new Strip(Strip::MasterStrip, 0, playback, d->masterBox);
-    d->master->onFx = [this](const FxTarget& t, uint64_t slot) { d->openFx(t, slot); };
-    d->master->onSelect = [this](Strip* st, Qt::KeyboardModifiers m) { d->select(st, m); };
-    d->preview = new Strip(Strip::PreviewStrip, 0, playback, d->masterBox);
-    d->preview->onSelect = [this](Strip* st, Qt::KeyboardModifiers m) { d->select(st, m); };
-    d->preview->fader->onMeterMenu = [this](const QPoint& at) { if (d->meterMenuFn) d->meterMenuFn(at); };
-    d->wireVu(d->preview);
-    mb->addWidget(d->preview);
-    mb->addWidget(d->master);
-    body->addWidget(d->masterBox);
+    body->addWidget(d->buildSidePane());
+    d->buildStrips(body);
     root->addLayout(body, 1);
-    // when the strips need a scroll bar, the master's strip ends where theirs do, so the faders stay in line
-    QObject::connect(d->scroll->horizontalScrollBar(), &QScrollBar::rangeChanged, [this, mb](int, int max) {
-        mb->setContentsMargins(0, 2, 2, 2 + (max > 0 ? d->scroll->horizontalScrollBar()->sizeHint().height() : 0));
-    });
-    auto meterMenu = [this](const QPoint& at) {
-        QMenu m(this);
-        d->fillMeterMenu(&m);
-        m.exec(at);
-    };
-    d->meterMenuFn = meterMenu;
-    d->master->fader->onMeterMenu = meterMenu;
-    d->wireVu(d->master);
-
-    QObject::connect(viewsMenu, &QMenu::aboutToShow, this, [this, viewsMenu] {
-        viewsMenu->clear();
-        QAction* a = viewsMenu->addAction("Channel List\tShift+C");
-        a->setCheckable(true);
-        a->setChecked(!d->channelPane->isHidden());
-        QObject::connect(a, &QAction::triggered, this, [this] { handleKey(Qt::Key_C, Qt::ShiftModifier); });
-        QAction* b = viewsMenu->addAction("View Controls\tShift+R");
-        b->setCheckable(true);
-        b->setChecked(!d->viewPane->isHidden());
-        QObject::connect(b, &QAction::triggered, this, [this] { handleKey(Qt::Key_R, Qt::ShiftModifier); });
-    });
-
-    QObject::connect(d->insertTrack, &QToolButton::clicked, this, [this] { d->insertAudioTrack(); });
-    QObject::connect(d->dimBtn, &QToolButton::toggled, this, [this](bool on) {
-        if (onDim) onDim(on);
-        else if (d->pb) d->pb->setDim(on);
-    });
-    QObject::connect(d->insertBus, &QToolButton::clicked, [] {
-        AppState::get().edit("Insert Bus", [&](Project& p) {
-            Bus b;
-            b.id = p.newId();
-            for (int k = 0; k < 26 * 27 && b.name.empty(); ++k) {
-                const std::string name = k < 26 ? strfmt("Bus %c", 'A' + k) : strfmt("Bus %c%c", 'A' + k / 26 - 1, 'A' + k % 26);
-                bool used = false;
-                for (const auto& o : p.buses) used = used || o.name == name;
-                if (!used) b.name = name;
-            }
-            p.buses.push_back(b);
-        });
-    });
-    QObject::connect(d->insertInput, &QToolButton::clicked, [] { reno::app::insertInputBus(); });
-    QObject::connect(d->deleteBus, &QToolButton::clicked, [this] {
-        const Project& pr = AppState::get().project();
-        if (pr.findInputBus(d->selectedBus)) {
-            const uint64_t id = d->selectedBus;
-            AppState::get().edit("Delete Input Bus", [&](Project& p) {
-                for (auto& t : p.tracks)
-                    if (t.recordInput.inputBus == id) t.recordInput.inputBus = 0;
-                p.inputBuses.erase(std::remove_if(p.inputBuses.begin(), p.inputBuses.end(), [&](const InputBus& b) { return b.id == id; }), p.inputBuses.end());
-            });
-            d->selectedBus = 0;
-            return;
-        }
-        if (pr.buses.empty()) return;
-        const uint64_t id = pr.findBus(d->selectedBus) ? d->selectedBus : pr.buses.back().id;
-        AppState::get().edit("Delete Bus", [&](Project& p) {
-            for (auto& t : p.tracks) {
-                if (t.output == id) t.output = 0;
-                t.sends.erase(std::remove_if(t.sends.begin(), t.sends.end(), [&](const Send& s) { return s.bus == id; }), t.sends.end());
-            }
-            for (auto& b : p.buses)
-                if (b.output == id) b.output = 0;
-            for (auto& b : p.inputBuses) {
-                if (b.output == id) b.output = 0;
-                b.sends.erase(std::remove_if(b.sends.begin(), b.sends.end(), [&](const Send& x) { return x.bus == id; }), b.sends.end());
-            }
-            p.buses.erase(std::remove_if(p.buses.begin(), p.buses.end(), [&](const Bus& b) { return b.id == id; }), p.buses.end());
-        });
-        d->selectedBus = 0;
-    });
-    for (QToolButton* b : {d->showTracks, d->showBuses, d->showMaster, d->showAssign, d->showInputs, d->showPreview})
-        QObject::connect(b, &QToolButton::toggled, [this](bool) { d->viewChanged(); });
-    // Insert Assignable FX: a new chain (FX 1, FX 2 ...), then its effects chosen (as an empty FX button does)
-    QObject::connect(d->insertAssignable, &QToolButton::clicked, this, [this] {
-        const uint64_t id = reno::app::insertAssignableFx();
-        if (id && onOpenFx) {
-            FxTarget t;
-            t.kind = FxTarget::Bus;
-            t.id = id;
-            onOpenFx(t, 0);
-        }
-    });
-    QObject::connect(d->showAll, &QToolButton::clicked, this, [this] { d->showAllChannels(); });
-    auto region = [this](QToolButton* b, bool ConsoleView::*field) {
-        QObject::connect(b, &QToolButton::toggled, this, [this, field](bool on) {
-            d->view.*field = on;
-            d->viewChanged();
-        });
-    };
-    region(d->regionFx, &ConsoleView::fx);
-    region(d->regionSends, &ConsoleView::sends);
-    region(d->regionIO, &ConsoleView::io);
-    region(d->regionMeters, &ConsoleView::meters);
-    region(d->regionFaders, &ConsoleView::faders);
-    region(d->regionVu, &ConsoleView::vu);
-    QObject::connect(d->widthSlider, &QSlider::valueChanged, this, [this](int v) {
-        d->view.width = v;
-        d->viewChanged();
-    });
-    QObject::connect(d->channelList, &QListWidget::itemChanged, this, [this](QListWidgetItem* it) {
-        if (d->filling) return;
-        const QString k = it->data(Qt::UserRole).toString();
-        if (it->checkState() == Qt::Checked) d->hidden.erase(k);
-        else d->hidden.insert(k);
-        d->applyView();
-    });
 
     d->listener.reset(new Listener([this](int changes) {
         if (changes & kProject) {

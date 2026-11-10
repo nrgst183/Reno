@@ -157,25 +157,22 @@ MainWindow::Tools::~Tools()
     recorder.reset();
 }
 
-void MainWindow::buildToolWindows()
+// A tool window's dock: hidden at first, its command in the Window menu and its key.
+void MainWindow::addToolWindow(QDockWidget* d, const char* actionName, const char* key)
 {
-    tools_.reset(new Tools());
-    Tools* t = tools_.get();
-    AppState& app = AppState::get();
+    QAction* toggle = d->toggleViewAction();
+    toggle->setText(QString("%1\t%2").arg(d->windowTitle(), key));
+    if (windowMenu_) windowMenu_->addAction(toggle);
+    keyAction(this, actionName, QString("Show %1").arg(d->windowTitle()), seq({key}), [this, d] { showDock(d); });
+    d->hide();
+}
+
+// The Trimmer (Alt+2), and how the other windows open files in it and preview them there.
+void MainWindow::setUpTrimmer(Tools* t)
+{
     Playback* pb = playback_.get();
-    QMenu* toolsMenu = menuNamed(this, "Tools");
-    t->transport = dynamic_cast<TransportBar*>(findChild<QWidget*>("transportBar"));
-
-    auto addWindow = [this](QDockWidget* d, const char* actionName, const char* key) {
-        QAction* toggle = d->toggleViewAction();
-        toggle->setText(QString("%1\t%2").arg(d->windowTitle(), key));
-        if (windowMenu_) windowMenu_->addAction(toggle);
-        keyAction(this, actionName, QString("Show %1").arg(d->windowTitle()), seq({key}), [this, d] { showDock(d); });
-        d->hide();
-    };
-
     t->trimmerDock = dock("Trimmer", "dockTrimmer", [&](QWidget* parent) -> QWidget* { return t->trimmer = new TrimmerWindow(parent); });
-    addWindow(t->trimmerDock, "showTrimmer", "Alt+2");
+    addToolWindow(t->trimmerDock, "showTrimmer", "Alt+2");
     t->trimmer->onWillPlay = [pb] { pb->pause(); };
     t->trimmer->onPreviewPicture = [this](const QImage& img) { if (preview_) preview_->showPicture(img); };
     openInTrimmer = [this, t](uint64_t mediaId, const QString& path) {
@@ -201,8 +198,13 @@ void MainWindow::buildToolWindows()
         out = t->trimmer->selectionOut();
         return mediaId != 0 && out > in;
     };
+}
 
-    // ---- recording (Ctrl+R; Ctrl+Alt+R arms the selected track; Ctrl+Alt+Shift+R arms it and asks for the folder)
+// Recording: Ctrl+R records; Ctrl+Alt+R arms the selected track; Ctrl+Alt+Shift+R arms it and asks for the folder.
+void MainWindow::setUpRecording(Tools* t)
+{
+    AppState& app = AppState::get();
+    Playback* pb = playback_.get();
     t->recorder.reset(new Recorder(pb));
     Recorder* rec = t->recorder.get();
     t->inputMeter = new InputMeter(rec, this);
@@ -234,13 +236,18 @@ void MainWindow::buildToolWindows()
         if (!rec->armed(app.currentTrack)) rec->armSelected();
         app.status("Recordings go to " + ss(dir));
     });
+    if (QMenu* toolsMenu = menuNamed(this, "Tools")) {
+        toolsMenu->addSeparator();
+        toolsMenu->addActions({record, arm, armPath});
+    }
+}
 
-    t->loudnessDock = dock("Loudness Meters", "dockLoudness", [&](QWidget* parent) -> QWidget* { return t->loudness = new LoudnessWindow(pb, parent); });
-    addWindow(t->loudnessDock, "showLoudness", "Ctrl+Alt+7");
-
-    // ---- the Surround Panner (Ctrl+Alt+3): the current track's (or bus's) panner in a 5.1 project; a double-click on a Mixing Console strip's small panner shows that track's or bus's
+// The Surround Panner (Ctrl+Alt+3): the current track's (or bus's) panner in a 5.1 project; a double-click on a
+// Mixing Console strip's small panner shows that track's or bus's.
+void MainWindow::setUpSurroundPanner(Tools* t)
+{
     t->surroundDock = dock("Surround Panner", "dockSurround", [&](QWidget* parent) -> QWidget* { return t->surround = new SurroundPannerWindow(parent); });
-    addWindow(t->surroundDock, "showSurroundPanner", "Ctrl+Alt+3");
+    addToolWindow(t->surroundDock, "showSurroundPanner", "Ctrl+Alt+3");
     if (MixerWindow* mixer = mixerDock_ ? dynamic_cast<MixerWindow*>(mixerDock_->findChild<QWidget*>("mixer")) : nullptr)
         mixer->onOpenSurround = [this, t](uint64_t id) {
             t->surround->showPanner(id);
@@ -251,19 +258,12 @@ void MainWindow::buildToolWindows()
             t->surround->showPanner(id);
             showDock(t->surroundDock);
         };
+}
 
-    t->pluginsDock = dock("Plug-In Manager", "dockPlugins", [&](QWidget* parent) -> QWidget* {
-        t->plugins = new PluginManager(parent);
-        t->plugins->onActivated = [this](FxBrowser::Kind kind, const std::string& data) { browserActivated(kind, data); };
-        return t->plugins;
-    });
-    addWindow(t->pluginsDock, "showPluginManager", "Ctrl+Alt+1");
-
-    t->dashboardDock = dock("Dashboard", "dockDashboard", [&](QWidget* parent) -> QWidget* { return t->dashboard = new Dashboard(pb, rec, parent); });
-    addWindow(t->dashboardDock, "showDashboard", "Ctrl+Alt+8");
-    t->devicesDock = dock("Device Explorer", "dockDevices", [&](QWidget* parent) -> QWidget* { return t->devices = new DeviceExplorer(parent); });
-    addWindow(t->devicesDock, "showDeviceExplorer", "Ctrl+Alt+6");
-
+// Preview on External Monitor (Alt+Shift+4) and the display it uses (View menu).
+void MainWindow::setUpExternalMonitor(Tools* t)
+{
+    Playback* pb = playback_.get();
     t->monitor = new ExternalMonitor(pb, this);
     QAction* monitor = keyAction(this, "externalMonitor", "Preview on E&xternal Monitor", seq({"Alt+Shift+4"}), [t] { t->monitor->toggle(); });
     if (QMenu* view = menuNamed(this, "View")) {
@@ -287,13 +287,18 @@ void MainWindow::buildToolWindows()
             }
         });
     }
+}
 
+// The Color Grading panel (Alt+G) and the Color Grading layout (Alt+D, C).
+void MainWindow::setUpColorGrading(Tools* t)
+{
+    Playback* pb = playback_.get();
     t->grading = new ColorGradingPanel(this);
     t->grading->onOpenFx = [this](const FxTarget& target, uint64_t slot) { openFx(target, slot); };
     t->grading->setPickerHook = [this](std::function<void(int, const QRectF&, const QImage&)> fn) { preview()->setPicker(std::move(fn)); };
     t->grading->frameSource = [pb] { return pb->renderNow(AppState::get().cursor()); };
     t->gradingDock = dock("Color Grading", "dockColorGrading", t->grading);
-    addWindow(t->gradingDock, "showColorGrading", "Alt+G");
+    addToolWindow(t->gradingDock, "showColorGrading", "Alt+G");
     fxWindow_->onOpenBuiltin = [this, t](uint64_t slotId, const FxTarget& target) {
         showDock(t->gradingDock);
         t->grading->showSlot(slotId, target);
@@ -322,13 +327,13 @@ void MainWindow::buildToolWindows()
         updateDockTabs();
     };
     keyAction(this, "colorGradingLayout", "&Color Grading Layout", seq({"Alt+D, C"}), [t] { t->colorGradingLayout(); });
+}
 
-    t->trackingDock = dock("Motion Tracking", "dockMotionTracking", [&](QWidget* parent) -> QWidget* { return t->tracking = new MotionTrackingWindow(pb, parent); });
-    addWindow(t->trackingDock, "showMotionTracking", "Alt+M");
-
-    t->speechDock = dock("Text to Speech", "dockTextToSpeech", [&](QWidget* parent) -> QWidget* { return t->speech = new TextToSpeechWindow(parent); });
-    addWindow(t->speechDock, "showTextToSpeech", "Ctrl+Shift+P");
-
+// MIDI timecode and clock (Options > Timecode): generating them, following them, and the ports.
+void MainWindow::setUpMidiSync(Tools* t)
+{
+    AppState& app = AppState::get();
+    Playback* pb = playback_.get();
     t->midi.reset(new MidiSync(pb));
     MidiSync* midi = t->midi.get();
     auto midiToggle = [this, &app](const char* name, const QString& text, const char* key, std::function<bool(bool, std::string*)> set) {
@@ -377,7 +382,13 @@ void MainWindow::buildToolWindows()
             });
         }
     }
+}
 
+// Selectively Prerender Video (Shift+M) and Clean Up Prerendered Video (Tools menu).
+void MainWindow::setUpPrerender(Tools* t)
+{
+    AppState& app = AppState::get();
+    Playback* pb = playback_.get();
     t->prerender = [this, pb, &app]() -> bool {
         if (!(app.loopEnd > app.loopStart)) {
             app.status("Selective Prerender: make a time selection first.");
@@ -408,8 +419,17 @@ void MainWindow::buildToolWindows()
         pb->clearPrerendered(true);
         app.status(strfmt("%d prerendered stretch%s deleted.", (int)n, n == 1 ? "" : "es"));
     });
+    if (QMenu* toolsMenu = menuNamed(this, "Tools")) {
+        toolsMenu->addSeparator();
+        toolsMenu->addActions({prerender, cleanUp});
+    }
+}
 
-    // ---- Insert Adjustment Track (Ctrl+Shift+Alt+Q): a video track whose effects work on everything under it, put above the selected video track (else at the top), with its Track FX open to choose an effect
+// Insert > Adjustment Track (Ctrl+Shift+Alt+Q): a video track whose effects work on everything under it, put above
+// the selected video track (else at the top), with its Track FX open to choose an effect.
+void MainWindow::addAdjustmentTrackCommand(Tools* t)
+{
+    AppState& app = AppState::get();
     QAction* adjTrack = keyAction(this, "adjustmentTrack", "Ad&justment Track", seq({"Ctrl+Shift+Alt+Q"}), [this, &app] {
         uint64_t made = 0;
         app.edit("Insert Adjustment Track", [&](Project& p) {
@@ -439,15 +459,43 @@ void MainWindow::buildToolWindows()
             if (acts[k]->objectName() == "videoTrack") before = acts[k + 1];
         insert->insertAction(before, adjTrack);
     }
+}
 
-    if (toolsMenu) {
-        toolsMenu->addSeparator();
-        toolsMenu->addActions({record, arm, armPath});
-        toolsMenu->addSeparator();
-        toolsMenu->addActions({prerender, cleanUp});
-    }
+void MainWindow::buildToolWindows()
+{
+    tools_.reset(new Tools());
+    Tools* t = tools_.get();
+    Playback* pb = playback_.get();
+    t->transport = dynamic_cast<TransportBar*>(findChild<QWidget*>("transportBar"));
 
-    t->listener = app.addListener([t](int changes) {
+    setUpTrimmer(t);
+    setUpRecording(t);
+    t->loudnessDock = dock("Loudness Meters", "dockLoudness", [&](QWidget* parent) -> QWidget* { return t->loudness = new LoudnessWindow(pb, parent); });
+    addToolWindow(t->loudnessDock, "showLoudness", "Ctrl+Alt+7");
+    setUpSurroundPanner(t);
+    t->pluginsDock = dock("Plug-In Manager", "dockPlugins", [&](QWidget* parent) -> QWidget* {
+        t->plugins = new PluginManager(parent);
+        t->plugins->onActivated = [this](FxBrowser::Kind kind, const std::string& data) { browserActivated(kind, data); };
+        return t->plugins;
+    });
+    addToolWindow(t->pluginsDock, "showPluginManager", "Ctrl+Alt+1");
+
+    t->dashboardDock = dock("Dashboard", "dockDashboard", [&](QWidget* parent) -> QWidget* { return t->dashboard = new Dashboard(pb, t->recorder.get(), parent); });
+    addToolWindow(t->dashboardDock, "showDashboard", "Ctrl+Alt+8");
+    t->devicesDock = dock("Device Explorer", "dockDevices", [&](QWidget* parent) -> QWidget* { return t->devices = new DeviceExplorer(parent); });
+    addToolWindow(t->devicesDock, "showDeviceExplorer", "Ctrl+Alt+6");
+    setUpExternalMonitor(t);
+    setUpColorGrading(t);
+    t->trackingDock = dock("Motion Tracking", "dockMotionTracking", [&](QWidget* parent) -> QWidget* { return t->tracking = new MotionTrackingWindow(pb, parent); });
+    addToolWindow(t->trackingDock, "showMotionTracking", "Alt+M");
+
+    t->speechDock = dock("Text to Speech", "dockTextToSpeech", [&](QWidget* parent) -> QWidget* { return t->speech = new TextToSpeechWindow(parent); });
+    addToolWindow(t->speechDock, "showTextToSpeech", "Ctrl+Shift+P");
+    setUpMidiSync(t);
+    setUpPrerender(t);
+    addAdjustmentTrackCommand(t);
+
+    t->listener = AppState::get().addListener([t](int changes) {
         if ((changes & kPlayback) && t->transport && t->recorder) t->transport->setRecording(t->recorder->recording());
     });
 }

@@ -200,6 +200,19 @@ private:
     int extSetD(const Desc& d, int prop, double v);
     int extSetS(const Desc& d, int prop, const std::string& v);
     int extList(const Desc& d, int which, std::vector<uint64_t>* out);
+    // call()'s parts: what each kind of object does
+    int fxOwnerCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s, uint64_t* out, double* dout);
+    int envelopeOwnerCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s, uint64_t* out,
+                          double* dout);
+    int appCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s, uint64_t* out, double* dout);
+    int trackCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s, uint64_t* out, double* dout);
+    int eventCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s, uint64_t* out, double* dout);
+    int groupCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s, uint64_t* out, double* dout);
+    int envelopeCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s, uint64_t* out,
+                     double* dout);
+    static int64_t intArg(const std::vector<int64_t>& ia, size_t k, int64_t def = 0);
+    static double numArg(const std::vector<double>& da, size_t k, double def = 0);
+    int pluginIndex(int64_t handleArg);
     int extCall(const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s, uint64_t* out, double* dout);
     const std::vector<ScriptPreset>& presetsOf(size_t pluginIndex);
     const std::vector<ScriptRenderer>& renderersOf();

@@ -133,6 +133,8 @@ private:
     void tapBuses(AudioEngine& audio);
     bool renderSequential(MediaPool& pool, FrameOptions& fo);
     bool renderPipelined(MediaPool& pool, FrameOptions& fo, int workers);
+    std::vector<std::unique_ptr<FxRuntime>> extraFxRuntimes(int workers);
+    bool writePipelined(int64_t k, const ImagePtr& img, AudioBlock& blk, bool withAudio);
     void mixMapped(AudioEngine& audio, int n, int64_t s0, AudioBlock& blk);
 
     Project p_;                     // the project as the template asks for it to be rendered
@@ -497,42 +499,22 @@ bool RenderAsJob::renderSequential(MediaPool& pool, FrameOptions& fo)
 }
 
 // Several frames at once, the sound beside them, the encoder fed in order.
-bool RenderAsJob::renderPipelined(MediaPool& pool, FrameOptions& fo, int workers)
-{
-    const bool withAudio = pe_.audio;
-    // Every worker but the first has instances of its own of the project's OpenFX effects.
-    std::vector<std::unique_ptr<FxRuntime>> extra;
-    if (workers > 1) {
-        Project ps = p_;
-        fx_.captureStates(ps);
-        std::vector<uint64_t> wanted;
-        p_.forEachFx([&](const FxSlot& s) { if (s.kind == "ofx" && fx_.video(s.id)) wanted.push_back(s.id); });
-        for (int i = 1; i < workers; ++i) {
-            std::unique_ptr<FxRuntime> rt(new FxRuntime());
-            size_t next = 0;
-            while (!rt->prepareSome(ps, next, 1.0e9, true, false)) {}
-            bool same = true;
-            for (uint64_t id : wanted) same = same && rt->video(id) != nullptr;
-            if (!same) break;                   // an effect that cannot be made twice
-            extra.push_back(std::move(rt));
-        }
-        workers = 1 + (int)extra.size();
-    }
-    // how many frames may wait to be written at most, and how many a worker takes at a go
-    const int64_t frameBytes = std::max<int64_t>(1, (int64_t)es_.inWidth * es_.inHeight * 4);
-    const int64_t window = std::max<int64_t>(2 * workers, std::min<int64_t>(16 * workers, (512ll << 20) / frameBytes));
-    const int64_t run = std::max<int64_t>(1, std::min<int64_t>(8, window / (2 * workers)));
-    const int64_t audioAhead = 64 + window;
+namespace {
 
+// What the threads of a pipelined render share: the frames and sound blocks rendered and waiting to be written, how far
+// the writer has got, and why the render stopped.
+struct RenderPipeline {
     std::mutex m;
     std::condition_variable workerCv, writerCv;
-    std::map<int64_t, ImagePtr> frames;         // rendered, waiting to be written (m)
+    std::map<int64_t, ImagePtr> frames;
     std::map<int64_t, AudioBlock> sounds;
-    int64_t written = 0;                        // the frames written so far (m)
-    std::string failure;                        // why a thread gave up (m)
-    std::atomic<bool> stop(false);              // told to all: stop now (also the effects' abort())
-    std::atomic<int64_t> nextRun(0);
-    auto giveUp = [&](const std::string& why) {
+    int64_t written = 0;                        // the frames written so far
+    std::string failure;                        // why a thread gave up
+    std::atomic<bool> stop{false};              // told to all: stop now (also the effects' abort())
+    std::atomic<int64_t> nextRun{0};            // the next run of frames for a video worker
+
+    void giveUp(const std::string& why)
+    {
         {
             std::lock_guard<std::mutex> lk(m);
             if (failure.empty()) failure = why;
@@ -540,85 +522,37 @@ bool RenderAsJob::renderPipelined(MediaPool& pool, FrameOptions& fo, int workers
         }
         workerCv.notify_all();
         writerCv.notify_all();
-    };
-    fo.cancel = &stop;
-    std::vector<std::thread> threads;
-    for (int i = 0; i < workers; ++i) {
-        FxRuntime& runtime = i == 0 ? fx_ : *extra[(size_t)i - 1];
-        threads.emplace_back([&] {
-            lowerThreadPriority();
-            try {
-                VideoEngine video(pool, runtime);
-                for (;;) {
-                    const int64_t first = nextRun.fetch_add(1) * run;
-                    if (first >= count_) return;
-                    for (int64_t k = first; k < std::min(count_, first + run); ++k) {
-                        {
-                            std::unique_lock<std::mutex> lk(m);
-                            workerCv.wait(lk, [&] { return stop.load() || k < written + window; });
-                            if (stop.load()) return;
-                        }
-                        ImagePtr img;
-                        if (!smart_.at(k)) {
-                            img = video.render(p_, timeOf(k) + 1e-7, fo);
-                            if (stop.load()) return;
-                            img = finishFrame(img);
-                            if (!img) return giveUp("out of memory");
-                        }
-                        {
-                            std::lock_guard<std::mutex> lk(m);
-                            frames[k] = std::move(img);
-                        }
-                        writerCv.notify_all();
-                    }
-                }
-            } catch (const std::exception& e) {
-                giveUp(e.what());
-            } catch (...) {
-                giveUp("an unexpected error");
-            }
-        });
     }
-    if (withAudio) {
-        threads.emplace_back([&] {
-            raiseThreadPriority();
-            try {
-                const FinalRenderScope scope;
-                AudioEngine audio(pool, fx_);
-                tapBuses(audio);
-                for (int64_t k = 0; k < count_; ++k) {
-                    {
-                        std::unique_lock<std::mutex> lk(m);
-                        workerCv.wait(lk, [&] { return stop.load() || k < written + audioAhead; });
-                        if (stop.load()) return;
-                    }
-                    AudioBlock blk;
-                    mixBlock(audio, k, blk);
-                    {
-                        std::lock_guard<std::mutex> lk(m);
-                        sounds[k] = std::move(blk);
-                    }
-                    writerCv.notify_all();
-                }
-            } catch (const std::exception& e) {
-                giveUp(e.what());
-            } catch (...) {
-                giveUp("an unexpected error");
-            }
-        });
+    // Waits until frame (or block) k may be made: fewer than 'ahead' are made and not yet written. False: stopped.
+    bool waitForRoom(int64_t k, int64_t ahead)
+    {
+        std::unique_lock<std::mutex> lk(m);
+        workerCv.wait(lk, [&] { return stop.load() || k < written + ahead; });
+        return !stop.load();
     }
-    // This thread is the encoder's: the frames and the sound come to it in order.
-    bool good = true;
-    for (int64_t k = 0; k < count_ && good; ++k) {
-        ImagePtr img;
-        AudioBlock blk;
+    void putFrame(int64_t k, ImagePtr img)
+    {
+        {
+            std::lock_guard<std::mutex> lk(m);
+            frames[k] = std::move(img);
+        }
+        writerCv.notify_all();
+    }
+    void putSound(int64_t k, AudioBlock blk)
+    {
+        {
+            std::lock_guard<std::mutex> lk(m);
+            sounds[k] = std::move(blk);
+        }
+        writerCv.notify_all();
+    }
+    // Waits for frame k (and its sound) and takes them; the workers may go on. False: stopped.
+    bool take(int64_t k, bool withAudio, ImagePtr& img, AudioBlock& blk)
+    {
         {
             std::unique_lock<std::mutex> lk(m);
             writerCv.wait(lk, [&] { return stop.load() || (frames.count(k) && (!withAudio || sounds.count(k))); });
-            if (stop.load()) {
-                good = false;
-                break;
-            }
+            if (stop.load()) return false;
             img = std::move(frames[k]);
             frames.erase(k);
             if (withAudio) {
@@ -628,39 +562,146 @@ bool RenderAsJob::renderPipelined(MediaPool& pool, FrameOptions& fo, int workers
             written = k + 1;
         }
         workerCv.notify_all();
-        const SmartCopy* sc = smart_.at(k);
-        if (sc && !img) {
-            if (k == sc->firstFrame && !writer_->writeVideoCopy(*sc->source, sc->firstGop, sc->gopCount, &err_)) {
-                writer_->finish(nullptr);
-                if (err_.empty()) err_ = "could not copy the frames";
-                good = false;
-            } else if (withAudio && !writeBlock(blk)) {
-                good = false;
-            } else if (!progressAfter(k)) {
-                good = false;
-            }
-        } else if (!writer_ || !writer_->writeVideo(*img)) {
-            if (writer_) writer_->finish(&err_);
-            if (err_.empty()) err_ = "could not write the frame";
-            good = false;
-        } else if (withAudio && !writeBlock(blk)) {
-            good = false;
-        } else if (!progressAfter(k)) {
-            good = false;
-        }
-        if (!good) giveUp(err_);
+        return true;
     }
+    void stopAll()
     {
-        std::lock_guard<std::mutex> lk(m);
-        stop.store(true);
+        {
+            std::lock_guard<std::mutex> lk(m);
+            stop.store(true);
+        }
+        workerCv.notify_all();
     }
-    workerCv.notify_all();
+    // Runs 'work', a thread's whole job, turning what it throws into giving up.
+    template <class F> void guarded(F&& work)
+    {
+        try {
+            work();
+        } catch (const std::exception& e) {
+            giveUp(e.what());
+        } catch (...) {
+            giveUp("an unexpected error");
+        }
+    }
+};
+
+}  // namespace
+
+// Every worker but the first has instances of its own of the project's OpenFX effects: as many as could be made (an
+// effect that cannot be made twice stops it at one), up to workers - 1.
+std::vector<std::unique_ptr<FxRuntime>> RenderAsJob::extraFxRuntimes(int workers)
+{
+    std::vector<std::unique_ptr<FxRuntime>> extra;
+    if (workers <= 1) return extra;
+    Project ps = p_;
+    fx_.captureStates(ps);
+    std::vector<uint64_t> wanted;
+    p_.forEachFx([&](const FxSlot& s) { if (s.kind == "ofx" && fx_.video(s.id)) wanted.push_back(s.id); });
+    for (int i = 1; i < workers; ++i) {
+        std::unique_ptr<FxRuntime> rt(new FxRuntime());
+        size_t next = 0;
+        while (!rt->prepareSome(ps, next, 1.0e9, true, false)) {}
+        bool same = true;
+        for (uint64_t id : wanted) same = same && rt->video(id) != nullptr;
+        if (!same) break;
+        extra.push_back(std::move(rt));
+    }
+    return extra;
+}
+
+// Writes one frame (and its sound) taken from the pipeline: rendered, or copied from the source (smart rendering).
+// False with err_ set when it can't.
+bool RenderAsJob::writePipelined(int64_t k, const ImagePtr& img, AudioBlock& blk, bool withAudio)
+{
+    const SmartCopy* sc = smart_.at(k);
+    if (sc && !img) {
+        if (k == sc->firstFrame && !writer_->writeVideoCopy(*sc->source, sc->firstGop, sc->gopCount, &err_)) {
+            writer_->finish(nullptr);
+            if (err_.empty()) err_ = "could not copy the frames";
+            return false;
+        }
+    } else if (!writer_ || !writer_->writeVideo(*img)) {
+        if (writer_) writer_->finish(&err_);
+        if (err_.empty()) err_ = "could not write the frame";
+        return false;
+    }
+    if (withAudio && !writeBlock(blk)) return false;
+    return progressAfter(k);
+}
+
+bool RenderAsJob::renderPipelined(MediaPool& pool, FrameOptions& fo, int workers)
+{
+    const bool withAudio = pe_.audio;
+    std::vector<std::unique_ptr<FxRuntime>> extra = extraFxRuntimes(workers);
+    workers = 1 + (int)extra.size();
+    // how many frames may wait to be written at most, and how many a worker takes at a go
+    const int64_t frameBytes = std::max<int64_t>(1, (int64_t)es_.inWidth * es_.inHeight * 4);
+    const int64_t window = std::max<int64_t>(2 * workers, std::min<int64_t>(16 * workers, (512ll << 20) / frameBytes));
+    const int64_t run = std::max<int64_t>(1, std::min<int64_t>(8, window / (2 * workers)));
+    const int64_t audioAhead = 64 + window;
+
+    RenderPipeline pipe;
+    fo.cancel = &pipe.stop;
+    std::vector<std::thread> threads;
+    for (int i = 0; i < workers; ++i) {
+        FxRuntime& runtime = i == 0 ? fx_ : *extra[(size_t)i - 1];
+        threads.emplace_back([&] {
+            lowerThreadPriority();
+            pipe.guarded([&] {
+                VideoEngine video(pool, runtime);
+                for (;;) {
+                    const int64_t first = pipe.nextRun.fetch_add(1) * run;
+                    if (first >= count_) return;
+                    for (int64_t k = first; k < std::min(count_, first + run); ++k) {
+                        if (!pipe.waitForRoom(k, window)) return;
+                        ImagePtr img;
+                        if (!smart_.at(k)) {
+                            img = video.render(p_, timeOf(k) + 1e-7, fo);
+                            if (pipe.stop.load()) return;
+                            img = finishFrame(img);
+                            if (!img) return pipe.giveUp("out of memory");
+                        }
+                        pipe.putFrame(k, std::move(img));
+                    }
+                }
+            });
+        });
+    }
+    if (withAudio) {
+        threads.emplace_back([&] {
+            raiseThreadPriority();
+            pipe.guarded([&] {
+                const FinalRenderScope scope;
+                AudioEngine audio(pool, fx_);
+                tapBuses(audio);
+                for (int64_t k = 0; k < count_; ++k) {
+                    if (!pipe.waitForRoom(k, audioAhead)) return;
+                    AudioBlock blk;
+                    mixBlock(audio, k, blk);
+                    pipe.putSound(k, std::move(blk));
+                }
+            });
+        });
+    }
+    // This thread is the encoder's: the frames and the sound come to it in order.
+    bool good = true;
+    for (int64_t k = 0; k < count_ && good; ++k) {
+        ImagePtr img;
+        AudioBlock blk;
+        if (!pipe.take(k, withAudio, img, blk)) {
+            good = false;
+            break;
+        }
+        good = writePipelined(k, img, blk, withAudio);
+        if (!good) pipe.giveUp(err_);
+    }
+    pipe.stopAll();
     for (std::thread& t : threads) t.join();
     fo.cancel = nullptr;
     if (!good && err_.empty()) {
         // a thread gave up (the encoder's own failures have their message in err_)
         finishAll(nullptr);
-        err_ = failure.empty() ? "stopped" : failure;
+        err_ = pipe.failure.empty() ? "stopped" : pipe.failure;
     }
     if (!good) return fail(err_);
     return true;

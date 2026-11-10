@@ -807,6 +807,110 @@ void TimelineWidget::Impl::setPointer(const Hit& h, Qt::KeyboardModifiers mods)
     }
 }
 
+// The tracks and events a drag moved (the ones a later edit at the same place repeats on: rememberEdit).
+static void moversTracksAndIds(const Project& p, const std::vector<Mover>& movers, std::set<uint64_t>& tracks, std::set<uint64_t>& ids)
+{
+    for (const Mover& m : movers) {
+        if ((size_t)m.track < p.tracks.size()) tracks.insert(p.tracks[(size_t)m.track].id);
+        ids.insert(m.id);
+    }
+}
+
+// A move (or Ctrl+drag copy) let go: one undo step, the edit remembered. Without a drag, the click's selection change.
+void TimelineWidget::Impl::finishMove(const DragState& was)
+{
+    if (was.started) {
+        app.endDrag(was.copies.empty() ? "Move Events" : "Copy Events");
+        if (!was.ripple && !was.movers.empty()) {
+            const Mover& g = was.movers[std::min(was.grabbed, was.movers.size() - 1)];
+            const Track* t = nullptr;
+            const Event* e = app.project().findEvent(g.id, &t);
+            std::set<uint64_t> tracks, ids;
+            moversTracksAndIds(app.project(), was.movers, tracks, ids);
+            double from = 1e300;
+            for (const Mover& m : was.movers) from = std::min(from, m.end());
+            if (e && t && tracks.count(t->id)) rememberEdit(tracks, from, e->start - g.start, ids);
+        }
+    } else if (was.ctrlUntoggle) {
+        std::set<uint64_t> sel = app.selection();
+        for (uint64_t g : withGroup(was.hit.event)) sel.erase(g);
+        app.setSelection(sel);
+    } else if (was.collapseOnRelease) {
+        selectGroupOf(was.hit.event);
+    }
+}
+
+// A trim or stretch of an edge let go: one undo step; a right edge's change remembered as an edit.
+void TimelineWidget::Impl::finishEdgeDrag(const DragState& was)
+{
+    app.endDrag(was.kind == Drag::TrimLeft || was.kind == Drag::TrimRight ? "Trim Event" : "Stretch Event");
+    endEdgePreview();
+    if ((was.kind == Drag::TrimRight || was.kind == Drag::StretchRight) && !was.ripple && !was.movers.empty())
+        if (const Event* e = app.project().findEvent(was.movers[0].id)) {
+            std::set<uint64_t> tracks, ids;
+            moversTracksAndIds(app.project(), was.movers, tracks, ids);
+            rememberEdit(tracks, was.movers[0].end(), e->length - was.movers[0].length, ids);
+        }
+}
+
+// The zoom tool let go at 'pos': the dragged area fills the view; a click without a drag zooms to fit.
+void TimelineWidget::Impl::finishZoomRange(const DragState& was, const QPointF& pos)
+{
+    if (was.started) {
+        // the dragged area fills the view: its time span (Free Zoom and Time Zoom) and its tracks (Free Zoom and
+        // Track Height Zoom)
+        const double a = timeAtF(std::min(was.pressPos.x(), pos.x())), b = timeAtF(std::max(was.pressPos.x(), pos.x()));
+        if (was.bandMode != 2 && b - a > 1e-6) {
+            pps = clampd(viewW() / (b - a), minPps(), maxPps());
+            setViewStart(a);
+        }
+        if (was.bandMode != 1) {
+            const double y0 = std::min(was.pressPos.y(), pos.y()), y1 = std::max(was.pressPos.y(), pos.y());
+            int ra = -1, rb = -1;
+            for (size_t k = 0; k < rows.size(); ++k)
+                if (rows[k].h > 0 && rowTop(rows[k]) + rows[k].h > y0 && rowTop(rows[k]) < y1) {
+                    if (ra < 0) ra = (int)k;
+                    rb = (int)k;
+                }
+            if (ra >= 0) zoomTracks(ra, rb);
+        }
+    } else {
+        zoomToFit();
+        if (!rows.empty()) zoomTracks(0, (int)rows.size() - 1);
+    }
+}
+
+// A click (no drag) let go over the button it was pressed on: an event's or track's FX, Pan/Crop, Track Motion, or the
+// event's menu.
+void TimelineWidget::Impl::clickedButton(const DragState& was, const QPointF& pos)
+{
+    const Hit h = hitTest(pos);
+    const bool same = h.part == was.hit.part && h.event == was.hit.event && h.track == was.hit.track;
+    if (same && (h.part == Part::EventFx || h.part == Part::HeaderFx) && q->onOpenFx) {
+        FxTarget t;
+        t.kind = h.part == Part::EventFx ? FxTarget::Event : FxTarget::Track;
+        t.id = h.part == Part::EventFx ? h.event : h.track;
+        q->onOpenFx(t, 0);
+    } else if (same && h.part == Part::EventCrop && q->onPanCrop) {
+        q->onPanCrop(h.event);
+    } else if (same && h.part == Part::HeaderMotion && q->onTrackMotion) {
+        q->onTrackMotion(h.track);
+    } else if (same && h.part == Part::EventMenu) {
+        const Track* tr = nullptr;
+        const Event* e = app.project().findEvent(h.event, &tr);
+        const Row* r = (e && tr) ? rowOf(tr->id) : nullptr;
+        if (r) {
+            if (!app.selection().count(h.event)) selectGroupOf(h.event);
+            if (q->onBeforeMenu) q->onBeforeMenu();
+            QMenu menu(q);
+            eventHamburger(menu, h.event);
+            q->update();
+            menu.exec(q->mapToGlobal(menuButtonRect(eventRect(*r, *e)).bottomLeft().toPoint() + QPoint(0, 2)));
+        }
+    }
+
+}
+
 void TimelineWidget::Impl::release(QMouseEvent* ev)
 {
     if (ev->button() == Qt::RightButton && swallowRight) {
@@ -848,43 +952,12 @@ void TimelineWidget::Impl::release(QMouseEvent* ev)
     case Drag::TrackHeight:
         if (was.started) app.endDrag(was.heights.size() > 1 ? "Track Heights" : "Track Height");
         break;
-    case Drag::Move:
-        if (was.started) {
-            app.endDrag(was.copies.empty() ? "Move Events" : "Copy Events");
-            if (!was.ripple && !was.movers.empty()) {
-                const Mover& g = was.movers[std::min(was.grabbed, was.movers.size() - 1)];
-                const Track* t = nullptr;
-                const Event* e = app.project().findEvent(g.id, &t);
-                std::set<uint64_t> tracks, ids;
-                double from = 1e300;
-                for (const Mover& m : was.movers) {
-                    if ((size_t)m.track < app.project().tracks.size()) tracks.insert(app.project().tracks[(size_t)m.track].id);
-                    ids.insert(m.id);
-                    from = std::min(from, m.end());
-                }
-                if (e && t && tracks.count(t->id)) rememberEdit(tracks, from, e->start - g.start, ids);
-            }
-        } else if (was.ctrlUntoggle) {
-            std::set<uint64_t> sel = app.selection();
-            for (uint64_t g : withGroup(was.hit.event)) sel.erase(g);
-            app.setSelection(sel);
-        } else if (was.collapseOnRelease) selectGroupOf(was.hit.event);
-        break;
+    case Drag::Move: finishMove(was); break;
     case Drag::TrimLeft:
     case Drag::TrimRight:
     case Drag::StretchLeft:
     case Drag::StretchRight:
-        app.endDrag(was.kind == Drag::TrimLeft || was.kind == Drag::TrimRight ? "Trim Event" : "Stretch Event");
-        endEdgePreview();
-        if ((was.kind == Drag::TrimRight || was.kind == Drag::StretchRight) && !was.ripple && !was.movers.empty())
-            if (const Event* e = app.project().findEvent(was.movers[0].id)) {
-                std::set<uint64_t> tracks, ids;
-                for (const Mover& m : was.movers) {
-                    if ((size_t)m.track < app.project().tracks.size()) tracks.insert(app.project().tracks[(size_t)m.track].id);
-                    ids.insert(m.id);
-                }
-                rememberEdit(tracks, was.movers[0].end(), e->length - was.movers[0].length, ids);
-            }
+        finishEdgeDrag(was);
         break;
     case Drag::Shuffle:
         if (was.started) app.endDrag("Shuffle Events");
@@ -944,58 +1017,12 @@ void TimelineWidget::Impl::release(QMouseEvent* ev)
         if (was.started) app.endDrag("Move Region");
         break;
     case Drag::ZoomRange:
-        if (was.started) {
-            // the dragged area fills the view: its time span (Free Zoom and Time Zoom) and its tracks (Free Zoom and
-            // Track Height Zoom)
-            const double a = timeAtF(std::min(was.pressPos.x(), ev->position().x())), b = timeAtF(std::max(was.pressPos.x(), ev->position().x()));
-            if (was.bandMode != 2 && b - a > 1e-6) {
-                pps = clampd(viewW() / (b - a), minPps(), maxPps());
-                setViewStart(a);
-            }
-            if (was.bandMode != 1) {
-                const double y0 = std::min(was.pressPos.y(), ev->position().y()), y1 = std::max(was.pressPos.y(), ev->position().y());
-                int ra = -1, rb = -1;
-                for (size_t k = 0; k < rows.size(); ++k)
-                    if (rows[k].h > 0 && rowTop(rows[k]) + rows[k].h > y0 && rowTop(rows[k]) < y1) {
-                        if (ra < 0) ra = (int)k;
-                        rb = (int)k;
-                    }
-                if (ra >= 0) zoomTracks(ra, rb);
-            }
-        } else {
-            zoomToFit();
-            if (!rows.empty()) zoomTracks(0, (int)rows.size() - 1);
-        }
+        finishZoomRange(was, ev->position());
         break;
     default: break;
     }
     if (was.started && was.kind != Drag::Scrub) app.status(std::string());
-    if (was.kind == Drag::None) {
-        const Hit h = hitTest(ev->position());
-        const bool same = h.part == was.hit.part && h.event == was.hit.event && h.track == was.hit.track;
-        if (same && (h.part == Part::EventFx || h.part == Part::HeaderFx) && q->onOpenFx) {
-            FxTarget t;
-            t.kind = h.part == Part::EventFx ? FxTarget::Event : FxTarget::Track;
-            t.id = h.part == Part::EventFx ? h.event : h.track;
-            q->onOpenFx(t, 0);
-        } else if (same && h.part == Part::EventCrop && q->onPanCrop) {
-            q->onPanCrop(h.event);
-        } else if (same && h.part == Part::HeaderMotion && q->onTrackMotion) {
-            q->onTrackMotion(h.track);
-        } else if (same && h.part == Part::EventMenu) {
-            const Track* tr = nullptr;
-            const Event* e = app.project().findEvent(h.event, &tr);
-            const Row* r = (e && tr) ? rowOf(tr->id) : nullptr;
-            if (r) {
-                if (!app.selection().count(h.event)) selectGroupOf(h.event);
-                if (q->onBeforeMenu) q->onBeforeMenu();
-                QMenu menu(q);
-                eventHamburger(menu, h.event);
-                q->update();
-                menu.exec(q->mapToGlobal(menuButtonRect(eventRect(*r, *e)).bottomLeft().toPoint() + QPoint(0, 2)));
-            }
-        }
-    }
+    if (was.kind == Drag::None) clickedButton(was, ev->position());
     QRegion gone = dragVisualsOf(was);
     if (!gone.isEmpty()) q->update(gone);
     overlaysChanged();

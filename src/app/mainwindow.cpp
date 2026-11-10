@@ -101,6 +101,7 @@
 // grouping), Num 5 works on both sides of an edit, Esc leaves; F3 / F9 jog. Keys for the windows and tools added in
 // mainwindow_tools.cpp are made
 // there and listed below. VEGAS defaults Reno does not have yet are listed as "not available", with the reason.
+#include "mobilefiles.h"
 #include "cachedscroll.h"
 #include "audioproxyui.h"
 #include "mainwindow.h"
@@ -1065,28 +1066,10 @@ double parseTime(const Project& p, const QString& text)
 
 
 // ================================================================================================ the window
-MainWindow::MainWindow() : a_(new Actions())
+// What the timeline asks of the main window: effect, Pan/Crop, Track Motion and Event Properties windows, and the
+// items the main window adds to the timeline's shortcut menus.
+void MainWindow::connectTimeline()
 {
-    setObjectName("MainWindow");
-    setDockNestingEnabled(true);
-    AppState& app = AppState::get();
-    {
-        // Loop Playback and Automatic Crossfades are restored before anything shows them.
-        QSettings s;
-        app.loopOn = s.value("options/loopPlayback", app.loopOn).toBool();
-        app.setAutoCrossfades(s.value("options/autoCrossfades", app.autoCrossfades()).toBool());
-    }
-    playback_.reset(new Playback());
-    qApp->installEventFilter(new TypingGuard(this));
-
-    QWidget* center = new QWidget(this);
-    center->setObjectName("timelineArea");
-    auto* cl = new QVBoxLayout(center);
-    cl->setContentsMargins(0, 0, 0, 0);
-    cl->setSpacing(0);
-    timeline_ = new TimelineWidget(playback_.get(), center);
-    cl->addWidget(timeline_, 1);
-    setCentralWidget(center);
     timeline_->onOpenFx = [this](const FxTarget& t, uint64_t slot) { openFx(t, slot); };
     timeline_->onPanCrop = [this](uint64_t id) { openPanCrop(this, playback_.get(), id); };
     timeline_->onTrackMotion = [this](uint64_t id) { openTrackMotion(this, playback_.get(), id); };
@@ -1113,27 +1096,11 @@ MainWindow::MainWindow() : a_(new Actions())
     timeline_->onTrackDefaults = [this](QMenu* menu, uint64_t trackId) {
         addTrackDefaultsItem(menu, trackId, this);
     };
+}
 
-    fxWindow_ = new FxWindow(playback_.get(), this);
-    fxWindow_->setWindowFlags(Qt::Tool);
-    fxWindow_->resize(560, 620);
-    if (QSettings().contains("fxWindow/geometry")) fxWindow_->restoreGeometry(QSettings().value("fxWindow/geometry").toByteArray());
-
-    buildActions();
-    cl->addWidget(buildBottomBar());
-    buildMenus();
-    buildToolBars();
-    buildDocks();
-    buildToolWindows();
-    addOutputCommands(this);
-    buildVegasMenus();
-    installManualExtras(this);
-    installKeyboardMap(this);
-    installTrackDefaults();
-    addPreferenceFileItems(this);
-    conformMenusToVegas(menuBar());
-
-    // status bar: messages at the left; recording time left and free disk space at the right
+// The status bar: messages at the left; recording time left and free disk space at the right.
+void MainWindow::buildStatusBar()
+{
     statusText_ = new QLabel(this);
     statusText_->setObjectName("statusText");
     diskText_ = new QLabel(this);
@@ -1143,8 +1110,13 @@ MainWindow::MainWindow() : a_(new Actions())
     statusBar()->setSizeGripEnabled(false);
     statusBar()->setFixedHeight(20);
     statusText_->setText("Complete: 00:00:00");     // what VEGAS's status bar shows while nothing is going on
-    app.onStatus = [this](const std::string& s) { statusText_->setText(QString::fromStdString(s)); };
-    installAudioProxyUi(this);
+    AppState::get().onStatus = [this](const std::string& s) { statusText_->setText(QString::fromStdString(s)); };
+}
+
+// The free disk space shown every 30 seconds, and the timer that plays automation takes (it runs only while one is
+// going, instead of waking the program 33 times a second).
+void MainWindow::startTimers()
+{
     QTimer* disk = new QTimer(this);
     disk->setInterval(30000);
     QObject::connect(disk, &QTimer::timeout, this, [this] { showDiskSpace(); });
@@ -1153,44 +1125,44 @@ MainWindow::MainWindow() : a_(new Actions())
     AutomationHooks::position = [this] { return playback_ ? playback_->position() : 0.0; };
     QTimer* automationTimer = new QTimer(this);
     automationTimer->setInterval(30);
-    // (runs only while automation takes are going, instead of waking the program 33 times a second)
     QObject::connect(automationTimer, &QTimer::timeout, this, [automationTimer] {
         if (!automationTick(AppState::get())) automationTimer->stop();
     });
     AutomationHooks::wake = [automationTimer] { if (!automationTimer->isActive()) automationTimer->start(); };
+}
 
-    listener_ = app.addListener([this](int changes) {
-        if (changes & kPrefs) {
-            applyDockOptions(this, docks_);
-            bool wrongSide = false;
-            for (QDockWidget* d : docks_)
-                if (!d->isFloating() && d->isVisible() && dockWidgetArea(d) != dockArea()) wrongSide = true;
-            if (wrongSide) {
-                BuiltinLayout again = DefaultLayout;
-                for (BuiltinLayout l : {LargePreviewLayout, AudioMixingLayout})
-                    if (currentLayout_ == builtinLayoutName(l)) again = l;
-                applyLayout(again);
-            }
-        }
-        refresh(changes);
-    });
-    restyle();
-    refresh(~0);
-    syncOptions();
-    resize(1600, 900);
+// A change of preferences: the docks' options, and the layout again if docks now sit on the wrong side.
+void MainWindow::prefsChanged()
+{
+    applyDockOptions(this, docks_);
+    bool wrongSide = false;
+    for (QDockWidget* d : docks_)
+        if (!d->isFloating() && d->isVisible() && dockWidgetArea(d) != dockArea()) wrongSide = true;
+    if (wrongSide) {
+        BuiltinLayout again = DefaultLayout;
+        for (BuiltinLayout l : {LargePreviewLayout, AudioMixingLayout})
+            if (currentLayout_ == builtinLayoutName(l)) again = l;
+        applyLayout(again);
+    }
+}
 
+// The window's size and place and its docks' layout from the last run (version 4; layouts saved by older versions are
+// ignored), else the default layout.
+void MainWindow::restoreWindowLayout()
+{
     QSettings s;
     if (s.contains("window/geometry")) restoreGeometry(s.value("window/geometry").toByteArray());
-    // Restore the layout from the last run (version 4; layouts saved by older versions are ignored).
     if (s.contains("window/state") && restoreState(s.value("window/state").toByteArray(), kLayoutVersion)) {
         startLayoutRestored_ = true;
         currentLayout_ = s.value("window/layout").toString();
     } else {
         applyLayout(DefaultLayout);
     }
-    updateDockTabs();
-    timeline_->setFocus();
+}
 
+// The layout is saved half a second after the window or a dock is moved, resized, shown or hidden.
+void MainWindow::watchLayoutChanges()
+{
     layoutSaver_ = new QTimer(this);
     layoutSaver_->setSingleShot(true);
     layoutSaver_->setInterval(500);
@@ -1219,6 +1191,68 @@ MainWindow::MainWindow() : a_(new Actions())
         QObject::connect(d, &QDockWidget::dockLocationChanged, layoutSaver_, [this] { layoutSaver_->start(); });
         QObject::connect(d, &QDockWidget::topLevelChanged, layoutSaver_, [this] { layoutSaver_->start(); });
     }
+}
+
+MainWindow::MainWindow() : a_(new Actions())
+{
+    setObjectName("MainWindow");
+    setDockNestingEnabled(true);
+    AppState& app = AppState::get();
+    {
+        // Loop Playback and Automatic Crossfades are restored before anything shows them.
+        QSettings s;
+        app.loopOn = s.value("options/loopPlayback", app.loopOn).toBool();
+        app.setAutoCrossfades(s.value("options/autoCrossfades", app.autoCrossfades()).toBool());
+    }
+    playback_.reset(new Playback());
+    qApp->installEventFilter(new TypingGuard(this));
+
+    QWidget* center = new QWidget(this);
+    center->setObjectName("timelineArea");
+    auto* cl = new QVBoxLayout(center);
+    cl->setContentsMargins(0, 0, 0, 0);
+    cl->setSpacing(0);
+    timeline_ = new TimelineWidget(playback_.get(), center);
+    cl->addWidget(timeline_, 1);
+    setCentralWidget(center);
+    connectTimeline();
+
+    fxWindow_ = new FxWindow(playback_.get(), this);
+    fxWindow_->setWindowFlags(Qt::Tool);
+    fxWindow_->resize(560, 620);
+    if (QSettings().contains("fxWindow/geometry")) fxWindow_->restoreGeometry(QSettings().value("fxWindow/geometry").toByteArray());
+
+    buildActions();
+    cl->addWidget(buildBottomBar());
+    buildMenus();
+    buildToolBars();
+    buildDocks();
+    buildToolWindows();
+    addOutputCommands(this);
+    buildVegasMenus();
+    installManualExtras(this);
+    installKeyboardMap(this);
+    installTrackDefaults();
+    addPreferenceFileItems(this);
+    conformMenusToVegas(menuBar());
+
+    buildStatusBar();
+    installAudioProxyUi(this);
+    startTimers();
+    listener_ = app.addListener([this](int changes) {
+        if (changes & kPrefs) prefsChanged();
+        refresh(changes);
+    });
+    restyle();
+    refresh(~0);
+    syncOptions();
+    resize(1600, 900);
+
+    restoreWindowLayout();
+    updateDockTabs();
+    timeline_->setFocus();
+
+    watchLayoutChanges();
 }
 
 void MainWindow::saveWindowLayout()
@@ -1269,50 +1303,105 @@ MainWindow::~MainWindow()
     playback_.reset();
 }
 
-void MainWindow::buildActions()
-{
-    AppState& app = AppState::get();
-    Actions& a = *a_;
-    TimelineWidget* tl = timeline_;
-    Playback* pb = playback_.get();
-    auto add = [&](const char* name, const QString& text, const QList<QKeySequence>& k, std::function<void()> fn) {
-        QAction* x = make(this, name, text, k, std::move(fn));
-        if (*name) a.all[name] = x;
-        addAction(x);
+// Makes the window's commands for buildActions' sections: each an action of the window, named (keyboard maps, toolbars
+// and the VEGAS menus find it by its name) and kept in the window's table of actions.
+class MainWindow::ActionBuilder {
+public:
+    ActionBuilder(MainWindow* window, Actions& table) : w_(window), table_(table) {}
+
+    // A command that runs 'fn' when chosen. An empty name: kept out of the table (the caller files it).
+    QAction* add(const char* name, const QString& text, const QList<QKeySequence>& keys, std::function<void()> fn)
+    {
+        QAction* x = make(w_, name, text, keys, std::move(fn));
+        if (*name) table_.all[name] = x;
+        w_->addAction(x);
         return x;
-    };
-    auto checkable = [&](const char* name, const QString& text, const QList<QKeySequence>& k, std::function<void(bool)> fn) {
-        QAction* x = new QAction(text, this);
+    }
+
+    // An on / off command that calls 'fn' with its new state.
+    QAction* checkable(const char* name, const QString& text, const QList<QKeySequence>& keys, std::function<void(bool)> fn)
+    {
+        QAction* x = new QAction(text, w_);
         x->setObjectName(name);
         x->setCheckable(true);
-        if (!k.isEmpty()) x->setShortcuts(k);
-        QObject::connect(x, &QAction::toggled, this, [fn](bool on) { fn(on); });
-        a.all[name] = x;
-        addAction(x);
+        if (!keys.isEmpty()) x->setShortcuts(keys);
+        QObject::connect(x, &QAction::toggled, w_, [fn](bool on) { fn(on); });
+        table_.all[name] = x;
+        w_->addAction(x);
         return x;
-    };
-    auto moved = [tl] { tl->scrollToCursor(); };
+    }
 
-    // ---- File
-    add("new", "&New...", keys({"Ctrl+N"}), [this] {
+    // An event switch (Edit > Switches): turns it on for all the selected events, or off if all have it already.
+    QAction* eventSwitch(const char* name, const QString& text, const std::string& what, std::function<bool(const Event&)> get,
+                         std::function<void(Event&, bool)> set)
+    {
+        AppState& app = AppState::get();
+        QAction* x = add(name, text, QList<QKeySequence>(), [&app, what, get, set] {
+            const std::set<uint64_t> sel = app.selection();
+            bool all = !sel.empty();
+            for (uint64_t id : sel) if (const Event* e = app.project().findEvent(id)) all = all && get(*e);
+            app.edit(what, [&](Project& p) { for (uint64_t id : sel) if (Event* e = p.findEvent(id)) set(*e, !all); });
+        });
+        x->setCheckable(true);
+        return x;
+    }
+
+    // An on / off option of the timeline's (Options menu).
+    QAction* timelineOption(const char* name, const QString& text, const QList<QKeySequence>& keys, bool TimelineOptions::*field)
+    {
+        TimelineWidget* tl = w_->timeline_;
+        return checkable(name, text, keys, [tl, field](bool on) {
+            if (tl->options().*field == on) return;
+            tl->options().*field = on;
+            tl->optionsChanged();
+        });
+    }
+
+private:
+    MainWindow* w_;
+    Actions& table_;
+};
+
+void MainWindow::buildActions()
+{
+    ActionBuilder b(this, *a_);
+    addFileActions(b);
+    addEditActions(b);
+    addNavigationActions(b);
+    addGroupToolAndPitchActions(b);
+    addViewActions(b);
+    addInsertActions(b);
+    addToolsActions(b);
+    addOptionsActions(b);
+    addEnvelopeActions(b);
+    addTrackActions(b);
+    addPlaybackActions(b);
+    addMoreEditingActions(b);
+    addHelpActions(b);
+}
+
+// File
+void MainWindow::addFileActions(ActionBuilder& b)
+{
+    b.add("new", "&New...", keys({"Ctrl+N"}), [this] {
         if (!maybeSave()) return;
         playback_->pause();
         dropPrerenders(playback_.get());
         AppState::get().newProject(true);
         runProjectPropertiesFull(this);
     });
-    add("newPlain", "New (without Project Properties)", keys({"Ctrl+Shift+N"}), [this] {
+    b.add("newPlain", "New (without Project Properties)", keys({"Ctrl+Shift+N"}), [this] {
         if (!maybeSave()) return;
         playback_->pause();
         dropPrerenders(playback_.get());
         AppState::get().newProject(true);
     });
-    add("open", "&Open...", keys({"Ctrl+O"}), [this] {
+    b.add("open", "&Open...", keys({"Ctrl+O"}), [this] {
         QStringList media;
         for (const std::string& e : mediaExtensions(MediaKind::Any)) media << "*." + QString::fromStdString(e);
-        const QString f = QFileDialog::getOpenFileName(this, "Open", projectFolder(),
+        const QString f = localFileFor(QFileDialog::getOpenFileName(this, "Open", projectFolder(),
                                                        QString("All Projects and Media Files (*.veg *.reno %1);;VEGAS Pro projects (*.veg);;Reno projects (*.reno);;"
-                                                               "All projects (*.veg *.reno);;Media files (%1);;All files (*)").arg(media.join(' ')));
+                                                               "All projects (*.veg *.reno);;Media files (%1);;All files (*)").arg(media.join(' '))));
         if (f.isEmpty()) return;
         if (!isProjectFile(f.toStdString()) && hasMediaExtension(f.toStdString())) {
             openProject(f);
@@ -1321,24 +1410,29 @@ void MainWindow::buildActions()
         if (!maybeSave()) return;
         openProject(f);
     });
-    add("close", "&Close", keys({"Ctrl+F4"}), [this] {
+    b.add("close", "&Close", keys({"Ctrl+F4"}), [this] {
         if (!maybeSave()) return;
         playback_->pause();
         dropPrerenders(playback_.get());
         AppState::get().newProject(true);
     });
-    add("save", "&Save", keys({"Ctrl+S"}), [this] { saveProject(false); });
-    add("saveAs", "Save &As...", keys({"Ctrl+Shift+S"}), [this] { saveProject(true); });
-    add("saveVersion", "Save &Version", keys({"Ctrl+Alt+S"}), [this] { saveVersion(); });
-    add("importMedia", "&Media...", keys({"Ctrl+I"}), [this] { if (mediaBin_) mediaBin_->importFiles(); });
-    add("importImageSequence", "&Image Sequence...", QList<QKeySequence>(), [this] { if (mediaBin_) mediaBin_->importImageSequence(); });
-    add("render", "&Render As...", QList<QKeySequence>(), [this] { playback_->pause(); runRenderDialog(this); });
-    add("properties", "&Properties...", keys({"Alt+Return", "Alt+Enter"}), [this] { runProjectPropertiesFull(this); });
-    add("exit", "E&xit", keys({"Alt+F4"}), [this] { close(); });
+    b.add("save", "&Save", keys({"Ctrl+S"}), [this] { saveProject(false); });
+    b.add("saveAs", "Save &As...", keys({"Ctrl+Shift+S"}), [this] { saveProject(true); });
+    b.add("saveVersion", "Save &Version", keys({"Ctrl+Alt+S"}), [this] { saveVersion(); });
+    b.add("importMedia", "&Media...", keys({"Ctrl+I"}), [this] { if (mediaBin_) mediaBin_->importFiles(); });
+    b.add("importImageSequence", "&Image Sequence...", QList<QKeySequence>(), [this] { if (mediaBin_) mediaBin_->importImageSequence(); });
+    b.add("render", "&Render As...", QList<QKeySequence>(), [this] { playback_->pause(); runRenderDialog(this); });
+    b.add("properties", "&Properties...", keys({"Alt+Return", "Alt+Enter"}), [this] { runProjectPropertiesFull(this); });
+    b.add("exit", "E&xit", keys({"Alt+F4"}), [this] { close(); });
+}
 
-    // ---- Edit
-    add("undo", "&Undo", keys({"Ctrl+Z", "Alt+Backspace"}), [&app] { app.undo(); });
-    add("redo", "&Redo", keys({"Ctrl+Shift+Z", "Ctrl+Y"}), [&app] { app.redo(); });
+// Edit
+void MainWindow::addEditActions(ActionBuilder& b)
+{
+    AppState& app = AppState::get();
+    TimelineWidget* tl = timeline_;
+    b.add("undo", "&Undo", keys({"Ctrl+Z", "Alt+Backspace"}), [&app] { app.undo(); });
+    b.add("redo", "&Redo", keys({"Ctrl+Shift+Z", "Ctrl+Y"}), [&app] { app.redo(); });
     // Preferences > Editing "Cut, copy, and delete grouped events"
     auto withGroupsIfWanted = [this, &app] {
         if (!vprefs::on("prefs/groupedCutCopy")) return;
@@ -1354,103 +1448,100 @@ void MainWindow::buildActions()
                 if (e.group && groups.count(e.group)) sel.insert(e.id);
         if (sel != app.selection()) app.setSelection(sel);
     };
-    add("cut", "Cu&t", keys({"Ctrl+X", "Shift+Del"}), [this, tl, withGroupsIfWanted] { withGroupsIfWanted(); tl->cutSelection(); refresh(kSelection); });
-    add("copy", "&Copy", keys({"Ctrl+C", "Ctrl+Ins"}), [this, &app, tl, withGroupsIfWanted] {
+    b.add("cut", "Cu&t", keys({"Ctrl+X", "Shift+Del"}), [this, tl, withGroupsIfWanted] { withGroupsIfWanted(); tl->cutSelection(); refresh(kSelection); });
+    b.add("copy", "&Copy", keys({"Ctrl+C", "Ctrl+Ins"}), [this, &app, tl, withGroupsIfWanted] {
         if (tl->copyEnvelopePoints()) { refresh(kSelection); return; }
         withGroupsIfWanted();
         app.copySelection();
         refresh(kSelection);
     });
-    add("paste", "&Paste", keys({"Ctrl+V", "Shift+Ins"}), [tl] { if (!tl->pasteEnvelopePoints()) tl->paste(); });
-    add("pasteInsert", "Paste &Insert", keys({"Ctrl+Shift+V"}), [tl] { tl->pasteInsert(); });
-    add("pasteRepeat", "Paste R&epeat...", keys({"Ctrl+B"}), [this] { pasteRepeat(); });
-    add("delete", "&Delete", keys({"Del"}), [tl, withGroupsIfWanted] { withGroupsIfWanted(); tl->deleteSelection(); });
-    add("selectAll", "Select &All", keys({"Ctrl+A"}), [&app] {
+    b.add("paste", "&Paste", keys({"Ctrl+V", "Shift+Ins"}), [tl] { if (!tl->pasteEnvelopePoints()) tl->paste(); });
+    b.add("pasteInsert", "Paste &Insert", keys({"Ctrl+Shift+V"}), [tl] { tl->pasteInsert(); });
+    b.add("pasteRepeat", "Paste R&epeat...", keys({"Ctrl+B"}), [this] { pasteRepeat(); });
+    b.add("delete", "&Delete", keys({"Del"}), [tl, withGroupsIfWanted] { withGroupsIfWanted(); tl->deleteSelection(); });
+    b.add("selectAll", "Select &All", keys({"Ctrl+A"}), [&app] {
         std::set<uint64_t> all;
         for (const auto& t : app.project().tracks) for (const auto& e : t.events) all.insert(e.id);
         app.setSelection(all);
     });
-    add("unselectAll", "U&nselect All", keys({"Ctrl+Shift+A"}), [&app] { app.setSelection(std::set<uint64_t>()); });
-    add("split", "&Split", keys({"S"}), [&app] { app.splitAtCursor(); });
-    add("trim", "T&rim", keys({"Ctrl+T"}), [tl] { tl->trimToTimeSelection(); });
-    add("trimStart", "Trim Start", keys({"Alt+["}), [tl] { tl->trimStartToCursor(); });
-    add("trimEnd", "Trim End", keys({"Alt+]"}), [tl] { tl->trimEndToCursor(); });
-    add("rename", "Rena&me", keys({"F2"}), [tl] { tl->renameSelected(); });
-    add("nestCreate", "&Create Nested Timeline", keys({"Alt+C"}), [this] { playback_->pause(); createNestedTimeline(this); });
-    add("nestOpen", "&Open Nested Timeline", keys({"Alt+N"}), [this] { openNestedTimeline(this); });
-    add("nestParent", "Open &Parent", keys({"Alt+P"}), [] { openParentTimeline(); });
-    add("eventPanCrop", "Video Event &Pan/Crop...", QList<QKeySequence>(), [this, &app] {
+    b.add("unselectAll", "U&nselect All", keys({"Ctrl+Shift+A"}), [&app] { app.setSelection(std::set<uint64_t>()); });
+    b.add("split", "&Split", keys({"S"}), [&app] { app.splitAtCursor(); });
+    b.add("trim", "T&rim", keys({"Ctrl+T"}), [tl] { tl->trimToTimeSelection(); });
+    b.add("trimStart", "Trim Start", keys({"Alt+["}), [tl] { tl->trimStartToCursor(); });
+    b.add("trimEnd", "Trim End", keys({"Alt+]"}), [tl] { tl->trimEndToCursor(); });
+    b.add("rename", "Rena&me", keys({"F2"}), [tl] { tl->renameSelected(); });
+    b.add("nestCreate", "&Create Nested Timeline", keys({"Alt+C"}), [this] { playback_->pause(); createNestedTimeline(this); });
+    b.add("nestOpen", "&Open Nested Timeline", keys({"Alt+N"}), [this] { openNestedTimeline(this); });
+    b.add("nestParent", "Open &Parent", keys({"Alt+P"}), [] { openParentTimeline(); });
+    b.add("eventPanCrop", "Video Event &Pan/Crop...", QList<QKeySequence>(), [this, &app] {
         for (const Track& t : app.project().tracks)
             if (t.type == TrackType::Video)
                 for (const Event& e : t.events)
                     if (app.selection().count(e.id)) { openPanCrop(this, playback_.get(), e.id); return; }
         app.status("Select a video event first.");
     });
-    add("eventProperties", "Event Pr&operties...", QList<QKeySequence>(), [this, &app] {
+    b.add("eventProperties", "Event Pr&operties...", QList<QKeySequence>(), [this, &app] {
         if (!app.selection().empty()) runEventProperties(this, *app.selection().begin());
     });
-    auto switchAction = [&](const char* name, const QString& text, const std::string& what, std::function<bool(const Event&)> get, std::function<void(Event&, bool)> set) {
-        QAction* x = add(name, text, QList<QKeySequence>(), [&app, what, get, set] {
-            const std::set<uint64_t> sel = app.selection();
-            bool all = !sel.empty();
-            for (uint64_t id : sel) if (const Event* e = app.project().findEvent(id)) all = all && get(*e);
-            app.edit(what, [&](Project& p) { for (uint64_t id : sel) if (Event* e = p.findEvent(id)) set(*e, !all); });
-        });
-        x->setCheckable(true);
-        return x;
-    };
-    switchAction("switchMute", "&Mute", "Mute Events", [](const Event& e) { return e.mute; }, [](Event& e, bool v) { e.mute = v; });
-    switchAction("switchLoop", "&Loop", "Loop Events", [](const Event& e) { return e.loop; }, [](Event& e, bool v) { e.loop = v; });
-    switchAction("switchReverse", "&Reverse", "Reverse Events", [](const Event& e) { return e.reverse; }, [](Event& e, bool v) { e.reverse = v; });
+    b.eventSwitch("switchMute", "&Mute", "Mute Events", [](const Event& e) { return e.mute; }, [](Event& e, bool v) { e.mute = v; });
+    b.eventSwitch("switchLoop", "&Loop", "Loop Events", [](const Event& e) { return e.loop; }, [](Event& e, bool v) { e.loop = v; });
+    b.eventSwitch("switchReverse", "&Reverse", "Reverse Events", [](const Event& e) { return e.reverse; }, [](Event& e, bool v) { e.reverse = v; });
+}
 
-    // ---- navigation
-    add("goTo", "&Go To...", keys({"Ctrl+G"}), [this] { goToDialog(false); });
-    add("setSelectionEnd", "Set &End of Time Selection...", keys({"Ctrl+Shift+G"}), [this] { goToDialog(true); });
-    add("goStart", "Go to &Start", keys({"Ctrl+Home", "W"}), [pb, moved] { pb->jumpTo(0); moved(); });
-    add("goEnd", "Go to E&nd", keys({"Ctrl+End"}), [pb, &app, moved] { pb->pause(); app.setCursor(app.project().length()); moved(); });
+// Moving the cursor and the view
+void MainWindow::addNavigationActions(ActionBuilder& b)
+{
+    AppState& app = AppState::get();
+    Actions& a = *a_;
+    TimelineWidget* tl = timeline_;
+    Playback* pb = playback_.get();
+    b.add("goTo", "&Go To...", keys({"Ctrl+G"}), [this] { goToDialog(false); });
+    b.add("setSelectionEnd", "Set &End of Time Selection...", keys({"Ctrl+Shift+G"}), [this] { goToDialog(true); });
+    b.add("goStart", "Go to &Start", keys({"Ctrl+Home", "W"}), [pb, tl] { pb->jumpTo(0); tl->scrollToCursor(); });
+    b.add("goEnd", "Go to E&nd", keys({"Ctrl+End"}), [pb, &app, tl] { pb->pause(); app.setCursor(app.project().length()); tl->scrollToCursor(); });
     // with the track list focused (Tab), Ctrl+Left / Right change track volume instead
-    add("prevMarker", "Previous &Marker", keys({"Ctrl+Left"}), [tl] {
+    b.add("prevMarker", "Previous &Marker", keys({"Ctrl+Left"}), [tl] {
         if (tl->trackListFocused()) tl->changeTrackLevel(-1, false);
         else tl->cursorToMarker(-1);
     });
-    add("nextMarker", "Next Mar&ker", keys({"Ctrl+Right"}), [tl] {
+    b.add("nextMarker", "Next Mar&ker", keys({"Ctrl+Right"}), [tl] {
         if (tl->trackListFocused()) tl->changeTrackLevel(1, false);
         else tl->cursorToMarker(1);
     });
-    add("trackPanLeft", "Track Pan Left (track list)", keys({"Ctrl+Shift+Left"}), [tl, &app] {
+    b.add("trackPanLeft", "Track Pan Left (track list)", keys({"Ctrl+Shift+Left"}), [tl, &app] {
         if (tl->trackListFocused()) tl->changeTrackLevel(-1, true);
         else app.status("Ctrl+Shift+Left pans the selected tracks while the track list has the keyboard (Tab).");
     });
-    add("trackPanRight", "Track Pan Right (track list)", keys({"Ctrl+Shift+Right"}), [tl, &app] {
+    b.add("trackPanRight", "Track Pan Right (track list)", keys({"Ctrl+Shift+Right"}), [tl, &app] {
         if (tl->trackListFocused()) tl->changeTrackLevel(1, true);
         else app.status("Ctrl+Shift+Right pans the selected tracks while the track list has the keyboard (Tab).");
     });
-    auto frameStep = [pb, &app, moved](int dir) {
+    auto frameStep = [pb, &app, tl](int dir) {
         const Project& p = app.project();
         pb->jumpTo(p.frameTime(std::max<int64_t>(0, p.frameAt(app.cursor()) + dir)));
-        moved();
+        tl->scrollToCursor();
     };
-    add("prevFrame", "Previous &Frame", keys({"Alt+Left"}), [frameStep] { frameStep(-1); });
-    add("nextFrame", "Next F&rame", keys({"Alt+Right"}), [frameStep] { frameStep(1); });
-    add("prevEditPoint", "Previous &Edit Point", keys({"Ctrl+Alt+Left"}), [tl] { tl->cursorToEditPoint(-1); });
-    add("nextEditPoint", "Next Edit &Point", keys({"Ctrl+Alt+Right"}), [tl] { tl->cursorToEditPoint(1); });
-    add("prevEdge", "Select Event &Start", keys({"["}), [tl] { tl->selectEdge(-1); });
-    add("nextEdge", "Select Event &End", keys({"]"}), [tl] { tl->selectEdge(1); });
-    add("expandedEdit", "Enter Expanded Edit &Mode\tNum 5", QList<QKeySequence>(), [tl] { tl->toggleExpandedEdit(); });
-    add("exitEditMode", "Exit E&dit Mode", QList<QKeySequence>(), [tl] { tl->exitEditMode(); });
-    add("jogLeft", "Jog Left", keys({"F3"}), [tl] { tl->jog(-1); });
-    add("jogRight", "Jog Right", keys({"F9"}), [tl] { tl->jog(1); });
-    add("selectLoopRegion", "&Select Loop Region", keys({"Shift+Q"}), [tl] { tl->selectLoopRegion(); });
-    add("prevCdTrack", "Previous CD Track", keys({"Ctrl+,"}), [tl] { tl->cursorToCd(-1, true); });
-    add("nextCdTrack", "Next CD Track", keys({"Ctrl+."}), [tl] { tl->cursorToCd(1, true); });
-    add("prevCdIndex", "Previous CD Index or Region", keys({","}), [tl] { tl->cursorToCd(-1, false); });
-    add("nextCdIndex", "Next CD Index or Region", keys({"."}), [tl] { tl->cursorToCd(1, false); });
-    add("prevSelectedEdge", "Cursor to Previous Selected Event Edge", keys({"Ctrl+["}), [tl] { tl->cursorToSelectedEdge(-1); });
-    add("nextSelectedEdge", "Cursor to Next Selected Event Edge", keys({"Ctrl+]"}), [tl] { tl->cursorToSelectedEdge(1); });
-    add("timeSelectPrev", "Time Select Previous Selected Event", keys({"Ctrl+Shift+["}), [tl] { tl->timeSelectSelectedEvent(-1); });
-    add("timeSelectNext", "Time Select Next Selected Event", keys({"Ctrl+Shift+]"}), [tl] { tl->timeSelectSelectedEvent(1); });
-    add("centerCursor", "&Center View Around Cursor", keys({"\\"}), [tl] { tl->centerOnCursor(); });
-    add("restoreSelection", "Restore Previous Time Selection", keys({"Backspace"}), [this, &app] {
+    b.add("prevFrame", "Previous &Frame", keys({"Alt+Left"}), [frameStep] { frameStep(-1); });
+    b.add("nextFrame", "Next F&rame", keys({"Alt+Right"}), [frameStep] { frameStep(1); });
+    b.add("prevEditPoint", "Previous &Edit Point", keys({"Ctrl+Alt+Left"}), [tl] { tl->cursorToEditPoint(-1); });
+    b.add("nextEditPoint", "Next Edit &Point", keys({"Ctrl+Alt+Right"}), [tl] { tl->cursorToEditPoint(1); });
+    b.add("prevEdge", "Select Event &Start", keys({"["}), [tl] { tl->selectEdge(-1); });
+    b.add("nextEdge", "Select Event &End", keys({"]"}), [tl] { tl->selectEdge(1); });
+    b.add("expandedEdit", "Enter Expanded Edit &Mode\tNum 5", QList<QKeySequence>(), [tl] { tl->toggleExpandedEdit(); });
+    b.add("exitEditMode", "Exit E&dit Mode", QList<QKeySequence>(), [tl] { tl->exitEditMode(); });
+    b.add("jogLeft", "Jog Left", keys({"F3"}), [tl] { tl->jog(-1); });
+    b.add("jogRight", "Jog Right", keys({"F9"}), [tl] { tl->jog(1); });
+    b.add("selectLoopRegion", "&Select Loop Region", keys({"Shift+Q"}), [tl] { tl->selectLoopRegion(); });
+    b.add("prevCdTrack", "Previous CD Track", keys({"Ctrl+,"}), [tl] { tl->cursorToCd(-1, true); });
+    b.add("nextCdTrack", "Next CD Track", keys({"Ctrl+."}), [tl] { tl->cursorToCd(1, true); });
+    b.add("prevCdIndex", "Previous CD Index or Region", keys({","}), [tl] { tl->cursorToCd(-1, false); });
+    b.add("nextCdIndex", "Next CD Index or Region", keys({"."}), [tl] { tl->cursorToCd(1, false); });
+    b.add("prevSelectedEdge", "Cursor to Previous Selected Event Edge", keys({"Ctrl+["}), [tl] { tl->cursorToSelectedEdge(-1); });
+    b.add("nextSelectedEdge", "Cursor to Next Selected Event Edge", keys({"Ctrl+]"}), [tl] { tl->cursorToSelectedEdge(1); });
+    b.add("timeSelectPrev", "Time Select Previous Selected Event", keys({"Ctrl+Shift+["}), [tl] { tl->timeSelectSelectedEvent(-1); });
+    b.add("timeSelectNext", "Time Select Next Selected Event", keys({"Ctrl+Shift+]"}), [tl] { tl->timeSelectSelectedEvent(1); });
+    b.add("centerCursor", "&Center View Around Cursor", keys({"\\"}), [tl] { tl->centerOnCursor(); });
+    b.add("restoreSelection", "Restore Previous Time Selection", keys({"Backspace"}), [this, &app] {
         if (selectionHistory_.empty()) return;
         const std::pair<double, double> s = selectionHistory_.back();
         selectionHistory_.pop_back();
@@ -1458,7 +1549,7 @@ void MainWindow::buildActions()
         app.setLoop(s.first, s.second);
         restoringSelection_ = false;
     });
-    add("cursorToPlayback", "Move Cursor to Playback Position", keys({"Alt+Down"}), [pb] {
+    b.add("cursorToPlayback", "Move Cursor to Playback Position", keys({"Alt+Down"}), [pb] {
         if (!pb->playing()) return;
         pb->pause();
         pb->play();
@@ -1466,29 +1557,35 @@ void MainWindow::buildActions()
     for (int n = 1; n <= 10; ++n) {
         const std::string name = strfmt("marker%d", n);
         // with multicamera editing on, 1..9 choose a camera instead
-        a.all[name] = add("", QString("Go to Marker %1").arg(n), QList<QKeySequence>() << QKeySequence(QString::number(n % 10)), [tl, n] {
+        a.all[name] = b.add("", QString("Go to Marker %1").arg(n), QList<QKeySequence>() << QKeySequence(QString::number(n % 10)), [tl, n] {
             if (tl->options().multicam && n <= 9) tl->multicamCut(n, false);
             else tl->goToMarker(n);
         });
         a.all[name]->setObjectName(QString::fromStdString(name));
         if (n <= 9) {
             const std::string cam = strfmt("multicamFade%d", n);
-            a.all[cam] = add("", QString("Multicamera: Cross-fade to Camera %1").arg(n), QList<QKeySequence>() << QKeySequence(QString("Ctrl+%1").arg(n)), [tl, n, &app] {
+            a.all[cam] = b.add("", QString("Multicamera: Cross-fade to Camera %1").arg(n), QList<QKeySequence>() << QKeySequence(QString("Ctrl+%1").arg(n)), [tl, n, &app] {
                 if (tl->options().multicam) tl->multicamCut(n, true);
                 else app.status("Ctrl+1 ... 9 cross-fade between cameras while multicamera editing is on (Ctrl+Shift+D).");
             });
             a.all[cam]->setObjectName(QString::fromStdString(cam));
         }
     }
+}
 
-    // ---- groups, tools, pitch
-    add("group", "&Create New", keys({"G"}), [&app] { app.groupSelection(true); });
-    add("ungroup", "&Remove From", keys({"U"}), [&app] { app.groupSelection(false); });
-    add("clearGroup", "C&lear", keys({"Ctrl+U"}), [tl] { tl->clearGroups(); });
-    add("selectGroup", "&Select All", keys({"Shift+G"}), [tl] { tl->selectGroups(); });
+// Groups, the editing tools, event switches and pitch
+void MainWindow::addGroupToolAndPitchActions(ActionBuilder& b)
+{
+    AppState& app = AppState::get();
+    Actions& a = *a_;
+    TimelineWidget* tl = timeline_;
+    b.add("group", "&Create New", keys({"G"}), [&app] { app.groupSelection(true); });
+    b.add("ungroup", "&Remove From", keys({"U"}), [&app] { app.groupSelection(false); });
+    b.add("clearGroup", "C&lear", keys({"Ctrl+U"}), [tl] { tl->clearGroups(); });
+    b.add("selectGroup", "&Select All", keys({"Shift+G"}), [tl] { tl->selectGroups(); });
     a.tools = new QActionGroup(this);
     auto tool = [&](const char* name, const QString& text, EditTool t, const QList<QKeySequence>& k) {
-        QAction* x = add(name, text, k, [tl, t] {
+        QAction* x = b.add(name, text, k, [tl, t] {
             tl->options().tool = t;
             tl->optionsChanged();
         });
@@ -1499,28 +1596,19 @@ void MainWindow::buildActions()
     tool("toolNormal", "&Normal", EditTool::Normal, keys({"Ctrl+D"}))->setIcon(toolbarIcon(Ico::ToolNormal));
     tool("toolSelection", "&Selection", EditTool::Selection, QList<QKeySequence>())->setIcon(toolbarIcon(Ico::ToolSelect));
     tool("toolZoom", "&Zoom", EditTool::Zoom, QList<QKeySequence>())->setIcon(toolbarIcon(Ico::ToolZoom));
-    auto unavailable = [&](const char* name, const QString& text, const QString& why, bool on) {
-        QAction* x = add(name, text, QList<QKeySequence>(), [] {});
-        x->setCheckable(on);
-        x->setChecked(on);
-        x->setEnabled(false);
-        x->setData(why);
-        return x;
-    };
     tool("toolEnvelope", "&Envelope", EditTool::Envelope, QList<QKeySequence>());
     tool("toolShuffle", "S&huffle Tool", EditTool::Shuffle, QList<QKeySequence>())->setIcon(toolbarIcon(Ico::ToolShuffle));
     tool("toolSlip", "Sl&ip Tool", EditTool::Slip, QList<QKeySequence>())->setIcon(toolbarIcon(Ico::ToolSlip));
     tool("toolSlide", "Sli&de Tool", EditTool::Slide, QList<QKeySequence>())->setIcon(toolbarIcon(Ico::ToolSlide));
     tool("toolStretch", "Time Stretch/&Compress Tool", EditTool::Stretch, QList<QKeySequence>())->setIcon(toolbarIcon(Ico::ToolStretch));
     tool("toolSplitTrim", "Split &Trim Tool", EditTool::SplitTrim, QList<QKeySequence>())->setIcon(toolbarIcon(Ico::ToolSplitTrim));
-    (void)unavailable;
-    switchAction("lockEvent", "Loc&k", "Lock Events", [](const Event& e) { return e.locked; }, [](Event& e, bool v) { e.locked = v; });
-    checkable("autoCrossfade", "&Automatic Crossfades", keys({"Ctrl+Shift+X"}), [&app](bool on) {
+    b.eventSwitch("lockEvent", "Loc&k", "Lock Events", [](const Event& e) { return e.locked; }, [](Event& e, bool v) { e.locked = v; });
+    b.checkable("autoCrossfade", "&Automatic Crossfades", keys({"Ctrl+Shift+X"}), [&app](bool on) {
         app.setAutoCrossfades(on);
         QSettings().setValue("options/autoCrossfades", on);
         app.status(on ? "Automatic crossfades on: overlapping events cross-fade." : "Automatic crossfades off: where events overlap, the later one simply covers the earlier.");
     });
-    checkable("quickFade", "Q&uickfade Audio Edits", QList<QKeySequence>(), [&app](bool on) {
+    b.checkable("quickFade", "Q&uickfade Audio Edits", QList<QKeySequence>(), [&app](bool on) {
         app.prefs.quickFadeEdits = on;
         app.applyPreferences();
         app.status(on ? "Quickfade audio edits on: audio events start and end with a short fade where they have none."
@@ -1539,33 +1627,38 @@ void MainWindow::buildActions()
         tl->options().tool = order[next];
         tl->optionsChanged();
     };
-    add("toolNext", "Ne&xt Tool", keys({"D"}), [cycle] { cycle(1); });
-    add("toolPrevious", "&Previous Tool", keys({"Shift+D"}), [cycle] { cycle(-1); });
-    add("pitchUp", "Raise a &Semitone", keys({"="}), [this] { changePitch(1.0, false); });
-    add("pitchDown", "Lower a S&emitone", keys({"-"}), [this] { changePitch(-1.0, false); });
-    add("pitchUpCent", "Raise a &Cent", keys({"Ctrl+="}), [this] { changePitch(0.01, false); });
-    add("pitchDownCent", "Lower a Ce&nt", keys({"Ctrl+-"}), [this] { changePitch(-0.01, false); });
+    b.add("toolNext", "Ne&xt Tool", keys({"D"}), [cycle] { cycle(1); });
+    b.add("toolPrevious", "&Previous Tool", keys({"Shift+D"}), [cycle] { cycle(-1); });
+    b.add("pitchUp", "Raise a &Semitone", keys({"="}), [this] { changePitch(1.0, false); });
+    b.add("pitchDown", "Lower a S&emitone", keys({"-"}), [this] { changePitch(-1.0, false); });
+    b.add("pitchUpCent", "Raise a &Cent", keys({"Ctrl+="}), [this] { changePitch(0.01, false); });
+    b.add("pitchDownCent", "Lower a Ce&nt", keys({"Ctrl+-"}), [this] { changePitch(-0.01, false); });
     // Shift+= is + on most keyboards, Shift+- is _
-    add("pitchUpOctave", "Raise an &Octave", keys({"Shift+=", "+"}), [this] { changePitch(12.0, false); });
-    add("pitchDownOctave", "Lower an Oc&tave", keys({"Shift+-", "_"}), [this] { changePitch(-12.0, false); });
-    add("pitchReset", "&Reset Pitch", keys({"Ctrl+Shift+=", "Ctrl+Shift+-", "Ctrl++", "Ctrl+_"}), [this] { changePitch(0, true); });
+    b.add("pitchUpOctave", "Raise an &Octave", keys({"Shift+=", "+"}), [this] { changePitch(12.0, false); });
+    b.add("pitchDownOctave", "Lower an Oc&tave", keys({"Shift+-", "_"}), [this] { changePitch(-12.0, false); });
+    b.add("pitchReset", "&Reset Pitch", keys({"Ctrl+Shift+=", "Ctrl+Shift+-", "Ctrl++", "Ctrl+_"}), [this] { changePitch(0, true); });
+}
 
-    // ---- View
-    add("focusTimeline", "&Focus to Track View", keys({"Alt+0"}), [tl] { tl->setFocus(Qt::ShortcutFocusReason); });
-    add("nextWindow", "Next Window", keys({"F6", "Ctrl+Tab"}), [this] { cycleFocus(1); });
-    add("previousWindow", "Previous Window", keys({"Shift+F6", "Ctrl+Shift+Tab"}), [this] { cycleFocus(-1); });
-    add("defaultLayout", "&Default Layout", keys({"Alt+D, D"}), [this] { applyLayout(DefaultLayout); });
-    add("largePreviewLayout", "&Large Preview Layout", keys({"Alt+D, V"}), [this] { applyLayout(LargePreviewLayout); });
-    add("audioMixingLayout", "&Audio Mixing Layout", keys({"Alt+D, A"}), [this] { applyLayout(AudioMixingLayout); });
+// View
+void MainWindow::addViewActions(ActionBuilder& b)
+{
+    Actions& a = *a_;
+    TimelineWidget* tl = timeline_;
+    b.add("focusTimeline", "&Focus to Track View", keys({"Alt+0"}), [tl] { tl->setFocus(Qt::ShortcutFocusReason); });
+    b.add("nextWindow", "Next Window", keys({"F6", "Ctrl+Tab"}), [this] { cycleFocus(1); });
+    b.add("previousWindow", "Previous Window", keys({"Shift+F6", "Ctrl+Shift+Tab"}), [this] { cycleFocus(-1); });
+    b.add("defaultLayout", "&Default Layout", keys({"Alt+D, D"}), [this] { applyLayout(DefaultLayout); });
+    b.add("largePreviewLayout", "&Large Preview Layout", keys({"Alt+D, V"}), [this] { applyLayout(LargePreviewLayout); });
+    b.add("audioMixingLayout", "&Audio Mixing Layout", keys({"Alt+D, A"}), [this] { applyLayout(AudioMixingLayout); });
     for (int n = 0; n < 10; ++n) {
         const std::string load = strfmt("loadLayout%d", n), save = strfmt("saveLayout%d", n);
-        QAction* l = add("", QString("Layout %1").arg(n), QList<QKeySequence>() << QKeySequence(QString("Alt+D, %1").arg(n)), [this, n] {
+        QAction* l = b.add("", QString("Layout %1").arg(n), QList<QKeySequence>() << QKeySequence(QString("Alt+D, %1").arg(n)), [this, n] {
             if (!recallLayout(n)) AppState::get().status(strfmt("No window layout has been saved as %d (Ctrl+Alt+D, %d saves one).", n, n));
         });
         l->setObjectName(QString::fromStdString(load));
         a.all[load] = l;
         a.loadLayouts.push_back(l);
-        QAction* sv = add("", QString("Layout %1").arg(n), QList<QKeySequence>() << QKeySequence(QString("Ctrl+Alt+D, %1").arg(n)), [this, n] {
+        QAction* sv = b.add("", QString("Layout %1").arg(n), QList<QKeySequence>() << QKeySequence(QString("Ctrl+Alt+D, %1").arg(n)), [this, n] {
             QString name = QString("Layout %1").arg(n);
             for (const SavedLayout& x : savedLayoutList())
                 if (x.key == n) name = x.name;
@@ -1575,28 +1668,28 @@ void MainWindow::buildActions()
         sv->setObjectName(QString::fromStdString(save));
         a.all[save] = sv;
     }
-    add("saveLayoutAs", "Save Layout &As...", QList<QKeySequence>(), [this] { saveLayoutAsDialog(); });
-    add("saveCurrentLayout", "&Save Layout", QList<QKeySequence>(), [this] {
+    b.add("saveLayoutAs", "Save Layout &As...", QList<QKeySequence>(), [this] { saveLayoutAsDialog(); });
+    b.add("saveCurrentLayout", "&Save Layout", QList<QKeySequence>(), [this] {
         for (const SavedLayout& x : savedLayoutList())
             if (x.name == currentLayout_) { saveLayout(x.name, x.key); return; }
     });
-    add("reloadLayout", "&Reload Selected Layout", QList<QKeySequence>(), [this] { reloadLayout(); });
-    add("organizeLayouts", "&Organize Layouts...", QList<QKeySequence>(), [this] { organizeLayouts(); });
-    add("zoomIn", "Zoom &In\tUp", QList<QKeySequence>(), [tl] { tl->zoomIn(); });
-    add("zoomOut", "Zoom &Out\tDown", QList<QKeySequence>(), [tl] { tl->zoomOut(); });
-    add("zoomInLarge", "Zoom In (to the Time Selection)", keys({"Ctrl+Up"}), [tl] { tl->zoomLarge(true); });
-    add("zoomOutLarge", "Zoom Out (Large Steps)", keys({"Ctrl+Down"}), [tl] { tl->zoomLarge(false); });
-    add("zoomFit", "Zoom to &Fit", QList<QKeySequence>(), [tl] { tl->zoomToFit(); });
-    add("tracksTaller", "Increase Track Height", keys({"Ctrl+Shift+Up"}), [tl] { tl->changeTrackHeights(1); });
-    add("tracksDefault", "Default Track Heights", keys({"Ctrl+`"}), [tl] { tl->resetTrackHeights(); });
-    add("zoomFrames", "Zoom In to Frames", keys({"Alt+Up"}), [tl] { tl->zoomToFrames(); });
-    add("previousTrack", "Previous Track", keys({"Alt+Shift+Up"}), [this] { stepTrack(-1); });
-    add("nextTrack", "Next Track", keys({"Alt+Shift+Down"}), [this] { stepTrack(1); });
-    add("tracksShorter", "Decrease Track Height", keys({"Ctrl+Shift+Down"}), [tl] { tl->changeTrackHeights(-1); });
+    b.add("reloadLayout", "&Reload Selected Layout", QList<QKeySequence>(), [this] { reloadLayout(); });
+    b.add("organizeLayouts", "&Organize Layouts...", QList<QKeySequence>(), [this] { organizeLayouts(); });
+    b.add("zoomIn", "Zoom &In\tUp", QList<QKeySequence>(), [tl] { tl->zoomIn(); });
+    b.add("zoomOut", "Zoom &Out\tDown", QList<QKeySequence>(), [tl] { tl->zoomOut(); });
+    b.add("zoomInLarge", "Zoom In (to the Time Selection)", keys({"Ctrl+Up"}), [tl] { tl->zoomLarge(true); });
+    b.add("zoomOutLarge", "Zoom Out (Large Steps)", keys({"Ctrl+Down"}), [tl] { tl->zoomLarge(false); });
+    b.add("zoomFit", "Zoom to &Fit", QList<QKeySequence>(), [tl] { tl->zoomToFit(); });
+    b.add("tracksTaller", "Increase Track Height", keys({"Ctrl+Shift+Up"}), [tl] { tl->changeTrackHeights(1); });
+    b.add("tracksDefault", "Default Track Heights", keys({"Ctrl+`"}), [tl] { tl->resetTrackHeights(); });
+    b.add("zoomFrames", "Zoom In to Frames", keys({"Alt+Up"}), [tl] { tl->zoomToFrames(); });
+    b.add("previousTrack", "Previous Track", keys({"Alt+Shift+Up"}), [this] { stepTrack(-1); });
+    b.add("nextTrack", "Next Track", keys({"Alt+Shift+Down"}), [this] { stepTrack(1); });
+    b.add("tracksShorter", "Decrease Track Height", keys({"Ctrl+Shift+Down"}), [tl] { tl->changeTrackHeights(-1); });
     // ` is Minimize All Tracks (again restores)
-    add("minimizeTrack", "Minimize / Restore Track Height", QList<QKeySequence>(), [tl] { tl->toggleMinimizeTrack(); });
-    add("maximizeTrack", "Maximize / Restore Track Height", QList<QKeySequence>(), [tl] { tl->toggleMaximizeTrack(); });
-    checkable("maximizeTimeline", "Maximize Timeline", keys({"Ctrl+F11", "Ctrl+Alt+`", "Ctrl+Alt+Shift+F11"}), [this](bool on) {
+    b.add("minimizeTrack", "Minimize / Restore Track Height", QList<QKeySequence>(), [tl] { tl->toggleMinimizeTrack(); });
+    b.add("maximizeTrack", "Maximize / Restore Track Height", QList<QKeySequence>(), [tl] { tl->toggleMaximizeTrack(); });
+    b.checkable("maximizeTimeline", "Maximize Timeline", keys({"Ctrl+F11", "Ctrl+Alt+`", "Ctrl+Alt+Shift+F11"}), [this](bool on) {
         if (on == timelineMaximized_) return;
         timelineMaximized_ = on;
         if (on) {
@@ -1606,19 +1699,19 @@ void MainWindow::buildActions()
             restoreState(beforeMaximize_, kLayoutVersion);
         }
     });
-    checkable("showWaveforms", "Show &Waveforms", keys({"Ctrl+Shift+W"}), [tl](bool on) {
+    b.checkable("showWaveforms", "Show &Waveforms", keys({"Ctrl+Shift+W"}), [tl](bool on) {
         tl->options().showWaveforms = on;
         tl->optionsChanged();
     });
-    checkable("showEventButtons", "Show Event &Buttons", keys({"Ctrl+Shift+C"}), [tl](bool on) {
+    b.checkable("showEventButtons", "Show Event &Buttons", keys({"Ctrl+Shift+C"}), [tl](bool on) {
         tl->options().showEventButtons = on;
         tl->optionsChanged();
     });
-    checkable("eventHeaders", "Show Event &Headers", keys({"Ctrl+Shift+M", "Ctrl+Alt+M"}), [tl](bool on) {
+    b.checkable("eventHeaders", "Show Event &Headers", keys({"Ctrl+Shift+M", "Ctrl+Alt+M"}), [tl](bool on) {
         tl->options().eventHeaders = on;
         tl->optionsChanged();
     });
-    add("dockingArea", "Minimize / Restore the Window Docking Area", keys({"F11", "Alt+`"}), [this] { a_->get("maximizeTimeline")->toggle(); });
+    b.add("dockingArea", "Minimize / Restore the Window Docking Area", keys({"F11", "Alt+`"}), [this] { a_->get("maximizeTimeline")->toggle(); });
     // VEGAS 23 docking areas: Alt+F11 top, Ctrl+Alt+F11 bottom, Ctrl+Shift+F11 right (docked windows hide and return); left has no key
     auto areaToggle = [this](Qt::DockWidgetArea area) {
         std::vector<QDockWidget*>& hidden = hiddenByArea_[(int)area];
@@ -1631,15 +1724,20 @@ void MainWindow::buildActions()
             if (!d->isFloating() && d->isVisible() && dockWidgetArea(d) == area) hidden.push_back(d);
         for (QDockWidget* d : hidden) d->hide();
     };
-    add("dockTop", "Show / Hide the &Top Docking Area", keys({"Alt+F11"}), [areaToggle] { areaToggle(Qt::TopDockWidgetArea); });
-    add("dockBottom", "Show / Hide the &Bottom Docking Area", keys({"Ctrl+Alt+F11"}), [areaToggle] { areaToggle(Qt::BottomDockWidgetArea); });
-    add("dockRight", "Show / Hide the &Right Docking Area", keys({"Ctrl+Shift+F11"}), [areaToggle] { areaToggle(Qt::RightDockWidgetArea); });
-    add("dockLeft", "Show / Hide the &Left Docking Area", QList<QKeySequence>(), [areaToggle] { areaToggle(Qt::LeftDockWidgetArea); });
+    b.add("dockTop", "Show / Hide the &Top Docking Area", keys({"Alt+F11"}), [areaToggle] { areaToggle(Qt::TopDockWidgetArea); });
+    b.add("dockBottom", "Show / Hide the &Bottom Docking Area", keys({"Ctrl+Alt+F11"}), [areaToggle] { areaToggle(Qt::BottomDockWidgetArea); });
+    b.add("dockRight", "Show / Hide the &Right Docking Area", keys({"Ctrl+Shift+F11"}), [areaToggle] { areaToggle(Qt::RightDockWidgetArea); });
+    b.add("dockLeft", "Show / Hide the &Left Docking Area", QList<QKeySequence>(), [areaToggle] { areaToggle(Qt::LeftDockWidgetArea); });
+}
 
-    // ---- Insert
-    add("audioTrack", "&Audio Track", keys({"Ctrl+Q"}), [&app] { app.currentTrack = app.addTrack(TrackType::Audio); app.notify(kSelection); });
-    add("videoTrack", "&Video Track", keys({"Ctrl+Shift+Q"}), [&app] { app.currentTrack = app.addTrack(TrackType::Video); app.notify(kSelection); });
-    add("audioBus", "Audio &Bus", QList<QKeySequence>(), [&app] {
+// Insert
+void MainWindow::addInsertActions(ActionBuilder& b)
+{
+    AppState& app = AppState::get();
+    TimelineWidget* tl = timeline_;
+    b.add("audioTrack", "&Audio Track", keys({"Ctrl+Q"}), [&app] { app.currentTrack = app.addTrack(TrackType::Audio); app.notify(kSelection); });
+    b.add("videoTrack", "&Video Track", keys({"Ctrl+Shift+Q"}), [&app] { app.currentTrack = app.addTrack(TrackType::Video); app.notify(kSelection); });
+    b.add("audioBus", "Audio &Bus", QList<QKeySequence>(), [&app] {
         app.edit("Insert Audio Bus", [](Project& p) {
             Bus b;
             b.id = p.newId();
@@ -1647,76 +1745,84 @@ void MainWindow::buildActions()
             p.buses.push_back(b);
         });
     });
-    add("generatedMedia", "&Generated Media...", QList<QKeySequence>(), [this] {
+    b.add("generatedMedia", "&Generated Media...", QList<QKeySequence>(), [this] {
         insertGeneratedMedia(this, [this](const FxTarget& t) { openFx(t, 0); });
     });
-    add("marker", "&Marker", keys({"M"}), [tl] { tl->insertMarker(); });
-    add("region", "&Region", keys({"R"}), [tl] { tl->insertRegion(); });
+    b.add("marker", "&Marker", keys({"M"}), [tl] { tl->insertMarker(); });
+    b.add("region", "&Region", keys({"R"}), [tl] { tl->insertRegion(); });
+}
 
-    // ---- Tools
-    add("videoOutFx", "Video &Output FX...", QList<QKeySequence>(), [this] { FxTarget t; t.kind = FxTarget::VideoOut; openFx(t, 0); });
-    add("masterFx", "&Master Bus FX...", QList<QKeySequence>(), [this] { FxTarget t; t.kind = FxTarget::AudioOut; openFx(t, 0); });
-    add("eventFx", "&Event FX...", QList<QKeySequence>(), [this, &app] {
+// Tools
+void MainWindow::addToolsActions(ActionBuilder& b)
+{
+    AppState& app = AppState::get();
+    b.add("videoOutFx", "Video &Output FX...", QList<QKeySequence>(), [this] { FxTarget t; t.kind = FxTarget::VideoOut; openFx(t, 0); });
+    b.add("masterFx", "&Master Bus FX...", QList<QKeySequence>(), [this] { FxTarget t; t.kind = FxTarget::AudioOut; openFx(t, 0); });
+    b.add("eventFx", "&Event FX...", QList<QKeySequence>(), [this, &app] {
         if (app.selection().empty()) return;
         FxTarget t;
         t.kind = FxTarget::Event;
         t.id = *app.selection().begin();
         openFx(t, 0);
     });
-    add("trackFx", "&Track FX...", QList<QKeySequence>(), [this, &app] {
+    b.add("trackFx", "&Track FX...", QList<QKeySequence>(), [this, &app] {
         if (!app.currentTrack) return;
         FxTarget t;
         t.kind = FxTarget::Track;
         t.id = app.currentTrack;
         openFx(t, 0);
     });
-    add("trackMotion", "Track &Motion...", QList<QKeySequence>(), [this, &app] {
+    b.add("trackMotion", "Track &Motion...", QList<QKeySequence>(), [this, &app] {
         const Project& p = app.project();
         for (const Track& t : p.tracks)
             if (t.id == app.currentTrack && t.type == TrackType::Video) { openTrackMotion(this, playback_.get(), t.id); return; }
         app.status("Select a video track first.");
     });
-    checkable("bypassFx", "&Bypass All Video FX", QList<QKeySequence>(), [&app](bool on) {
+    b.checkable("bypassFx", "&Bypass All Video FX", QList<QKeySequence>(), [&app](bool on) {
         if (app.bypassAllFx == on) return;
         app.bypassAllFx = on;
         app.notify(kFxParams);
     });
-    add("rescan", "Look for &New Plug-Ins", QList<QKeySequence>(), [this] { runPluginScan(this, false); });
-    add("rescanAll", "&Check All Plug-Ins Again", QList<QKeySequence>(), [this] { runPluginScan(this, true); });
+    b.add("rescan", "Look for &New Plug-Ins", QList<QKeySequence>(), [this] { runPluginScan(this, false); });
+    b.add("rescanAll", "&Check All Plug-Ins Again", QList<QKeySequence>(), [this] { runPluginScan(this, true); });
+}
 
-    // ---- Options
-    add("preferences", "&Preferences...", QList<QKeySequence>(), [this] { runPreferences(this); });
-    auto option = [&](const char* name, const QString& text, const QList<QKeySequence>& k, bool TimelineOptions::*field) {
-        return checkable(name, text, k, [tl, field](bool on) {
-            if (tl->options().*field == on) return;
-            tl->options().*field = on;
-            tl->optionsChanged();
-        });
-    };
-    option("quantize", "Enable &Quantize to Frames", keys({"Alt+F8"}), &TimelineOptions::quantize);
-    option("showUnquantized", "Show &Unquantized Event Edges", QList<QKeySequence>(), &TimelineOptions::showUnquantized);
-    checkable("snapping", "Enable &Snapping", keys({"F8"}), [&app, this](bool on) {
+// Options
+void MainWindow::addOptionsActions(ActionBuilder& b)
+{
+    AppState& app = AppState::get();
+    b.add("preferences", "&Preferences...", QList<QKeySequence>(), [this] { runPreferences(this); });
+    b.timelineOption("quantize", "Enable &Quantize to Frames", keys({"Alt+F8"}), &TimelineOptions::quantize);
+    b.timelineOption("showUnquantized", "Show &Unquantized Event Edges", QList<QKeySequence>(), &TimelineOptions::showUnquantized);
+    b.checkable("snapping", "Enable &Snapping", keys({"F8"}), [&app, this](bool on) {
         if (app.snapping == on) return;
         app.snapping = on;
         app.prefs.snapping = on;
         QSettings().setValue("prefs/snapping", on);
         syncOptions();
     });
-    option("snapGrid", "Snap to &Grid", keys({"Ctrl+F8"}), &TimelineOptions::snapToGrid);
-    option("snapMarkers", "Snap to &Markers", keys({"Shift+F8"}), &TimelineOptions::snapToMarkers);
-    option("autoRipple", "Auto &Ripple", keys({"Ctrl+L"}), &TimelineOptions::autoRipple);
-    option("ignoreGrouping", "&Ignore Event Grouping", keys({"Ctrl+Shift+U"}), &TimelineOptions::ignoreGrouping);
-    // ---- envelopes
-    option("lockEnvelopes", "Lock &Envelopes to Events", QList<QKeySequence>(), &TimelineOptions::lockEnvelopes);
-    option("showEnvelopes", "Show &Envelopes", keys({"Ctrl+Shift+E"}), &TimelineOptions::showEnvelopes);
-    option("showBusTracks", "Show &Bus Tracks", keys({"B", "Ctrl+Shift+B"}), &TimelineOptions::showBusTracks);
-    option("showFadeLengths", "Show Event &Fade Lengths", keys({"Ctrl+Shift+T"}), &TimelineOptions::showFadeLengths);
-    add("envVolume", "&Volume Envelope", keys({"V"}), [tl] { tl->toggleTrackEnvelope("volume"); });
-    add("envVolumeRemove", "Remove Volume Envelope", keys({"Shift+V"}), [tl] { tl->removeTrackEnvelope("volume"); });
-    add("envPan", "&Pan Envelope", keys({"P"}), [tl] { tl->toggleTrackEnvelope("pan"); });
-    add("envPanRemove", "Remove Pan Envelope", keys({"Shift+P"}), [tl] { tl->removeTrackEnvelope("pan"); });
-    add("envNext", "Next Envelope", keys({"E"}), [tl] { tl->cycleEnvelope(1); });
-    add("envPrevious", "Previous Envelope", keys({"Shift+E"}), [tl] { tl->cycleEnvelope(-1); });
+    b.timelineOption("snapGrid", "Snap to &Grid", keys({"Ctrl+F8"}), &TimelineOptions::snapToGrid);
+    b.timelineOption("snapMarkers", "Snap to &Markers", keys({"Shift+F8"}), &TimelineOptions::snapToMarkers);
+    b.timelineOption("autoRipple", "Auto &Ripple", keys({"Ctrl+L"}), &TimelineOptions::autoRipple);
+    b.timelineOption("ignoreGrouping", "&Ignore Event Grouping", keys({"Ctrl+Shift+U"}), &TimelineOptions::ignoreGrouping);
+}
+
+// Envelopes
+void MainWindow::addEnvelopeActions(ActionBuilder& b)
+{
+    AppState& app = AppState::get();
+    Actions& a = *a_;
+    TimelineWidget* tl = timeline_;
+    b.timelineOption("lockEnvelopes", "Lock &Envelopes to Events", QList<QKeySequence>(), &TimelineOptions::lockEnvelopes);
+    b.timelineOption("showEnvelopes", "Show &Envelopes", keys({"Ctrl+Shift+E"}), &TimelineOptions::showEnvelopes);
+    b.timelineOption("showBusTracks", "Show &Bus Tracks", keys({"B", "Ctrl+Shift+B"}), &TimelineOptions::showBusTracks);
+    b.timelineOption("showFadeLengths", "Show Event &Fade Lengths", keys({"Ctrl+Shift+T"}), &TimelineOptions::showFadeLengths);
+    b.add("envVolume", "&Volume Envelope", keys({"V"}), [tl] { tl->toggleTrackEnvelope("volume"); });
+    b.add("envVolumeRemove", "Remove Volume Envelope", keys({"Shift+V"}), [tl] { tl->removeTrackEnvelope("volume"); });
+    b.add("envPan", "&Pan Envelope", keys({"P"}), [tl] { tl->toggleTrackEnvelope("pan"); });
+    b.add("envPanRemove", "Remove Pan Envelope", keys({"Shift+P"}), [tl] { tl->removeTrackEnvelope("pan"); });
+    b.add("envNext", "Next Envelope", keys({"E"}), [tl] { tl->cycleEnvelope(1); });
+    b.add("envPrevious", "Previous Envelope", keys({"Shift+E"}), [tl] { tl->cycleEnvelope(-1); });
     a.ripple = new QActionGroup(this);
     const struct { const char* name; const char* text; RippleMode mode; } modes[] = {
         {"rippleTracks", "Affected Tracks", RippleMode::AffectedTracks},
@@ -1724,67 +1830,82 @@ void MainWindow::buildActions()
         {"rippleAll", "All Tracks, Markers, and Regions", RippleMode::AllTracks}};
     for (const auto& m : modes) {
         const RippleMode mode = m.mode;
-        QAction* x = add(m.name, m.text, QList<QKeySequence>(), [tl, mode] {
+        QAction* x = b.add(m.name, m.text, QList<QKeySequence>(), [tl, mode] {
             tl->options().ripple = mode;
             tl->optionsChanged();
         });
         x->setCheckable(true);
         a.ripple->addAction(x);
     }
-    checkable("loop", "&Loop Playback", keys({"Q", "Ctrl+Shift+L"}), [&app](bool on) {
+    b.checkable("loop", "&Loop Playback", keys({"Q", "Ctrl+Shift+L"}), [&app](bool on) {
         if (app.loopOn == on) return;
         app.loopOn = on;
         app.notify(kCursor);
     });
+}
 
-    // ---- tracks (no menu in VEGAS either)
-    add("muteTrack", "Mute Selected Track", keys({"Z"}), [this] { muteSolo(false, false); });
-    add("muteTrackOnly", "Mute Selected Track Only", keys({"Shift+Z"}), [this] { muteSolo(false, true); });
-    add("soloTrack", "Solo Selected Track", keys({"X"}), [this] { muteSolo(true, false); });
-    add("soloTrackOnly", "Solo Selected Track Only", keys({"Shift+X"}), [this] { muteSolo(true, true); });
+// Tracks (no menu in VEGAS either)
+void MainWindow::addTrackActions(ActionBuilder& b)
+{
+    b.add("muteTrack", "Mute Selected Track", keys({"Z"}), [this] { muteSolo(false, false); });
+    b.add("muteTrackOnly", "Mute Selected Track Only", keys({"Shift+Z"}), [this] { muteSolo(false, true); });
+    b.add("soloTrack", "Solo Selected Track", keys({"X"}), [this] { muteSolo(true, false); });
+    b.add("soloTrackOnly", "Solo Selected Track Only", keys({"Shift+X"}), [this] { muteSolo(true, true); });
+}
 
-    // ---- playback (Preferences > General: Space and F12 can be Play/Pause)
-    add("playStop", "Play / Stop", keys({"Space"}), [pb] {
+// Playback (Preferences > General: Space and F12 can be Play/Pause)
+void MainWindow::addPlaybackActions(ActionBuilder& b)
+{
+    AppState& app = AppState::get();
+    TimelineWidget* tl = timeline_;
+    Playback* pb = playback_.get();
+    b.add("playStop", "Play / Stop", keys({"Space"}), [pb] {
         if (pb->playing()) {
             if (vprefs::on("prefs/spacePlayPause")) pb->pause();
             else stopPlayback(pb);
         } else pb->play();
     });
-    add("stop", "Stop", keys({"Esc"}), [pb, tl] {
+    b.add("stop", "Stop", keys({"Esc"}), [pb, tl] {
         if (tl->cancelMouseDrag()) return;
         if (tl->edgeTrimming()) tl->exitEditMode();
         stopPlayback(pb);
     });
-    add("playPause", "Play / Pause", keys({"Return", "Enter", "Ctrl+F12"}), [pb] {
+    b.add("playPause", "Play / Pause", keys({"Return", "Enter", "Ctrl+F12"}), [pb] {
         if (pb->playing()) pb->pause();
         else pb->play();
     });
-    add("playFromStart", "Play From Start", keys({"Shift+Space", "Shift+F12"}), [pb, &app, moved] {
+    b.add("playFromStart", "Play From Start", keys({"Shift+Space", "Shift+F12"}), [pb, &app, tl] {
         pb->pause();
         app.setCursor(app.loopEnd > app.loopStart ? app.loopStart : 0.0);
-        moved();
+        tl->scrollToCursor();
         pb->play();
     });
-    add("playAny", "Play from Any Window", keys({"Ctrl+Space", "F12"}), [pb] {
+    b.add("playAny", "Play from Any Window", keys({"Ctrl+Space", "F12"}), [pb] {
         if (pb->playing()) {
             if (vprefs::on("prefs/spacePlayPause")) pb->pause();
             else stopPlayback(pb);
         } else pb->play();
     });
-    add("previewCursor", "Preview Cursor Position", keys({"Num+0"}), [pb] { pb->previewCursor(AppState::get().prefs.cursorPreview); });
-    checkable("dimOutput", "&Dim Master Bus Output", keys({"Ctrl+Shift+F12"}), [pb, &app](bool on) {
+    b.add("previewCursor", "Preview Cursor Position", keys({"Num+0"}), [pb] { pb->previewCursor(AppState::get().prefs.cursorPreview); });
+    b.checkable("dimOutput", "&Dim Master Bus Output", keys({"Ctrl+Shift+F12"}), [pb, &app](bool on) {
         pb->setDim(on);
         app.status(on ? "Master output dimmed by 20 dB." : "Master output at its full level again.");
     });
-    add("ramPreview", "Build Dynamic &RAM Preview", keys({"Shift+B"}), [this] { buildRamPreview(); });
-    add("renderToNewTrack", "Render to &New Track...", keys({"Ctrl+M"}), [this] { renderToNewTrack(); });
-    add("shuttleBack", "Shuttle Back", keys({"J"}), [this] { shuttle(-1); })->setAutoRepeat(false);
-    add("shuttlePause", "Slow Motion", keys({"K"}), [this] { shuttle(0); })->setAutoRepeat(false);
-    add("shuttleForward", "Shuttle Forward", keys({"L"}), [this] { shuttle(1); })->setAutoRepeat(false);
+    b.add("ramPreview", "Build Dynamic &RAM Preview", keys({"Shift+B"}), [this] { buildRamPreview(); });
+    b.add("renderToNewTrack", "Render to &New Track...", keys({"Ctrl+M"}), [this] { renderToNewTrack(); });
+    b.add("shuttleBack", "Shuttle Back", keys({"J"}), [this] { shuttle(-1); })->setAutoRepeat(false);
+    b.add("shuttlePause", "Slow Motion", keys({"K"}), [this] { shuttle(0); })->setAutoRepeat(false);
+    b.add("shuttleForward", "Shuttle Forward", keys({"L"}), [this] { shuttle(1); })->setAutoRepeat(false);
+}
 
-    // ---- more editing (more of VEGAS's commands)
-    add("smartSplit", "S&mart Split", keys({"Alt+S"}), [tl] { tl->smartSplit(); });
-    add("detectScenes", "Detect &Scenes...", {}, [this, &app] {
+// More editing: more of VEGAS's commands
+void MainWindow::addMoreEditingActions(ActionBuilder& b)
+{
+    AppState& app = AppState::get();
+    TimelineWidget* tl = timeline_;
+    Playback* pb = playback_.get();
+    b.add("smartSplit", "S&mart Split", keys({"Alt+S"}), [tl] { tl->smartSplit(); });
+    b.add("detectScenes", "Detect &Scenes...", {}, [this, &app] {
         if (app.selection().empty()) { app.status("Detect Scenes: select a video event first."); return; }
         bool ok = false;
         const int s = QInputDialog::getInt(this, "Detect Scenes", "Sensitivity (higher finds more scene changes):", 50, 0, 100, 5, &ok);
@@ -1793,11 +1914,11 @@ void MainWindow::buildActions()
         app.splitAtScenes(s);
         QApplication::restoreOverrideCursor();
     });
-    add("takeNext", "&Next Take", keys({"T"}), [&app] { app.stepTakes(app.selection(), 1); });
-    add("takePrevious", "&Previous Take", keys({"Shift+T"}), [&app] { app.stepTakes(app.selection(), -1); });
-    add("takeAdd", "&Add...", QList<QKeySequence>(), [this, tl, &app] {
+    b.add("takeNext", "&Next Take", keys({"T"}), [&app] { app.stepTakes(app.selection(), 1); });
+    b.add("takePrevious", "&Previous Take", keys({"Shift+T"}), [&app] { app.stepTakes(app.selection(), -1); });
+    b.add("takeAdd", "&Add...", QList<QKeySequence>(), [this, tl, &app] {
         if (app.selection().empty()) { app.status("Select the event to add takes to first."); return; }
-        const QStringList files = QFileDialog::getOpenFileNames(this, "Add Takes", QSettings().value("media/importFolder", projectFolder()).toString(), "Media files (*)");
+        const QStringList files = localFilesFor(QFileDialog::getOpenFileNames(this, "Add Takes", QSettings().value("media/importFolder", projectFolder()).toString(), "Media files (*)"));
         if (!files.isEmpty()) QSettings().setValue("media/importFolder", QFileInfo(files.first()).absolutePath());
         std::vector<uint64_t> media;
         for (const QString& f : files) {
@@ -1807,12 +1928,12 @@ void MainWindow::buildActions()
         }
         if (!media.empty()) tl->addTakesToSelected(media);
     });
-    add("takeChoose", "&Choose Active...", QList<QKeySequence>(), [this] { chooseTakeDialog(false); });
-    add("takeDeleteActive", "Delete &Active", QList<QKeySequence>(), [&app] {
+    b.add("takeChoose", "&Choose Active...", QList<QKeySequence>(), [this] { chooseTakeDialog(false); });
+    b.add("takeDeleteActive", "Delete &Active", QList<QKeySequence>(), [&app] {
         for (uint64_t id : app.selection()) app.deleteActiveTake(id);
     });
-    add("takeDelete", "&Delete...", QList<QKeySequence>(), [this] { chooseTakeDialog(true); });
-    add("takeRename", "&Rename Active", QList<QKeySequence>(), [this, &app] {
+    b.add("takeDelete", "&Delete...", QList<QKeySequence>(), [this] { chooseTakeDialog(true); });
+    b.add("takeRename", "&Rename Active", QList<QKeySequence>(), [this, &app] {
         if (app.selection().empty()) return;
         const uint64_t id = *app.selection().begin();
         const Event* e = app.project().findEvent(id);
@@ -1821,82 +1942,86 @@ void MainWindow::buildActions()
         const QString name = QInputDialog::getText(this, "Rename Active Take", "Name:", QLineEdit::Normal, QString::fromStdString(e->name), &ok);
         if (ok) app.renameActiveTake(id, name.toStdString());
     });
-    checkable("showTakeInfo", "Active Take &Information", keys({"Ctrl+Shift+I"}), [tl](bool on) {
+    b.checkable("showTakeInfo", "Active Take &Information", keys({"Ctrl+Shift+I"}), [tl](bool on) {
         tl->options().showTakeInfo = on;
         tl->optionsChanged();
     });
-    checkable("showMediaMarkers", "Event Media &Markers", keys({"Ctrl+Shift+K"}), [tl](bool on) {
+    b.checkable("showMediaMarkers", "Event Media &Markers", keys({"Ctrl+Shift+K"}), [tl](bool on) {
         tl->options().showMediaMarkers = on;
         tl->optionsChanged();
     });
-    checkable("edgeFrames", "Video Event Edge Edit &Frames", keys({"Ctrl+Shift+O"}), [tl](bool on) {
+    b.checkable("edgeFrames", "Video Event Edge Edit &Frames", keys({"Ctrl+Shift+O"}), [tl](bool on) {
         tl->options().edgeFrames = on;
         tl->optionsChanged();
     });
-    add("rebuildPeaks", "Rebuild Audio Pea&ks", keys({"Shift+F5"}), [tl] { tl->rebuildPeaks(); });
-    add("trackList", "Minimize / Restore the Track List", keys({"Shift+F11", "Shift+Alt+`"}), [tl] { tl->toggleTrackList(); });
-    add("cutToCrossfade", "Convert Cut to Cross-fade", keys({"Num+/"}), [tl] { tl->convertCutToTransition(0); });
-    add("cutToDissolve", "Convert Cut to Dissolve", keys({"Num+*"}), [tl] { tl->convertCutToTransition(1); });
-    add("cutToWipe", "Convert Cut to Linear Wipe", keys({"Num+-"}), [tl] { tl->convertCutToTransition(2); });
-    add("transitionToCut", "Convert Transition to Cut", keys({"Ctrl+Num+/"}), [tl] { tl->convertTransitionToCut(); });
-    add("postRippleTracks", "Affected &Tracks", keys({"F"}), [tl] { tl->postEditRipple(RippleMode::AffectedTracks); });
-    add("postRippleBus", "Affected Tracks, &Bus Tracks, Markers, and Regions", keys({"Ctrl+F"}), [tl] { tl->postEditRipple(RippleMode::AffectedTracksAndMarkers); });
-    add("postRippleMarkers", "Affected Tracks, &Markers, and Regions", QList<QKeySequence>(), [tl] { tl->postEditRipple(RippleMode::AffectedTracksAndMarkers); });
-    add("postRippleAll", "&All Tracks, Markers, and Regions", keys({"Ctrl+Shift+F"}), [tl] { tl->postEditRipple(RippleMode::AllTracks); });
-    option("snapAllEvents", "Snap to All Even&ts", keys({"Ctrl+Shift+F8"}), &TimelineOptions::snapToAllEvents);
-    option("slipAllTakes", "Slip All Ta&kes", QList<QKeySequence>(), &TimelineOptions::slipAllTakes);
-    add("cdTrack", "Audio CD Trac&k Region", keys({"N"}), [tl] { tl->insertCdTrack(); });
-    add("cdIndex", "Audio CD Track Inde&x", keys({"Shift+N"}), [tl] { tl->insertCdIndex(); });
-    add("commandMarker", "&Command...", keys({"C"}), [this] { insertCommandDialog(); });
-    add("groupTracks", "&Group Selected Tracks", QList<QKeySequence>(), [tl] { tl->groupTracks(true); });
-    add("ungroupTracks", "&Ungroup Selected Tracks", QList<QKeySequence>(), [tl] { tl->groupTracks(false); });
-    add("collapseTrackGroup", "&Collapse", QList<QKeySequence>(), [tl] { tl->collapseTrackGroup(true); });
-    add("expandTrackGroup", "E&xpand", QList<QKeySequence>(), [tl] { tl->collapseTrackGroup(false); });
-    add("muteTrackGroup", "&Mute Track Group", keys({"Ctrl+Alt+Z"}), [tl] { tl->muteSoloTrackGroup(false, false); });
-    add("muteTrackGroupOnly", "Mute Track Group Only", keys({"Ctrl+Alt+Shift+Z"}), [tl] { tl->muteSoloTrackGroup(false, true); });
-    add("soloTrackGroup", "&Solo Track Group", keys({"Ctrl+Alt+X"}), [tl] { tl->muteSoloTrackGroup(true, false); });
-    add("soloTrackGroupOnly", "Solo Track Group Only", keys({"Ctrl+Alt+Shift+X"}), [tl] { tl->muteSoloTrackGroup(true, true); });
-    add("createMulticam", "&Create Multicamera Track", QList<QKeySequence>(), [tl] { tl->createMulticamTrack(); });
-    checkable("multicam", "&Enable Multicamera Editing", keys({"Ctrl+Shift+D"}), [tl, &app](bool on) {
+    b.add("rebuildPeaks", "Rebuild Audio Pea&ks", keys({"Shift+F5"}), [tl] { tl->rebuildPeaks(); });
+    b.add("trackList", "Minimize / Restore the Track List", keys({"Shift+F11", "Shift+Alt+`"}), [tl] { tl->toggleTrackList(); });
+    b.add("cutToCrossfade", "Convert Cut to Cross-fade", keys({"Num+/"}), [tl] { tl->convertCutToTransition(0); });
+    b.add("cutToDissolve", "Convert Cut to Dissolve", keys({"Num+*"}), [tl] { tl->convertCutToTransition(1); });
+    b.add("cutToWipe", "Convert Cut to Linear Wipe", keys({"Num+-"}), [tl] { tl->convertCutToTransition(2); });
+    b.add("transitionToCut", "Convert Transition to Cut", keys({"Ctrl+Num+/"}), [tl] { tl->convertTransitionToCut(); });
+    b.add("postRippleTracks", "Affected &Tracks", keys({"F"}), [tl] { tl->postEditRipple(RippleMode::AffectedTracks); });
+    b.add("postRippleBus", "Affected Tracks, &Bus Tracks, Markers, and Regions", keys({"Ctrl+F"}), [tl] { tl->postEditRipple(RippleMode::AffectedTracksAndMarkers); });
+    b.add("postRippleMarkers", "Affected Tracks, &Markers, and Regions", QList<QKeySequence>(), [tl] { tl->postEditRipple(RippleMode::AffectedTracksAndMarkers); });
+    b.add("postRippleAll", "&All Tracks, Markers, and Regions", keys({"Ctrl+Shift+F"}), [tl] { tl->postEditRipple(RippleMode::AllTracks); });
+    b.timelineOption("snapAllEvents", "Snap to All Even&ts", keys({"Ctrl+Shift+F8"}), &TimelineOptions::snapToAllEvents);
+    b.timelineOption("slipAllTakes", "Slip All Ta&kes", QList<QKeySequence>(), &TimelineOptions::slipAllTakes);
+    b.add("cdTrack", "Audio CD Trac&k Region", keys({"N"}), [tl] { tl->insertCdTrack(); });
+    b.add("cdIndex", "Audio CD Track Inde&x", keys({"Shift+N"}), [tl] { tl->insertCdIndex(); });
+    b.add("commandMarker", "&Command...", keys({"C"}), [this] { insertCommandDialog(); });
+    b.add("groupTracks", "&Group Selected Tracks", QList<QKeySequence>(), [tl] { tl->groupTracks(true); });
+    b.add("ungroupTracks", "&Ungroup Selected Tracks", QList<QKeySequence>(), [tl] { tl->groupTracks(false); });
+    b.add("collapseTrackGroup", "&Collapse", QList<QKeySequence>(), [tl] { tl->collapseTrackGroup(true); });
+    b.add("expandTrackGroup", "E&xpand", QList<QKeySequence>(), [tl] { tl->collapseTrackGroup(false); });
+    b.add("muteTrackGroup", "&Mute Track Group", keys({"Ctrl+Alt+Z"}), [tl] { tl->muteSoloTrackGroup(false, false); });
+    b.add("muteTrackGroupOnly", "Mute Track Group Only", keys({"Ctrl+Alt+Shift+Z"}), [tl] { tl->muteSoloTrackGroup(false, true); });
+    b.add("soloTrackGroup", "&Solo Track Group", keys({"Ctrl+Alt+X"}), [tl] { tl->muteSoloTrackGroup(true, false); });
+    b.add("soloTrackGroupOnly", "Solo Track Group Only", keys({"Ctrl+Alt+Shift+X"}), [tl] { tl->muteSoloTrackGroup(true, true); });
+    b.add("createMulticam", "&Create Multicamera Track", QList<QKeySequence>(), [tl] { tl->createMulticamTrack(); });
+    b.checkable("multicam", "&Enable Multicamera Editing", keys({"Ctrl+Shift+D"}), [tl, &app](bool on) {
         tl->options().multicam = on;
         tl->optionsChanged();
         app.status(on ? "Multicamera editing: 1 ... 9 choose a camera at the cursor (a cut there while playing); Ctrl+1 ... 9 cross-fade to it."
                       : "Multicamera editing off: the number keys go to markers again.");
     });
-    add("audioEditor", "&Open in Audio Editor", keys({"Ctrl+E"}), [this, &app] {
+    b.add("audioEditor", "&Open in Audio Editor", keys({"Ctrl+E"}), [this, &app] {
         for (const Track& t : app.project().tracks)
             for (const Event& e : t.events)
                 if (app.selection().count(e.id)) { openInAudioEditor(e.id); return; }
         app.status("Select an event first: Ctrl+E opens its media in the audio editor.");
     });
     timeline_->onAudioEditor = [this](uint64_t id) { openInAudioEditor(id); };
-    add("mediaPlayPause", "Play / Pause (multimedia key)", keys({"Toggle Media Play/Pause", "Media Play"}), [pb] {
+    b.add("mediaPlayPause", "Play / Pause (multimedia key)", keys({"Toggle Media Play/Pause", "Media Play"}), [pb] {
         if (pb->playing()) pb->pause();
         else pb->play();
     });
-    add("mediaPlayFromStart", "Play From Start (multimedia key)", keys({"Shift+Toggle Media Play/Pause", "Shift+Media Play"}), [pb, &app, moved] {
+    b.add("mediaPlayFromStart", "Play From Start (multimedia key)", keys({"Shift+Toggle Media Play/Pause", "Shift+Media Play"}), [pb, &app, tl] {
         pb->pause();
         app.setCursor(app.loopEnd > app.loopStart ? app.loopStart : 0.0);
-        moved();
+        tl->scrollToCursor();
         pb->play();
     });
-    add("mediaStop", "Stop (multimedia key)", keys({"Media Stop"}), [pb] { stopPlayback(pb); });
-    add("mediaMute", "Mute Track (multimedia key)", keys({"Volume Mute"}), [this] { muteSolo(false, false); });
-    add("mediaMuteOnly", "Mute Track Only (multimedia key)", keys({"Shift+Volume Mute"}), [this] { muteSolo(false, true); });
-    add("mediaSolo", "Solo Track (multimedia key)", keys({"Ctrl+Volume Mute"}), [this] { muteSolo(true, false); });
-    add("mediaSoloOnly", "Solo Track Only (multimedia key)", keys({"Ctrl+Shift+Volume Mute"}), [this] { muteSolo(true, true); });
-    add("mediaVolumeUp", "Track Volume Up (multimedia key)", keys({"Ctrl+Volume Up"}), [tl] { tl->changeTrackLevel(1, false); });
-    add("mediaVolumeDown", "Track Volume Down (multimedia key)", keys({"Ctrl+Volume Down"}), [tl] { tl->changeTrackLevel(-1, false); });
-    add("mediaPanRight", "Track Pan Right (multimedia key)", keys({"Shift+Volume Up"}), [tl] { tl->changeTrackLevel(1, true); });
-    add("mediaPanLeft", "Track Pan Left (multimedia key)", keys({"Shift+Volume Down"}), [tl] { tl->changeTrackLevel(-1, true); });
-    add("mediaNextTrack", "Next Track (multimedia key)", keys({"Media Next"}), [this] { stepTrack(1); });
-    add("mediaPreviousTrack", "Previous Track (multimedia key)", keys({"Media Previous"}), [this] { stepTrack(-1); });
+    b.add("mediaStop", "Stop (multimedia key)", keys({"Media Stop"}), [pb] { stopPlayback(pb); });
+    b.add("mediaMute", "Mute Track (multimedia key)", keys({"Volume Mute"}), [this] { muteSolo(false, false); });
+    b.add("mediaMuteOnly", "Mute Track Only (multimedia key)", keys({"Shift+Volume Mute"}), [this] { muteSolo(false, true); });
+    b.add("mediaSolo", "Solo Track (multimedia key)", keys({"Ctrl+Volume Mute"}), [this] { muteSolo(true, false); });
+    b.add("mediaSoloOnly", "Solo Track Only (multimedia key)", keys({"Ctrl+Shift+Volume Mute"}), [this] { muteSolo(true, true); });
+    b.add("mediaVolumeUp", "Track Volume Up (multimedia key)", keys({"Ctrl+Volume Up"}), [tl] { tl->changeTrackLevel(1, false); });
+    b.add("mediaVolumeDown", "Track Volume Down (multimedia key)", keys({"Ctrl+Volume Down"}), [tl] { tl->changeTrackLevel(-1, false); });
+    b.add("mediaPanRight", "Track Pan Right (multimedia key)", keys({"Shift+Volume Up"}), [tl] { tl->changeTrackLevel(1, true); });
+    b.add("mediaPanLeft", "Track Pan Left (multimedia key)", keys({"Shift+Volume Down"}), [tl] { tl->changeTrackLevel(-1, true); });
+    b.add("mediaNextTrack", "Next Track (multimedia key)", keys({"Media Next"}), [this] { stepTrack(1); });
+    b.add("mediaPreviousTrack", "Previous Track (multimedia key)", keys({"Media Previous"}), [this] { stepTrack(-1); });
+}
 
-    // ---- Help
-    add("helpContents", "&Contents and Index", keys({"F1"}), [this] { showHelp(); });
-    add("whatsThis", "What's &This?", keys({"Shift+F1"}), [] { QWhatsThis::enterWhatsThisMode(); });
-    add("shortcuts", "&Keyboard Shortcuts...", QList<QKeySequence>(), [this] { showShortcuts(); });
-    add("about", "&About Reno", QList<QKeySequence>(), [this] { showAbout(this); });
+// Help
+void MainWindow::addHelpActions(ActionBuilder& b)
+{
+    Actions& a = *a_;
+    b.add("helpContents", "&Contents and Index", keys({"F1"}), [this] { showHelp(); });
+    b.add("whatsThis", "What's &This?", keys({"Shift+F1"}), [] { QWhatsThis::enterWhatsThisMode(); });
+    b.add("shortcuts", "&Keyboard Shortcuts...", QList<QKeySequence>(), [this] { showShortcuts(); });
+    b.add("about", "&About Reno", QList<QKeySequence>(), [this] { showAbout(this); });
 
     const struct { const char* name; Ico ico; } pics[] = {
         {"new", Ico::New}, {"newPlain", Ico::New}, {"open", Ico::Open}, {"save", Ico::Save}, {"saveAs", Ico::SaveAs}, {"render", Ico::Render}, {"properties", Ico::Properties},
@@ -1919,10 +2044,10 @@ void MainWindow::buildActions()
     }
 }
 
-void MainWindow::buildMenus()
+// File: projects, import, render, properties and the recent projects (filled each time the menu opens).
+void MainWindow::buildFileMenu()
 {
-    Actions& a = *a_;
-    auto g = [&](const char* n) { return a.get(n); };
+    auto g = [this](const char* name) { return a_->get(name); };
     QMenu* file = menuBar()->addMenu("&File");
     file->addActions({g("new"), g("open"), g("close"), g("save"), g("saveAs"), g("saveVersion")});
     file->addSeparator();
@@ -1934,33 +2059,13 @@ void MainWindow::buildMenus()
     file->addSeparator();
     QAction* recentStart = file->addSeparator();
     file->addAction(g("exit"));
-    QObject::connect(file, &QMenu::aboutToShow, this, [this, file, recentStart] {
-        for (QAction* x : file->actions())
-            if (x->property("recentProject").isValid()) {
-                file->removeAction(x);
-                x->deleteLater();
-            }
-        QStringList recent = QSettings().value("recentProjects").toStringList();
-        if (!vprefs::on("prefs/recentList")) recent.clear();
-        while (recent.size() > std::max(1, vprefs::number("prefs/recentCount"))) recent.removeLast();
-        QAction* before = nullptr;
-        {
-            const QList<QAction*> all = file->actions();
-            const int i = all.indexOf(recentStart);
-            before = i >= 0 && i + 1 < all.size() ? all[i + 1] : nullptr;
-        }
-        int n = 0;
-        for (const QString& f : recent) {
-            QAction* x = new QAction(QString("&%1 %2").arg(++n).arg(QDir::toNativeSeparators(f)), file);
-            x->setProperty("recentProject", f);
-            QObject::connect(x, &QAction::triggered, this, [this, f] {
-                if (maybeSave()) openProject(f);
-            });
-            file->insertAction(before, x);
-        }
-        recentStart->setVisible(!recent.isEmpty());
-    });
+    QObject::connect(file, &QMenu::aboutToShow, this, [this, file, recentStart] { fillRecentProjects(file, recentStart); });
+}
 
+// Edit: undo, the clipboard, selecting, navigating, editing tools, event switches, takes and pitch.
+void MainWindow::buildEditMenu()
+{
+    auto g = [this](const char* name) { return a_->get(name); };
     QMenu* edit = menuBar()->addMenu("&Edit");
     edit->addActions({g("undo"), g("redo")});
     edit->addSeparator();
@@ -2000,23 +2105,8 @@ void MainWindow::buildMenus()
     group->addActions({g("group"), g("ungroup"), g("clearGroup"), g("selectGroup")});
     QMenu* sw = edit->addMenu("S&witches");
     sw->addActions({g("switchMute"), g("lockEvent"), g("switchLoop"), g("switchReverse")});
-    QObject::connect(sw, &QMenu::aboutToShow, this, [this, sw] {
-        AppState& app = AppState::get();
-        const std::set<uint64_t> sel = app.selection();
-        bool mute = !sel.empty(), loop = !sel.empty(), rev = !sel.empty(), lock = !sel.empty();
-        for (uint64_t id : sel)
-            if (const Event* e = app.project().findEvent(id)) {
-                mute = mute && e->mute;
-                loop = loop && e->loop;
-                rev = rev && e->reverse;
-                lock = lock && e->locked;
-            }
-        a_->get("lockEvent")->setChecked(lock);
-        a_->get("switchMute")->setChecked(mute);
-        a_->get("switchLoop")->setChecked(loop);
-        a_->get("switchReverse")->setChecked(rev);
-        for (QAction* x : sw->actions()) x->setEnabled(!sel.empty());
-    });
+    QObject::connect(sw, &QMenu::aboutToShow, this, [this, sw] { updateSwitchesMenu(sw); });
+
     QMenu* take = edit->addMenu("Ta&ke");
     take->addActions({g("takeRename"), g("takeChoose")});
     take->addSeparator();
@@ -2029,7 +2119,12 @@ void MainWindow::buildMenus()
     pitch->addActions({g("pitchUp"), g("pitchDown"), g("pitchUpCent"), g("pitchDownCent"), g("pitchUpOctave"), g("pitchDownOctave"), g("pitchReset")});
     edit->addSeparator();
     edit->addActions({g("eventPanCrop"), g("eventProperties")});
+}
 
+// View: windows and layouts, zoom, track heights, docking, what the timeline shows, tool bars.
+void MainWindow::buildViewMenu()
+{
+    auto g = [this](const char* name) { return a_->get(name); };
     QMenu* view = menuBar()->addMenu("&View");
     windowMenu_ = view->addMenu("&Window");
     view->addAction(g("focusTimeline"));
@@ -2049,8 +2144,13 @@ void MainWindow::buildMenus()
     view->addActions({g("showMediaMarkers"), g("showTakeInfo"), g("edgeFrames")});
     view->addSeparator();
     view->addAction(g("rebuildPeaks"));
-    a.toolbars = view->addMenu("&Toolbars");
+    a_->toolbars = view->addMenu("&Toolbars");
+}
 
+// Insert: tracks, generated media, markers and regions, CD tracks, and the envelopes of the selected track.
+void MainWindow::buildInsertMenu()
+{
+    auto g = [this](const char* name) { return a_->get(name); };
     QMenu* insert = menuBar()->addMenu("&Insert");
     insert->addActions({g("audioTrack"), g("videoTrack"), g("audioBus")});
     insert->addSeparator();
@@ -2069,7 +2169,12 @@ void MainWindow::buildMenus()
         QObject::connect(env, &QMenu::aboutToShow, this, [tl, env, video] { tl->fillEnvelopeMenu(env, video != 0); });
         env->addAction("(select a track)")->setEnabled(false);
     }
+}
 
+// Tools: video and audio effects, rendering to a track, multicamera, rescanning media.
+void MainWindow::buildToolsMenu()
+{
+    auto g = [this](const char* name) { return a_->get(name); };
     QMenu* toolsMenu = menuBar()->addMenu("&Tools");
     QMenu* video = toolsMenu->addMenu("&Video");
     video->addActions({g("videoOutFx"), g("trackMotion"), g("eventPanCrop"), g("bypassFx")});
@@ -2085,7 +2190,12 @@ void MainWindow::buildMenus()
     multicam->addActions({g("createMulticam"), g("multicam")});
     toolsMenu->addSeparator();
     toolsMenu->addActions({g("rescan"), g("rescanAll")});
+}
 
+// Options: preferences, snapping and quantizing, fades, ripple and loop.
+void MainWindow::buildOptionsMenu()
+{
+    auto g = [this](const char* name) { return a_->get(name); };
     QMenu* options = menuBar()->addMenu("&Options");
     options->addAction(g("preferences"));
     options->addSeparator();
@@ -2101,11 +2211,76 @@ void MainWindow::buildMenus()
     options->addAction(g("slipAllTakes"));
     options->addSeparator();
     options->addAction(g("loop"));
+}
 
+// Help: contents, What's This, keyboard shortcuts and About.
+void MainWindow::buildHelpMenu()
+{
+    auto g = [this](const char* name) { return a_->get(name); };
     QMenu* help = menuBar()->addMenu("&Help");
     help->addActions({g("helpContents"), g("whatsThis")});
     help->addSeparator();
     help->addActions({g("shortcuts"), g("about")});
+}
+
+// The File menu's recent projects, put back each time it opens (up to Preferences' count, none if the list is off).
+void MainWindow::fillRecentProjects(QMenu* file, QAction* recentStart)
+{
+    for (QAction* x : file->actions())
+        if (x->property("recentProject").isValid()) {
+            file->removeAction(x);
+            x->deleteLater();
+        }
+    QStringList recent = QSettings().value("recentProjects").toStringList();
+    if (!vprefs::on("prefs/recentList")) recent.clear();
+    while (recent.size() > std::max(1, vprefs::number("prefs/recentCount"))) recent.removeLast();
+    QAction* before = nullptr;
+    {
+        const QList<QAction*> all = file->actions();
+        const int i = all.indexOf(recentStart);
+        before = i >= 0 && i + 1 < all.size() ? all[i + 1] : nullptr;
+    }
+    int n = 0;
+    for (const QString& f : recent) {
+        QAction* x = new QAction(QString("&%1 %2").arg(++n).arg(QDir::toNativeSeparators(f)), file);
+        x->setProperty("recentProject", f);
+        QObject::connect(x, &QAction::triggered, this, [this, f] {
+            if (maybeSave()) openProject(f);
+        });
+        file->insertAction(before, x);
+    }
+    recentStart->setVisible(!recent.isEmpty());
+}
+
+// Edit > Switches shows each switch ticked when every selected event has it on.
+void MainWindow::updateSwitchesMenu(QMenu* sw)
+{
+    AppState& app = AppState::get();
+    const std::set<uint64_t> sel = app.selection();
+    bool mute = !sel.empty(), loop = !sel.empty(), rev = !sel.empty(), lock = !sel.empty();
+    for (uint64_t id : sel)
+        if (const Event* e = app.project().findEvent(id)) {
+            mute = mute && e->mute;
+            loop = loop && e->loop;
+            rev = rev && e->reverse;
+            lock = lock && e->locked;
+        }
+    a_->get("lockEvent")->setChecked(lock);
+    a_->get("switchMute")->setChecked(mute);
+    a_->get("switchLoop")->setChecked(loop);
+    a_->get("switchReverse")->setChecked(rev);
+    for (QAction* x : sw->actions()) x->setEnabled(!sel.empty());
+}
+
+void MainWindow::buildMenus()
+{
+    buildFileMenu();
+    buildEditMenu();
+    buildViewMenu();
+    buildInsertMenu();
+    buildToolsMenu();
+    buildOptionsMenu();
+    buildHelpMenu();
 }
 
 void MainWindow::buildToolBars()

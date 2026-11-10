@@ -18,7 +18,12 @@
 #  include <chrono>
 #  include <thread>
 #  ifdef __APPLE__
+#    include <TargetConditionals.h>
 #    include <mach-o/dyld.h>
+#  endif
+#  ifdef __FreeBSD__
+#    include <sys/types.h>
+#    include <sys/sysctl.h>
 #  endif
 #endif
 
@@ -133,6 +138,12 @@ std::string selfExePath()
     if (_NSGetExecutablePath(buf, &size) != 0) return std::string();
     char real[PATH_MAX];
     return realpath(buf, real) ? std::string(real) : std::string(buf);
+#elif defined(__FreeBSD__)
+    // (FreeBSD has no /proc unless it is mounted)
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    char buf[PATH_MAX];
+    size_t size = sizeof buf;
+    return sysctl(mib, 4, buf, &size, nullptr, 0) == 0 && size > 1 ? std::string(buf) : std::string();
 #else
     char buf[PATH_MAX];
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
@@ -149,6 +160,12 @@ ProcessResult runProcess(const std::string& exe, const std::vector<std::string>&
     argv.push_back(const_cast<char*>(exe.c_str()));
     for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // iOS starts no other programs (the plug-in checker and helpers run in the app itself or not at all)
+    (void)timeoutSeconds;
+    (void)stop;
+    return r;
+#endif
     pid_t pid = fork();
     if (pid < 0) return r;
     if (pid == 0) {

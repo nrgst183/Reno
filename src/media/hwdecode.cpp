@@ -77,8 +77,8 @@ Platform currentPlatform()
     return Platform::Windows;
 #elif defined(__APPLE__)
     return Platform::Mac;
-#elif defined(__linux__)
-    return Platform::Linux;
+#elif defined(__linux__) || defined(__FreeBSD__)
+    return Platform::Linux;     // (FreeBSD: the same VA-API / VDPAU / CUDA decoders)
 #else
     return Platform::Other;
 #endif

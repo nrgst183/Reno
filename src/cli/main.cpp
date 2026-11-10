@@ -2008,12 +2008,33 @@ int renderJob(AppState& app, const Job& job)
 }  // namespace
 
 // ================================================================================================ main
-int main(int argc, char** argv)
+// gpupick: measures every built-in effect with a Vulkan kernel on the CPU and on the card and prints which is quicker (Reno does the same behind the
+// splash screen, once per card; --again measures even if the saved result is for this card)
+static int runGpuPick(const std::vector<std::string>& args)
 {
-    std::vector<std::string> args = readCommandLine(argc, argv);
+    bool again = false;
+    for (size_t k = 0; k < args.size(); ++k) {
+        if (args[k] == "--again") again = true;
+        else if (args[k] == "--device" && k + 1 < args.size()) gpu::selectDevice(std::atoi(args[++k].c_str()));
+        else if (args[k] == "--software") qputenv("RENO_VK_ALLOW_SOFTWARE", "1");
+        else { std::fputs("usage: reno_cli gpupick [--again] [--device N] [--software]\n", stderr); return kUsage; }
+    }
+    gpu::setEnabled(true);
+    const int n = ofx::builtin::pick::runNow(renoVersion(), again, stdout);
+    if (n < 0) { std::puts("No usable graphics card (or only a software Vulkan): every effect uses the CPU or the default."); return 3; }
+    int cpu = 0;
+    for (const auto& e : ofx::builtin::pick::results()) if (!e.gpu) ++cpu;
+    std::printf("%d effects measured, %d of them go to the CPU. Saved for: %s\n", n, cpu, ofx::builtin::pick::deviceKey().c_str());
+    return kOk;
+}
 
-    // plug-in checking commands: no Qt, no renderer
-    if (!args.empty() && isPluginCheckCommand(args[0])) {
+// The commands that are not renders (checking plug-ins, the project model, Vulkan checks and benchmarks): their exit
+// code, or kContinue if args[0] is not one of them.
+static int runToolCommand(std::vector<std::string> args)
+{
+    if (args.empty()) return kContinue;
+    // plug-in checking: no Qt, no renderer
+    if (isPluginCheckCommand(args[0])) {
         const std::string cmd = args[0];
         args.erase(args.begin());
         if (cmd == "vegasfxrun" && std::find(args.begin(), args.end(), std::string("builtin")) != args.end()) {
@@ -2028,38 +2049,33 @@ int main(int argc, char** argv)
         return runPluginCheckCommand(cmd, args);
     }
     // model: the project as JSON in the schema of tools/vegas/RenoCoverage.cs (no Qt)
-    if (!args.empty() && args[0] == "model") {
+    if (args[0] == "model") {
         args.erase(args.begin());
         return runModelCommand(args);
     }
     // vkcheck: Vulkan devices and GPU effects against their CPU code (no Qt)
-    if (!args.empty() && args[0] == "vkcheck") {
+    if (args[0] == "vkcheck") {
         args.erase(args.begin());
         return ofx::builtin::runVkCheck(args);
     }
     // fxbench: milliseconds per frame of each built-in effect on the CPU and on the card, and of a chain (no Qt)
-    if (!args.empty() && args[0] == "fxbench") {
+    if (args[0] == "fxbench") {
         args.erase(args.begin());
         return ofx::builtin::runFxBench(args);
     }
-    // gpupick: measures every built-in effect with a Vulkan kernel on the CPU and on the card and prints which is quicker (Reno does the same behind the
-    // splash screen, once per card; --again measures even if the saved result is for this card)
-    if (!args.empty() && args[0] == "gpupick") {
-        bool again = false;
-        for (size_t k = 1; k < args.size(); ++k) {
-            if (args[k] == "--again") again = true;
-            else if (args[k] == "--device" && k + 1 < args.size()) gpu::selectDevice(std::atoi(args[++k].c_str()));
-            else if (args[k] == "--software") qputenv("RENO_VK_ALLOW_SOFTWARE", "1");
-            else { std::fputs("usage: reno_cli gpupick [--again] [--device N] [--software]\n", stderr); return kUsage; }
-        }
-        gpu::setEnabled(true);
-        const int n = ofx::builtin::pick::runNow(renoVersion(), again, stdout);
-        if (n < 0) { std::puts("No usable graphics card (or only a software Vulkan): every effect uses the CPU or the default."); return 3; }
-        int cpu = 0;
-        for (const auto& e : ofx::builtin::pick::results()) if (!e.gpu) ++cpu;
-        std::printf("%d effects measured, %d of them go to the CPU. Saved for: %s\n", n, cpu, ofx::builtin::pick::deviceKey().c_str());
-        return kOk;
+    if (args[0] == "gpupick") {
+        args.erase(args.begin());
+        return runGpuPick(args);
     }
+    return kContinue;
+}
+
+int main(int argc, char** argv)
+{
+    std::vector<std::string> args = readCommandLine(argc, argv);
+
+    const int toolCode = runToolCommand(args);
+    if (toolCode != kContinue) return toolCode;
     if (args.empty()) {
         std::fputs(kHelp, stdout);
         return kUsage;

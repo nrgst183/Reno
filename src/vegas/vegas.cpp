@@ -284,6 +284,207 @@ void Importer::readMixer(const Chunk& c)
 // holds width and height at +0x0c and +0x10), followed for a generator by u32 1 and its OpenFX record. Further
 // OpenFX records are taken as the media's own effects (Media FX); no sample has any, so that is unconfirmed.
 // The record has no length or size of the media: VEGAS reads the file.
+// The stream records after the names: video / audio streams, an image sequence's rate, a generator's size and name.
+// 'at' is left after them.
+static void readStreamRecords(const Bytes& b, size_t& at, MediaRec& m)
+{
+    for (int i = 0; i < 64 && b.has(at, 8); ++i) {
+        const uint32_t sz = b.u32(at);
+        if (sz < 8 || !b.has(at, sz)) break;
+        if (sz == 0x90) {
+            const uint32_t type = b.u32(at + 4);
+            if (type == 3) m.video = true;
+            else if (type == 2) m.audio = true;
+        } else if (sz == 0xc) {
+            const double f = b.f64(at + 4);
+            if (std::isfinite(f) && f > 0 && f <= 1000) m.seqFps = f;
+        } else if (sz == 0xb0) {
+            m.genW = (int)b.u32(at + 0x0c);
+            m.genH = (int)b.u32(at + 0x10);
+        } else if (sz == 0x224) {
+            m.generatorName = b.textZ(at + 0x1c);
+        }
+        at += sz;
+    }
+}
+
+// The OpenFX records (they follow the stream records; searched for, not counted), each with where it starts.
+static std::vector<std::pair<OfxRecord, size_t>> mediaOfxRecords(const Bytes& b, size_t from)
+{
+    std::vector<std::pair<OfxRecord, size_t>> fx;
+    static const uint8_t ofxGuid[16] = {0x41, 0x1a, 0xfc, 0xa2, 0xf6, 0x01, 0x0e, 0x46, 0xae, 0x5a, 0x2b, 0xe4, 0xaf, 0x57, 0xb9, 0x2e};
+    size_t f = b.find(ofxGuid, 16, from);
+    while (f != std::string::npos && fx.size() < 1000) {
+        OfxRecord r;
+        if (f >= 4 && readOfxRecord(b, f - 4, r) && r.end > f) {
+            const size_t next = r.end;
+            fx.push_back({std::move(r), f - 4});
+            f = b.find(ofxGuid, 16, next);
+        } else {
+            f = b.find(ofxGuid, 16, f + 1);
+        }
+    }
+    return fx;
+}
+
+// Media effects of the older kinds (VEGAS's managed CoreGraphics effects such as Rays, and the DirectX-era ones) are
+// records of their own behind the stream records (u32 0x38, the class GUID): found by position, one after the other.
+static std::vector<size_t> findOlderFxRecords(const Bytes& b, size_t recordsStart, const std::vector<std::pair<OfxRecord, size_t>>& fx)
+{
+    std::vector<size_t> found;
+    size_t q = recordsStart;
+    while (q + 0x38 <= b.size() && found.size() < 1000) {
+        bool inOfx = false;
+        for (const auto& o : fx) inOfx = inOfx || (q >= o.second && q < o.first.end);
+        if (inOfx) { q += 1; continue; }
+        if (b.u32(q) == 0x38 && (isManagedFxAt(b, q) || isLegacyFxAt(b, q))) {
+            found.push_back(q);
+            q += 0x38;
+        } else {
+            q += 1;
+        }
+    }
+    return found;
+}
+
+// VEGAS names an image sequence "first - last" (no name is stored): the numbers are [count][digits] at the end of the
+// record's text, the first picture is 'path'. Empty when they can't be read.
+static std::string imageSequenceName(const std::string& raw, const std::string& path)
+{
+    long long nums[2] = {0, 0};
+    size_t end = raw.size();
+    bool ok = true;
+    for (int i = 1; i >= 0 && ok; --i) {
+        const size_t open = end > 0 && raw[end - 1] == ']' ? raw.rfind('[', end - 1) : std::string::npos;
+        ok = open != std::string::npos && end - open - 2 > 0 && end - open - 2 < 10;
+        if (ok) { nums[i] = std::atoll(raw.substr(open + 1, end - open - 2).c_str()); end = open; }
+    }
+    const std::string file = windowsFileName(path);
+    const size_t dot = file.find_last_of('.');
+    const std::string stem = dot == std::string::npos ? file : file.substr(0, dot);
+    const size_t digits = (size_t)nums[1];
+    if (ok && nums[0] >= 2 && digits > 0 && digits < stem.size() + 1 && digits < 10) {
+        const std::string head = stem.substr(0, stem.size() - digits);
+        const long first = std::atol(stem.c_str() + stem.size() - digits);
+        char last[16];
+        std::snprintf(last, sizeof last, "%0*ld", (int)digits, first + (long)nums[0] - 1);
+        return stem + " - " + head + last;
+    }
+    return std::string();
+}
+
+// What kind of media the record's text names (a file, a subclip of one, a generator, an image sequence or something
+// else VEGAS has), and which of the effects found are the media's own.
+static void classifyMedia(const std::string& raw, const std::vector<std::pair<OfxRecord, size_t>>& fx, MediaRec& m)
+{
+    double ss = 0, sl = 0;
+    bool rev = false;
+    std::string parent;
+    if (parseSubclip(raw, parent, ss, sl, rev)) {
+        m.kind = VegMediaRecord::Subclip;
+        m.path = parent;
+        m.subStart = ss;
+        m.subLen = sl;
+        m.subReversed = rev;
+        m.mediaFx = fx;
+    } else if (raw.compare(0, 22, "META:\\Video Generator\\") == 0) {
+        m.kind = VegMediaRecord::Generated;
+        m.video = true;
+        if (!fx.empty()) {
+            m.generator = fx.front().first;
+            m.generatorOff = fx.front().second;
+            m.generatorOk = true;
+            m.mediaFx.assign(fx.begin() + 1, fx.end());
+        }
+    } else if (raw.compare(0, 22, "META:\\Image Sequence\\{") == 0 && raw.find("} (") != std::string::npos) {
+        // the first picture is in the braces; the numbers after it are the frame count and the digits of the numbering
+        m.kind = VegMediaRecord::File;
+        m.sequence = true;
+        m.path = raw.substr(22, raw.rfind("} (") - 22);
+        m.video = true;
+        // VEGAS names it "first - last" (no name is stored)
+        if (m.name.empty()) m.name = imageSequenceName(raw, m.path);
+        m.mediaFx = fx;
+    } else if (raw.compare(0, 5, "META:") == 0) {
+        m.kind = VegMediaRecord::Other;
+        m.path = raw;
+    } else {
+        m.kind = VegMediaRecord::File;
+        m.path = raw;
+        m.mediaFx = fx;
+    }
+}
+
+// The pre-OpenFX generators (DirectX plug-ins, named by class GUID in the path) have no OpenFX record; the two that Reno
+// has a built-in of are taken with that built-in's default settings (their own settings block is not decoded). The
+// built-in's plug-in id, or null.
+static const char* legacyGeneratorPlugin(const std::string& raw)
+{
+    static const struct { const char* guid; const char* plugin; } legacyGen[] = {
+        {"{02FD3B60-986B-11D4-9F6F-00485481BD31}", "com.vegascreativesoftware:creditroll"},
+        {"{8B5DEABC-53BD-49F6-9803-367478307A59}", "com.vegascreativesoftware:colorgradient"},
+    };
+    for (const auto& g : legacyGen)
+        if (raw.compare(22, std::strlen(g.guid), g.guid) == 0) return g.plugin;
+    return nullptr;
+}
+
+// Generated media: its generator (or the built-in standing in for an older one) and size.
+void Importer::addGeneratedMedia(const Chunk* c, MediaRec& m, const char* legacyPlugin)
+{
+    MediaItem mi;
+    mi.id = p_->newId();
+    mi.generated = true;
+    mi.name = !m.name.empty() ? m.name : (!m.generatorName.empty() ? m.generatorName : m.generator.pluginId);
+    if (legacyPlugin) {
+        mi.generator.id = p_->newId();
+        mi.generator.kind = "ofx";
+        mi.generator.pluginId = legacyPlugin;
+    } else {
+        mi.generator = fxSlotOf(m.generator, "Generated media '" + mi.name + "'", c, m.generatorOff, false);
+    }
+    mi.generator.name = m.generatorName;
+    mi.info.hasVideo = true;
+    if (m.genW >= 1 && m.genW <= 16384 && m.genH >= 1 && m.genH <= 16384) {
+        mi.info.width = m.genW;
+        mi.info.height = m.genH;
+    }
+    auto o = origin<VegMediaOrigin>(c);
+    o->vegId = m.vegId;
+    o->asRead = mi;
+    mi.veg = o;
+    m.renoId = mi.id;
+    p_->media.push_back(mi);
+}
+
+// A file, image sequence or subclip: one media item per file. A subclip becomes its whole file: events using it get the
+// subclip start added to their offset (and are reversed if the subclip plays backwards).
+void Importer::addFileMedia(const Chunk* c, MediaRec& m)
+{
+    const std::string display = m.kind == VegMediaRecord::File ? m.name : std::string();
+    m.renoId = mediaItemForFile(m.path, display, m.sequence);
+    MediaItem* mi = p_->findMedia(m.renoId);
+    if (mi && m.sequence && mi->sequenceFps <= 0) mi->sequenceFps = m.seqFps > 0 ? m.seqFps : p_->settings.fps();     // (the rate the sequence was opened at; the project's when the record has none)
+    if (mi) {
+        mi->info.hasVideo = mi->info.hasVideo || m.video;
+        mi->info.hasAudio = mi->info.hasAudio || m.audio;
+        if (m.kind == VegMediaRecord::File) {
+            if (!m.name.empty()) mi->name = windowsFileName(m.name);
+            // (two records for one file become one item: it keeps the first record, so its place in the pool is that record's)
+            const auto* had = vegOriginAs<VegMediaOrigin>(mi->veg, VegOrigin::MediaK);
+            if (!had || !had->vegId) {
+                auto o = origin<VegMediaOrigin>(c);
+                o->vegId = m.vegId;
+                mi->veg = o;           // asRead copy is made in finishMedia
+            }
+        }
+    }
+    if (m.kind == VegMediaRecord::Subclip) {
+        double& len = mediaMinLength_[m.renoId];
+        len = std::max(len, m.subStart + m.subLen);
+    }
+}
+
 void Importer::readMedia(const Chunk& list)
 {
     for (const Chunk* c : childChunks(list, G::Media)) {
@@ -309,132 +510,20 @@ void Importer::readMedia(const Chunk& list)
         if (b.has(at, nameLen)) m.name = b.text(at, nameLen);
         at += nameLen;
         const size_t recordsStart = at;
-        for (int i = 0; i < 64 && b.has(at, 8); ++i) {
-            const uint32_t sz = b.u32(at);
-            if (sz < 8 || !b.has(at, sz)) break;
-            if (sz == 0x90) {
-                const uint32_t type = b.u32(at + 4);
-                if (type == 3) m.video = true;
-                else if (type == 2) m.audio = true;
-            } else if (sz == 0xc) {
-                const double f = b.f64(at + 4);
-                if (std::isfinite(f) && f > 0 && f <= 1000) m.seqFps = f;
-            } else if (sz == 0xb0) {
-                m.genW = (int)b.u32(at + 0x0c);
-                m.genH = (int)b.u32(at + 0x10);
-            } else if (sz == 0x224) {
-                m.generatorName = b.textZ(at + 0x1c);
-            }
-            at += sz;
-        }
-        // OpenFX records follow the stream records; searched for, not counted
-        std::vector<std::pair<OfxRecord, size_t>> fx;
-        {
-            static const uint8_t ofxGuid[16] = {0x41, 0x1a, 0xfc, 0xa2, 0xf6, 0x01, 0x0e, 0x46, 0xae, 0x5a, 0x2b, 0xe4, 0xaf, 0x57, 0xb9, 0x2e};
-            size_t f = b.find(ofxGuid, 16, (size_t)hs + pathLen);
-            while (f != std::string::npos && fx.size() < 1000) {
-                OfxRecord r;
-                if (f >= 4 && readOfxRecord(b, f - 4, r) && r.end > f) {
-                    const size_t next = r.end;
-                    fx.push_back({std::move(r), f - 4});
-                    f = b.find(ofxGuid, 16, next);
-                } else {
-                    f = b.find(ofxGuid, 16, f + 1);
-                }
-            }
-        }
-        // Media effects of the older kinds (VEGAS's managed CoreGraphics effects such as Rays, and the DirectX-era ones) are records of
-        // their own behind the stream records (u32 0x38, the class GUID): found by position, one after the other
-        {
-            size_t q = recordsStart;
-            while (q + 0x38 <= b.size() && m.otherFx.size() < 1000) {
-                bool inOfx = false;
-                for (const auto& o : fx) inOfx = inOfx || (q >= o.second && q < o.first.end);
-                if (inOfx) { q += 1; continue; }
-                if (b.u32(q) == 0x38 && (isManagedFxAt(b, q) || isLegacyFxAt(b, q))) {
-                    m.otherFx.push_back(q);
-                    q += 0x38;
-                } else {
-                    q += 1;
-                }
-            }
-        }
-        double ss = 0, sl = 0;
-        bool rev = false;
-        std::string parent;
-        if (parseSubclip(raw, parent, ss, sl, rev)) {
-            m.kind = VegMediaRecord::Subclip;
-            m.path = parent;
-            m.subStart = ss;
-            m.subLen = sl;
-            m.subReversed = rev;
-            m.mediaFx = fx;
-        } else if (raw.compare(0, 22, "META:\\Video Generator\\") == 0) {
-            m.kind = VegMediaRecord::Generated;
-            m.video = true;
-            if (!fx.empty()) {
-                m.generator = fx.front().first;
-                m.generatorOff = fx.front().second;
-                m.generatorOk = true;
-                m.mediaFx.assign(fx.begin() + 1, fx.end());
-            }
-        } else if (raw.compare(0, 22, "META:\\Image Sequence\\{") == 0 && raw.find("} (") != std::string::npos) {
-            // the first picture is in the braces; the numbers after it are the frame count and the digits of the numbering
-            m.kind = VegMediaRecord::File;
-            m.sequence = true;
-            m.path = raw.substr(22, raw.rfind("} (") - 22);
-            m.video = true;
-            // VEGAS names it "first - last" (no name is stored): the numbers are [count][digits] at the end of the text
-            {
-                long long nums[2] = {0, 0};
-                size_t end = raw.size();
-                bool ok = true;
-                for (int i = 1; i >= 0 && ok; --i) {
-                    const size_t open = end > 0 && raw[end - 1] == ']' ? raw.rfind('[', end - 1) : std::string::npos;
-                    ok = open != std::string::npos && end - open - 2 > 0 && end - open - 2 < 10;
-                    if (ok) { nums[i] = std::atoll(raw.substr(open + 1, end - open - 2).c_str()); end = open; }
-                }
-                const std::string file = windowsFileName(m.path);
-                const size_t dot = file.find_last_of('.');
-                const std::string stem = dot == std::string::npos ? file : file.substr(0, dot);
-                const size_t digits = (size_t)nums[1];
-                if (ok && nums[0] >= 2 && digits > 0 && digits < stem.size() + 1 && digits < 10 && m.name.empty()) {
-                    const std::string head = stem.substr(0, stem.size() - digits);
-                    const long first = std::atol(stem.c_str() + stem.size() - digits);
-                    char last[16];
-                    std::snprintf(last, sizeof last, "%0*ld", (int)digits, first + (long)nums[0] - 1);
-                    m.name = stem + " - " + head + last;
-                }
-            }
-            m.mediaFx = fx;
-        } else if (raw.compare(0, 5, "META:") == 0) {
-            m.kind = VegMediaRecord::Other;
-            m.path = raw;
-        } else {
-            m.kind = VegMediaRecord::File;
-            m.path = raw;
-            m.mediaFx = fx;
-        }
+        readStreamRecords(b, at, m);
+        const std::vector<std::pair<OfxRecord, size_t>> fx = mediaOfxRecords(b, (size_t)hs + pathLen);
+        m.otherFx = findOlderFxRecords(b, recordsStart, fx);
+        classifyMedia(raw, fx, m);
         vr.kind = m.kind;
         vr.path = m.kind == VegMediaRecord::Other ? raw : m.path;
         vr.subStart = m.subStart;
         vr.subLen = m.subLen;
         vr.subReversed = m.subReversed;
-        // The pre-OpenFX generators (DirectX plug-ins, named by class GUID in the path) have no OpenFX record; the two that
-        // Reno has a built-in of are taken with that built-in's default settings (their own settings block is not
-        // decoded). The record stays as it is in the file unless the generator is changed.
-        const char* legacyPlugin = nullptr;
-        if (m.kind == VegMediaRecord::Generated && !m.generatorOk && raw.size() > 22) {
-            static const struct { const char* guid; const char* plugin; } legacyGen[] = {
-                {"{02FD3B60-986B-11D4-9F6F-00485481BD31}", "com.vegascreativesoftware:creditroll"},
-                {"{8B5DEABC-53BD-49F6-9803-367478307A59}", "com.vegascreativesoftware:colorgradient"},
-            };
-            for (const auto& g : legacyGen)
-                if (raw.compare(22, std::strlen(g.guid), g.guid) == 0) legacyPlugin = g.plugin;
-            if (legacyPlugin)
-                notes_.count("%d generator(s) are VEGAS's older DirectX generators (Credit Roll, Color Gradient); their settings are not read, Reno uses the built-in's defaults",
-                             m.generatorName.empty() ? raw : m.generatorName);
-        }
+        // (an older generator's record stays as it is in the file unless the generator is changed)
+        const char* legacyPlugin = m.kind == VegMediaRecord::Generated && !m.generatorOk && raw.size() > 22 ? legacyGeneratorPlugin(raw) : nullptr;
+        if (legacyPlugin)
+            notes_.count("%d generator(s) are VEGAS's older DirectX generators (Credit Roll, Color Gradient); their settings are not read, Reno uses the built-in's defaults",
+                         m.generatorName.empty() ? raw : m.generatorName);
         if (m.kind == VegMediaRecord::Generated && !m.generatorOk && !legacyPlugin) {
             notes_.add("Generated media '" + (m.name.empty() ? raw : m.name) + "': the generator's settings could not be read; it is kept "
                        "in the file but not shown.");
@@ -448,56 +537,8 @@ void Importer::readMedia(const Chunk& list)
             po_->media.push_back(vr);
             continue;
         }
-        if (m.kind == VegMediaRecord::Generated) {
-            MediaItem mi;
-            mi.id = p_->newId();
-            mi.generated = true;
-            mi.name = !m.name.empty() ? m.name : (!m.generatorName.empty() ? m.generatorName : m.generator.pluginId);
-            if (legacyPlugin) {
-                mi.generator.id = p_->newId();
-                mi.generator.kind = "ofx";
-                mi.generator.pluginId = legacyPlugin;
-            } else {
-                mi.generator = fxSlotOf(m.generator, "Generated media '" + mi.name + "'", c, m.generatorOff, false);
-            }
-            mi.generator.name = m.generatorName;
-            mi.info.hasVideo = true;
-            if (m.genW >= 1 && m.genW <= 16384 && m.genH >= 1 && m.genH <= 16384) {
-                mi.info.width = m.genW;
-                mi.info.height = m.genH;
-            }
-            auto o = origin<VegMediaOrigin>(c);
-            o->vegId = m.vegId;
-            o->asRead = mi;
-            mi.veg = o;
-            m.renoId = mi.id;
-            p_->media.push_back(mi);
-        } else {
-            // A subclip becomes its whole file: events using it get the subclip start added to their offset
-            // (and are reversed if the subclip plays backwards).
-            const std::string display = m.kind == VegMediaRecord::File ? m.name : std::string();
-            m.renoId = mediaItemForFile(m.path, display, m.sequence);
-            MediaItem* mi = p_->findMedia(m.renoId);
-            if (mi && m.sequence && mi->sequenceFps <= 0) mi->sequenceFps = m.seqFps > 0 ? m.seqFps : p_->settings.fps();     // (the rate the sequence was opened at; the project's when the record has none)
-            if (mi) {
-                mi->info.hasVideo = mi->info.hasVideo || m.video;
-                mi->info.hasAudio = mi->info.hasAudio || m.audio;
-                if (m.kind == VegMediaRecord::File) {
-                    if (!m.name.empty()) mi->name = windowsFileName(m.name);
-                    // (two records for one file become one item: it keeps the first record, so its place in the pool is that record's)
-                    const auto* had = vegOriginAs<VegMediaOrigin>(mi->veg, VegOrigin::MediaK);
-                    if (!had || !had->vegId) {
-                        auto o = origin<VegMediaOrigin>(c);
-                        o->vegId = m.vegId;
-                        mi->veg = o;           // asRead copy is made in finishMedia
-                    }
-                }
-            }
-            if (m.kind == VegMediaRecord::Subclip) {
-                double& len = mediaMinLength_[m.renoId];
-                len = std::max(len, m.subStart + m.subLen);
-            }
-        }
+        if (m.kind == VegMediaRecord::Generated) addGeneratedMedia(c, m, legacyPlugin);
+        else addFileMedia(c, m);
         vr.renoId = m.renoId;
         po_->media.push_back(vr);
         media_[m.vegId] = m;

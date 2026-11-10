@@ -526,168 +526,176 @@ struct SurroundPannerWindow::Impl {
         }
         field->update();
     }
-};
 
-SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d(new Impl())
-{
-    d->w = this;
-    setObjectName("surroundPanner");
-    setAutoFillBackground(true);
-    QPalette pal = palette();
-    pal.setColor(QPalette::Window, dark());
-    pal.setColor(QPalette::WindowText, text());
-    setPalette(pal);
-    QVBoxLayout* v = new QVBoxLayout(this);
-    v->setContentsMargins(6, 6, 6, 6);
-    v->setSpacing(4);
+    // The row at the top: whose panner is shown, where its sound goes, and its pan type.
+    void buildTargetRow(QVBoxLayout* v)
+    {
+        QHBoxLayout* top = new QHBoxLayout();
+        target = new QComboBox(w);
+        target->setObjectName("surroundTarget");
+        target->setToolTip("Whose surround panner is shown: the current track, or a track or bus of your choice");
+        top->addWidget(target, 1);
+        route = new QComboBox(w);
+        route->setObjectName("surroundRoute");
+        for (auto r : {std::make_pair("Surround Pan", "surround"), std::make_pair("Front Only", "front"), std::make_pair("Center Only", "center"),
+                       std::make_pair("LFE Only", "lfe"), std::make_pair("Rear Only", "rear")})
+            route->addItem(r.first, QString(r.second));
+        route->setToolTip("Where the sound goes: panned by the point, or straight to the front pair, the centre, the LFE or the rear pair");
+        top->addWidget(route);
+        panTypeBox = new QComboBox(w);
+        panTypeBox->setObjectName("surroundPanType");
+        for (const auto& t : surroundPanTypes()) panTypeBox->addItem(qs(t.second), qs(t.first));
+        panTypeBox->setToolTip("Pan Type: the panning law of this track or bus (also on the shortcut menu of the panner)");
+        top->addWidget(panTypeBox);
+        v->addLayout(top);
+    }
 
-    QHBoxLayout* top = new QHBoxLayout();
-    d->target = new QComboBox(this);
-    d->target->setObjectName("surroundTarget");
-    d->target->setToolTip("Whose surround panner is shown: the current track, or a track or bus of your choice");
-    top->addWidget(d->target, 1);
-    d->route = new QComboBox(this);
-    d->route->setObjectName("surroundRoute");
-    for (auto r : {std::make_pair("Surround Pan", "surround"), std::make_pair("Front Only", "front"), std::make_pair("Center Only", "center"),
-                   std::make_pair("LFE Only", "lfe"), std::make_pair("Rear Only", "rear")})
-        d->route->addItem(r.first, QString(r.second));
-    d->route->setToolTip("Where the sound goes: panned by the point, or straight to the front pair, the centre, the LFE or the rear pair");
-    top->addWidget(d->route);
-    d->panTypeBox = new QComboBox(this);
-    d->panTypeBox->setObjectName("surroundPanType");
-    for (const auto& t : surroundPanTypes()) d->panTypeBox->addItem(qs(t.second), qs(t.first));
-    d->panTypeBox->setToolTip("Pan Type: the panning law of this track or bus (also on the shortcut menu of the panner)");
-    top->addWidget(d->panTypeBox);
-    v->addLayout(top);
+    // The panner itself (or a message saying why there is none).
+    void buildField(QVBoxLayout* v)
+    {
+        message = new QLabel(w);
+        message->setAlignment(Qt::AlignCenter);
+        message->setWordWrap(true);
+        message->setObjectName("surroundMessage");
+        v->addWidget(message, 1);
+        field = new SurroundField(false, w);
+        field->get = [this]() { return pan(); };
+        field->panType = [this]() { return surroundPanTypeOf(AppState::get().project(), shown()); };
+        field->setPanType = [this](const std::string& type) {
+            const uint64_t id = shown();
+            AppState::get().edit("Pan Type", [&](Project& p) { setSurroundPanType(p, id, type); });
+        };
+        field->set = [this](Project& p, const SurroundPan& sp) {
+            if (SurroundPan* to = surroundPanOf(p, shown())) *to = sp;
+        };
+        field->setToolTip("Drag the point (Shift: along the line through the middle, Alt: round its circle, Alt+Shift: round the largest circle, "
+                             "Ctrl: finer); arrows, Page Up/Down, the wheel and the keypad move it; click a speaker to mute it");
+        v->addWidget(field, 4);
+    }
 
-    d->message = new QLabel(this);
-    d->message->setAlignment(Qt::AlignCenter);
-    d->message->setWordWrap(true);
-    d->message->setObjectName("surroundMessage");
-    v->addWidget(d->message, 1);
-    d->field = new SurroundField(false, this);
-    d->field->get = [this]() { return d->pan(); };
-    d->field->panType = [this]() { return surroundPanTypeOf(AppState::get().project(), d->shown()); };
-    d->field->setPanType = [this](const std::string& type) {
-        const uint64_t id = d->shown();
-        AppState::get().edit("Pan Type", [&](Project& p) { setSurroundPanType(p, id, type); });
-    };
-    d->field->set = [this](Project& p, const SurroundPan& sp) {
-        if (SurroundPan* to = surroundPanOf(p, d->shown())) *to = sp;
-    };
-    d->field->setToolTip("Drag the point (Shift: along the line through the middle, Alt: round its circle, Alt+Shift: round the largest circle, "
-                         "Ctrl: finer); arrows, Page Up/Down, the wheel and the keypad move it; click a speaker to mute it");
-    v->addWidget(d->field, 4);
+    // Under the panner: Center, Smoothness, LFE, Motion and the keyframe buttons.
+    void buildControls(QVBoxLayout* v)
+    {
+        controls = new QWidget(w);
+        QGridLayout* g = new QGridLayout(controls);
+        g->setContentsMargins(0, 0, 0, 0);
+        g->setHorizontalSpacing(6);
+        g->setVerticalSpacing(2);
+        auto slider = [&](LabeledSlider& s, const char* label, const char* name, int lo, int hi, int row) {
+            g->addWidget(new QLabel(label, controls), row, 0);
+            s.slider = new QSlider(Qt::Horizontal, controls);
+            s.slider->setObjectName(name);
+            s.slider->setRange(lo, hi);
+            g->addWidget(s.slider, row, 1);
+            s.value = new QLabel(controls);
+            s.value->setMinimumWidth(56);
+            g->addWidget(s.value, row, 2);
+        };
+        slider(center, "Center:", "surroundCenter", 0, 1000, 0);   // 0.0 dB (no gain) is where the fader sits by default
+        slider(smooth, "Smoothness:", "surroundSmoothness", 0, 100, 1);
+        lfeOn = new QCheckBox("Enable &LFE", controls);
+        lfeOn->setObjectName("surroundLfe");
+        g->addWidget(lfeOn, 2, 0);
+        lfe.slider = new QSlider(Qt::Horizontal, controls);
+        lfe.slider->setObjectName("surroundLfeLevel");
+        lfe.slider->setRange(0, 1000);
+        g->addWidget(lfe.slider, 2, 1);
+        lfe.value = new QLabel(controls);
+        g->addWidget(lfe.value, 2, 2);
+        g->addWidget(new QLabel("Motion:", controls), 3, 0);
+        motion = new QComboBox(controls);
+        motion->setObjectName("surroundMotion");
+        motion->addItem("Move Freely (X or Y)", QString("free"));
+        motion->addItem("Move left/right only (X)", QString("x"));
+        motion->addItem("Move front/back only (Y)", QString("y"));
+        g->addWidget(motion, 3, 1, 1, 2);
+        QHBoxLayout* keys = new QHBoxLayout();
+        addKey = new QPushButton("Add Keyframe", controls);
+        addKey->setObjectName("surroundAddKey");
+        addKey->setToolTip("A Surround Pan keyframe at the cursor, where the point is now (moving the point then changes the keyframe at the cursor)");
+        delKey = new QPushButton("Delete Keyframe", controls);
+        delKey->setObjectName("surroundDeleteKey");
+        clearKeys = new QPushButton("Clear", controls);
+        clearKeys->setToolTip("Delete every keyframe (the point stays where it is at the cursor)");
+        keys->addWidget(addKey);
+        keys->addWidget(delKey);
+        keys->addWidget(clearKeys);
+        g->addLayout(keys, 4, 0, 1, 3);
+        v->addWidget(controls);
+    }
 
-    d->controls = new QWidget(this);
-    QGridLayout* g = new QGridLayout(d->controls);
-    g->setContentsMargins(0, 0, 0, 0);
-    g->setHorizontalSpacing(6);
-    g->setVerticalSpacing(2);
-    auto slider = [&](LabeledSlider& s, const char* label, const char* name, int lo, int hi, int row) {
-        g->addWidget(new QLabel(label, d->controls), row, 0);
-        s.slider = new QSlider(Qt::Horizontal, d->controls);
-        s.slider->setObjectName(name);
-        s.slider->setRange(lo, hi);
-        g->addWidget(s.slider, row, 1);
-        s.value = new QLabel(d->controls);
-        s.value->setMinimumWidth(56);
-        g->addWidget(s.value, row, 2);
-    };
-    slider(d->center, "Center:", "surroundCenter", 0, 1000, 0);   // 0.0 dB (no gain) is where the fader sits by default
-    slider(d->smooth, "Smoothness:", "surroundSmoothness", 0, 100, 1);
-    d->lfeOn = new QCheckBox("Enable &LFE", d->controls);
-    d->lfeOn->setObjectName("surroundLfe");
-    g->addWidget(d->lfeOn, 2, 0);
-    d->lfe.slider = new QSlider(Qt::Horizontal, d->controls);
-    d->lfe.slider->setObjectName("surroundLfeLevel");
-    d->lfe.slider->setRange(0, 1000);
-    g->addWidget(d->lfe.slider, 2, 1);
-    d->lfe.value = new QLabel(d->controls);
-    g->addWidget(d->lfe.value, 2, 2);
-    g->addWidget(new QLabel("Motion:", d->controls), 3, 0);
-    d->motion = new QComboBox(d->controls);
-    d->motion->setObjectName("surroundMotion");
-    d->motion->addItem("Move Freely (X or Y)", QString("free"));
-    d->motion->addItem("Move left/right only (X)", QString("x"));
-    d->motion->addItem("Move front/back only (Y)", QString("y"));
-    g->addWidget(d->motion, 3, 1, 1, 2);
-    QHBoxLayout* keys = new QHBoxLayout();
-    d->addKey = new QPushButton("Add Keyframe", d->controls);
-    d->addKey->setObjectName("surroundAddKey");
-    d->addKey->setToolTip("A Surround Pan keyframe at the cursor, where the point is now (moving the point then changes the keyframe at the cursor)");
-    d->delKey = new QPushButton("Delete Keyframe", d->controls);
-    d->delKey->setObjectName("surroundDeleteKey");
-    d->clearKeys = new QPushButton("Clear", d->controls);
-    d->clearKeys->setToolTip("Delete every keyframe (the point stays where it is at the cursor)");
-    keys->addWidget(d->addKey);
-    keys->addWidget(d->delKey);
-    keys->addWidget(d->clearKeys);
-    g->addLayout(keys, 4, 0, 1, 3);
-    v->addWidget(d->controls);
-
-    QObject::connect(d->target, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        d->pinned = d->target->currentData().toULongLong();
-        d->refresh();
-    });
-    QObject::connect(d->route, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        const std::string r = ss(d->route->currentData().toString());
-        d->change("Surround Pan", [&](SurroundPan& sp) { sp.route = r; });
-    });
-    QObject::connect(d->panTypeBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        const std::string type = ss(d->panTypeBox->currentData().toString());
-        const uint64_t id = d->shown();
-        if (!id) return;
-        AppState::get().edit("Pan Type", [&](Project& p) { setSurroundPanType(p, id, type); });
-    });
-    QObject::connect(d->motion, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        const std::string m = ss(d->motion->currentData().toString());
-        d->change("Surround Pan Motion", [&](SurroundPan& sp) { sp.motion = m; });
-    });
-    auto dragSlider = [this](QSlider* s, const char* undo, std::function<void(SurroundPan&, int)> fn) {
-        QObject::connect(s, &QSlider::sliderPressed, this, [] { AppState::get().beginDrag(); });
-        QObject::connect(s, &QSlider::sliderReleased, this, [undo] { AppState::get().endDrag(undo); });
-        QObject::connect(s, &QSlider::valueChanged, this, [this, s, undo, fn](int v) {
-            const uint64_t id = d->shown();
-            auto apply = [&](Project& p) {
-                if (SurroundPan* sp = surroundPanOf(p, id)) fn(*sp, v);
-            };
-            if (s->isSliderDown()) AppState::get().dragUpdate(apply);
-            else AppState::get().edit(undo, apply);
+    // What the row's and the controls' settings change.
+    void connectControls()
+    {
+        QObject::connect(target, QOverload<int>::of(&QComboBox::currentIndexChanged), w, [this](int) {
+            pinned = target->currentData().toULongLong();
+            refresh();
         });
-    };
-    dragSlider(d->center.slider, "Surround Pan Center", [](SurroundPan& sp, int v) {
-        const double c = sliderToGain(v, kCenterTopDb);
-        if (sp.keys.empty()) sp.center = c;
-        else {
-            const double t = AppState::get().cursor();
-            double x, y, cc;
-            surroundPointAt(sp, t, x, y, cc);
-            const std::string m = sp.motion;
-            sp.motion = "free";
-            placePoint(sp, x, y, t, 1.0 / std::max(1.0, AppState::get().project().settings.fps()));
-            sp.motion = m;
-            for (auto& k : sp.keys)
-                if (std::fabs(k.time - t) <= 0.5 / std::max(1.0, AppState::get().project().settings.fps())) k.center = c;
-        }
-    });
-    dragSlider(d->smooth.slider, "Surround Pan Smoothness", [](SurroundPan& sp, int v) {
-        // with keyframes the key at the cursor gets its own (the curve of the path to the next key), else the panner
-        const double t = AppState::get().cursor();
-        const double half = 0.5 / std::max(1.0, AppState::get().project().settings.fps());
-        for (auto& k : sp.keys)
-            if (std::fabs(k.time - t) <= half) {
-                k.smoothness = v / 100.0;
-                return;
+        QObject::connect(route, QOverload<int>::of(&QComboBox::currentIndexChanged), w, [this](int) {
+            const std::string r = ss(route->currentData().toString());
+            change("Surround Pan", [&](SurroundPan& sp) { sp.route = r; });
+        });
+        QObject::connect(panTypeBox, QOverload<int>::of(&QComboBox::currentIndexChanged), w, [this](int) {
+            const std::string type = ss(panTypeBox->currentData().toString());
+            const uint64_t id = shown();
+            if (!id) return;
+            AppState::get().edit("Pan Type", [&](Project& p) { setSurroundPanType(p, id, type); });
+        });
+        QObject::connect(motion, QOverload<int>::of(&QComboBox::currentIndexChanged), w, [this](int) {
+            const std::string m = ss(motion->currentData().toString());
+            change("Surround Pan Motion", [&](SurroundPan& sp) { sp.motion = m; });
+        });
+        auto dragSlider = [this](QSlider* s, const char* undo, std::function<void(SurroundPan&, int)> fn) {
+            QObject::connect(s, &QSlider::sliderPressed, w, [] { AppState::get().beginDrag(); });
+            QObject::connect(s, &QSlider::sliderReleased, w, [undo] { AppState::get().endDrag(undo); });
+            QObject::connect(s, &QSlider::valueChanged, w, [this, s, undo, fn](int v) {
+                const uint64_t id = shown();
+                auto apply = [&](Project& p) {
+                    if (SurroundPan* sp = surroundPanOf(p, id)) fn(*sp, v);
+                };
+                if (s->isSliderDown()) AppState::get().dragUpdate(apply);
+                else AppState::get().edit(undo, apply);
+            });
+        };
+        dragSlider(center.slider, "Surround Pan Center", [](SurroundPan& sp, int v) {
+            const double c = sliderToGain(v, kCenterTopDb);
+            if (sp.keys.empty()) sp.center = c;
+            else {
+                const double t = AppState::get().cursor();
+                double x, y, cc;
+                surroundPointAt(sp, t, x, y, cc);
+                const std::string m = sp.motion;
+                sp.motion = "free";
+                placePoint(sp, x, y, t, 1.0 / std::max(1.0, AppState::get().project().settings.fps()));
+                sp.motion = m;
+                for (auto& k : sp.keys)
+                    if (std::fabs(k.time - t) <= 0.5 / std::max(1.0, AppState::get().project().settings.fps())) k.center = c;
             }
-        sp.smoothness = v / 100.0;
-    });
-    dragSlider(d->lfe.slider, "Surround Pan LFE", [](SurroundPan& sp, int v) { sp.lfeLevel = sliderToGain(v, 12.0); });
-    QObject::connect(d->lfeOn, &QCheckBox::toggled, this, [this](bool on) { d->change("Enable LFE", [&](SurroundPan& sp) { sp.lfe = on; }); });
-    QObject::connect(d->addKey, &QPushButton::clicked, this, [this] {
+        });
+        dragSlider(smooth.slider, "Surround Pan Smoothness", [](SurroundPan& sp, int v) {
+            // with keyframes the key at the cursor gets its own (the curve of the path to the next key), else the panner
+            const double t = AppState::get().cursor();
+            const double half = 0.5 / std::max(1.0, AppState::get().project().settings.fps());
+            for (auto& k : sp.keys)
+                if (std::fabs(k.time - t) <= half) {
+                    k.smoothness = v / 100.0;
+                    return;
+                }
+            sp.smoothness = v / 100.0;
+        });
+        dragSlider(lfe.slider, "Surround Pan LFE", [](SurroundPan& sp, int v) { sp.lfeLevel = sliderToGain(v, 12.0); });
+        QObject::connect(lfeOn, &QCheckBox::toggled, w, [this](bool on) { change("Enable LFE", [&](SurroundPan& sp) { sp.lfe = on; }); });
+        QObject::connect(addKey, &QPushButton::clicked, w, [this] { addKeyframeAtCursor(); });
+        QObject::connect(delKey, &QPushButton::clicked, w, [this] { deleteNearestKeyframe(); });
+        QObject::connect(clearKeys, &QPushButton::clicked, w, [this] { clearKeyframes(); });
+    }
+
+    // Add Keyframe: a keyframe at the cursor where the point is now (the first one takes the panner's point).
+    void addKeyframeAtCursor()
+    {
         const double t = AppState::get().cursor();
         const double frame = 1.0 / std::max(1.0, AppState::get().project().settings.fps());
-        d->change("Surround Pan Keyframe", [&](SurroundPan& sp) {
+        change("Surround Pan Keyframe", [&](SurroundPan& sp) {
             if (sp.keys.empty()) {
                 SurroundKey k;
                 k.time = t;
@@ -704,10 +712,13 @@ SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d
             placePoint(sp, x, y, t, frame);
             sp.motion = m;
         });
-    });
-    QObject::connect(d->delKey, &QPushButton::clicked, this, [this] {
+    }
+
+    // Delete Keyframe: the keyframe nearest the cursor; the last one leaves its point as the panner's.
+    void deleteNearestKeyframe()
+    {
         const double t = AppState::get().cursor();
-        d->change("Delete Surround Pan Keyframe", [&](SurroundPan& sp) {
+        change("Delete Surround Pan Keyframe", [&](SurroundPan& sp) {
             if (sp.keys.empty()) return;
             size_t best = 0;
             for (size_t i = 1; i < sp.keys.size(); ++i)
@@ -719,14 +730,36 @@ SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d
             }
             sp.keys.erase(sp.keys.begin() + (std::ptrdiff_t)best);
         });
-    });
-    QObject::connect(d->clearKeys, &QPushButton::clicked, this, [this] {
+    }
+
+    // Clear: every keyframe goes, the point staying where it is at the cursor.
+    void clearKeyframes()
+    {
         const double t = AppState::get().cursor();
-        d->change("Clear Surround Pan Keyframes", [&](SurroundPan& sp) {
+        change("Clear Surround Pan Keyframes", [&](SurroundPan& sp) {
             surroundPointAt(sp, t, sp.x, sp.y, sp.center);
             sp.keys.clear();
         });
-    });
+    }
+};
+
+SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d(new Impl())
+{
+    d->w = this;
+    setObjectName("surroundPanner");
+    setAutoFillBackground(true);
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, dark());
+    pal.setColor(QPalette::WindowText, text());
+    setPalette(pal);
+    QVBoxLayout* v = new QVBoxLayout(this);
+    v->setContentsMargins(6, 6, 6, 6);
+    v->setSpacing(4);
+
+    d->buildTargetRow(v);
+    d->buildField(v);
+    d->buildControls(v);
+    d->connectControls();
     d->listener.reset(new Listener([this](int changes) {
         if (!(changes & (kProject | kSelection | kCursor | kFile))) return;
         if (isVisible()) d->refresh();

@@ -2,6 +2,8 @@
 rem Builds Reno with Visual Studio 2022's clang-cl (its "C++ Clang tools for Windows" component), CMake and Ninja, Qt
 rem from C:\Qt\6.8.3\msvc2022_64 and FFmpeg from deps\ffmpeg (tools\get_ffmpeg.ps1) or else C:\vcpkg\installed\x64-windows.
 rem "build_msvc.bat msvc" builds with MSVC's own compiler instead (as does a Visual Studio without the Clang tools).
+rem "build_msvc.bat win7" (or "msvc win7") builds for Windows 7 and later into build\out-win7\: the same Qt to build with,
+rem then Qt's DLLs swapped for ones patched to run on Windows 7 (tools\use_qt_win7.ps1, from github.com/crystalidea/qt6windows7).
 rem Output goes to build\:
 rem   build\clang\  build files (build\msvc\ with MSVC)
 rem   build\out\    reno.exe, reno_cli.exe, reno_vst32.exe (32-bit VST2 host), mediatest.exe and their DLLs
@@ -12,6 +14,16 @@ set "QTDIR=C:\Qt\6.8.3\msvc2022_64"
 set "FFDIR=C:\vcpkg\installed\x64-windows"
 if exist "%~dp0deps\ffmpeg\include\libavformat\avformat.h" set "FFDIR=%~dp0deps\ffmpeg"
 set "LOG=%~dp0build_log.txt"
+set "OUTDIR=build\out"
+set "WIN7="
+set "WIN7_ARGS="
+if /i "%~1"=="win7" set "WIN7=1"
+if /i "%~2"=="win7" set "WIN7=1"
+if not defined WIN7 goto targetchosen
+set "OUTDIR=build\out-win7"
+set "WIN7_ARGS=-DRENO_WINDOWS7=ON"
+echo Target: Windows 7 and later
+:targetchosen
 > "%LOG%" echo Reno build %DATE% %TIME%
 
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -32,41 +44,44 @@ goto compilerchosen
 :haveclang
 set "BDIR=build\clang"
 :compilerchosen
+if defined WIN7 set "BDIR=%BDIR%-win7"
 if defined COMPILER echo Compiler: clang-cl, %COMPILER%
 if not defined COMPILER echo Compiler: MSVC
 >> "%LOG%" echo Compiler: %COMPILER%
-if not exist "%QTDIR%\bin\Qt6Core.dll" (echo Qt 6.8.3 msvc2022_64 is not in %QTDIR% - install it there.& goto failed)
+if not exist "%QTDIR%\bin\Qt6Core.dll" (echo Qt 6 for msvc2022_64 is not in %QTDIR% - install it there.& goto failed)
 if not exist "%FFDIR%\include\libavformat\avformat.h" (echo FFmpeg is not in %FFDIR%.& goto failed)
 
 set "CC_ARGS="
 if defined COMPILER set CC_ARGS=-DCMAKE_C_COMPILER="%COMPILER%" -DCMAKE_CXX_COMPILER="%COMPILER%"
-cmake -S . -B %BDIR% -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QTDIR%" -DRENO_FFMPEG_DIR="%FFDIR%" %CC_ARGS% >> "%LOG%" 2>&1
+cmake -S . -B %BDIR% -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QTDIR%" -DRENO_FFMPEG_DIR="%FFDIR%" %CC_ARGS% %WIN7_ARGS% >> "%LOG%" 2>&1
 if errorlevel 1 (type "%LOG%" & goto failed)
 cmake --build %BDIR% >> "%LOG%" 2>&1
 if errorlevel 1 (type "%LOG%" & goto failed)
 
-if not exist build\out mkdir build\out
-for %%f in (reno.exe reno_cli.exe reno_vst32.exe mediatest.exe) do copy /Y "%BDIR%\bin\%%f" build\out\ >nul
+if not exist %OUTDIR% mkdir %OUTDIR%
+for %%f in (reno.exe reno_cli.exe reno_vst32.exe mediatest.exe) do copy /Y "%BDIR%\bin\%%f" %OUTDIR%\ >nul
 rem Qt's DLLs and plug-ins (without Qt's FFmpeg backend; Reno's own FFmpeg is copied below)
 rem and without what Reno never uses: the software OpenGL fallback, Direct3D shader compilers, SVG and PDF, network
 rem and touch plug-ins, and the image formats it does not read (the color-match picker reads png jpg bmp tif gif webp)
-"%QTDIR%\bin\windeployqt.exe" --release --no-translations --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler --skip-plugin-types generic,networkinformation,tls,iconengines --exclude-plugins ffmpegmediaplugin,qsvg,qico,qicns,qtga,qwbmp,qpdf,qdirect2d,qminimal,qoffscreen build\out\reno.exe >> "%LOG%" 2>&1
+"%QTDIR%\bin\windeployqt.exe" --release --no-translations --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler --skip-plugin-types generic,networkinformation,tls,iconengines --exclude-plugins ffmpegmediaplugin,qsvg,qico,qicns,qtga,qwbmp,qpdf,qdirect2d,qminimal,qoffscreen %OUTDIR%\reno.exe >> "%LOG%" 2>&1
 rem (leftovers of an earlier, fuller deployment into the same folder)
-for %%d in (iconengines generic networkinformation tls) do if exist "build\out\%%d" rmdir /s /q "build\out\%%d"
-for %%f in (Qt6Svg Qt6Pdf Qt6OpenGLWidgets opengl32sw D3Dcompiler_47 dxcompiler dxil avdevice-* avfilter-* postproc-*) do del /q "build\out\%%f*.dll" 2>nul
-for %%f in (qsvg qico qicns qtga qwbmp qpdf) do del /q "build\out\imageformats\%%f.dll" 2>nul
+for %%d in (iconengines generic networkinformation tls) do if exist "%OUTDIR%\%%d" rmdir /s /q "%OUTDIR%\%%d"
+for %%f in (Qt6Svg Qt6Pdf Qt6OpenGLWidgets opengl32sw D3Dcompiler_47 dxcompiler dxil avdevice-* avfilter-* postproc-*) do del /q "%OUTDIR%\%%f*.dll" 2>nul
+for %%f in (qsvg qico qicns qtga qwbmp qpdf) do del /q "%OUTDIR%\imageformats\%%f.dll" 2>nul
 rem reno_cli.exe needs only Qt Core and Gui, which the reno.exe deployment already copied
-for %%p in (avcodec avformat avutil swscale swresample) do if exist "%FFDIR%\bin\%%p*.dll" copy /Y "%FFDIR%\bin\%%p*.dll" build\out\ >nul
+for %%p in (avcodec avformat avutil swscale swresample) do if exist "%FFDIR%\bin\%%p*.dll" copy /Y "%FFDIR%\bin\%%p*.dll" %OUTDIR%\ >nul
 rem Tools > Scripting: the ScriptPortal.Vegas source (compiled on first use) and an empty Script Menu folder
-if not exist build\out\scripting mkdir build\out\scripting
-copy /Y src\scripting\*.cs build\out\scripting\ >nul
-copy /Y README.md build\out\ >nul
-if not exist "build\out\Script Menu" mkdir "build\out\Script Menu"
+if not exist %OUTDIR%\scripting mkdir %OUTDIR%\scripting
+copy /Y src\scripting\*.cs %OUTDIR%\scripting\ >nul
+copy /Y README.md %OUTDIR%\ >nul
+if not exist "%OUTDIR%\Script Menu" mkdir "%OUTDIR%\Script Menu"
+if defined WIN7 powershell -ExecutionPolicy Bypass -File tools\use_qt_win7.ps1 "%OUTDIR%" >> "%LOG%" 2>&1
+if errorlevel 1 (echo Could not put the Windows 7 Qt DLLs in %OUTDIR% - see build_log.txt.& goto failed)
 echo.
-echo Built: build\out\reno.exe
-echo Built: build\out\reno_cli.exe (command-line renderer and plug-in checker: reno_cli --help)
-echo Built: build\out\reno_vst32.exe (runs 32-bit VST2 plug-ins for reno.exe)
-echo Built: build\out\reno.exe>> "%LOG%"
+echo Built: %OUTDIR%\reno.exe
+echo Built: %OUTDIR%\reno_cli.exe (command-line renderer and plug-in checker: reno_cli --help)
+echo Built: %OUTDIR%\reno_vst32.exe (runs 32-bit VST2 plug-ins for reno.exe)
+echo Built: %OUTDIR%\reno.exe>> "%LOG%"
 pause
 exit /b 0
 

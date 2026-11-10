@@ -435,6 +435,7 @@ struct TrimmerWindow::Impl {
     double frameLen() const { return 1.0 / (fps > 0 ? fps : 30.0); }
     bool selection() const { return out > in; }
 
+    void projectChanged(int changes);
     void updateLabels()
     {
         cursorLbl->setText(qs(timecode(pos, fps)));
@@ -666,30 +667,21 @@ struct TrimmerWindow::Impl {
     }
 };
 
-TrimmerWindow::TrimmerWindow(QWidget* parent) : QWidget(parent), d(new Impl())
+// A button of the Trimmer's bars.
+static QToolButton* trimmerButton(QWidget* parentW, const char* name, const QString& text, const QString& tip)
 {
-    d->q = this;
-    setObjectName("trimmer");
-    setFocusPolicy(Qt::StrongFocus);
-    setAutoFillBackground(true);
-    QPalette pal = palette();
-    pal.setColor(QPalette::Window, dark());
-    setPalette(pal);
-    Impl* impl = d.get();
+    auto* b = new QToolButton(parentW);
+    b->setObjectName(name);
+    b->setText(text);
+    b->setToolTip(tip);
+    b->setFocusPolicy(Qt::NoFocus);
+    b->setAutoRaise(true);
+    return b;
+}
 
-    auto* v = new QVBoxLayout(this);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(0);
-    auto button = [](QWidget* parentW, const char* name, const QString& text, const QString& tip) {
-        auto* b = new QToolButton(parentW);
-        b->setObjectName(name);
-        b->setText(text);
-        b->setToolTip(tip);
-        b->setFocusPolicy(Qt::NoFocus);
-        b->setAutoRaise(true);
-        return b;
-    };
-
+// The bar on top: the history of files opened, Add, Add Up To, Fit to Fill, Overwrite, Sort, Remove and Clear.
+QWidget* TrimmerWindow::buildToolBar()
+{
     QWidget* top = new QWidget(this);
     top->setAutoFillBackground(true);
     QPalette tp = top->palette();
@@ -705,15 +697,15 @@ TrimmerWindow::TrimmerWindow(QWidget* parent) : QWidget(parent), d(new Impl())
     d->history->setFocusPolicy(Qt::NoFocus);
     d->history->setMinimumWidth(160);
     th->addWidget(d->history, 1);
-    QToolButton* add = button(top, "trimmerAdd", "Add", "Add to Timeline from Cursor (A): the selection, or the whole file, at the timeline's cursor");
-    QToolButton* addEnd = button(top, "trimmerAddEnd", "Add Up To", "Add to Timeline up to Cursor (Shift+A): so that it ends at the timeline's cursor");
-    QToolButton* clear = button(top, "trimmerClearHistory", "Clear", "Clear Trimmer History (Ctrl+Shift+H)");
-    QToolButton* fit = button(top, "trimmerFitToFill", "Fit to Fill", "Fit to Fill: the selection (or the whole file) stretched to fill the timeline's time selection");
-    d->overwriteBtn = button(top, "trimmerOverwrite", "Overwrite", "Enable Timeline Overwrite: what is added replaces what is on the track there");
+    QToolButton* add = trimmerButton(top, "trimmerAdd", "Add", "Add to Timeline from Cursor (A): the selection, or the whole file, at the timeline's cursor");
+    QToolButton* addEnd = trimmerButton(top, "trimmerAddEnd", "Add Up To", "Add to Timeline up to Cursor (Shift+A): so that it ends at the timeline's cursor");
+    QToolButton* clear = trimmerButton(top, "trimmerClearHistory", "Clear", "Clear Trimmer History (Ctrl+Shift+H)");
+    QToolButton* fit = trimmerButton(top, "trimmerFitToFill", "Fit to Fill", "Fit to Fill: the selection (or the whole file) stretched to fill the timeline's time selection");
+    d->overwriteBtn = trimmerButton(top, "trimmerOverwrite", "Overwrite", "Enable Timeline Overwrite: what is added replaces what is on the track there");
     d->overwriteBtn->setCheckable(true);
     d->overwriteBtn->setChecked(d->overwrite);
-    QToolButton* sortBtn = button(top, "trimmerSortHistory", "Sort", "Sort Trimmer History (H; Ctrl+click: Z to A)");
-    QToolButton* removeBtn = button(top, "trimmerRemoveCurrent", "Remove", "Remove Current Media from Trimmer History (Ctrl+H)");
+    QToolButton* sortBtn = trimmerButton(top, "trimmerSortHistory", "Sort", "Sort Trimmer History (H; Ctrl+click: Z to A)");
+    QToolButton* removeBtn = trimmerButton(top, "trimmerRemoveCurrent", "Remove", "Remove Current Media from Trimmer History (Ctrl+H)");
     th->addWidget(add);
     th->addWidget(addEnd);
     th->addWidget(fit);
@@ -725,31 +717,32 @@ TrimmerWindow::TrimmerWindow(QWidget* parent) : QWidget(parent), d(new Impl())
     QObject::connect(d->overwriteBtn, &QToolButton::toggled, this, [this](bool on) { setTimelineOverwrite(on); });
     QObject::connect(sortBtn, &QToolButton::clicked, this, [this] { sortHistory((QApplication::keyboardModifiers() & Qt::ControlModifier) != 0); });
     QObject::connect(removeBtn, &QToolButton::clicked, this, [this] { removeCurrentFromHistory(); });
-    v->addWidget(top);
+    QObject::connect(add, &QToolButton::clicked, this, [this] { addToTimeline(false); });
+    QObject::connect(addEnd, &QToolButton::clicked, this, [this] { addToTimeline(true); });
+    QObject::connect(clear, &QToolButton::clicked, this, [this] { clearHistory(); });
+    QObject::connect(d->history, QOverload<int>::of(&QComboBox::activated), this, [this](int i) {
+        if (d->fillingHistory || i < 0) return;
+        const QString p = d->history->itemData(i).toString();
+        if (p != d->path) openFile(p);
+    });
+    return top;
+}
 
-    d->picture = new TrimPicture(this);
-    d->picture->message = "Double-click media in Project Media or the Explorer to look at it here.";
-    d->picture->setMouseTracking(true);
-    d->picture->onHover = [this, impl](double f) {
-        if (!impl->hoverScrub || impl->playing || impl->dur <= 0 || impl->info.isStill) return;
-        setPosition(f * impl->dur);
-    };
-    v->addWidget(d->picture, 1);
-    d->strip = new TrimStrip(this);
-    v->addWidget(d->strip);
-
+// The bar at the bottom: play, loop, frame steps, in and out, and the times of the cursor and the selection.
+QWidget* TrimmerWindow::buildTransportBar()
+{
     QWidget* tr = new QWidget(this);
     tr->setFixedHeight(28);
     auto* h = new QHBoxLayout(tr);
     h->setContentsMargins(4, 2, 4, 2);
     h->setSpacing(2);
-    d->play = button(tr, "trimmerPlay", QString::fromUtf8("▶"), "Play (Space)");
-    d->loop = button(tr, "trimmerLoop", QString::fromUtf8("↻"), "Loop Playback");
+    d->play = trimmerButton(tr, "trimmerPlay", QString::fromUtf8("▶"), "Play (Space)");
+    d->loop = trimmerButton(tr, "trimmerLoop", QString::fromUtf8("↻"), "Loop Playback");
     d->loop->setCheckable(true);
-    QToolButton* prev = button(tr, "trimmerPrevFrame", QString::fromUtf8("◀|"), "Previous Frame (Left)");
-    QToolButton* next = button(tr, "trimmerNextFrame", QString::fromUtf8("|▶"), "Next Frame (Right)");
-    QToolButton* markIn = button(tr, "trimmerIn", "[", "Set In Point (I)");
-    QToolButton* markOut = button(tr, "trimmerOut", "]", "Set Out Point (O)");
+    QToolButton* prev = trimmerButton(tr, "trimmerPrevFrame", QString::fromUtf8("◀|"), "Previous Frame (Left)");
+    QToolButton* next = trimmerButton(tr, "trimmerNextFrame", QString::fromUtf8("|▶"), "Next Frame (Right)");
+    QToolButton* markIn = trimmerButton(tr, "trimmerIn", "[", "Set In Point (I)");
+    QToolButton* markOut = trimmerButton(tr, "trimmerOut", "]", "Set Out Point (O)");
     for (QToolButton* b : {d->play, d->loop, prev, next, markIn, markOut}) h->addWidget(b);
     h->addSpacing(8);
     auto label = [&](const char* name, const QString& tip) {
@@ -778,7 +771,132 @@ TrimmerWindow::TrimmerWindow(QWidget* parent) : QWidget(parent), d(new Impl())
     h->addWidget(d->outLbl);
     h->addWidget(new QLabel("Length:", tr));
     h->addWidget(d->lenLbl);
-    v->addWidget(tr);
+    QObject::connect(d->play, &QToolButton::clicked, this, [this] { playing() ? stop() : play(); });
+    QObject::connect(d->loop, &QToolButton::toggled, this, [this](bool on) { setLoop(on); });
+    QObject::connect(prev, &QToolButton::clicked, this, [this] { stepFrames(-1); });
+    QObject::connect(next, &QToolButton::clicked, this, [this] { stepFrames(1); });
+    QObject::connect(markIn, &QToolButton::clicked, this, [this] { this->markIn(); });
+    QObject::connect(markOut, &QToolButton::clicked, this, [this] { this->markOut(); });
+    return tr;
+}
+
+// The strip's right-click menu ('mark': the marker clicked on, -1 none).
+void TrimmerWindow::showStripMenu(const QPoint& at, int mark)
+{
+    Impl* impl = d.get();
+    QMenu m(this);
+    m.setObjectName("trimmerMenu");
+    QMenu* mr = m.addMenu("Markers/Regions");
+    QObject::connect(mr->addAction("Insert Marker\tM"), &QAction::triggered, this, [this] { insertMarker(); });
+    QAction* region = mr->addAction("Insert Region\tR");
+    region->setEnabled(impl->selection());
+    QObject::connect(region, &QAction::triggered, this, [this] { insertRegion(); });
+    if (mark >= 0) QObject::connect(mr->addAction("Delete Marker"), &QAction::triggered, this, [this, mark] { deleteMarker(mark); });
+    mr->addSeparator();
+    QAction* save = mr->addAction("Save Markers/Regions\tS");
+    save->setEnabled(!impl->path.isEmpty());
+    QObject::connect(save, &QAction::triggered, this, [this] { saveMarkers(); });
+    QAction* autoSave = mr->addAction("Auto-Save Trimmer Markers/Regions\tShift+S");
+    autoSave->setCheckable(true);
+    autoSave->setChecked(impl->autoSave);
+    QObject::connect(autoSave, &QAction::triggered, this, [this](bool on) { setAutoSaveMarkers(on); });
+    m.addSeparator();
+    QAction* pv = m.addAction("Show Video in Preview Window\tCtrl+P");
+    pv->setCheckable(true);
+    pv->setChecked(impl->toPreview);
+    QObject::connect(pv, &QAction::triggered, this, [this](bool on) { setVideoInPreview(on); });
+    QAction* hover = m.addAction("Enable Hover Scrub");
+    hover->setCheckable(true);
+    hover->setChecked(impl->hoverScrub);
+    QObject::connect(hover, &QAction::triggered, this, [this](bool on) { setHoverScrub(on); });
+    m.addSeparator();
+    const bool both = impl->info.hasVideo && impl->info.hasAudio;
+    QAction* ao = m.addAction("Select Audio Only");
+    ao->setCheckable(true);
+    ao->setChecked(impl->streams == 2);
+    ao->setEnabled(both);
+    QObject::connect(ao, &QAction::triggered, this, [this, impl](bool on) { setStreams(on ? AudioOnly : BothStreams); (void)impl; });
+    QAction* vo = m.addAction("Select Video Only");
+    vo->setCheckable(true);
+    vo->setChecked(impl->streams == 1);
+    vo->setEnabled(both);
+    QObject::connect(vo, &QAction::triggered, this, [this](bool on) { setStreams(on ? VideoOnly : BothStreams); });
+    m.addSeparator();
+    QObject::connect(m.addAction("Video Height Larger\tCtrl+Shift+Up"), &QAction::triggered, this, [this] { changeStreamHeight(1); });
+    QObject::connect(m.addAction("Audio Height Larger\tCtrl+Shift+Down"), &QAction::triggered, this, [this] { changeStreamHeight(-1); });
+    QAction* eq = m.addAction("Video and Audio Equal Height");
+    QObject::connect(eq, &QAction::triggered, this, [this, impl] {
+        impl->stripSize = 0;
+        changeStreamHeight(0);
+    });
+    m.addSeparator();
+    QAction* parent = m.addAction("Select Parent Media");
+    const MediaItem* cm = AppState::get().project().findMedia(impl->mediaId);
+    parent->setEnabled(cm && cm->subclipLength > 0);
+    QObject::connect(parent, &QAction::triggered, this, [this] { selectParentMedia(); });
+    QObject::connect(m.addAction("Open in Audio Editor\tCtrl+E"), &QAction::triggered, this, [this] { openInAudioEditor(); });
+    m.addSeparator();
+    QAction* copy = m.addAction("Copy Snapshot to Clipboard");
+    copy->setEnabled(!impl->picture->image.isNull());
+    QObject::connect(copy, &QAction::triggered, this, [this] { copySnapshot(); });
+    QAction* saveShot = m.addAction("Save Snapshot to File...");
+    saveShot->setEnabled(!impl->picture->image.isNull());
+    QObject::connect(saveShot, &QAction::triggered, this, [this, impl] {
+        const QString base = QFileInfo(impl->path).completeBaseName() + QString("_%1.png").arg(QString::fromStdString(timecode(impl->pos, impl->fps)).remove(':').remove(';'));
+        const QString f = QFileDialog::getSaveFileName(this, "Save Snapshot to File", QFileInfo(impl->path).dir().filePath(base), "PNG (*.png);;JPEG (*.jpg)");
+        if (!f.isEmpty()) saveSnapshot(f);
+    });
+    m.exec(at);
+}
+
+// The project changed: the media shown may be gone, or its markers changed elsewhere (shown here when they had been
+// saved with it).
+void TrimmerWindow::Impl::projectChanged(int changes)
+{
+    if (!(changes & kProject) || !mediaId) return;
+    const MediaItem* m = AppState::get().project().findMedia(mediaId);
+    if (!m) {
+        mediaId = 0;
+        return;
+    }
+    bool same = m->markers.size() == marks.size();
+    for (size_t k = 0; same && k < marks.size(); ++k)
+        same = m->markers[k].time == marks[k].time && m->markers[k].length == marks[k].length && m->markers[k].name == marks[k].name;
+    if (!same && marksSaved) {
+        marks = m->markers;
+        updateLabels();
+    }
+}
+
+TrimmerWindow::TrimmerWindow(QWidget* parent) : QWidget(parent), d(new Impl())
+{
+    d->q = this;
+    setObjectName("trimmer");
+    setFocusPolicy(Qt::StrongFocus);
+    setAutoFillBackground(true);
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, dark());
+    setPalette(pal);
+    Impl* impl = d.get();
+
+    auto* v = new QVBoxLayout(this);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(0);
+
+    v->addWidget(buildToolBar());
+
+    d->picture = new TrimPicture(this);
+    d->picture->message = "Double-click media in Project Media or the Explorer to look at it here.";
+    d->picture->setMouseTracking(true);
+    d->picture->onHover = [this, impl](double f) {
+        if (!impl->hoverScrub || impl->playing || impl->dur <= 0 || impl->info.isStill) return;
+        setPosition(f * impl->dur);
+    };
+    v->addWidget(d->picture, 1);
+    d->strip = new TrimStrip(this);
+    v->addWidget(d->strip);
+
+    v->addWidget(buildTransportBar());
 
     d->timer = new QTimer(this);
     d->timer->setInterval(15);
@@ -796,104 +914,12 @@ TrimmerWindow::TrimmerWindow(QWidget* parent) : QWidget(parent), d(new Impl())
             if (impl->toPreview && impl->q->onPreviewPicture) impl->q->onPreviewPicture(img);
         });
     };
-    d->strip->onMenu = [this, impl](const QPoint& at, int mark) {
-        QMenu m(this);
-        m.setObjectName("trimmerMenu");
-        QMenu* mr = m.addMenu("Markers/Regions");
-        QObject::connect(mr->addAction("Insert Marker\tM"), &QAction::triggered, this, [this] { insertMarker(); });
-        QAction* region = mr->addAction("Insert Region\tR");
-        region->setEnabled(impl->selection());
-        QObject::connect(region, &QAction::triggered, this, [this] { insertRegion(); });
-        if (mark >= 0) QObject::connect(mr->addAction("Delete Marker"), &QAction::triggered, this, [this, mark] { deleteMarker(mark); });
-        mr->addSeparator();
-        QAction* save = mr->addAction("Save Markers/Regions\tS");
-        save->setEnabled(!impl->path.isEmpty());
-        QObject::connect(save, &QAction::triggered, this, [this] { saveMarkers(); });
-        QAction* autoSave = mr->addAction("Auto-Save Trimmer Markers/Regions\tShift+S");
-        autoSave->setCheckable(true);
-        autoSave->setChecked(impl->autoSave);
-        QObject::connect(autoSave, &QAction::triggered, this, [this](bool on) { setAutoSaveMarkers(on); });
-        m.addSeparator();
-        QAction* pv = m.addAction("Show Video in Preview Window\tCtrl+P");
-        pv->setCheckable(true);
-        pv->setChecked(impl->toPreview);
-        QObject::connect(pv, &QAction::triggered, this, [this](bool on) { setVideoInPreview(on); });
-        QAction* hover = m.addAction("Enable Hover Scrub");
-        hover->setCheckable(true);
-        hover->setChecked(impl->hoverScrub);
-        QObject::connect(hover, &QAction::triggered, this, [this](bool on) { setHoverScrub(on); });
-        m.addSeparator();
-        const bool both = impl->info.hasVideo && impl->info.hasAudio;
-        QAction* ao = m.addAction("Select Audio Only");
-        ao->setCheckable(true);
-        ao->setChecked(impl->streams == 2);
-        ao->setEnabled(both);
-        QObject::connect(ao, &QAction::triggered, this, [this, impl](bool on) { setStreams(on ? AudioOnly : BothStreams); (void)impl; });
-        QAction* vo = m.addAction("Select Video Only");
-        vo->setCheckable(true);
-        vo->setChecked(impl->streams == 1);
-        vo->setEnabled(both);
-        QObject::connect(vo, &QAction::triggered, this, [this](bool on) { setStreams(on ? VideoOnly : BothStreams); });
-        m.addSeparator();
-        QObject::connect(m.addAction("Video Height Larger\tCtrl+Shift+Up"), &QAction::triggered, this, [this] { changeStreamHeight(1); });
-        QObject::connect(m.addAction("Audio Height Larger\tCtrl+Shift+Down"), &QAction::triggered, this, [this] { changeStreamHeight(-1); });
-        QAction* eq = m.addAction("Video and Audio Equal Height");
-        QObject::connect(eq, &QAction::triggered, this, [this, impl] {
-            impl->stripSize = 0;
-            changeStreamHeight(0);
-        });
-        m.addSeparator();
-        QAction* parent = m.addAction("Select Parent Media");
-        const MediaItem* cm = AppState::get().project().findMedia(impl->mediaId);
-        parent->setEnabled(cm && cm->subclipLength > 0);
-        QObject::connect(parent, &QAction::triggered, this, [this] { selectParentMedia(); });
-        QObject::connect(m.addAction("Open in Audio Editor\tCtrl+E"), &QAction::triggered, this, [this] { openInAudioEditor(); });
-        m.addSeparator();
-        QAction* copy = m.addAction("Copy Snapshot to Clipboard");
-        copy->setEnabled(!impl->picture->image.isNull());
-        QObject::connect(copy, &QAction::triggered, this, [this] { copySnapshot(); });
-        QAction* saveShot = m.addAction("Save Snapshot to File...");
-        saveShot->setEnabled(!impl->picture->image.isNull());
-        QObject::connect(saveShot, &QAction::triggered, this, [this, impl] {
-            const QString base = QFileInfo(impl->path).completeBaseName() + QString("_%1.png").arg(QString::fromStdString(timecode(impl->pos, impl->fps)).remove(':').remove(';'));
-            const QString f = QFileDialog::getSaveFileName(this, "Save Snapshot to File", QFileInfo(impl->path).dir().filePath(base), "PNG (*.png);;JPEG (*.jpg)");
-            if (!f.isEmpty()) saveSnapshot(f);
-        });
-        m.exec(at);
-    };
+    d->strip->onMenu = [this](const QPoint& at, int mark) { showStripMenu(at, mark); };
     d->strip->onCursor = [this](double t) { setPosition(t); setFocus(); };
     d->strip->onSelect = [this](double a, double b) { setSelection(a, b); setFocus(); };
     d->strip->onDragOut = [impl] { impl->startDrag(); };
 
-    QObject::connect(d->play, &QToolButton::clicked, this, [this] { playing() ? stop() : play(); });
-    QObject::connect(d->loop, &QToolButton::toggled, this, [this](bool on) { setLoop(on); });
-    QObject::connect(prev, &QToolButton::clicked, this, [this] { stepFrames(-1); });
-    QObject::connect(next, &QToolButton::clicked, this, [this] { stepFrames(1); });
-    QObject::connect(markIn, &QToolButton::clicked, this, [this] { this->markIn(); });
-    QObject::connect(markOut, &QToolButton::clicked, this, [this] { this->markOut(); });
-    QObject::connect(add, &QToolButton::clicked, this, [this] { addToTimeline(false); });
-    QObject::connect(addEnd, &QToolButton::clicked, this, [this] { addToTimeline(true); });
-    QObject::connect(clear, &QToolButton::clicked, this, [this] { clearHistory(); });
-    QObject::connect(d->history, QOverload<int>::of(&QComboBox::activated), this, [this, impl](int i) {
-        if (impl->fillingHistory || i < 0) return;
-        const QString p = impl->history->itemData(i).toString();
-        if (p != impl->path) openFile(p);
-    });
-    d->listener.reset(new Listener([impl](int changes) {
-        if (!(changes & kProject) || !impl->mediaId) return;
-        const MediaItem* m = AppState::get().project().findMedia(impl->mediaId);
-        if (!m) {
-            impl->mediaId = 0;
-            return;
-        }
-        bool same = m->markers.size() == impl->marks.size();
-        for (size_t k = 0; same && k < impl->marks.size(); ++k)
-            same = m->markers[k].time == impl->marks[k].time && m->markers[k].length == impl->marks[k].length && m->markers[k].name == impl->marks[k].name;
-        if (!same && impl->marksSaved) {
-            impl->marks = m->markers;
-            impl->updateLabels();
-        }
-    }));
+    d->listener.reset(new Listener([impl](int changes) { impl->projectChanged(changes); }));
     d->fillHistory();
     d->updateLabels();
 }

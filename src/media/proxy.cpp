@@ -103,6 +103,146 @@ bool createVideoProxy(const std::string& mediaPath, const std::function<bool(dou
     return createVideoProxy(mediaPath, VideoProxyOptions(), progress, error);
 }
 
+namespace {
+
+// A frame rate as the fraction an encoder takes: 29.97 -> 30000/1001, 25 -> 25/1, else in thousandths.
+void rateFraction(double fps, int& num, int& den)
+{
+    if (std::fabs(fps * 1001 / 1000 - std::round(fps * 1001 / 1000)) < 1e-3 && std::fabs(fps - std::round(fps)) > 1e-3) {
+        num = (int)std::lround(fps * 1001 / 1000) * 1000;
+        den = 1001;
+    } else if (std::fabs(fps - std::round(fps)) < 1e-3) {
+        num = (int)std::lround(fps);
+        den = 1;
+    } else {
+        num = (int)std::lround(fps * 1000);
+        den = 1000;
+    }
+}
+
+// The proxy's writer: H.264 on the graphics card if it has an encoder (several times faster than the processor, which
+// is left to the decoding), else from the processor (libx264 / OpenH264), else MPEG-4. 'onCard': the card's.
+std::unique_ptr<MediaWriter> openProxyWriter(EncodeSettings& es, bool tryCard, bool* onCard, std::string& err)
+{
+    std::unique_ptr<MediaWriter> out;
+    *onCard = false;
+    if (tryCard) {
+        static const char* const cards[][2] = {{"h264_nvenc", "preset=p1 tune=ll"}, {"h264_amf", "quality=speed usage=lowlatency"}};
+        for (const auto& card : cards) {
+            EncodeSettings hs = es;
+            hs.videoCodec = card[0];
+            hs.encodeMode = "auto";
+            hs.encoderOptions = card[1];
+            std::string hwErr;
+            out = createMediaWriter(hs, &hwErr);
+            if (out) {
+                *onCard = true;
+                return out;
+            }
+        }
+    }
+    out = createMediaWriter(es, &err);
+    if (out) return out;
+    const std::string first = err;
+    es.encodeMode = "auto";
+    err.clear();
+    out = createMediaWriter(es, &err);
+    if (!out) {
+        es.videoFamily = "mpeg4";
+        es.encodeMode = "cpu";
+        err.clear();
+        out = createMediaWriter(es, &err);
+    }
+    if (!out) err = first.empty() ? "Cannot make " + pathFileName(es.path) + "." : first + (err.empty() ? std::string() : " MPEG-4: " + err);
+    return out;
+}
+
+// A frame at exactly w x h in bytes per channel (nearest pixel; a float frame's channels swapped to BGRA). Null: no memory.
+ImagePtr byteFrameOfSize(const ImagePtr& img, int w, int h)
+{
+    if (img->w == w && img->h == h && img->depth == PixelDepth::Byte) return img;
+    ImagePtr fit = Image::make(w, h, PixelDepth::Byte, false);
+    if (!fit) return nullptr;
+    for (int y = 0; y < h; ++y) {
+        const int sy = std::min(img->h - 1, y * img->h / h);
+        for (int x = 0; x < w; ++x) {
+            const int sx = std::min(img->w - 1, x * img->w / w);
+            uint8_t* d = fit->row(y) + x * 4;
+            if (img->depth == PixelDepth::Byte) std::memcpy(d, img->row(sy) + sx * 4, 4);
+            else {
+                const float* s = (const float*)img->row(sy) + sx * 4;
+                auto q = [](float v) { return (uint8_t)std::lround(std::min(1.f, std::max(0.f, v)) * 255.f); };
+                d[0] = q(s[2]); d[1] = q(s[1]); d[2] = q(s[0]); d[3] = q(s[3]);
+            }
+        }
+    }
+    return fit;
+}
+
+// Encodes frames on a thread of its own while the next ones are decoded (one after the other, the encoding took about as
+// long again as the decoding). Up to four frames wait.
+class BackgroundEncoder {
+public:
+    explicit BackgroundEncoder(MediaWriter& out) : out_(out), thread_([this] { run(); }) {}
+    ~BackgroundEncoder() { finish(false); }
+
+    // False when writing has failed (the frame is not taken).
+    bool put(const ImagePtr& img)
+    {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait(lk, [&] { return queue_.size() < 4 || failed_; });
+        if (failed_) return false;
+        queue_.push_back(img);
+        cv_.notify_all();
+        return true;
+    }
+
+    // Waits for the frames given to be written ('discard': the ones not written yet are dropped). False when writing failed.
+    bool finish(bool discard)
+    {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            noMore_ = true;
+            if (discard) queue_.clear();
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) thread_.join();
+        return !failed_;
+    }
+
+private:
+    void run()
+    {
+        for (;;) {
+            ImagePtr img;
+            {
+                std::unique_lock<std::mutex> lk(m_);
+                cv_.wait(lk, [&] { return !queue_.empty() || noMore_; });
+                if (queue_.empty()) return;
+                img = queue_.front();
+                queue_.pop_front();
+            }
+            cv_.notify_all();
+            if (!out_.writeVideo(*img)) {
+                std::lock_guard<std::mutex> lk(m_);
+                failed_ = true;
+                queue_.clear();
+                cv_.notify_all();
+                return;
+            }
+        }
+    }
+
+    MediaWriter& out_;
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::deque<ImagePtr> queue_;
+    bool noMore_ = false, failed_ = false;
+    std::thread thread_;
+};
+
+}  // namespace
+
 bool createVideoProxy(const std::string& mediaPath, const VideoProxyOptions& opt, const std::function<bool(double)>& progress, std::string* error)
 {
     auto fail = [&](const std::string& e) {
@@ -135,17 +275,7 @@ bool createVideoProxy(const std::string& mediaPath, const VideoProxyOptions& opt
     es.width = w;
     es.height = h;
     // the frame rate as a fraction (29.97 -> 30000/1001)
-    const double fps = mi.fps;
-    if (std::fabs(fps * 1001 / 1000 - std::round(fps * 1001 / 1000)) < 1e-3 && std::fabs(fps - std::round(fps)) > 1e-3) {
-        es.fpsNum = (int)std::lround(fps * 1001 / 1000) * 1000;
-        es.fpsDen = 1001;
-    } else if (std::fabs(fps - std::round(fps)) < 1e-3) {
-        es.fpsNum = (int)std::lround(fps);
-        es.fpsDen = 1;
-    } else {
-        es.fpsNum = (int)std::lround(fps * 1000);
-        es.fpsDen = 1000;
-    }
+    rateFraction(mi.fps, es.fpsNum, es.fpsDen);
     es.videoFamily = "h264";
     es.encodeMode = "cpu";
     es.rateControl = "quality";
@@ -156,115 +286,30 @@ bool createVideoProxy(const std::string& mediaPath, const VideoProxyOptions& opt
     if (opt.encoderThreads > 0) es.encoderOptions += (es.encoderOptions.empty() ? "" : " ") + strfmt("threads=%d", opt.encoderThreads);
     es.stretch = true;
     es.quickConvert = true;             // a preview: the quick colour conversion (it took as long as decoding)
-    // H.264 on the graphics card if it has an encoder (several times faster than the processor, which is left to the
-    // decoding), else from the processor (libx264 / OpenH264).
-    std::unique_ptr<MediaWriter> out;
     bool onCard = false;
-    if (opt.hardwareEncoder) {
-        static const char* const cards[][2] = {{"h264_nvenc", "preset=p1 tune=ll"}, {"h264_amf", "quality=speed usage=lowlatency"}};
-        for (const auto& card : cards) {
-            EncodeSettings hs = es;
-            hs.videoCodec = card[0];
-            hs.encodeMode = "auto";
-            hs.encoderOptions = card[1];
-            std::string hwErr;
-            out = createMediaWriter(hs, &hwErr);
-            if (out) {
-                onCard = true;
-                break;
-            }
-        }
-    }
-    if (!out) out = createMediaWriter(es, &err);
-    if (!out) {
-        const std::string first = err;
-        es.encodeMode = "auto";
-        err.clear();
-        out = createMediaWriter(es, &err);
-        if (!out) {
-            es.videoFamily = "mpeg4";
-            es.encodeMode = "cpu";
-            err.clear();
-            out = createMediaWriter(es, &err);
-        }
-        if (!out) return fail(first.empty() ? "Cannot make " + pathFileName(part) + "." : first + (err.empty() ? std::string() : " MPEG-4: " + err));
-    }
+    std::unique_ptr<MediaWriter> out = openProxyWriter(es, opt.hardwareEncoder, &onCard, err);
+    if (!out) return fail(err);
     const double rate = (double)es.fpsNum / es.fpsDen;
     const double from = std::max(0.0, std::min(opt.fromSeconds, mi.duration)), to = opt.toSeconds > from ? std::min(opt.toSeconds, mi.duration) : mi.duration;
     const int64_t first = (int64_t)std::floor(from * rate + 1e-6);
     const int64_t frames = std::max<int64_t>(1, (int64_t)std::floor(to * rate + 1e-6) - first);
     bool ok = true, stopped = false;
     ImagePtr last;
-    // The frames are encoded on a thread of their own while the next ones are decoded (one after the other, the
-    // encoding took about as long again as the decoding).
-    std::mutex qm;
-    std::condition_variable qcv;
-    std::deque<ImagePtr> queue;
-    bool noMore = false, writeFailed = false;
-    std::thread encoder([&] {
-        for (;;) {
-            ImagePtr img;
-            {
-                std::unique_lock<std::mutex> lk(qm);
-                qcv.wait(lk, [&] { return !queue.empty() || noMore; });
-                if (queue.empty()) return;
-                img = queue.front();
-                queue.pop_front();
-            }
-            qcv.notify_all();
-            if (!out->writeVideo(*img)) {
-                std::lock_guard<std::mutex> lk(qm);
-                writeFailed = true;
-                queue.clear();
-                qcv.notify_all();
-                return;
-            }
-        }
-    });
-    auto put = [&](const ImagePtr& img) {
-        std::unique_lock<std::mutex> lk(qm);
-        qcv.wait(lk, [&] { return queue.size() < 4 || writeFailed; });
-        if (writeFailed) return false;
-        queue.push_back(img);
-        qcv.notify_all();
-        return true;
-    };
+    BackgroundEncoder encoder(*out);
     // frame by frame in order from the first: the reader decodes straight through, it never seeks after the first frame.
     for (int64_t f = 0; f < frames; ++f) {
         // the middle of each frame, as the engine asks for frames
         ImagePtr img = in->videoFrame((first + f + 0.5) / rate, w, h);
         if (!img) img = last;
         if (!img) continue;
-        if (img->w != w || img->h != h || img->depth != PixelDepth::Byte) {
-            ImagePtr fit = Image::make(w, h, PixelDepth::Byte, false);
-            if (!fit) { ok = false; break; }
-            for (int y = 0; y < h; ++y) {
-                const int sy = std::min(img->h - 1, y * img->h / h);
-                for (int x = 0; x < w; ++x) {
-                    const int sx = std::min(img->w - 1, x * img->w / w);
-                    uint8_t* d = fit->row(y) + x * 4;
-                    if (img->depth == PixelDepth::Byte) std::memcpy(d, img->row(sy) + sx * 4, 4);
-                    else {
-                        const float* s = (const float*)img->row(sy) + sx * 4;
-                        auto q = [](float v) { return (uint8_t)std::lround(std::min(1.f, std::max(0.f, v)) * 255.f); };
-                        d[0] = q(s[2]); d[1] = q(s[1]); d[2] = q(s[0]); d[3] = q(s[3]);
-                    }
-                }
-            }
-            img = fit;
-        }
+        img = byteFrameOfSize(img, w, h);
+        if (!img) { ok = false; break; }
         last = img;
-        if (!put(img)) { ok = false; err = "Writing the proxy failed."; break; }
+        if (!encoder.put(img)) { ok = false; err = "Writing the proxy failed."; break; }
         if (progress && (f % 8 == 0 || f + 1 == frames) && !progress((double)(f + 1) / frames)) { stopped = true; break; }
     }
-    {
-        std::lock_guard<std::mutex> lk(qm);
-        noMore = true;
-        if (stopped) queue.clear();
-    }
-    qcv.notify_all();
-    encoder.join();
-    if (writeFailed && ok) { ok = false; err = "Writing the proxy failed."; }
+    const bool written = encoder.finish(stopped);
+    if (!written && ok) { ok = false; err = "Writing the proxy failed."; }
     std::string ferr;
     const bool finished = out->finish(&ferr);
     out.reset();

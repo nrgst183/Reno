@@ -1,4 +1,5 @@
 // The Project Media window.
+#include "mobilefiles.h"
 #include "panels_internal.h"
 #include "vprefs.h"
 #include "audiotools.h"
@@ -1893,7 +1894,7 @@ void MediaBin::importFiles()
     const QString projects = "*.veg *.reno";
     const QString filters = QString("All Media Files (%1 %2 %3 %4);;Video Files (%1);;Audio Files (%2);;Picture Files (%3);;Projects (%4);;All Files (*)")
                                 .arg(video, audio, pics, projects);
-    const QStringList files = QFileDialog::getOpenFileNames(window(), "Import Media", dir, filters);
+    const QStringList files = localFilesFor(QFileDialog::getOpenFileNames(window(), "Import Media", dir, filters));
     if (files.isEmpty()) return;
     settings.setValue("media/importFolder", QFileInfo(files.first()).absolutePath());
     d->importPaths(files);

@@ -113,47 +113,9 @@ bool statFile(const std::string& path, int64_t* size, int64_t* mtime)
     return true;
 }
 
-bool analyze(const std::string& path, std::shared_ptr<const SmartSource>* out, std::string* why)
+// The stream's format, as the copied packets need it described in the output.
+void describeStream(const AVStream* st, const AVCodecParameters* par, AVRational fps, SmartSource* s)
 {
-    AVFormatContext* raw = nullptr;
-    int r = avformat_open_input(&raw, path.c_str(), nullptr, nullptr);
-    if (r < 0 || !raw) {
-        *why = "cannot open " + pathFileName(path) + ": " + errText(r);
-        return false;
-    }
-    InputPtr fc(raw);
-    if (avformat_find_stream_info(fc.get(), nullptr) < 0) {
-        *why = "cannot read " + pathFileName(path);
-        return false;
-    }
-    const int vi = av_find_best_stream(fc.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    if (vi < 0) {
-        *why = "the file has no video";
-        return false;
-    }
-    AVStream* st = fc->streams[vi];
-    const AVCodecParameters* par = st->codecpar;
-    if (st->disposition & AV_DISPOSITION_ATTACHED_PIC) {
-        *why = "the file's picture is a cover";
-        return false;
-    }
-    if (!codecCopyable(par)) {
-        *why = std::string("the ") + avcodec_get_name(par->codec_id) + " video cannot be copied (smart rendering copies H.264, HEVC, MPEG-1, MPEG-2 and intra-only video)";
-        return false;
-    }
-    AVRational fps = st->r_frame_rate;
-    if (fps.num <= 0 || fps.den <= 0) fps = st->avg_frame_rate;
-    if (fps.num <= 0 || fps.den <= 0) {
-        *why = "the frame rate is not known";
-        return false;
-    }
-    if (st->start_time == AV_NOPTS_VALUE) {
-        *why = "the stream has no start time";
-        return false;
-    }
-    auto s = std::make_shared<SmartSource>();
-    s->path = path;
-    s->streamIndex = vi;
     s->codecId = (int)par->codec_id;
     s->codecName = avcodec_get_name(par->codec_id);
     s->width = par->width;
@@ -177,15 +139,19 @@ bool analyze(const std::string& path, std::shared_ptr<const SmartSource>* out, s
     if (par->extradata && par->extradata_size > 0) s->extradata.assign(par->extradata, par->extradata + par->extradata_size);
     for (int k = 0; k < par->nb_coded_side_data; ++k)
         if (par->coded_side_data[k].type == AV_PKT_DATA_DISPLAYMATRIX) s->rotated = true;
+}
 
-    // every packet of the stream, in the order the file gives them (decoding order)
-    std::vector<PacketNote> notes;
+// Every packet of stream 'vi', in the order the file gives them (decoding order). False with a reason if one is damaged
+// or has no time.
+bool readPacketNotes(AVFormatContext* fc, int vi, const AVCodecParameters* par, std::vector<PacketNote>* notes, std::string* why)
+{
     PacketPtr pkt(av_packet_alloc());
     if (!pkt) {
         *why = "out of memory";
         return false;
     }
-    while ((r = av_read_frame(fc.get(), pkt.get())) >= 0) {
+    int r = 0;
+    while ((r = av_read_frame(fc, pkt.get())) >= 0) {
         if (pkt->stream_index == vi) {
             if (pkt->flags & (AV_PKT_FLAG_CORRUPT | AV_PKT_FLAG_DISCARD)) {
                 *why = "the video has damaged packets";
@@ -200,15 +166,20 @@ bool analyze(const std::string& path, std::shared_ptr<const SmartSource>* out, s
                 *why = "a packet has no time";
                 return false;
             }
-            notes.push_back(n);
+            notes->push_back(n);
         }
         av_packet_unref(pkt.get());
     }
-    if (notes.empty()) {
+    if (notes->empty()) {
         *why = "the video has no packets";
         return false;
     }
-    // frame numbers: the stream's earliest time is frame 0; every packet must sit on the frame grid
+    return true;
+}
+
+// Each packet's frame number: the stream's earliest time is frame 0, and every packet must sit on the frame grid.
+bool frameNumbers(const std::vector<PacketNote>& notes, const AVStream* st, AVRational fps, std::vector<int64_t>* frameOf, std::string* why)
+{
     int64_t minPts = notes[0].pts;
     for (const PacketNote& n : notes) minPts = std::min(minPts, n.pts);
     if (minPts != st->start_time) {
@@ -216,11 +187,8 @@ bool analyze(const std::string& path, std::shared_ptr<const SmartSource>* out, s
         return false;
     }
     const AVRational frameDur = av_inv_q(fps);      // seconds per frame
-    std::vector<int64_t> frameOf(notes.size());
-    int64_t maxFrame = 0;
+    frameOf->assign(notes.size(), 0);
     for (size_t i = 0; i < notes.size(); ++i) {
-        const AVRational t = av_make_q(1, 1);
-        (void)t;
         // (pts - minPts) * time base / frame duration, to the nearest whole frame, which must be within a twentieth of it
         const int64_t num = (notes[i].pts - minPts) * st->time_base.num * frameDur.den;
         const int64_t den = (int64_t)st->time_base.den * frameDur.num;
@@ -230,11 +198,15 @@ bool analyze(const std::string& path, std::shared_ptr<const SmartSource>* out, s
             *why = "the frames are not on a constant frame rate";
             return false;
         }
-        frameOf[i] = f;
-        maxFrame = std::max(maxFrame, f);
+        (*frameOf)[i] = f;
     }
-    s->frames = maxFrame + 1;
+    return true;
+}
 
+// The groups of pictures that can be copied whole: each closed key packet to the next, showing a run of distinct
+// consecutive frames that no other group shows. In frame order.
+std::vector<SmartGop> copyableGroups(const std::vector<PacketNote>& notes, const std::vector<int64_t>& frameOf)
+{
     // closed groups: from each closed key packet to the next
     struct Span { size_t first, last; };
     std::vector<size_t> starts;
@@ -284,8 +256,59 @@ bool analyze(const std::string& path, std::shared_ptr<const SmartSource>* out, s
         gops.push_back(gop);
     }
     std::sort(gops.begin(), gops.end(), [](const SmartGop& a, const SmartGop& b) { return a.startFrame < b.startFrame; });
-    s->gops = gops;
-    if (gops.empty()) {
+    return gops;
+}
+
+bool analyze(const std::string& path, std::shared_ptr<const SmartSource>* out, std::string* why)
+{
+    AVFormatContext* raw = nullptr;
+    int r = avformat_open_input(&raw, path.c_str(), nullptr, nullptr);
+    if (r < 0 || !raw) {
+        *why = "cannot open " + pathFileName(path) + ": " + errText(r);
+        return false;
+    }
+    InputPtr fc(raw);
+    if (avformat_find_stream_info(fc.get(), nullptr) < 0) {
+        *why = "cannot read " + pathFileName(path);
+        return false;
+    }
+    const int vi = av_find_best_stream(fc.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (vi < 0) {
+        *why = "the file has no video";
+        return false;
+    }
+    AVStream* st = fc->streams[vi];
+    const AVCodecParameters* par = st->codecpar;
+    if (st->disposition & AV_DISPOSITION_ATTACHED_PIC) {
+        *why = "the file's picture is a cover";
+        return false;
+    }
+    if (!codecCopyable(par)) {
+        *why = std::string("the ") + avcodec_get_name(par->codec_id) + " video cannot be copied (smart rendering copies H.264, HEVC, MPEG-1, MPEG-2 and intra-only video)";
+        return false;
+    }
+    AVRational fps = st->r_frame_rate;
+    if (fps.num <= 0 || fps.den <= 0) fps = st->avg_frame_rate;
+    if (fps.num <= 0 || fps.den <= 0) {
+        *why = "the frame rate is not known";
+        return false;
+    }
+    if (st->start_time == AV_NOPTS_VALUE) {
+        *why = "the stream has no start time";
+        return false;
+    }
+    auto s = std::make_shared<SmartSource>();
+    s->path = path;
+    s->streamIndex = vi;
+    describeStream(st, par, fps, s.get());
+
+    std::vector<PacketNote> notes;
+    if (!readPacketNotes(fc.get(), vi, par, &notes, why)) return false;
+    std::vector<int64_t> frameOf;
+    if (!frameNumbers(notes, st, fps, &frameOf, why)) return false;
+    s->frames = *std::max_element(frameOf.begin(), frameOf.end()) + 1;
+    s->gops = copyableGroups(notes, frameOf);
+    if (s->gops.empty()) {
         *why = "the video has no closed groups of pictures to copy";
         return false;
     }

@@ -464,6 +464,11 @@ private:
     bool chooseAudio(const std::string& ext, std::string* error);
     bool addStream(AVCodecContext* enc, AVStream** out, std::string* error);
     bool setUpScaling(std::string* error);
+    // open's steps
+    bool setUpVideo(const std::string& ext, std::string* error);
+    bool setUpAudio(const std::string& ext, std::string* error);
+    void addChaptersAndTags(const std::string& ext);
+    void describe();
     bool encode(AVCodecContext* enc, AVStream* st, AVFrame* frame);
     bool drain(AVCodecContext* enc, AVStream* st);
     void quantize(const AVFrame& bgra, AVFrame* out);
@@ -561,87 +566,55 @@ static void fillMasteringDisplay(AVMasteringDisplayMetadata* m, const EncodeSett
     m->has_luminance = 1;
 }
 
-bool FFWriter::openVideoEncoder(const AVCodec* codec, std::string& why)
+// Bit rate, key frame spacing, B-frames and the rate limits the template asks for.
+static void setRateControl(AVCodecContext* c, const EncodeSettings& s, const std::string& name, double fps)
 {
-    CodecPtr ctx(avcodec_alloc_context3(codec));
-    if (!ctx) {
-        why = "out of memory";
-        return false;
-    }
-    AVCodecContext* c = ctx.get();
-    const std::string name = codec->name;
-    const AVPixelFormat pixFmt = choosePixelFormat(codec, s_);
-    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pixFmt);
-    const bool rgb = desc && (desc->flags & AV_PIX_FMT_FLAG_RGB);
-    const bool jpeg = isJpegRangeFormat(pixFmt);
-    int num = s_.fpsNum, den = s_.fpsDen;
-    av_reduce(&num, &den, s_.fpsNum, s_.fpsDen, 1000000);
-    const double fps = (double)num / den;
-    // Formats that store colour at half resolution need even sizes (and so do all the H.264 encoders):
-    // the size is rounded down, and the odd column or row of each frame is left off.
-    int w = s_.width, h = s_.height;
-    if (!desc || rgb == false) {
-        if (!desc || desc->log2_chroma_w > 0 || codec->id == AV_CODEC_ID_H264 || codec->id == AV_CODEC_ID_HEVC) w &= ~1;
-        if (!desc || desc->log2_chroma_h > 0 || codec->id == AV_CODEC_ID_H264 || codec->id == AV_CODEC_ID_HEVC) h &= ~1;
-    }
     const bool hw = name.find("_nvenc") != std::string::npos || name.find("_qsv") != std::string::npos || name.find("_amf") != std::string::npos;
     const bool x26x = name == "libx264" || name == "libx265";
-    const int64_t kbps = std::max(100, s_.videoKbps);
-    const bool quality = s_.rateControl == "quality";
-    const bool cbr = s_.rateControl == "cbr";
-
-    c->width = w;
-    c->height = h;
-    c->pix_fmt = pixFmt;
-    c->time_base = av_make_q(den, num);
-    c->framerate = av_make_q(num, den);
-    c->sample_aspect_ratio = av_make_q(1, 1);
-    if (s_.pixelAspect > 0 && std::fabs(s_.pixelAspect - 1.0) > 1e-4) c->sample_aspect_ratio = av_d2q(s_.pixelAspect, 10000);
+    const int64_t kbps = std::max(100, s.videoKbps);
+    const bool quality = s.rateControl == "quality";
+    const bool cbr = s.rateControl == "cbr";
     c->bit_rate = quality ? 0 : kbps * 1000;
     // a key frame every two seconds unless the template says otherwise
-    if (s_.keyframeSeconds > 0) c->gop_size = std::max(1, (int)std::lround(fps * s_.keyframeSeconds));
-    c->max_b_frames = s_.bFrames >= 0 ? s_.bFrames : (name == "libx264" ? 2 : 0);
+    if (s.keyframeSeconds > 0) c->gop_size = std::max(1, (int)std::lround(fps * s.keyframeSeconds));
+    c->max_b_frames = s.bFrames >= 0 ? s.bFrames : (name == "libx264" ? 2 : 0);
     if (!quality) {
         if (cbr) {
             c->rc_max_rate = c->bit_rate;
             if (!hw && !x26x) c->rc_min_rate = c->bit_rate;
             c->rc_buffer_size = (int)std::min<int64_t>(INT32_MAX, c->bit_rate);
-        } else if (s_.maxKbps > 0) {
-            c->rc_max_rate = std::max<int64_t>(c->bit_rate, (int64_t)s_.maxKbps * 1000);
+        } else if (s.maxKbps > 0) {
+            c->rc_max_rate = std::max<int64_t>(c->bit_rate, (int64_t)s.maxKbps * 1000);
             c->rc_buffer_size = (int)std::min<int64_t>(INT32_MAX, c->rc_max_rate * 2);
         }
     }
-    if (!rgb) {
-        // JPEG-range formats are BT.601 by convention; otherwise BT.709 for HD and BT.601 below it.
-        const bool hd = isHD(w, h) && !jpeg;
-        c->color_range = jpeg ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
-        c->colorspace = hd ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
-        c->color_primaries = hd ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M;
-        c->color_trc = hd ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M;
-    }
+}
+
+// The colour tags of a YUV picture: range, matrix, primaries and transfer (an HDR one when the template is HDR).
+static void setColourTags(AVCodecContext* c, const EncodeSettings& s, int w, int h, bool jpeg)
+{
+    // JPEG-range formats are BT.601 by convention; otherwise BT.709 for HD and BT.601 below it.
+    const bool hd = isHD(w, h) && !jpeg;
+    c->color_range = jpeg ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    c->colorspace = hd ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
+    c->color_primaries = hd ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M;
+    c->color_trc = hd ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M;
     // an HDR frame (PQ or HLG coded): the colour tags say so
-    if (!rgb && !s_.hdrTransfer.empty()) {
-        const bool p3 = s_.hdrPrimaries == "p3d65";
-        c->color_trc = s_.hdrTransfer == "hlg" ? AVCOL_TRC_ARIB_STD_B67 : AVCOL_TRC_SMPTE2084;
+    if (!s.hdrTransfer.empty()) {
+        const bool p3 = s.hdrPrimaries == "p3d65";
+        c->color_trc = s.hdrTransfer == "hlg" ? AVCOL_TRC_ARIB_STD_B67 : AVCOL_TRC_SMPTE2084;
         c->color_primaries = p3 ? AVCOL_PRI_SMPTE432 : AVCOL_PRI_BT2020;
         c->colorspace = p3 ? AVCOL_SPC_BT709 : AVCOL_SPC_BT2020_NCL;
     }
-    // interlaced: say which field comes first, and code the fields as such where the encoder can
-    if (s_.fieldOrder == "upper" || s_.fieldOrder == "lower") {
-        c->field_order = s_.fieldOrder == "upper" ? AV_FIELD_TT : AV_FIELD_BB;
-        if (codec->id == AV_CODEC_ID_H264 || codec->id == AV_CODEC_ID_MPEG2VIDEO || codec->id == AV_CODEC_ID_MPEG4)
-            c->flags |= AV_CODEC_FLAG_INTERLACED_DCT | AV_CODEC_FLAG_INTERLACED_ME;
-    }
-    if (s_.pass == 1) c->flags |= AV_CODEC_FLAG_PASS1;
-    if (s_.pass == 2) c->flags |= AV_CODEC_FLAG_PASS2;
-    if (oc_->oformat->flags & AVFMT_GLOBALHEADER) c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-    if (codec->capabilities & AV_CODEC_CAP_OTHER_THREADS) c->thread_count = 0;      // x264, libvpx: use every processor
-    if (processorLimit() > 0) c->thread_count = processorLimit();
-    if (codec->capabilities & AV_CODEC_CAP_EXPERIMENTAL) c->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
+}
 
-    // Each encoder's own words for the template's settings.
-    Dict options;
-    const int q = std::max(0, std::min(51, s_.quality));
+// Each encoder's own words for the template's quality, profile, level and passes.
+static void addEncoderOptions(Dict& options, AVCodecContext* c, const AVCodec* codec, const EncodeSettings& s, AVPixelFormat pixFmt)
+{
+    const std::string name = codec->name;
+    const bool quality = s.rateControl == "quality";
+    const bool cbr = s.rateControl == "cbr";
+    const int q = std::max(0, std::min(51, s.quality));
     if (name == "libvpx" || name == "libvpx-vp9") {
         options.set("deadline", "good");
         options.set("cpu-used", "4");
@@ -668,22 +641,22 @@ bool FFWriter::openVideoEncoder(const AVCodec* codec, std::string& why)
         options.set("format", "half");
     }
     if (codec->id == AV_CODEC_ID_H264 || codec->id == AV_CODEC_ID_HEVC) {
-        if (!s_.profile.empty()) options.set("profile", s_.profile.c_str());
-        if (!s_.level.empty()) options.set("level", s_.level.c_str());
+        if (!s.profile.empty()) options.set("profile", s.profile.c_str());
+        if (!s.level.empty()) options.set("level", s.level.c_str());
     }
     if (name == "libx264") {
         if (quality) options.set("crf", strfmt("%d", q).c_str());
         if (cbr && !quality) options.set("nal-hrd", "cbr");
-        if (s_.pass && !s_.passLog.empty()) options.set("stats", s_.passLog.c_str());
+        if (s.pass && !s.passLog.empty()) options.set("stats", s.passLog.c_str());
     } else if (name == "libx265") {
         std::string params = "log-level=error";
         if (quality) params += strfmt(":crf=%d", q);
-        if (s_.pass) params += strfmt(":pass=%d", s_.pass) + (s_.passLog.empty() ? std::string() : ":stats=" + s_.passLog);
+        if (s.pass) params += strfmt(":pass=%d", s.pass) + (s.passLog.empty() ? std::string() : ":stats=" + s.passLog);
         options.set("x265-params", params.c_str());
     } else if (name.find("_nvenc") != std::string::npos) {
         options.set("rc", quality ? "vbr" : cbr ? "cbr" : "vbr");
         if (quality) options.set("cq", strfmt("%d", q).c_str());
-        if (s_.pass) options.set("multipass", "fullres");     // NVENC does both passes itself, in one
+        if (s.pass) options.set("multipass", "fullres");     // NVENC does both passes itself, in one
     } else if (name.find("_qsv") != std::string::npos) {
         if (quality) options.set("global_quality", strfmt("%d", q).c_str());
     } else if (name.find("_amf") != std::string::npos) {
@@ -696,32 +669,86 @@ bool FFWriter::openVideoEncoder(const AVCodec* codec, std::string& why)
         options.set("rate_control", quality ? "quality" : cbr ? "cbr" : "pc_vbr");
         if (quality) options.set("quality", strfmt("%d", std::max(1, 100 - q * 2)).c_str());
     } else if (codec->id == AV_CODEC_ID_PRORES && name == "prores_ks") {
-        options.set("profile", s_.profile.empty() ? "standard" : s_.profile.c_str());
+        options.set("profile", s.profile.empty() ? "standard" : s.profile.c_str());
         options.set("vendor", "apl0");
     } else if (codec->id == AV_CODEC_ID_DNXHD) {
-        options.set("profile", s_.profile.empty() ? "dnxhr_hq" : s_.profile.c_str());
+        options.set("profile", s.profile.empty() ? "dnxhr_hq" : s.profile.c_str());
     } else if (quality && (codec->id == AV_CODEC_ID_MPEG4 || codec->id == AV_CODEC_ID_MPEG2VIDEO || codec->id == AV_CODEC_ID_MJPEG ||
                            codec->id == AV_CODEC_ID_WMV2 || codec->id == AV_CODEC_ID_WMV1)) {
         // the older encoders' constant quality: a fixed quantiser (2 best .. 31)
         c->flags |= AV_CODEC_FLAG_QSCALE;
         c->global_quality = FF_QP2LAMBDA * std::max(2, std::min(31, 2 + q * 29 / 51));
     }
-    // the template's own encoder options (FFmpeg's words, "key=value" separated by spaces; the x264/x265 parameter strings are added to)
-    {
-        std::istringstream in(s_.encoderOptions);
-        std::string token;
-        while (in >> token) {
-            const size_t eq = token.find('=');
-            if (eq == std::string::npos || eq == 0) continue;
-            const std::string key = token.substr(0, eq), value = token.substr(eq + 1);
-            std::string text = value;
-            if ((key == "x265-params" && name == "libx265") || (key == "x264-params" && name == "libx264")) {
-                const AVDictionaryEntry* have = av_dict_get(options.d, key.c_str(), nullptr, 0);
-                if (have && have->value && *have->value) text = std::string(have->value) + ":" + value;
-            }
-            options.set(key.c_str(), text.c_str());
+}
+
+// The template's own encoder options (FFmpeg's words, "key=value" separated by spaces); the x264/x265 parameter
+// strings are added to rather than replaced.
+static void addTemplateOptions(Dict& options, const EncodeSettings& s, const std::string& name)
+{
+    std::istringstream in(s.encoderOptions);
+    std::string token;
+    while (in >> token) {
+        const size_t eq = token.find('=');
+        if (eq == std::string::npos || eq == 0) continue;
+        const std::string key = token.substr(0, eq), value = token.substr(eq + 1);
+        std::string text = value;
+        if ((key == "x265-params" && name == "libx265") || (key == "x264-params" && name == "libx264")) {
+            const AVDictionaryEntry* have = av_dict_get(options.d, key.c_str(), nullptr, 0);
+            if (have && have->value && *have->value) text = std::string(have->value) + ":" + value;
         }
+        options.set(key.c_str(), text.c_str());
     }
+}
+
+bool FFWriter::openVideoEncoder(const AVCodec* codec, std::string& why)
+{
+    CodecPtr ctx(avcodec_alloc_context3(codec));
+    if (!ctx) {
+        why = "out of memory";
+        return false;
+    }
+    AVCodecContext* c = ctx.get();
+    const std::string name = codec->name;
+    const AVPixelFormat pixFmt = choosePixelFormat(codec, s_);
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pixFmt);
+    const bool rgb = desc && (desc->flags & AV_PIX_FMT_FLAG_RGB);
+    const bool jpeg = isJpegRangeFormat(pixFmt);
+    int num = s_.fpsNum, den = s_.fpsDen;
+    av_reduce(&num, &den, s_.fpsNum, s_.fpsDen, 1000000);
+    const double fps = (double)num / den;
+    // Formats that store colour at half resolution need even sizes (and so do all the H.264 encoders):
+    // the size is rounded down, and the odd column or row of each frame is left off.
+    int w = s_.width, h = s_.height;
+    if (!desc || rgb == false) {
+        if (!desc || desc->log2_chroma_w > 0 || codec->id == AV_CODEC_ID_H264 || codec->id == AV_CODEC_ID_HEVC) w &= ~1;
+        if (!desc || desc->log2_chroma_h > 0 || codec->id == AV_CODEC_ID_H264 || codec->id == AV_CODEC_ID_HEVC) h &= ~1;
+    }
+
+    c->width = w;
+    c->height = h;
+    c->pix_fmt = pixFmt;
+    c->time_base = av_make_q(den, num);
+    c->framerate = av_make_q(num, den);
+    c->sample_aspect_ratio = av_make_q(1, 1);
+    if (s_.pixelAspect > 0 && std::fabs(s_.pixelAspect - 1.0) > 1e-4) c->sample_aspect_ratio = av_d2q(s_.pixelAspect, 10000);
+    setRateControl(c, s_, name, fps);
+    if (!rgb) setColourTags(c, s_, w, h, jpeg);
+    // interlaced: say which field comes first, and code the fields as such where the encoder can
+    if (s_.fieldOrder == "upper" || s_.fieldOrder == "lower") {
+        c->field_order = s_.fieldOrder == "upper" ? AV_FIELD_TT : AV_FIELD_BB;
+        if (codec->id == AV_CODEC_ID_H264 || codec->id == AV_CODEC_ID_MPEG2VIDEO || codec->id == AV_CODEC_ID_MPEG4)
+            c->flags |= AV_CODEC_FLAG_INTERLACED_DCT | AV_CODEC_FLAG_INTERLACED_ME;
+    }
+    if (s_.pass == 1) c->flags |= AV_CODEC_FLAG_PASS1;
+    if (s_.pass == 2) c->flags |= AV_CODEC_FLAG_PASS2;
+    if (oc_->oformat->flags & AVFMT_GLOBALHEADER) c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    if (codec->capabilities & AV_CODEC_CAP_OTHER_THREADS) c->thread_count = 0;      // x264, libvpx: use every processor
+    if (processorLimit() > 0) c->thread_count = processorLimit();
+    if (codec->capabilities & AV_CODEC_CAP_EXPERIMENTAL) c->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
+
+    Dict options;
+    addEncoderOptions(options, c, codec, s_, pixFmt);
+    addTemplateOptions(options, s_, name);
     const int r = avcodec_open2(c, codec, &options.d);
     if (r < 0) {
         why = errText(r);
@@ -897,78 +924,8 @@ bool FFWriter::open(const EncodeSettings& settings, std::string* error)
         setError(error, s_.video || s_.audio ? "A ." + ext + " file cannot hold this video or audio." : "There is no video or audio to write.");
         return false;
     }
-    if (wantVideo) {
-        if (s_.width < 2 || s_.height < 2 || s_.width > 32768 || s_.height > 32768 || s_.fpsNum < 1 || s_.fpsDen < 1) {
-            setError(error, strfmt("Cannot write %d x %d video at %d/%d fps.", s_.width, s_.height, s_.fpsNum, s_.fpsDen));
-            return false;
-        }
-        if (!chooseVideo(ext, error) || !addStream(venc_.get(), &vst_, error)) return false;
-
-        // The frame converter: the caller's BGRA to what the encoder takes.
-        const AVPixelFormat pixFmt = venc_->pix_fmt;
-        if (!madeHere(pixFmt))
-            sws_.reset(sws_getContext(encW_, encH_, AV_PIX_FMT_BGRA, encW_, encH_, pixFmt, s_.quickConvert ? SWS_FAST_BILINEAR : SWS_BILINEAR | SWS_ACCURATE_RND, nullptr, nullptr, nullptr));
-        if (!sws_ && !madeHere(pixFmt)) {
-            setError(error, strfmt("Cannot convert frames to %s for the %s encoder.", av_get_pix_fmt_name(pixFmt), venc_->codec->name));
-            return false;
-        }
-        const int space = venc_->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709 : venc_->colorspace == AVCOL_SPC_BT2020_NCL ? SWS_CS_BT2020 : SWS_CS_ITU601;
-        const int* coefficients = sws_getCoefficients(space);
-        // The source is RGB (its table and range are not used); the destination's matrix and range are the encoder's.
-        if (sws_) sws_setColorspaceDetails(sws_.get(), coefficients, 0, coefficients, venc_->color_range == AVCOL_RANGE_JPEG ? 1 : 0, 0, 1 << 16, 1 << 16);
-
-        bgra_.reset(av_frame_alloc());
-        vframe_.reset(av_frame_alloc());
-        if (!bgra_ || !vframe_) {
-            setError(error, "Out of memory.");
-            return false;
-        }
-        bgra_->format = AV_PIX_FMT_BGRA;
-        bgra_->width = encW_;
-        bgra_->height = encH_;
-        r = av_frame_get_buffer(bgra_.get(), 0);
-        if (r < 0) {
-            setError(error, "Out of memory for a " + strfmt("%d x %d", encW_, encH_) + " picture: " + errText(r) + ".");
-            return false;
-        }
-        alpha_ = s_.alpha && (hasAlpha(pixFmt) || pixFmt == AV_PIX_FMT_PAL8);
-        interlaced_ = s_.fieldOrder == "upper" || s_.fieldOrder == "lower";
-        topFirst_ = s_.fieldOrder == "upper";
-        if (!setUpScaling(error)) return false;
-    }
-    if (wantAudio) {
-        if (s_.sampleRate < 1000 || s_.sampleRate > 768000) {
-            setError(error, strfmt("Cannot write audio at %d Hz.", s_.sampleRate));
-            return false;
-        }
-        if (!chooseAudio(ext, error) || !addStream(aenc_.get(), &ast_, error)) return false;
-
-        aFrameSize_ = aenc_->frame_size > 0 ? aenc_->frame_size : kFreeAudioFrame;
-        aPadLast_ = aenc_->frame_size > 0 && !(aenc_->codec->capabilities & (AV_CODEC_CAP_SMALL_LAST_FRAME | AV_CODEC_CAP_VARIABLE_FRAME_SIZE));
-
-        // Converts the caller's stereo or 5.1 (L R C LFE Ls Rs) float to what the encoder takes.
-        Layout in;
-        inChannels_ = s_.audioChannels >= 3 && s_.audioChannels <= 32 ? s_.audioChannels : 2;
-        if (inChannels_ > 2 && aenc_->ch_layout.nb_channels == inChannels_) r = av_channel_layout_copy(&in.l, &aenc_->ch_layout);
-        else av_channel_layout_default(&in.l, inChannels_);
-        SwrContext* swr = nullptr;
-        r = swr_alloc_set_opts2(&swr, &aenc_->ch_layout, aenc_->sample_fmt, aenc_->sample_rate, &in.l, AV_SAMPLE_FMT_FLTP, s_.sampleRate, 0, nullptr);
-        if (r >= 0 && swr) {
-            swr_.reset(swr);
-            r = swr_init(swr);
-        }
-        if (r < 0 || !swr_) {
-            setError(error, strfmt("Cannot convert audio for the %s encoder: %s.", aenc_->codec->name, errText(r).c_str()));
-            return false;
-        }
-        fifo_.reset(av_audio_fifo_alloc(aenc_->sample_fmt, aenc_->ch_layout.nb_channels, aFrameSize_ * 4));
-        aconv_.reset(av_frame_alloc());
-        aframe_.reset(av_frame_alloc());
-        if (!fifo_ || !aconv_ || !aframe_) {
-            setError(error, "Out of memory.");
-            return false;
-        }
-    }
+    if (wantVideo && !setUpVideo(ext, error)) return false;
+    if (wantAudio && !setUpAudio(ext, error)) return false;
     pkt_.reset(av_packet_alloc());
     if (!pkt_) {
         setError(error, "Out of memory.");
@@ -983,7 +940,110 @@ bool FFWriter::open(const EncodeSettings& settings, std::string* error)
             return false;
         }
     }
-    // chapters (their ends are filled in when the length is known, in finish()) and text tags.
+    addChaptersAndTags(ext);
+
+    Dict options;
+    static const char* const movFamily[] = {"mp4", "m4v", "m4a", "mov", "3gp", "3g2", nullptr};
+    if (oneOf(ext, movFamily)) options.set("movflags", "+faststart");     // the index goes at the front
+    if (format->name && std::strcmp(format->name, "image2") == 0) options.set("start_number", "0");
+    r = avformat_write_header(oc, &options.d);
+    if (r < 0) {
+        setError(error, "Cannot start writing " + file + ": " + errText(r) + ".");
+        return false;
+    }
+    headerWritten_ = true;
+
+    describe();
+    return true;
+}
+
+// The video stream: its encoder, and the frame converter from the caller's BGRA to what the encoder takes.
+bool FFWriter::setUpVideo(const std::string& ext, std::string* error)
+{
+    if (s_.width < 2 || s_.height < 2 || s_.width > 32768 || s_.height > 32768 || s_.fpsNum < 1 || s_.fpsDen < 1) {
+        setError(error, strfmt("Cannot write %d x %d video at %d/%d fps.", s_.width, s_.height, s_.fpsNum, s_.fpsDen));
+        return false;
+    }
+    if (!chooseVideo(ext, error) || !addStream(venc_.get(), &vst_, error)) return false;
+
+    // The frame converter: the caller's BGRA to what the encoder takes.
+    const AVPixelFormat pixFmt = venc_->pix_fmt;
+    if (!madeHere(pixFmt))
+        sws_.reset(sws_getContext(encW_, encH_, AV_PIX_FMT_BGRA, encW_, encH_, pixFmt, s_.quickConvert ? SWS_FAST_BILINEAR : SWS_BILINEAR | SWS_ACCURATE_RND, nullptr, nullptr, nullptr));
+    if (!sws_ && !madeHere(pixFmt)) {
+        setError(error, strfmt("Cannot convert frames to %s for the %s encoder.", av_get_pix_fmt_name(pixFmt), venc_->codec->name));
+        return false;
+    }
+    const int space = venc_->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709 : venc_->colorspace == AVCOL_SPC_BT2020_NCL ? SWS_CS_BT2020 : SWS_CS_ITU601;
+    const int* coefficients = sws_getCoefficients(space);
+    // The source is RGB (its table and range are not used); the destination's matrix and range are the encoder's.
+    if (sws_) sws_setColorspaceDetails(sws_.get(), coefficients, 0, coefficients, venc_->color_range == AVCOL_RANGE_JPEG ? 1 : 0, 0, 1 << 16, 1 << 16);
+
+    bgra_.reset(av_frame_alloc());
+    vframe_.reset(av_frame_alloc());
+    if (!bgra_ || !vframe_) {
+        setError(error, "Out of memory.");
+        return false;
+    }
+    bgra_->format = AV_PIX_FMT_BGRA;
+    bgra_->width = encW_;
+    bgra_->height = encH_;
+    const int r = av_frame_get_buffer(bgra_.get(), 0);
+    if (r < 0) {
+        setError(error, "Out of memory for a " + strfmt("%d x %d", encW_, encH_) + " picture: " + errText(r) + ".");
+        return false;
+    }
+    alpha_ = s_.alpha && (hasAlpha(pixFmt) || pixFmt == AV_PIX_FMT_PAL8);
+    interlaced_ = s_.fieldOrder == "upper" || s_.fieldOrder == "lower";
+    topFirst_ = s_.fieldOrder == "upper";
+    if (!setUpScaling(error)) return false;
+
+    return true;
+}
+
+// The audio stream: its encoder, the converter from the caller's float channels, and the queue that cuts the sound into
+// the encoder's frame size.
+bool FFWriter::setUpAudio(const std::string& ext, std::string* error)
+{
+    if (s_.sampleRate < 1000 || s_.sampleRate > 768000) {
+        setError(error, strfmt("Cannot write audio at %d Hz.", s_.sampleRate));
+        return false;
+    }
+    if (!chooseAudio(ext, error) || !addStream(aenc_.get(), &ast_, error)) return false;
+
+    aFrameSize_ = aenc_->frame_size > 0 ? aenc_->frame_size : kFreeAudioFrame;
+    aPadLast_ = aenc_->frame_size > 0 && !(aenc_->codec->capabilities & (AV_CODEC_CAP_SMALL_LAST_FRAME | AV_CODEC_CAP_VARIABLE_FRAME_SIZE));
+
+    // Converts the caller's stereo or 5.1 (L R C LFE Ls Rs) float to what the encoder takes.
+    Layout in;
+    inChannels_ = s_.audioChannels >= 3 && s_.audioChannels <= 32 ? s_.audioChannels : 2;
+    if (inChannels_ > 2 && aenc_->ch_layout.nb_channels == inChannels_) av_channel_layout_copy(&in.l, &aenc_->ch_layout);
+    else av_channel_layout_default(&in.l, inChannels_);
+    SwrContext* swr = nullptr;
+    int r = swr_alloc_set_opts2(&swr, &aenc_->ch_layout, aenc_->sample_fmt, aenc_->sample_rate, &in.l, AV_SAMPLE_FMT_FLTP, s_.sampleRate, 0, nullptr);
+    if (r >= 0 && swr) {
+        swr_.reset(swr);
+        r = swr_init(swr);
+    }
+    if (r < 0 || !swr_) {
+        setError(error, strfmt("Cannot convert audio for the %s encoder: %s.", aenc_->codec->name, errText(r).c_str()));
+        return false;
+    }
+    fifo_.reset(av_audio_fifo_alloc(aenc_->sample_fmt, aenc_->ch_layout.nb_channels, aFrameSize_ * 4));
+    aconv_.reset(av_frame_alloc());
+    aframe_.reset(av_frame_alloc());
+    if (!fifo_ || !aconv_ || !aframe_) {
+        setError(error, "Out of memory.");
+        return false;
+    }
+
+    return true;
+}
+
+// The chapters (their ends are filled in when the length is known, in finish()) and text tags.
+void FFWriter::addChaptersAndTags(const std::string& ext)
+{
+    AVFormatContext* oc = oc_.get();
     static const char* const quickTimeChapters[] = {"mp4", "m4v", "m4a", "mov", "3gp", nullptr};
     std::vector<std::pair<double, std::string>> chapters = s_.chapters;
     if (!chapters.empty() && chapters.front().first > 0.0005 && oneOf(ext, quickTimeChapters))
@@ -1005,19 +1065,12 @@ bool FFWriter::open(const EncodeSettings& settings, std::string* error)
     for (size_t k = 1; k < oc->nb_chapters; ++k) oc->chapters[k - 1]->end = std::max(oc->chapters[k - 1]->start + 1, oc->chapters[k]->start);
     for (const auto& m : s_.metadata)
         if (!m.first.empty() && !m.second.empty()) av_dict_set(&oc->metadata, m.first.c_str(), m.second.c_str(), 0);
+}
 
-    Dict options;
-    static const char* const movFamily[] = {"mp4", "m4v", "m4a", "mov", "3gp", "3g2", nullptr};
-    if (oneOf(ext, movFamily)) options.set("movflags", "+faststart");     // the index goes at the front
-    if (format->name && std::strcmp(format->name, "image2") == 0) options.set("start_number", "0");
-    r = avformat_write_header(oc, &options.d);
-    if (r < 0) {
-        setError(error, "Cannot start writing " + file + ": " + errText(r) + ".");
-        return false;
-    }
-    headerWritten_ = true;
-
-    // What was chosen, for the log.
+// What was chosen, for the log: "mp4: h264 1920x1080 30 fps 12000 kb/s, aac 48000 Hz 192 kb/s".
+void FFWriter::describe()
+{
+    const AVOutputFormat* format = oc_->oformat;
     description_ = std::string(format->name) + ":";
     if (venc_) {
         const double fps = av_q2d(venc_->framerate);
@@ -1034,7 +1087,6 @@ bool FFWriter::open(const EncodeSettings& settings, std::string* error)
         if (d && (d->props & AV_CODEC_PROP_LOSSY) && !(d->props & AV_CODEC_PROP_LOSSLESS) && aenc_->bit_rate > 0)
             description_ += strfmt(" %d kb/s", (int)(aenc_->bit_rate / 1000));
     }
-    return true;
 }
 
 // Hands every packet the encoder has ready to the container.

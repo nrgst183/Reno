@@ -182,13 +182,88 @@ struct MediaExplorer::Impl {
     }
 };
 
-MediaExplorer::MediaExplorer(QWidget* parent) : QWidget(parent), d(new Impl())
+// A double-click on a file or folder: a folder opens, a project opens, media opens in the Trimmer (Preferences) or is
+// added to the timeline.
+void MediaExplorer::activate(const QModelIndex& i)
 {
-    setObjectName("explorer");
-    Impl* impl = d.get();
-    auto* v = new QVBoxLayout(this);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(0);
+    if (d->files->isDir(i)) { setFolder(d->files->filePath(i)); return; }
+    const QString f = d->files->filePath(i);
+    if ((f.endsWith(".veg", Qt::CaseInsensitive) || f.endsWith(".reno", Qt::CaseInsensitive)) && openProjectFile) { openProjectFile(f); return; }
+    if (openInTrimmer && vprefs::on("prefs/dblClickTrimmer")) { openInTrimmer(0, f); return; }
+    addFiles(QStringList() << f, true);
+}
+
+// Another file picked: its details shown, and with Auto Preview on, it plays.
+void MediaExplorer::currentChanged()
+{
+    const QString f = d->selectedPath();
+    showDetails(f);
+    if (d->autoPreview->isChecked() && !f.isEmpty() && QFileInfo(f).isFile()) startPreview(f);
+}
+
+void MediaExplorer::startPreview(const QString& file)
+{
+    if (!previewMedia) return;
+    d->previewing = file;
+    previewMedia(0, file, true);
+}
+
+// The file list's right-click menu.
+void MediaExplorer::showFileMenu(QAbstractItemView* view, const QPoint& pos)
+{
+    const QModelIndex i = view->indexAt(pos);
+    QMenu menu(this);
+    menu.setObjectName("explorerMenu");
+    if (i.isValid()) {
+        const QString f = d->files->filePath(i.siblingAtColumn(0));
+        if (d->files->isDir(i)) {
+            menu.addAction("Open", [this, f] { setFolder(f); });
+            menu.addAction("Add Folder to Favorites", [this, f] { addFavorite(f); });
+        } else {
+            menu.addAction("Start Preview", [this, f] { startPreview(f); });
+            menu.addAction("Add to Project Media List", [this] { addFiles(d->selectedFiles(), false); });
+            menu.addAction("Add to Timeline", [this] { addFiles(d->selectedFiles(), true); });
+            if (openInTrimmer) menu.addAction("Open in Trimmer", [f] { openInTrimmer(0, f); });
+            if ((f.endsWith(".veg", Qt::CaseInsensitive) || f.endsWith(".reno", Qt::CaseInsensitive)) && openProjectFile)
+                menu.addAction("Open Project", [f] { openProjectFile(f); });
+        }
+        menu.addSeparator();
+        menu.addAction("Delete", [this] { deleteSelected(); });
+        menu.addSeparator();
+    }
+    menu.addAction("Refresh", [this] { const QString f = d->folder; d->folder.clear(); setFolder(f); });
+    menu.exec(view->viewport()->mapToGlobal(pos));
+}
+
+// The folder tree's right-click menu.
+void MediaExplorer::showFolderMenu(const QPoint& pos)
+{
+    const QModelIndex i = d->tree->indexAt(pos);
+    if (!i.isValid()) return;
+    const QString f = d->dirs->filePath(i);
+    QMenu menu(this);
+    menu.addAction("Add Folder to Favorites", [this, f] { addFavorite(f); });
+    menu.exec(d->tree->viewport()->mapToGlobal(pos));
+}
+
+// The favourites' right-click menu.
+void MediaExplorer::showFavoritesMenu(const QPoint& pos)
+{
+    QListWidgetItem* it = d->favorites->itemAt(pos);
+    if (!it) return;
+    QMenu menu(this);
+    menu.addAction("Delete", [this, it] {
+        delete it;
+        QStringList l;
+        for (int k = 0; k < d->favorites->count(); ++k) l << QDir::fromNativeSeparators(d->favorites->item(k)->text());
+        writeFavorites(l);
+    });
+    menu.exec(d->favorites->viewport()->mapToGlobal(pos));
+}
+
+// The tool bar: back, forward, up, refresh, delete, favorites; preview; Views; the path; Add to Project Media.
+QWidget* MediaExplorer::buildToolBar()
+{
     QWidget* bar = new QWidget(this);
     bar->setFixedHeight(29);
     auto* h = new QHBoxLayout(bar);
@@ -228,8 +303,87 @@ MediaExplorer::MediaExplorer(QWidget* parent) : QWidget(parent), d(new Impl())
     h->addWidget(views);
     h->addWidget(d->path, 1);
     h->addWidget(add);
-    v->addWidget(bar);
 
+
+    buildViewsMenu(views);
+    QObject::connect(d->path, &QLineEdit::returnPressed, this, [this] { setFolder(QDir::fromNativeSeparators(d->path->text())); });
+    QObject::connect(d->back, &QToolButton::clicked, this, [this] { goHistory(-1); });
+    QObject::connect(d->forward, &QToolButton::clicked, this, [this] { goHistory(1); });
+    QObject::connect(up, &QToolButton::clicked, this, [this] {
+        QDir dir(d->folder);
+        if (dir.cdUp()) setFolder(dir.absolutePath());
+    });
+    QObject::connect(refresh, &QToolButton::clicked, this, [this] {
+        const QString f = d->folder;
+        d->folder.clear();
+        d->navigating = true;
+        setFolder(f);
+        d->navigating = false;
+    });
+    QObject::connect(add, &QToolButton::clicked, this, [this] { addFiles(d->selectedFiles(), false); });
+    QObject::connect(del, &QToolButton::clicked, this, [this] { deleteSelected(); });
+    QObject::connect(fav, &QToolButton::clicked, this, [this] { addFavorite(d->folder); });
+    QObject::connect(play, &QToolButton::clicked, this, [this] {
+        const QString f = d->selectedPath();
+        if (!f.isEmpty() && QFileInfo(f).isFile()) startPreview(f);
+    });
+    QObject::connect(stop, &QToolButton::clicked, this, [this] { if (previewMedia) previewMedia(0, d->previewing, false); });
+    QObject::connect(d->autoPreview, &QToolButton::toggled, this, [](bool on) { QSettings().setValue("explorer/autoPreview", on); });
+    return bar;
+}
+
+// The Views menu: Details, List or Thumbnail, and whether the regions, summary, folder tree and all files show.
+void MediaExplorer::buildViewsMenu(QToolButton* views)
+{
+    Impl* impl = d.get();
+    QMenu* vm = new QMenu(views);
+    vm->setObjectName("explorerViewsMenu");
+    QActionGroup* vg = new QActionGroup(vm);
+    auto viewItem = [&](const QString& text, const QString& key) {
+        QAction* a = vm->addAction(text);
+        a->setObjectName("explorerView_" + key);
+        a->setCheckable(true);
+        a->setActionGroup(vg);
+        QObject::connect(a, &QAction::triggered, this, [this, key] { setView(key); });
+        return a;
+    };
+    QAction* vDetails = viewItem("&Details", "details");
+    QAction* vList = viewItem("&List", "list");
+    QAction* vThumb = viewItem("&Thumbnail", "thumbnail");
+    vm->addSeparator();
+    auto toggle = [&](const QString& text, const QString& key, bool Impl::*flag) {
+        QAction* a = vm->addAction(text);
+        a->setObjectName("explorerView_" + key);
+        a->setCheckable(true);
+        QObject::connect(a, &QAction::toggled, this, [this, impl, key, flag](bool on) {
+            impl->*flag = on;
+            QSettings().setValue("explorer/" + key, on);
+            applyViews();
+        });
+        return a;
+    };
+    QAction* vRegions = toggle("&Regions", "regions", &Impl::showRegions);
+    QAction* vSummary = toggle("&Summary", "summary", &Impl::showSummary);
+    QAction* vTree = toggle("T&ree", "tree", &Impl::showTree);
+    QAction* vAll = toggle("&All Files", "allFiles", &Impl::allFiles);
+    views->setMenu(vm);
+    QObject::connect(vm, &QMenu::aboutToShow, this, [=] {
+        vDetails->setChecked(impl->view == "details");
+        vList->setChecked(impl->view == "list");
+        vThumb->setChecked(impl->view == "thumbnail");
+        QSignalBlocker b1(vRegions), b2(vSummary), b3(vTree), b4(vAll);
+        vRegions->setChecked(impl->showRegions);
+        vSummary->setChecked(impl->showSummary);
+        vTree->setChecked(impl->showTree);
+        vAll->setChecked(impl->allFiles);
+    });
+
+}
+
+// Favorites and the folder tree at the left, the folder's files (as a list or thumbnails) with its regions and summary
+// at the right.
+QSplitter* MediaExplorer::buildPanes()
+{
     QSplitter* split = new QSplitter(Qt::Horizontal, this);
     split->setObjectName("explorerSplit");
     split->setChildrenCollapsible(false);
@@ -304,9 +458,25 @@ MediaExplorer::MediaExplorer(QWidget* parent) : QWidget(parent), d(new Impl())
     split->addWidget(right);
     split->setStretchFactor(1, 1);
     split->setSizes({220, 480});
-    v->addWidget(split, 1);
     d->thumbs->setRootIndex(d->files->index(QDir::homePath()));
 
+
+    QObject::connect(d->tree, &QTreeView::clicked, this, [this](const QModelIndex& i) { setFolder(d->dirs->filePath(i)); });
+    QObject::connect(d->favorites, &QListWidget::itemClicked, this, [this](QListWidgetItem* it) { setFolder(QDir::fromNativeSeparators(it->text())); });
+    QObject::connect(d->list, &QTreeView::doubleClicked, this, [this](const QModelIndex& i) { activate(i); });
+    QObject::connect(d->thumbs, &QListView::doubleClicked, this, [this](const QModelIndex& i) { activate(i); });
+    QObject::connect(d->list->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex&, const QModelIndex&) { currentChanged(); });
+    QObject::connect(d->thumbs->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex&, const QModelIndex&) { currentChanged(); });
+    QObject::connect(d->list, &QWidget::customContextMenuRequested, this, [this](const QPoint& p) { showFileMenu(d->list, p); });
+    QObject::connect(d->thumbs, &QWidget::customContextMenuRequested, this, [this](const QPoint& p) { showFileMenu(d->thumbs, p); });
+    QObject::connect(d->tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showFolderMenu(pos); });
+    QObject::connect(d->favorites, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showFavoritesMenu(pos); });
+    return split;
+}
+
+MediaExplorer::MediaExplorer(QWidget* parent) : QWidget(parent), d(new Impl())
+{
+    setObjectName("explorer");
     {
         QSettings st;
         d->view = st.value("explorer/view", "details").toString();
@@ -315,140 +485,11 @@ MediaExplorer::MediaExplorer(QWidget* parent) : QWidget(parent), d(new Impl())
         d->showTree = st.value("explorer/tree", true).toBool();
         d->allFiles = st.value("explorer/allFiles", false).toBool();
     }
-    QMenu* vm = new QMenu(views);
-    vm->setObjectName("explorerViewsMenu");
-    QActionGroup* vg = new QActionGroup(vm);
-    auto viewItem = [&](const QString& text, const QString& key) {
-        QAction* a = vm->addAction(text);
-        a->setObjectName("explorerView_" + key);
-        a->setCheckable(true);
-        a->setActionGroup(vg);
-        QObject::connect(a, &QAction::triggered, this, [this, key] { setView(key); });
-        return a;
-    };
-    QAction* vDetails = viewItem("&Details", "details");
-    QAction* vList = viewItem("&List", "list");
-    QAction* vThumb = viewItem("&Thumbnail", "thumbnail");
-    vm->addSeparator();
-    auto toggle = [&](const QString& text, const QString& key, bool Impl::*flag) {
-        QAction* a = vm->addAction(text);
-        a->setObjectName("explorerView_" + key);
-        a->setCheckable(true);
-        QObject::connect(a, &QAction::toggled, this, [this, impl, key, flag](bool on) {
-            impl->*flag = on;
-            QSettings().setValue("explorer/" + key, on);
-            applyViews();
-        });
-        return a;
-    };
-    QAction* vRegions = toggle("&Regions", "regions", &Impl::showRegions);
-    QAction* vSummary = toggle("&Summary", "summary", &Impl::showSummary);
-    QAction* vTree = toggle("T&ree", "tree", &Impl::showTree);
-    QAction* vAll = toggle("&All Files", "allFiles", &Impl::allFiles);
-    views->setMenu(vm);
-    QObject::connect(vm, &QMenu::aboutToShow, this, [=] {
-        vDetails->setChecked(impl->view == "details");
-        vList->setChecked(impl->view == "list");
-        vThumb->setChecked(impl->view == "thumbnail");
-        QSignalBlocker b1(vRegions), b2(vSummary), b3(vTree), b4(vAll);
-        vRegions->setChecked(impl->showRegions);
-        vSummary->setChecked(impl->showSummary);
-        vTree->setChecked(impl->showTree);
-        vAll->setChecked(impl->allFiles);
-    });
-
-    QObject::connect(d->tree, &QTreeView::clicked, this, [this](const QModelIndex& i) { setFolder(d->dirs->filePath(i)); });
-    QObject::connect(d->favorites, &QListWidget::itemClicked, this, [this](QListWidgetItem* it) { setFolder(QDir::fromNativeSeparators(it->text())); });
-    auto activate = [this](const QModelIndex& i) {
-        if (d->files->isDir(i)) { setFolder(d->files->filePath(i)); return; }
-        const QString f = d->files->filePath(i);
-        if ((f.endsWith(".veg", Qt::CaseInsensitive) || f.endsWith(".reno", Qt::CaseInsensitive)) && openProjectFile) { openProjectFile(f); return; }
-        if (openInTrimmer && vprefs::on("prefs/dblClickTrimmer")) { openInTrimmer(0, f); return; }
-        addFiles(QStringList() << f, true);
-    };
-    QObject::connect(d->list, &QTreeView::doubleClicked, this, activate);
-    QObject::connect(d->thumbs, &QListView::doubleClicked, this, activate);
-    auto selected = [this, impl] {
-        const QString f = impl->selectedPath();
-        showDetails(f);
-        if (impl->autoPreview->isChecked() && !f.isEmpty() && QFileInfo(f).isFile() && previewMedia) {
-            impl->previewing = f;
-            previewMedia(0, f, true);
-        }
-    };
-    QObject::connect(d->list->selectionModel(), &QItemSelectionModel::currentChanged, this, [selected](const QModelIndex&, const QModelIndex&) { selected(); });
-    QObject::connect(d->thumbs->selectionModel(), &QItemSelectionModel::currentChanged, this, [selected](const QModelIndex&, const QModelIndex&) { selected(); });
-    QObject::connect(d->path, &QLineEdit::returnPressed, this, [this] { setFolder(QDir::fromNativeSeparators(d->path->text())); });
-    QObject::connect(d->back, &QToolButton::clicked, this, [this] { goHistory(-1); });
-    QObject::connect(d->forward, &QToolButton::clicked, this, [this] { goHistory(1); });
-    QObject::connect(up, &QToolButton::clicked, this, [this] {
-        QDir dir(d->folder);
-        if (dir.cdUp()) setFolder(dir.absolutePath());
-    });
-    QObject::connect(refresh, &QToolButton::clicked, this, [this] {
-        const QString f = d->folder;
-        d->folder.clear();
-        d->navigating = true;
-        setFolder(f);
-        d->navigating = false;
-    });
-    QObject::connect(add, &QToolButton::clicked, this, [this] { addFiles(d->selectedFiles(), false); });
-    QObject::connect(del, &QToolButton::clicked, this, [this] { deleteSelected(); });
-    QObject::connect(fav, &QToolButton::clicked, this, [this] { addFavorite(d->folder); });
-    QObject::connect(play, &QToolButton::clicked, this, [this] {
-        const QString f = d->selectedPath();
-        if (f.isEmpty() || !QFileInfo(f).isFile() || !previewMedia) return;
-        d->previewing = f;
-        previewMedia(0, f, true);
-    });
-    QObject::connect(stop, &QToolButton::clicked, this, [this] { if (previewMedia) previewMedia(0, d->previewing, false); });
-    QObject::connect(d->autoPreview, &QToolButton::toggled, this, [](bool on) { QSettings().setValue("explorer/autoPreview", on); });
-    auto fileMenu = [this](QAbstractItemView* view, const QPoint& pos) {
-        const QModelIndex i = view->indexAt(pos);
-        QMenu menu(this);
-        menu.setObjectName("explorerMenu");
-        if (i.isValid()) {
-            const QString f = d->files->filePath(i.siblingAtColumn(0));
-            if (d->files->isDir(i)) {
-                menu.addAction("Open", [this, f] { setFolder(f); });
-                menu.addAction("Add Folder to Favorites", [this, f] { addFavorite(f); });
-            } else {
-                menu.addAction("Start Preview", [this, f] { if (previewMedia) { d->previewing = f; previewMedia(0, f, true); } });
-                menu.addAction("Add to Project Media List", [this] { addFiles(d->selectedFiles(), false); });
-                menu.addAction("Add to Timeline", [this] { addFiles(d->selectedFiles(), true); });
-                if (openInTrimmer) menu.addAction("Open in Trimmer", [f] { openInTrimmer(0, f); });
-                if ((f.endsWith(".veg", Qt::CaseInsensitive) || f.endsWith(".reno", Qt::CaseInsensitive)) && openProjectFile)
-                    menu.addAction("Open Project", [f] { openProjectFile(f); });
-            }
-            menu.addSeparator();
-            menu.addAction("Delete", [this] { deleteSelected(); });
-            menu.addSeparator();
-        }
-        menu.addAction("Refresh", [this] { const QString f = d->folder; d->folder.clear(); setFolder(f); });
-        menu.exec(view->viewport()->mapToGlobal(pos));
-    };
-    QObject::connect(d->list, &QWidget::customContextMenuRequested, this, [this, fileMenu](const QPoint& p) { fileMenu(d->list, p); });
-    QObject::connect(d->thumbs, &QWidget::customContextMenuRequested, this, [this, fileMenu](const QPoint& p) { fileMenu(d->thumbs, p); });
-    QObject::connect(d->tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
-        const QModelIndex i = d->tree->indexAt(pos);
-        if (!i.isValid()) return;
-        const QString f = d->dirs->filePath(i);
-        QMenu menu(this);
-        menu.addAction("Add Folder to Favorites", [this, f] { addFavorite(f); });
-        menu.exec(d->tree->viewport()->mapToGlobal(pos));
-    });
-    QObject::connect(d->favorites, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
-        QListWidgetItem* it = d->favorites->itemAt(pos);
-        if (!it) return;
-        QMenu menu(this);
-        menu.addAction("Delete", [this, it] {
-            delete it;
-            QStringList l;
-            for (int k = 0; k < d->favorites->count(); ++k) l << QDir::fromNativeSeparators(d->favorites->item(k)->text());
-            writeFavorites(l);
-        });
-        menu.exec(d->favorites->viewport()->mapToGlobal(pos));
-    });
+    auto* v = new QVBoxLayout(this);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(0);
+    v->addWidget(buildToolBar());
+    v->addWidget(buildPanes(), 1);
     applyViews();
     setFolder(QSettings().value("explorer/folder", QDir::homePath()).toString());
 }

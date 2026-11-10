@@ -61,6 +61,22 @@ choose Open, or run `xattr -dr com.apple.quarantine Reno.app`. Effects use Vulka
 installed (`brew install molten-vk`), and the CPU otherwise. 32-bit plug-ins and VEGAS's DirectX audio plug-ins are
 Windows-only; Reno's own versions of VEGAS's effects work everywhere.
 
+The Windows 7, FreeBSD, Android and iOS builds are new and not yet tried on those systems:
+
+- `reno-windows7-x64.zip`: for Windows 7 SP1 and 8.1 (64-bit), with Qt's DLLs patched to run there
+  ([qt6windows7](https://github.com/crystalidea/qt6windows7)). The FFmpeg DLLs need the Universal C Runtime (Windows
+  Update KB2999226), and GPU effects need a graphics driver with Vulkan for Windows 7.
+- `reno-freebsd-x64.tar.gz`: FreeBSD 14 (amd64). Install Qt and FFmpeg from packages first:
+  `pkg install qt6-base qt6-multimedia ffmpeg vulkan-loader`.
+- `reno-android-arm64.apk`: Android 9 and later on 64-bit ARM. One finger works as the mouse; two fingers pinch to zoom
+  the timeline and drag to scroll it. Each build is signed with a key of its own, so uninstall the older one first.
+- `reno-ios-unsigned.ipa`: iPhone and iPad (iOS 16 and later). It is not signed: sign it with your own Apple ID (for
+  example with Sideloadly or AltStore) to install it.
+
+On Android and iOS Reno has its own effects only (plug-ins are Windows, macOS or Linux programs and cannot load there),
+no command-line `reno_cli`, and FFmpeg's own encoders instead of x264 / x265 for rendering. The interface is the desktop
+one, made for a mouse and keyboard; a tablet with a mouse or keyboard attached works best.
+
 ## Building on Windows
 
 You need Visual Studio 2022 with the C++ workload and its "C++ Clang tools for Windows" component (Reno is built
@@ -96,6 +112,45 @@ Other presets are in `CMakePresets.json`.
 The build is for the Mac's own processor (Apple Silicon or Intel). To make a Reno.app to give to someone else, run
 `macdeployqt build/bin/Reno.app -executable=build/bin/Reno.app/Contents/MacOS/reno_cli` and then
 `codesign --force --deep --sign - build/bin/Reno.app`.
+
+## Building for Windows 7
+
+Build as on Windows with `build_msvc.bat win7` (output in `build\out-win7\`), or with the `windows7-clangcl-release`
+preset followed by `powershell -ExecutionPolicy Bypass -File tools\use_qt_win7.ps1 <the folder with reno.exe>`. Reno is
+then compiled for Windows 7 (only functions Windows 7 has), and the script swaps Qt's DLLs for the patched ones from
+[qt6windows7](https://github.com/crystalidea/qt6windows7) (it needs 7-Zip). Windows XP is not possible: Qt 6, FFmpeg,
+Vulkan and Visual Studio's compilers no longer support it.
+
+## Building on FreeBSD
+
+    pkg install cmake ninja pkgconf qt6-base qt6-multimedia ffmpeg vulkan-loader
+    cmake --preset freebsd-release
+    cmake --build --preset freebsd-release
+
+## Building for Android
+
+You need Qt 6.8.3 for Android (`android_arm64_v8a`, with Multimedia) and for your computer, the Android SDK, NDK
+26.1.10909125 and JDK 17. Build FFmpeg for Android, then Reno's APK:
+
+    export ANDROID_SDK_ROOT=~/Android/Sdk ANDROID_NDK_ROOT=~/Android/Sdk/ndk/26.1.10909125
+    tools/build_ffmpeg_android.sh
+    ~/Qt/6.8.3/android_arm64_v8a/bin/qt-cmake -S . -B build/android -G Ninja -DCMAKE_BUILD_TYPE=Release \
+        -DQT_HOST_PATH=~/Qt/6.8.3/gcc_64 -DANDROID_SDK_ROOT=$ANDROID_SDK_ROOT -DANDROID_NDK_ROOT=$ANDROID_NDK_ROOT \
+        -DRENO_FFMPEG_DIR=$PWD/deps/ffmpeg-android
+    cmake --build build/android --target apk
+
+The APK is under `build/android/android-build/build/outputs/apk/`. Sign it with `apksigner` (from the SDK's
+build-tools) to install it; Qt Creator can also open the project and run it on a connected device.
+
+## Building for iOS
+
+On a Mac with Xcode, Qt 6.8.3 for iOS and for macOS (with Multimedia):
+
+    tools/build_ffmpeg_ios.sh
+    ~/Qt/6.8.3/ios/bin/qt-cmake -S . -B build/ios -G Xcode -DQT_HOST_PATH=~/Qt/6.8.3/macos -DRENO_FFMPEG_DIR=$PWD/deps/ffmpeg-ios
+    open build/ios/Reno.xcodeproj
+
+In Xcode choose your team under Signing & Capabilities for the `reno` target, then run it on your iPhone or iPad.
 
 ## Usage
 

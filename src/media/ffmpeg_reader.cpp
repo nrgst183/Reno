@@ -533,6 +533,14 @@ private:
     void deinterlaceRows(uint8_t* rows, int stride, int w, int h, bool topFirst);
     void cacheInsert(int w, int h, int64_t pts, int64_t until, const ImagePtr& img);
 
+    // opening (open's steps)
+    void pickStreams(AVFormatContext* fc, int& vi, int& ai, std::string& why);
+    bool describeVideo(const std::string& path, AVFormatContext* fc, const std::string& format, int vi, int ai, bool* reopenVideo,
+                       std::string* error);
+    void describeAudio(AVFormatContext* fc, const std::string& format, int ai, int vi);
+    void measureDuration(const std::string& path, AVFormatContext* fc, int vi, int ai);
+    void readChapters(AVFormatContext* fc);
+
     // sound
     bool ensureAudioOpen();
     void setupAudioStreams();
@@ -677,6 +685,51 @@ void FFReader::keepOnly(AVFormatContext* fc, int a, int b)
         if (fc->streams[i]) fc->streams[i]->discard = ((int)i == a || (int)i == b) ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
 }
 
+// The names VEGAS gives a file's channels (its speaker names: L, R, C, LFE, Ls, Rs...); an empty name for a mono file's
+// one channel.
+static std::vector<std::string> speakerNames(const AVChannelLayout& fileLayout, int channels)
+{
+    Layout lay;
+    if (fileLayout.order == AV_CHANNEL_ORDER_UNSPEC || av_channel_layout_check(&fileLayout) == 0 ||
+        av_channel_layout_copy(&lay.l, &fileLayout) < 0)
+        av_channel_layout_default(&lay.l, channels);
+    bool sides = false;
+    for (int c = 0; c < channels && c < 64; ++c) {
+        const AVChannel ch = av_channel_layout_channel_from_index(&lay.l, (unsigned)c);
+        if (ch == AV_CHAN_SIDE_LEFT || ch == AV_CHAN_SIDE_RIGHT) sides = true;
+    }
+    std::vector<std::string> names;
+    for (int c = 0; c < channels && c < 64; ++c) {
+        const AVChannel ch = av_channel_layout_channel_from_index(&lay.l, (unsigned)c);
+        std::string n;
+        switch (ch) {
+        case AV_CHAN_FRONT_LEFT: n = "L"; break;
+        case AV_CHAN_FRONT_RIGHT: n = "R"; break;
+        case AV_CHAN_FRONT_CENTER: n = channels == 1 ? "" : "C"; break;
+        case AV_CHAN_LOW_FREQUENCY: n = "LFE"; break;
+        case AV_CHAN_SIDE_LEFT: n = "Ls"; break;
+        case AV_CHAN_SIDE_RIGHT: n = "Rs"; break;
+        case AV_CHAN_BACK_LEFT: n = sides ? "Lb" : "Ls"; break;
+        case AV_CHAN_BACK_RIGHT: n = sides ? "Rb" : "Rs"; break;
+        case AV_CHAN_BACK_CENTER: n = "Cs"; break;
+        default: break;
+        }
+        names.push_back(n);
+    }
+    return names;
+}
+
+// The layout's own description ("stereo", "5.1(side)"...).
+static std::string layoutDescription(const AVChannelLayout& fileLayout, int channels)
+{
+    Layout lay;
+    if (fileLayout.order == AV_CHANNEL_ORDER_UNSPEC || av_channel_layout_check(&fileLayout) == 0 ||
+        av_channel_layout_copy(&lay.l, &fileLayout) < 0)
+        av_channel_layout_default(&lay.l, channels);
+    char desc[128] = {0};
+    return av_channel_layout_describe(&lay.l, desc, sizeof(desc)) > 0 ? std::string(desc) : std::string();
+}
+
 bool FFReader::open(const std::string& path, std::string* error)
 {
     info_ = MediaInfo();
@@ -687,10 +740,58 @@ bool FFReader::open(const std::string& path, std::string* error)
     AVFormatContext* fc = fmt.get();
     const std::string format = fc->iformat && fc->iformat->name ? fc->iformat->name : "";
 
-    int vi = av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    int ai = av_find_best_stream(fc, AVMEDIA_TYPE_AUDIO, -1, vi >= 0 ? vi : -1, nullptr, 0);
+    int vi = -1, ai = -1;
     std::string why;
+    pickStreams(fc, vi, ai, why);
+    if (vi >= 0) {
+        v_.fmt = std::move(fmt);
+        std::string e;
+        if (!openStream(v_, vi, AVMEDIA_TYPE_VIDEO, &e, hwTry_)) {
+            why = e;
+            fmt = std::move(v_.fmt);
+            vi = -1;
+        }
+    }
+    if (vi < 0 && ai < 0) {
+        setError(error, why.empty() ? pathFileName(path) + " has no pictures or sound that can be read." : pathFileName(path) + " cannot be read. " + why);
+        return false;
+    }
+    vIndex_ = vi;
+    aIndex_ = ai;
+    info_.hasVideo = vi >= 0;
+    info_.hasAudio = ai >= 0;
 
+    bool reopenVideo = false;
+    if (vi >= 0 && !describeVideo(path, fc, format, vi, ai, &reopenVideo, error)) return false;
+    if (ai >= 0) describeAudio(fc, format, ai, vi);
+    if (!info_.isStill) measureDuration(path, fc, vi, ai);
+    readChapters(fc);
+
+    if (reopenVideo) {
+        Demux fresh;
+        v_.dec.reset();
+        v_.hw.reset();
+        v_.hwToken.reset();
+        if (!openInput(path, fresh.fmt, error) || !openStream(fresh, vi, AVMEDIA_TYPE_VIDEO, error, hwTry_)) return false;
+        v_ = std::move(fresh);
+        keepOnly(v_.fmt.get(), vi, -1);
+    }
+    // The file opened above serves the frames if there are any; the sound gets its own when it is first asked for.
+    if (vi < 0) {
+        a_.fmt = std::move(fmt);
+        if (!openStream(a_, ai, AVMEDIA_TYPE_AUDIO, error)) return false;
+        setupAudioStreams();
+        aOpenTried_ = true;
+    }
+    return true;
+}
+
+// The best video and audio streams, each left out (-1) when it can't be used; 'why' says why one couldn't when that was a
+// missing decoder.
+void FFReader::pickStreams(AVFormatContext* fc, int& vi, int& ai, std::string& why)
+{
+    vi = av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    ai = av_find_best_stream(fc, AVMEDIA_TYPE_AUDIO, -1, vi >= 0 ? vi : -1, nullptr, 0);
     // ---- is the sound usable?
     if (ai >= 0) {
         const AVCodecParameters* par = fc->streams[ai]->codecpar;
@@ -716,191 +817,164 @@ bool FFReader::open(const std::string& path, std::string* error)
             vi = -1;
         }
     }
-    if (vi >= 0) {
-        v_.fmt = std::move(fmt);
-        std::string e;
-        if (!openStream(v_, vi, AVMEDIA_TYPE_VIDEO, &e, hwTry_)) {
-            why = e;
-            fmt = std::move(v_.fmt);
-            vi = -1;
+}
+
+// The picture: its size and shape as shown, rate, depth, fields, whether it is a still, and when its frames start.
+// 'reopenVideo': frames were decoded to find that out, so the stream is to be opened again from its start.
+bool FFReader::describeVideo(const std::string& path, AVFormatContext* fc, const std::string& format, int vi, int ai, bool* reopenVideo,
+                             std::string* error)
+{
+    const AVRational us = microseconds();
+    AVStream* st = fc->streams[vi];
+    const AVCodecParameters* par = st->codecpar;
+    vTb_ = st->time_base;
+    if (st->start_time != kNoPts) vStartPts_ = st->start_time;
+    else if (fc->start_time != kNoPts) vStartPts_ = av_rescale_q(fc->start_time, us, vTb_);
+    else vStartPts_ = 0;
+    originUs_ = av_rescale_q(vStartPts_, vTb_, us);
+
+    // the shape it is shown at: non-square pixels widen or heighten it, a rotation may turn it on its side
+    int w = par->width, h = par->height;
+    const AVRational sar = av_guess_sample_aspect_ratio(fc, st, nullptr);
+    if (sar.num > 0 && sar.den > 0) {
+        const double a = av_q2d(sar);
+        if (a > 1.0005 && a < 100.0) w = (int)std::lround(w * a);
+        else if (a < 0.9995 && a > 0.01) h = (int)std::lround(h / a);
+    }
+    rotation_ = streamRotation(st);
+    info_.rotation = rotation_;
+    info_.pixelAspect = sar.num > 0 && sar.den > 0 && av_q2d(sar) > 0.01 && av_q2d(sar) < 100.0 ? av_q2d(sar) : 1.0;
+    if (rotation_ == 90 || rotation_ == 270) std::swap(w, h);
+    info_.width = std::max(1, std::min(w, 32768));
+    info_.height = std::max(1, std::min(h, 32768));
+    info_.videoCodec = avcodec_get_name(par->codec_id);
+    if (const AVPixFmtDescriptor* pd = av_pix_fmt_desc_get((AVPixelFormat)par->format)) {
+        if (pd->nb_components > 0) info_.bitDepth = std::max(1, pd->comp[0].depth);
+        info_.hasAlpha = (pd->flags & AV_PIX_FMT_FLAG_ALPHA) != 0 || (pd->flags & AV_PIX_FMT_FLAG_PAL) != 0;
+    }
+    if (v_.dec && (v_.dec->pix_fmt == AV_PIX_FMT_YUVA420P || std::strncmp(v_.dec->codec->name, "libvpx", 6) == 0)) info_.hasAlpha = true;
+    if (par->field_order == AV_FIELD_TT || par->field_order == AV_FIELD_TB) info_.fieldOrder = "upper";
+    else if (par->field_order == AV_FIELD_BB || par->field_order == AV_FIELD_BT) info_.fieldOrder = "lower";
+
+    AVRational rate = av_guess_frame_rate(fc, st, nullptr);
+    if (rate.num < 1 || rate.den < 1) rate = st->avg_frame_rate;
+    double fps = rate.num > 0 && rate.den > 0 ? av_q2d(rate) : 0.0;
+    if (!(fps > 0.0) || fps > 1000.0) fps = 0.0;
+
+    // a frame file?
+    const bool imageFormat = format == "image2" || endsWith(format, "_pipe");
+    if (ai < 0) {
+        if (endsWith(format, "_pipe")) {
+            info_.isStill = true;
+        } else {
+            const double seconds = st->duration != kNoPts ? st->duration * av_q2d(vTb_) : -1.0;
+            const bool maybe = imageFormat || format == "gif" || format == "apng" || st->nb_frames == 1 ||
+                               (st->nb_frames == 0 && (seconds <= 0.0 || (fps > 0.0 && seconds < 1.5 / fps)));
+            if (maybe && countPackets(path, vi, 2) < 2) info_.isStill = true;
         }
     }
-    if (vi < 0 && ai < 0) {
-        setError(error, why.empty() ? pathFileName(path) + " has no pictures or sound that can be read." : pathFileName(path) + " cannot be read. " + why);
+    info_.fps = info_.isStill ? 0.0 : fps;
+    const double frameTicks = fps > 0.0 ? 1.0 / (fps * av_q2d(vTb_)) : 0.0;
+    vDefaultDuration_ = frameTicks >= 1.0 && frameTicks < 1e15 ? (int64_t)std::llround(frameTicks) : 1;
+
+    keepOnly(fc, vi, -1);
+    if (st->start_time == kNoPts && fc->start_time == kNoPts) {
+        // A file that does not say when its frames start (a bare MPEG-2 stream): its first frame says.
+        FramePtr probe(av_frame_alloc());
+        if (probe && receiveFrame(v_, probe.get()) > 0) {
+            const int64_t ts = probe->best_effort_timestamp != kNoPts ? probe->best_effort_timestamp : probe->pts;
+            if (ts != kNoPts) {
+                vStartPts_ = ts;
+                originUs_ = av_rescale_q(vStartPts_, vTb_, us);
+            }
+        }
+        *reopenVideo = true;
+    }
+    // DV is always lower field first (when standard definition), whether or not the file says so
+    if (par->codec_id == AV_CODEC_ID_DVVIDEO && info_.fieldOrder == "none" && (par->height == 480 || par->height == 576)) info_.fieldOrder = "lower";
+    prev_.f.reset(av_frame_alloc());
+    cur_.f.reset(av_frame_alloc());
+    backShown_.f.reset(av_frame_alloc());
+    if (!prev_.f || !cur_.f || !backShown_.f) {
+        setError(error, "Out of memory.");
         return false;
     }
-    vIndex_ = vi;
-    aIndex_ = ai;
-    info_.hasVideo = vi >= 0;
-    info_.hasAudio = ai >= 0;
 
+    return true;
+}
+
+// The sound: rate, channels and their names, the encoder's delay, and what seeking in it needs.
+void FFReader::describeAudio(AVFormatContext* fc, const std::string& format, int ai, int vi)
+{
     const AVRational us = microseconds();
-    bool reopenVideo = false;
-    // ---- frames
-    if (vi >= 0) {
-        AVStream* st = fc->streams[vi];
-        const AVCodecParameters* par = st->codecpar;
-        vTb_ = st->time_base;
-        if (st->start_time != kNoPts) vStartPts_ = st->start_time;
-        else if (fc->start_time != kNoPts) vStartPts_ = av_rescale_q(fc->start_time, us, vTb_);
-        else vStartPts_ = 0;
-        originUs_ = av_rescale_q(vStartPts_, vTb_, us);
-
-        // the shape it is shown at: non-square pixels widen or heighten it, a rotation may turn it on its side
-        int w = par->width, h = par->height;
-        const AVRational sar = av_guess_sample_aspect_ratio(fc, st, nullptr);
-        if (sar.num > 0 && sar.den > 0) {
-            const double a = av_q2d(sar);
-            if (a > 1.0005 && a < 100.0) w = (int)std::lround(w * a);
-            else if (a < 0.9995 && a > 0.01) h = (int)std::lround(h / a);
+    const AVStream* st = fc->streams[ai];
+    const AVCodecParameters* par = st->codecpar;
+    info_.sampleRate = par->sample_rate;
+    info_.channels = par->ch_layout.nb_channels;
+    // the channels' names (VEGAS's speaker names) and the layout's
+    info_.channelLayout = layoutDescription(par->ch_layout, info_.channels);
+    info_.channelNames = speakerNames(par->ch_layout, info_.channels);
+    info_.audioCodec = avcodec_get_name(par->codec_id);
+    aDelay_ = aacDelaySamples(format, par->codec_id, par->profile);
+    info_.audioDelaySamples = (int)aDelay_;
+    if (vi < 0) {
+        if (st->start_time != kNoPts) originUs_ = av_rescale_q(st->start_time, st->time_base, us);
+        else if (fc->start_time != kNoPts) originUs_ = fc->start_time;
+        else originUs_ = 0;
+    }
+    aSkipSeek_ = realVideoIndex_ < 0 && (format == "mp3" || format == "aac" || format == "ac3" || format == "eac3" ||
+                                         format == "dts" || format == "truehd" || format == "loas");
+    // Ogg Vorbis and FLAC: after a seek FFmpeg works the first page's time stamps out from the page's end less
+    // its packets' lengths.
+    if (format == "ogg" && par->codec_id != AV_CODEC_ID_OPUS) aSkipSeek_ = true;
+    if (format.find("matroska") != std::string::npos && par->initial_padding > 0 && st->time_base.num > 0) {
+        // Matroska and WebM keep time in whole milliseconds.
+        const int padRate = par->codec_id == AV_CODEC_ID_OPUS ? 48000 : par->sample_rate;
+        const int64_t delayNs = av_rescale(par->initial_padding, 1000000000, padRate);
+        const int64_t unitNs = av_rescale_q(1, st->time_base, av_make_q(1, 1000000000));
+        if (unitNs > 0) {
+            const int64_t frac = (unitNs - delayNs % unitNs) % unitNs;          // where in a unit the frames start
+            aStampFixNs_ = frac * 2 >= unitNs ? frac - unitNs : frac;
         }
-        rotation_ = streamRotation(st);
-        info_.rotation = rotation_;
-        info_.pixelAspect = sar.num > 0 && sar.den > 0 && av_q2d(sar) > 0.01 && av_q2d(sar) < 100.0 ? av_q2d(sar) : 1.0;
-        if (rotation_ == 90 || rotation_ == 270) std::swap(w, h);
-        info_.width = std::max(1, std::min(w, 32768));
-        info_.height = std::max(1, std::min(h, 32768));
-        info_.videoCodec = avcodec_get_name(par->codec_id);
-        if (const AVPixFmtDescriptor* pd = av_pix_fmt_desc_get((AVPixelFormat)par->format)) {
-            if (pd->nb_components > 0) info_.bitDepth = std::max(1, pd->comp[0].depth);
-            info_.hasAlpha = (pd->flags & AV_PIX_FMT_FLAG_ALPHA) != 0 || (pd->flags & AV_PIX_FMT_FLAG_PAL) != 0;
-        }
-        if (v_.dec && (v_.dec->pix_fmt == AV_PIX_FMT_YUVA420P || std::strncmp(v_.dec->codec->name, "libvpx", 6) == 0)) info_.hasAlpha = true;
-        if (par->field_order == AV_FIELD_TT || par->field_order == AV_FIELD_TB) info_.fieldOrder = "upper";
-        else if (par->field_order == AV_FIELD_BB || par->field_order == AV_FIELD_BT) info_.fieldOrder = "lower";
-
-        AVRational rate = av_guess_frame_rate(fc, st, nullptr);
-        if (rate.num < 1 || rate.den < 1) rate = st->avg_frame_rate;
-        double fps = rate.num > 0 && rate.den > 0 ? av_q2d(rate) : 0.0;
-        if (!(fps > 0.0) || fps > 1000.0) fps = 0.0;
-
-        // a frame file?
-        const bool imageFormat = format == "image2" || endsWith(format, "_pipe");
-        if (ai < 0) {
-            if (endsWith(format, "_pipe")) {
-                info_.isStill = true;
-            } else {
-                const double seconds = st->duration != kNoPts ? st->duration * av_q2d(vTb_) : -1.0;
-                const bool maybe = imageFormat || format == "gif" || format == "apng" || st->nb_frames == 1 ||
-                                   (st->nb_frames == 0 && (seconds <= 0.0 || (fps > 0.0 && seconds < 1.5 / fps)));
-                if (maybe && countPackets(path, vi, 2) < 2) info_.isStill = true;
-            }
-        }
-        info_.fps = info_.isStill ? 0.0 : fps;
-        const double frameTicks = fps > 0.0 ? 1.0 / (fps * av_q2d(vTb_)) : 0.0;
-        vDefaultDuration_ = frameTicks >= 1.0 && frameTicks < 1e15 ? (int64_t)std::llround(frameTicks) : 1;
-
-        keepOnly(fc, vi, -1);
-        if (st->start_time == kNoPts && fc->start_time == kNoPts) {
-            // A file that does not say when its frames start (a bare MPEG-2 stream): its first frame says.
-            FramePtr probe(av_frame_alloc());
-            if (probe && receiveFrame(v_, probe.get()) > 0) {
-                const int64_t ts = probe->best_effort_timestamp != kNoPts ? probe->best_effort_timestamp : probe->pts;
-                if (ts != kNoPts) {
-                    vStartPts_ = ts;
-                    originUs_ = av_rescale_q(vStartPts_, vTb_, us);
-                }
-            }
-            reopenVideo = true;
-        }
-        // DV is always lower field first (when standard definition), whether or not the file says so
-        if (par->codec_id == AV_CODEC_ID_DVVIDEO && info_.fieldOrder == "none" && (par->height == 480 || par->height == 576)) info_.fieldOrder = "lower";
-        prev_.f.reset(av_frame_alloc());
-        cur_.f.reset(av_frame_alloc());
-        backShown_.f.reset(av_frame_alloc());
-        if (!prev_.f || !cur_.f || !backShown_.f) {
-            setError(error, "Out of memory.");
-            return false;
+        // Sound alone: its time zero is where the pre-skip ends, not the (rounded) start of the first frame.
+        if (vi < 0 && st->start_time != kNoPts) {
+            const int64_t delayTb = av_rescale_q(delayNs, av_make_q(1, 1000000000), st->time_base);
+            originUs_ = av_rescale_q(st->start_time + delayTb, st->time_base, us);
         }
     }
-    // ---- sound
-    if (ai >= 0) {
-        const AVStream* st = fc->streams[ai];
-        const AVCodecParameters* par = st->codecpar;
-        info_.sampleRate = par->sample_rate;
-        info_.channels = par->ch_layout.nb_channels;
-        // the channels' names (VEGAS's speaker names) and the layout's
-        {
-            Layout lay;
-            if (par->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC || av_channel_layout_check(&par->ch_layout) == 0 ||
-                av_channel_layout_copy(&lay.l, &par->ch_layout) < 0)
-                av_channel_layout_default(&lay.l, info_.channels);
-            char desc[128] = {0};
-            if (av_channel_layout_describe(&lay.l, desc, sizeof(desc)) > 0) info_.channelLayout = desc;
-            bool sides = false;
-            for (int c = 0; c < info_.channels && c < 64; ++c) {
-                const AVChannel ch = av_channel_layout_channel_from_index(&lay.l, (unsigned)c);
-                if (ch == AV_CHAN_SIDE_LEFT || ch == AV_CHAN_SIDE_RIGHT) sides = true;
-            }
-            for (int c = 0; c < info_.channels && c < 64; ++c) {
-                const AVChannel ch = av_channel_layout_channel_from_index(&lay.l, (unsigned)c);
-                std::string n;
-                switch (ch) {
-                case AV_CHAN_FRONT_LEFT: n = "L"; break;
-                case AV_CHAN_FRONT_RIGHT: n = "R"; break;
-                case AV_CHAN_FRONT_CENTER: n = info_.channels == 1 ? "" : "C"; break;
-                case AV_CHAN_LOW_FREQUENCY: n = "LFE"; break;
-                case AV_CHAN_SIDE_LEFT: n = "Ls"; break;
-                case AV_CHAN_SIDE_RIGHT: n = "Rs"; break;
-                case AV_CHAN_BACK_LEFT: n = sides ? "Lb" : "Ls"; break;
-                case AV_CHAN_BACK_RIGHT: n = sides ? "Rb" : "Rs"; break;
-                case AV_CHAN_BACK_CENTER: n = "Cs"; break;
-                default: break;
-                }
-                info_.channelNames.push_back(n);
-            }
-        }
-        info_.audioCodec = avcodec_get_name(par->codec_id);
-        aDelay_ = aacDelaySamples(format, par->codec_id, par->profile);
-        info_.audioDelaySamples = (int)aDelay_;
-        if (vi < 0) {
-            if (st->start_time != kNoPts) originUs_ = av_rescale_q(st->start_time, st->time_base, us);
-            else if (fc->start_time != kNoPts) originUs_ = fc->start_time;
-            else originUs_ = 0;
-        }
-        aSkipSeek_ = realVideoIndex_ < 0 && (format == "mp3" || format == "aac" || format == "ac3" || format == "eac3" ||
-                                             format == "dts" || format == "truehd" || format == "loas");
-        // Ogg Vorbis and FLAC: after a seek FFmpeg works the first page's time stamps out from the page's end less
-        // its packets' lengths.
-        if (format == "ogg" && par->codec_id != AV_CODEC_ID_OPUS) aSkipSeek_ = true;
-        if (format.find("matroska") != std::string::npos && par->initial_padding > 0 && st->time_base.num > 0) {
-            // Matroska and WebM keep time in whole milliseconds.
-            const int padRate = par->codec_id == AV_CODEC_ID_OPUS ? 48000 : par->sample_rate;
-            const int64_t delayNs = av_rescale(par->initial_padding, 1000000000, padRate);
-            const int64_t unitNs = av_rescale_q(1, st->time_base, av_make_q(1, 1000000000));
-            if (unitNs > 0) {
-                const int64_t frac = (unitNs - delayNs % unitNs) % unitNs;          // where in a unit the frames start
-                aStampFixNs_ = frac * 2 >= unitNs ? frac - unitNs : frac;
-            }
-            // Sound alone: its time zero is where the pre-skip ends, not the (rounded) start of the first frame.
-            if (vi < 0 && st->start_time != kNoPts) {
-                const int64_t delayTb = av_rescale_q(delayNs, av_make_q(1, 1000000000), st->time_base);
-                originUs_ = av_rescale_q(st->start_time + delayTb, st->time_base, us);
-            }
-        }
+
+}
+
+// How long the file lasts: from its streams' own lengths, else the file's, scanning to its end when neither is known or
+// the length was only guessed from the bit rate.
+void FFReader::measureDuration(const std::string& path, AVFormatContext* fc, int vi, int ai)
+{
+    const AVRational us = microseconds();
+    int64_t endUs = kNoPts;
+    const int used[2] = {vi, ai};
+    for (int k = 0; k < 2; ++k) {
+        if (used[k] < 0) continue;
+        const AVStream* st = fc->streams[used[k]];
+        if (st->duration == kNoPts || st->duration <= 0) continue;
+        const int64_t e = av_rescale_q((st->start_time != kNoPts ? st->start_time : 0) + st->duration, st->time_base, us);
+        if (endUs == kNoPts || e > endUs) endUs = e;
+        if (k == 0 && e > originUs_) info_.videoDuration = (double)(e - originUs_) / 1e6;
     }
-    // ---- how long it lasts
-    if (!info_.isStill) {
-        int64_t endUs = kNoPts;
-        const int used[2] = {vi, ai};
-        for (int k = 0; k < 2; ++k) {
-            if (used[k] < 0) continue;
-            const AVStream* st = fc->streams[used[k]];
-            if (st->duration == kNoPts || st->duration <= 0) continue;
-            const int64_t e = av_rescale_q((st->start_time != kNoPts ? st->start_time : 0) + st->duration, st->time_base, us);
-            if (endUs == kNoPts || e > endUs) endUs = e;
-            if (k == 0 && e > originUs_) info_.videoDuration = (double)(e - originUs_) / 1e6;
-        }
-        if (endUs == kNoPts && fc->duration != kNoPts && fc->duration > 0)
-            endUs = (fc->start_time != kNoPts ? fc->start_time : 0) + fc->duration;
-        if (endUs != kNoPts && endUs > originUs_) info_.duration = (double)(endUs - originUs_) / 1e6;
-        const bool guessed = fc->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE;
-        if (!(info_.duration > 0) || guessed) {
-            const int64_t scannedUs = scanEnd(path, vi, ai, vi >= 0 ? vDefaultDuration_ : 0, guessed ? kGuessedScanBytes : kMissingScanBytes);
-            if (scannedUs != kNoPts && scannedUs > originUs_) info_.duration = (double)(scannedUs - originUs_) / 1e6;
-        }
+    if (endUs == kNoPts && fc->duration != kNoPts && fc->duration > 0)
+        endUs = (fc->start_time != kNoPts ? fc->start_time : 0) + fc->duration;
+    if (endUs != kNoPts && endUs > originUs_) info_.duration = (double)(endUs - originUs_) / 1e6;
+    const bool guessed = fc->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE;
+    if (!(info_.duration > 0) || guessed) {
+        const int64_t scannedUs = scanEnd(path, vi, ai, vi >= 0 ? vDefaultDuration_ : 0, guessed ? kGuessedScanBytes : kMissingScanBytes);
+        if (scannedUs != kNoPts && scannedUs > originUs_) info_.duration = (double)(scannedUs - originUs_) / 1e6;
     }
-    // ---- the markers kept in the file (its chapters), for View > Event Media Markers
+
+}
+
+// The markers kept in the file (its chapters), for View > Event Media Markers.
+void FFReader::readChapters(AVFormatContext* fc)
+{
+    const AVRational us = microseconds();
     for (unsigned c = 0; c < fc->nb_chapters && c < 1000; ++c) {
         const AVChapter* ch = fc->chapters[c];
         if (!ch) continue;
@@ -908,24 +982,6 @@ bool FFReader::open(const std::string& path, std::string* error)
         const AVDictionaryEntry* title = av_dict_get(ch->metadata, "title", nullptr, 0);
         info_.markers.emplace_back(std::max(0.0, at), title && title->value ? std::string(title->value) : std::string());
     }
-
-    if (reopenVideo) {
-        Demux fresh;
-        v_.dec.reset();
-        v_.hw.reset();
-        v_.hwToken.reset();
-        if (!openInput(path, fresh.fmt, error) || !openStream(fresh, vi, AVMEDIA_TYPE_VIDEO, error, hwTry_)) return false;
-        v_ = std::move(fresh);
-        keepOnly(v_.fmt.get(), vi, -1);
-    }
-    // The file opened above serves the frames if there are any; the sound gets its own when it is first asked for.
-    if (vi < 0) {
-        a_.fmt = std::move(fmt);
-        if (!openStream(a_, ai, AVMEDIA_TYPE_AUDIO, error)) return false;
-        setupAudioStreams();
-        aOpenTried_ = true;
-    }
-    return true;
 }
 
 // Puts d's demuxer back at the very start of the file and empties its decoder.
@@ -1747,6 +1803,56 @@ FFReader::Shown* FFReader::locate(int64_t target)
     return cur_.valid ? &cur_ : nullptr;
 }
 
+// Makes 'buf' at least 'need' bytes (av_malloc'd, so swscale may use it). False if there is no memory.
+template <class Buffer>
+static bool growBuffer(Buffer& buf, size_t& have, size_t need)
+{
+    if (buf && have >= need) return true;
+    buf.reset((uint8_t*)av_malloc(need));
+    have = buf ? need : 0;
+    return (bool)buf;
+}
+
+// Copies a BGRA frame as stored (top row first, tw0 x th0) into 'img' (ow x oh, bottom row first), turned by
+// 'rotation' degrees clockwise; with 'alpha' the colours are premultiplied, else the picture is made opaque.
+static void storeTurned(const uint8_t* src, int srcStride, int ow, int oh, int tw0, int th0, int rotation, bool alpha, Image& img)
+{
+    if (rotation == 0) {
+        // Row y counted from the top goes to Image row oh-1-y, because Image row 0 is the bottom of the frame.
+        for (int y = 0; y < oh; ++y) {
+            const uint8_t* s = src + (size_t)y * (size_t)srcStride;
+            uint8_t* d = img.row(oh - 1 - y);
+            if (alpha) {
+                for (int x = 0; x < ow; ++x) copyPremultiplied(d + 4 * x, s + 4 * x);
+            } else {
+                std::memcpy(d, s, (size_t)ow * 4);
+                pix::opaqueRow(d, ow);
+            }
+        }
+    } else {
+        // (x, y) is a pixel of the turned frame, counted from its top left; (sx, sy) is where it comes from.
+        for (int y = 0; y < oh; ++y) {
+            uint8_t* d = img.row(oh - 1 - y);
+            for (int x = 0; x < ow; ++x) {
+                int sx, sy;
+                if (rotation == 90) {              // clockwise: the stored top left ends up top right
+                    sx = y;
+                    sy = th0 - 1 - x;
+                } else if (rotation == 180) {
+                    sx = tw0 - 1 - x;
+                    sy = th0 - 1 - y;
+                } else {                            // 270 clockwise
+                    sx = tw0 - 1 - y;
+                    sy = x;
+                }
+                const uint8_t* s = src + (size_t)sy * (size_t)srcStride + (size_t)sx * 4;
+                if (alpha) copyPremultiplied(d + 4 * x, s);
+                else copyOpaque(d + 4 * x, s);
+            }
+        }
+    }
+}
+
 ImagePtr FFReader::convert(const AVFrame* f, int ow, int oh)
 {
     if (!f || f->width < 1 || f->height < 1 || !f->data[0]) return nullptr;
@@ -1804,11 +1910,7 @@ ImagePtr FFReader::convert(const AVFrame* f, int ow, int oh)
     // with rows padded out to 64 bytes and some slack at the end, not the Image itself.
     const int stride = FFALIGN(tw * 4, 64);
     const size_t need = (size_t)stride * (size_t)th + 64;
-    if (!tmp_ || tmpBytes_ < need) {
-        tmp_.reset((uint8_t*)av_malloc(need));
-        tmpBytes_ = tmp_ ? need : 0;
-        if (!tmp_) return nullptr;
-    }
+    if (!growBuffer(tmp_, tmpBytes_, need)) return nullptr;
     uint8_t* dst[4] = {tmp_.get(), nullptr, nullptr, nullptr};
     int dstStride[4] = {stride, 0, 0, 0};
     if (sws_scale(sws_.get(), f->data, f->linesize, 0, f->height, dst, dstStride) <= 0) return nullptr;
@@ -1829,11 +1931,7 @@ ImagePtr FFReader::convert(const AVFrame* f, int ow, int oh)
             }
             const int stride2 = FFALIGN(tw0 * 4, 64);
             const size_t need2 = (size_t)stride2 * (size_t)th0 + 64;
-            if (!tmp2_ || tmp2Bytes_ < need2) {
-                tmp2_.reset((uint8_t*)av_malloc(need2));
-                tmp2Bytes_ = tmp2_ ? need2 : 0;
-                if (!tmp2_) return nullptr;
-            }
+            if (!growBuffer(tmp2_, tmp2Bytes_, need2)) return nullptr;
             const uint8_t* in2[4] = {tmp_.get(), nullptr, nullptr, nullptr};
             const int inStride2[4] = {stride, 0, 0, 0};
             uint8_t* out2[4] = {tmp2_.get(), nullptr, nullptr, nullptr};
@@ -1847,40 +1945,7 @@ ImagePtr FFReader::convert(const AVFrame* f, int ow, int oh)
     ImagePtr img = Image::make(ow, oh, PixelDepth::Byte, false);
     if (!img) return nullptr;
     const bool alpha = (desc->flags & AV_PIX_FMT_FLAG_ALPHA) != 0;
-    if (rotation_ == 0) {
-        // Row y counted from the top goes to Image row oh-1-y, because Image row 0 is the bottom of the frame.
-        for (int y = 0; y < oh; ++y) {
-            const uint8_t* s = src + (size_t)y * (size_t)srcStride;
-            uint8_t* d = img->row(oh - 1 - y);
-            if (alpha) {
-                for (int x = 0; x < ow; ++x) copyPremultiplied(d + 4 * x, s + 4 * x);
-            } else {
-                std::memcpy(d, s, (size_t)ow * 4);
-                pix::opaqueRow(d, ow);
-            }
-        }
-    } else {
-        // (x, y) is a pixel of the turned frame, counted from its top left; (sx, sy) is where it comes from.
-        for (int y = 0; y < oh; ++y) {
-            uint8_t* d = img->row(oh - 1 - y);
-            for (int x = 0; x < ow; ++x) {
-                int sx, sy;
-                if (rotation_ == 90) {              // clockwise: the stored top left ends up top right
-                    sx = y;
-                    sy = th0 - 1 - x;
-                } else if (rotation_ == 180) {
-                    sx = tw0 - 1 - x;
-                    sy = th0 - 1 - y;
-                } else {                            // 270 clockwise
-                    sx = tw0 - 1 - y;
-                    sy = x;
-                }
-                const uint8_t* s = src + (size_t)sy * (size_t)srcStride + (size_t)sx * 4;
-                if (alpha) copyPremultiplied(d + 4 * x, s);
-                else copyOpaque(d + 4 * x, s);
-            }
-        }
-    }
+    storeTurned(src, srcStride, ow, oh, tw0, th0, rotation_, alpha, *img);
     return img;
 }
 

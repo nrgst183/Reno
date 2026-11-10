@@ -15,7 +15,12 @@
 #include <functional>
 #include <memory>
 
+class QDoubleSpinBox;
 class QHBoxLayout;
+class QLabel;
+class QScrollArea;
+class QSlider;
+class QVBoxLayout;
 
 namespace reno {
 namespace app {
@@ -78,6 +83,25 @@ protected:
 
 private:
     void buildPages(QHBoxLayout* root);
+    // buildPages' parts: the helpers its pages share, then the pages
+    struct GradeField {
+        QLabel* l;
+        QSlider* s;
+        QDoubleSpinBox* b;
+    };
+    GradeField makeField(const QString& label, const char* name, double* field, double lo, double hi, double neutral, int decimals, bool vertical);
+    QWidget* sliderColumn(QLabel* l, QSlider* s, QDoubleSpinBox* b);
+    QLabel* pageHeading(const QString& text);
+    QScrollArea* scrolledPage(QWidget* page);
+    QWidget* lutPage(bool camera);
+    void addColorWheelsPage();
+    void addColorChannelsPage();
+    void addInputOutputPage();
+    void addRlColorWheelsPage();
+    void addUtilitiesPage();
+    void addColorCurvesPage();
+    void addHslPage();
+    QVBoxLayout* finishingColumn();
     void pickedRegion(int state, const QRectF& area, const QImage& region);
     struct Impl;
     std::unique_ptr<Impl> d;

@@ -306,11 +306,51 @@ bool generateLoudnessLog(const std::string& path, std::string* written, std::str
 }
 
 // ------------------------------------------------------------------------------------------------ the menus
-void addOutputCommands(MainWindow* w)
+// Tools > Relink Wireless Adapter Media: a folder at a time, until every proxy has its full-resolution file (or the user
+// stops).
+static void relinkWirelessDialog(MainWindow* w)
 {
-    AppState& app = AppState::get();
+    const int n = wirelessProxyCount();
+    if (n == 0) {
+        QMessageBox::information(w, "Relink Wireless Adapter Media", "There are no proxy files in this project to relink.");
+        return;
+    }
+    if (QMessageBox::question(w, "Relink Wireless Adapter Media",
+                              QString("%1 proxy file%2 can be relinked to full-resolution media. Relink now?").arg(n).arg(n == 1 ? "" : "s"),
+                              QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+        return;
+    int done = 0;
+    while (wirelessProxyCount() > 0) {
+        const QString folder = QFileDialog::getExistingDirectory(w, "Browse for the full-resolution clips' folder", QSettings().value("relink/folder", defaultFolder()).toString());
+        if (folder.isEmpty()) break;
+        QSettings().setValue("relink/folder", folder);
+        const int k = relinkWirelessMedia(folder.toStdString());
+        done += k;
+        if (k == 0) QMessageBox::information(w, "Relink Wireless Adapter Media", "No full-resolution clips for this project's proxies were found in " + folder + ".");
+    }
+    AppState::get().status(strfmt("Relinked %d proxy file%s to full-resolution media.", done, done == 1 ? "" : "s"));
+}
 
-    // ---- File > Import > Closed Captioning..., File > Export > XDCAM Disc...
+// Tools > Generate Loudness Log, opened in the text editor when Preferences > Audio says so.
+static void generateLoudnessLogNow(MainWindow* w)
+{
+    QProgressDialog busy("Measuring the loudness...", QString(), 0, 0, w);
+    busy.setWindowTitle("Generate Loudness Log");
+    busy.setMinimumDuration(200);
+    busy.setValue(0);
+    QCoreApplication::processEvents();
+    std::string out, err;
+    if (!generateLoudnessLog(std::string(), &out, &err)) {
+        QMessageBox::warning(w, "Generate Loudness Log", qs(err));
+        return;
+    }
+    AppState::get().status("Loudness log written: " + out);
+    if (vprefs::on("prefs/loudnessOpenEditor")) QDesktopServices::openUrl(QUrl::fromLocalFile(qs(out)));
+}
+
+// File > Import > Closed Captioning, and File > Export > XDCAM Disc (greyed).
+static void addFileCommands(MainWindow* w)
+{
     QMenu* file = topMenu(w, "File");
     QAction* importCc = command(w, "importClosedCaptioning", "&Closed Captioning...", [w] {
         const QString f = QFileDialog::getOpenFileName(w, "Import Closed Captioning", QSettings().value("captions/folder", defaultFolder()).toString(),
@@ -340,13 +380,11 @@ void addOutputCommands(MainWindow* w)
         }
         exp->addAction(xdcam);
     }
+}
 
-    // ---- View > Window > XDCAM Explorer
-    if (QMenu* win = subMenu(topMenu(w, "View"), "Window"))
-        win->addAction(notAvailable(w, "showXdcamExplorer", "XDCAM Explorer", "Reno has no XDCAM Explorer: XDCAM discs need an XDCAM drive or deck "
-                                                                              "(XDCAM files copied to the computer open as any media)"));
-
-    // ---- Tools
+// Tools: Burn Disc, printing to tape, relinking wireless adapter media, laying out an audio CD, the loudness log.
+static void addToolsCommands(MainWindow* w)
+{
     QMenu* tools = topMenu(w, "Tools");
     QMenu* burn = new QMenu("&Burn Disc", tools ? (QWidget*)tools : (QWidget*)w);
     burn->menuAction()->setObjectName("burnDiscMenu");
@@ -357,56 +395,23 @@ void addOutputCommands(MainWindow* w)
     burn->addAction(notAvailable(w, "burnBluray", "&Blu-ray Disc...", noBurn));
     QAction* tape = notAvailable(w, "printToTape", "Print &Video to Tape...", "Reno does not drive DV, SDI or HDMI tape decks");
     QAction* hdvTape = notAvailable(w, "printToHdvTape", "Print Video to &HDV Tape...", "Reno does not drive HDV tape decks");
-    QAction* relink = command(w, "relinkWireless", "Relink &Wireless Adapter Media...", [w] {
-        const int n = wirelessProxyCount();
-        if (n == 0) {
-            QMessageBox::information(w, "Relink Wireless Adapter Media", "There are no proxy files in this project to relink.");
-            return;
-        }
-        if (QMessageBox::question(w, "Relink Wireless Adapter Media",
-                                  QString("%1 proxy file%2 can be relinked to full-resolution media. Relink now?").arg(n).arg(n == 1 ? "" : "s"),
-                                  QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
-            return;
-        // a folder at a time, until every proxy has its full-resolution file (or the user stops)
-        int done = 0;
-        while (wirelessProxyCount() > 0) {
-            const QString folder = QFileDialog::getExistingDirectory(w, "Browse for the full-resolution clips' folder", QSettings().value("relink/folder", defaultFolder()).toString());
-            if (folder.isEmpty()) break;
-            QSettings().setValue("relink/folder", folder);
-            const int k = relinkWirelessMedia(folder.toStdString());
-            done += k;
-            if (k == 0) QMessageBox::information(w, "Relink Wireless Adapter Media", "No full-resolution clips for this project's proxies were found in " + folder + ".");
-        }
-        AppState::get().status(strfmt("Relinked %d proxy file%s to full-resolution media.", done, done == 1 ? "" : "s"));
-    });
+    QAction* relink = command(w, "relinkWireless", "Relink &Wireless Adapter Media...", [w] { relinkWirelessDialog(w); });
     QAction* layout = command(w, "layOutAudioCd", "Lay &Out Audio CD from Events", [] {
         const int n = layOutAudioCdFromEvents();
         AppState::get().status(n ? strfmt("Laid out %d CD track%s.", n, n == 1 ? "" : "s") : std::string("Lay Out Audio CD from Events: there are no audio events."));
     });
-    QAction* loudLog = command(w, "generateLoudnessLog", "Generate &Loudness Log", [w] {
-        QProgressDialog busy("Measuring the loudness...", QString(), 0, 0, w);
-        busy.setWindowTitle("Generate Loudness Log");
-        busy.setMinimumDuration(200);
-        busy.setValue(0);
-        QCoreApplication::processEvents();
-        std::string out, err;
-        if (!generateLoudnessLog(std::string(), &out, &err)) {
-            QMessageBox::warning(w, "Generate Loudness Log", qs(err));
-            return;
-        }
-        AppState::get().status("Loudness log written: " + out);
-        // Preferences > Audio "Open editor when new loudness log is generated"
-        if (vprefs::on("prefs/loudnessOpenEditor")) QDesktopServices::openUrl(QUrl::fromLocalFile(qs(out)));
-    });
+    QAction* loudLog = command(w, "generateLoudnessLog", "Generate &Loudness Log", [w] { generateLoudnessLogNow(w); });
     // Extract Audio from CD (VEGAS 23): the tracks of a CD copied to the computer open as any audio files
     QAction* extractCd = notAvailable(w, "extractAudioCd", "E&xtract Audio from CD...", "Reno does not read audio CDs. Copy the tracks with a ripping program and import the files.");
-    // Options > Metronome: the switch (the click is not played yet)
     if (tools) {
         tools->addMenu(burn);
         tools->addActions({tape, hdvTape, relink, layout, loudLog, extractCd});
     }
+}
 
-    // ---- Tools > Scripting closed captioning commands (added by buildVegasMenus after its own items)
+// The closed captioning commands Tools > Scripting lists (added by buildVegasMenus after its own items).
+static void addCaptionScriptCommands(MainWindow* w)
+{
     command(w, "scriptPromoteCaptions", "Promote Media Closed Captioning", [] {
         const int n = promoteMediaClosedCaptions();
         AppState::get().status(n ? strfmt("Promoted %d closed caption%s to command markers.", n, n == 1 ? "" : "s")
@@ -429,8 +434,12 @@ void addOutputCommands(MainWindow* w)
             else AppState::get().status("Closed captioning exported: " + path.toStdString());
         });
     }
+}
 
-    // ---- Options: Loudness Meters, External Control (Mute All, Bypass All Audio FX and the metronome are in vegasextras.cpp and mainwindow_menus.cpp)
+// Options: Loudness Meters, External Control (greyed). Mute All, Bypass All Audio FX and the metronome are in
+// vegasextras.cpp and mainwindow_menus.cpp.
+static void addOptionsCommands(MainWindow* w)
+{
     QMenu* options = topMenu(w, "Options");
     QMenu* loudness = new QMenu("Lou&dness Meters", options ? (QWidget*)options : (QWidget*)w);
     loudness->setObjectName("loudnessMetersMenu");
@@ -443,7 +452,18 @@ void addOutputCommands(MainWindow* w)
         options->addMenu(loudness);
         options->addAction(external);
     }
-    (void)app;
+}
+
+void addOutputCommands(MainWindow* w)
+{
+    addFileCommands(w);
+    // View > Window > XDCAM Explorer (greyed)
+    if (QMenu* win = subMenu(topMenu(w, "View"), "Window"))
+        win->addAction(notAvailable(w, "showXdcamExplorer", "XDCAM Explorer", "Reno has no XDCAM Explorer: XDCAM discs need an XDCAM drive or deck "
+                                                                              "(XDCAM files copied to the computer open as any media)"));
+    addToolsCommands(w);
+    addCaptionScriptCommands(w);
+    addOptionsCommands(w);
 }
 
 }  // namespace app

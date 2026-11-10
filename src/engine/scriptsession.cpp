@@ -1814,6 +1814,18 @@ uint64_t ScriptSession::addFx(FxChain& chain, int pluginIndex, int at, bool vide
     return handle({RK_FX, s.id, 0, 0, ""});
 }
 
+// A call's whole-number and number arguments (a missing one, or a number that isn't finite, is 'def').
+int64_t ScriptSession::intArg(const std::vector<int64_t>& ia, size_t k, int64_t def) { return k < ia.size() ? ia[k] : def; }
+double ScriptSession::numArg(const std::vector<double>& da, size_t k, double def) { return k < da.size() && std::isfinite(da[k]) ? da[k] : def; }
+
+// The plug-in a handle stands for, as an index into the host's plug-ins (-1: not a plug-in).
+int ScriptSession::pluginIndex(int64_t handleArg)
+{
+    const Desc* pd = desc((uint64_t)handleArg);
+    if (!pd || pd->kind != RK_PLUGIN || outOfRange(pd->c, host_.plugins.size())) return -1;
+    return (int)pd->c;
+}
+
 int ScriptSession::call(uint64_t h, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s, uint64_t* out,
                         double* dout)
 {
@@ -1824,645 +1836,667 @@ int ScriptSession::call(uint64_t h, int op, const std::vector<int64_t>& ia, cons
     const Desc d = *dp;
     if (d.kind == RK_OFXPARAM || d.kind == RK_OFXKEY) return ofxCall(d, op, ia, da, s, out, dout);
     { const int r = extCall(d, op, ia, da, s, out, dout); if (r != kNotMine) return r; }
-    auto I = [&](size_t k, int64_t def = 0) { return k < ia.size() ? ia[k] : def; };
-    auto D = [&](size_t k, double def = 0) { return k < da.size() && std::isfinite(da[k]) ? da[k] : def; };
-    auto pluginArg = [&](int64_t hh) -> int {
-        const Desc* pd = desc((uint64_t)hh);
-        if (!pd || pd->kind != RK_PLUGIN || outOfRange(pd->c, host_.plugins.size())) return -1;
-        return (int)pd->c;
-    };
+    if (op == RO_ADD_FX || op == RO_REMOVE_FX || op == RO_ADD_MASTER_FX) return fxOwnerCall(h, d, op, ia, da, s, out, dout);
+    if (op == RO_ADD_ENVELOPE || op == RO_REMOVE_ENVELOPE || op == RO_ADD_MASTER_ENVELOPE) return envelopeOwnerCall(h, d, op, ia, da, s, out, dout);
+    switch (d.kind) {
+    case RK_APP: return appCall(h, d, op, ia, da, s, out, dout);
+    case RK_TRACK: return trackCall(h, d, op, ia, da, s, out, dout);
+    case RK_EVENT: return eventCall(h, d, op, ia, da, s, out, dout);
+    case RK_GROUP: return groupCall(h, d, op, ia, da, s, out, dout);
+    case RK_ENVELOPE: return envelopeCall(h, d, op, ia, da, s, out, dout);
+    default: return unsupported();
+    }
+}
 
-    // operations on any owner of effects or envelopes
-    if (op == RO_ADD_FX || op == RO_REMOVE_FX || op == RO_ADD_MASTER_FX) {
-        Desc o = d;
-        if (op == RO_ADD_MASTER_FX) { if (d.kind != RK_APP) return unsupported(); o = {RK_BUS, 0, 1, 0, ""}; }
-        if (o.kind != RK_TRACK && o.kind != RK_EVENT && o.kind != RK_BUS && o.kind != RK_APP) return unsupported();
-        FxChain* c = chainOf(o);
-        if (!c) return RS_FAILED;
-        bool video = true;
-        if (o.kind == RK_TRACK) { Track* t = track(o); video = t && t->type == TrackType::Video; }
-        if (o.kind == RK_EVENT) { Track* t = nullptr; event(o, &t); video = t && t->type == TrackType::Video; }
-        if (o.kind == RK_BUS) video = o.b == 2;
-        if (op == RO_REMOVE_FX) {
-            const Desc* fd = desc((uint64_t)I(0));
-            if (!fd || fd->kind != RK_FX) return fail("not an effect");
-            const size_t before = c->size();
-            c->erase(std::remove_if(c->begin(), c->end(), [&](const FxSlot& x) { return x.id == fd->a; }), c->end());
-            if (c->size() == before) return fail("the effect is not in this chain");
-            touch();
-            return RS_OK;
+// Effects added to or removed from anything that has them (tracks, events, buses, the master).
+int ScriptSession::fxOwnerCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s,
+                               uint64_t* out, double* dout)
+{
+    Desc o = d;
+    if (op == RO_ADD_MASTER_FX) { if (d.kind != RK_APP) return unsupported(); o = {RK_BUS, 0, 1, 0, ""}; }
+    if (o.kind != RK_TRACK && o.kind != RK_EVENT && o.kind != RK_BUS && o.kind != RK_APP) return unsupported();
+    FxChain* c = chainOf(o);
+    if (!c) return RS_FAILED;
+    bool video = true;
+    if (o.kind == RK_TRACK) { Track* t = track(o); video = t && t->type == TrackType::Video; }
+    if (o.kind == RK_EVENT) { Track* t = nullptr; event(o, &t); video = t && t->type == TrackType::Video; }
+    if (o.kind == RK_BUS) video = o.b == 2;
+    if (op == RO_REMOVE_FX) {
+        const Desc* fd = desc((uint64_t)intArg(ia, 0));
+        if (!fd || fd->kind != RK_FX) return fail("not an effect");
+        const size_t before = c->size();
+        c->erase(std::remove_if(c->begin(), c->end(), [&](const FxSlot& x) { return x.id == fd->a; }), c->end());
+        if (c->size() == before) return fail("the effect is not in this chain");
+        touch();
+        return RS_OK;
+    }
+    const int pi = pluginIndex(intArg(ia, 0));
+    if (pi < 0) return fail("not a plug-in");
+    const ScriptPlugin& p = host_.plugins[(size_t)pi];
+    if (video != (p.type != ScriptPlugin::Audio)) return fail(video ? "an audio plug-in cannot go on video" : "a video plug-in cannot go on audio");
+    if (p.type == ScriptPlugin::Transition || p.type == ScriptPlugin::Generator)
+        return fail("\"" + p.name + "\" is a " + (p.type == ScriptPlugin::Transition ? "transition" : "generator") + ", not an effect");
+    *out = addFx(*c, pi, (int)intArg(ia, 1, -1), video);
+    return RS_OK;
+}
+
+// Envelopes added to or removed from anything that has them.
+int ScriptSession::envelopeOwnerCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s,
+                                     uint64_t* out, double* dout)
+{
+    Desc o = d;
+    if (op == RO_ADD_MASTER_ENVELOPE) { if (d.kind != RK_APP) return unsupported(); o = {RK_BUS, 0, 1, 0, ""}; }
+    int ok = 0;
+    uint64_t oid = 0;
+    if (!envOwnerOf(o, &ok, &oid)) return unsupported();
+    Envelopes* l = envelopesOf(ok, oid);
+    if (!l) return fail("the envelopes' owner is no longer in the project");
+    if (op == RO_REMOVE_ENVELOPE) {
+        const Desc* ed = desc((uint64_t)intArg(ia, 0));
+        if (!ed || ed->kind != RK_ENVELOPE || (int)ed->a != ok || ed->b != oid) return fail("the envelope is not this object's");
+        const size_t before = l->size();
+        l->erase(std::remove_if(l->begin(), l->end(), [&](const Envelope& e) { return e.kind == ed->s && e.target == (uint64_t)ed->c; }), l->end());
+        if (l->size() == before) return fail("the envelope is no longer there");
+        touch();
+        return RS_OK;
+    }
+    bool audio = ok == OwnBus || ok == OwnMaster;
+    double eventLength = 0;
+    if (ok == OwnTrack) { Track* t = project.findTrack(oid); audio = t && t->type == TrackType::Audio; }
+    if (ok == OwnEvent) {
+        Track* t = nullptr;
+        Event* e = project.findEvent(oid, &t);
+        audio = t && t->type == TrackType::Audio;
+        eventLength = e ? e->length : 0;
+    }
+    const int vt = (int)intArg(ia, 0, -1);
+    std::string kind;
+    uint64_t target = 0;
+    if (vt >= 3 && vt <= 28) {
+        if (vt - 3 >= (int)project.buses.size()) return fail("there is no such bus in the project");
+        kind = "send";
+        target = project.buses[(size_t)(vt - 3)].id;
+    } else if (const EnvType* et = envTypeOfVegas(vt)) {
+        kind = et->kind;
+    } else {
+        return fail(strfmt("Reno cannot make envelopes of type %d (VEGAS's EnvelopeType)", vt));
+    }
+    if (!envAllowed(ok, audio, kind)) return fail("this envelope cannot go there (VEGAS's CanAddEnvelope is false)");
+    Envelope* e = findEnvelope(*l, kind, target);
+    if (!e) {
+        Envelope ne;
+        ne.kind = kind;
+        ne.target = target;
+        const EnvType* et = envTypeOfKind(kind);
+        EnvPoint p0;
+        p0.time = 0;
+        p0.value = kind == "send" ? 1.0 : et ? et->neutral : 0;
+        if (kind == "mute" || kind == "fadecolor" || kind == "motionblur" || kind == "transition") p0.value = 0;
+        if (kind == "mute") p0.curve = CurveHold;
+        ne.points.push_back(p0);
+        if (kind == "transition" && eventLength > 0) {
+            // VEGAS's Transition Progress goes from 0 to 100% along the event.
+            EnvPoint p1;
+            p1.time = eventLength;
+            p1.value = 1;
+            ne.points.push_back(p1);
         }
-        const int pi = pluginArg(I(0));
+        l->push_back(ne);
+        touch();
+    } else if (!e->visible) {
+        e->visible = true;
+        touch();
+    }
+    *out = handle({RK_ENVELOPE, (uint64_t)ok, oid, (int64_t)target, kind});
+    return RS_OK;
+}
+
+// The project and the application (VEGAS's Vegas and Project objects).
+int ScriptSession::appCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s,
+                           uint64_t* out, double* dout)
+{
+    switch (op) {
+    case RO_ADD_TRACK: {
+        const int type = (int)intArg(ia, 0, 3);
+        if (type != 2 && type != 3) return fail("a track is video or audio");
+        Track t;
+        t.id = project.newId();
+        t.type = type == 2 ? TrackType::Audio : TrackType::Video;
+        if (t.type == TrackType::Audio) t.panType = "add";
+        t.name = s;
+        int at = (int)intArg(ia, 1, -1);
+        if (at < 0 || at > (int)project.tracks.size()) at = (int)project.tracks.size();
+        project.tracks.insert(project.tracks.begin() + at, t);
+        touch();
+        *out = trackHandle(t.id);
+        return RS_OK;
+    }
+    case RO_REMOVE_TRACK: {
+        const Desc* td = desc((uint64_t)intArg(ia, 0));
+        if (!td || td->kind != RK_TRACK) return fail("not a track");
+        const size_t before = project.tracks.size();
+        project.tracks.erase(std::remove_if(project.tracks.begin(), project.tracks.end(), [&](const Track& t) { return t.id == td->a; }),
+                             project.tracks.end());
+        if (project.tracks.size() == before) return fail("the track is no longer in the project");
+        selectedTracks.erase(td->a);
+        touch();
+        return RS_OK;
+    }
+    case RO_MOVE_TRACK: {
+        const Desc* td = desc((uint64_t)intArg(ia, 0));
+        if (!td || td->kind != RK_TRACK) return fail("not a track");
+        auto it = std::find_if(project.tracks.begin(), project.tracks.end(), [&](const Track& t) { return t.id == td->a; });
+        if (it == project.tracks.end()) return fail("the track is no longer in the project");
+        Track t = *it;
+        project.tracks.erase(it);
+        int at = (int)intArg(ia, 1, 0);
+        at = std::max(0, std::min(at, (int)project.tracks.size()));
+        project.tracks.insert(project.tracks.begin() + at, t);
+        touch();
+        return RS_OK;
+    }
+    case RO_IMPORT_MEDIA: case RO_FIND_MEDIA: {
+        for (const MediaItem& m : project.media)
+            if (!m.generated && m.subclipLength <= 0 && m.path == s) { *out = mediaHandle(m.id); return RS_OK; }
+        if (op == RO_FIND_MEDIA) return RS_OK;
+        if (s.empty()) return fail("no file name");
+        MediaInfo info;
+        std::string err;
+        if (!host_.probe || !host_.probe(s, &info, &err)) return fail("the media file could not be opened: " + s + (err.empty() ? "" : " (" + err + ")"));
+        MediaItem m;
+        m.id = project.newId();
+        m.path = s;
+        m.name = pathFileName(s);
+        m.info = info;
+        project.media.push_back(m);
+        touch();
+        *out = mediaHandle(m.id);
+        return RS_OK;
+    }
+    case RO_ADD_SUBCLIP: {
+        const size_t nl = s.find('\n');
+        const std::string path = s.substr(0, nl), name = nl == std::string::npos ? std::string() : s.substr(nl + 1);
+        uint64_t parentId = 0;
+        for (const MediaItem& m : project.media)
+            if (!m.generated && m.path == path) { parentId = m.id; break; }
+        if (!parentId) {
+            uint64_t ph = 0;
+            double x = 0;
+            const int r = call(1, RO_IMPORT_MEDIA, {}, {}, path, &ph, &x);
+            if (r != RS_OK) return r;
+            parentId = desc(ph)->a;
+        }
+        MediaItem m = *project.findMedia(parentId);
+        const double full = m.subclipLength > 0 ? m.subclipLength : m.info.duration;
+        const double from = std::max(0.0, numArg(da, 0)) + (m.subclipLength > 0 ? m.subclipStart : 0.0);
+        double len = numArg(da, 1);
+        if (full > 0) len = std::min(len, std::max(0.0, (m.subclipLength > 0 ? m.subclipStart : 0.0) + full - from));
+        if (!(len > 0)) return fail("a subclip must have a length within its media");
+        m.id = project.newId();
+        m.subclipStart = from;
+        m.subclipLength = len;
+        m.name = name.empty() ? m.name : name;
+        m.veg = nullptr;
+        project.media.push_back(m);
+        if (intArg(ia, 0)) reversedMedia_.insert(m.id);
+        touch();
+        *out = mediaHandle(m.id);
+        return RS_OK;
+    }
+    case RO_REMOVE_MEDIA: {
+        const Desc* md = desc((uint64_t)intArg(ia, 0));
+        if (!md || md->kind != RK_MEDIA) return fail("not media");
+        for (const Track& t : project.tracks)
+            for (const Event& e : t.events) {
+                bool used = e.mediaId == md->a;
+                for (const Take& k : e.takes) used = used || k.mediaId == md->a;
+                if (used) return fail("the media is used by events: remove them first");
+            }
+        const size_t before = project.media.size();
+        project.media.erase(std::remove_if(project.media.begin(), project.media.end(), [&](const MediaItem& m) { return m.id == md->a; }),
+                            project.media.end());
+        if (project.media.size() == before) return fail("the media is no longer in the project");
+        touch();
+        return RS_OK;
+    }
+    case RO_REMOVE_UNUSED_MEDIA: {
+        std::set<uint64_t> used;
+        for (const Track& t : project.tracks)
+            for (const Event& e : t.events) {
+                used.insert(e.mediaId);
+                for (const Take& k : e.takes) used.insert(k.mediaId);
+            }
+        const size_t before = project.media.size();
+        project.media.erase(std::remove_if(project.media.begin(), project.media.end(), [&](const MediaItem& m) { return !used.count(m.id); }),
+                            project.media.end());
+        if (project.media.size() != before) touch();
+        return RS_OK;
+    }
+    case RO_GENERATED_MEDIA: {
+        const int pi = pluginIndex(intArg(ia, 0));
+        if (pi < 0 || host_.plugins[(size_t)pi].type != ScriptPlugin::Generator) return fail("not a generator plug-in (Vegas.Generators)");
+        const ScriptPlugin& p = host_.plugins[(size_t)pi];
+        MediaItem m;
+        m.id = project.newId();
+        m.name = p.name;
+        m.generated = true;
+        m.generator.id = project.newId();
+        m.generator.kind = "ofx";
+        m.generator.pluginId = p.id;
+        m.generator.name = p.name;
+        m.info.hasVideo = true;
+        m.info.width = project.settings.width;
+        m.info.height = project.settings.height;
+        m.info.fps = project.settings.fps();
+        project.media.push_back(m);
+        touch();
+        *out = mediaHandle(m.id);
+        return RS_OK;
+    }
+    case RO_ADD_MARKER: {
+        const int kind = (int)intArg(ia, 0);
+        if (kind < 0 || kind > 4) return fail("not a kind of marker");
+        Project::Marker m;
+        m.id = project.newId();
+        m.time = std::max(0.0, numArg(da, 0));
+        m.region = kind == 1 || kind == 3;
+        m.length = m.region ? std::max(0.0, numArg(da, 1)) : 0.0;
+        m.kind = kind == 2 ? "command" : kind == 3 ? "cdtrack" : kind == 4 ? "cdindex" : "";
+        if (kind == 2) {
+            const size_t nl = s.find('\n');
+            m.command = s.substr(0, nl);
+            m.name = nl == std::string::npos ? std::string() : s.substr(nl + 1);
+        } else {
+            m.name = s;
+        }
+        // VEGAS refuses a second marker at the same place (of the same kind)
+        for (const Project::Marker* o : markersOfKind(kind))
+            if (std::fabs(o->time - m.time) < 1e-7 && (kind != 1 || std::fabs(o->length - m.length) < 1e-7))
+                return fail("there is already a marker at that position");
+        project.markers.push_back(m);
+        touch();
+        *out = handle({RK_MARKER, m.id, 0, 0, ""});
+        return RS_OK;
+    }
+    case RO_REMOVE_MARKER: {
+        const Desc* md = desc((uint64_t)intArg(ia, 0));
+        if (!md || md->kind != RK_MARKER) return fail("not a marker");
+        const size_t before = project.markers.size();
+        project.markers.erase(std::remove_if(project.markers.begin(), project.markers.end(), [&](const Project::Marker& m) { return m.id == md->a; }),
+                              project.markers.end());
+        if (project.markers.size() == before) return fail("the marker is no longer in the project");
+        touch();
+        return RS_OK;
+    }
+    case RO_NEW_GROUP: {
+        const uint64_t g = project.newId();
+        emptyGroups_.insert(g);
+        *out = handle({RK_GROUP, g, 0, 0, ""});
+        return RS_OK;
+    }
+    case RO_REMOVE_GROUP: {
+        const Desc* gd = desc((uint64_t)intArg(ia, 0));
+        if (!gd || gd->kind != RK_GROUP) return fail("not a group");
+        emptyGroups_.erase(gd->a);
+        for (Track& t : project.tracks)
+            for (Event& e : t.events)
+                if (e.group == gd->a) { e.group = 0; touch(); }
+        return RS_OK;
+    }
+    case RO_NEW_PROJECT: {
+        Project p;
+        p.settings = host_.newSettings;
+        p.nextId = std::max(project.nextId, p.nextId);
+        project = p;
+        host_.projectPath.clear();
+        selection.clear();
+        selectedTracks.clear();
+        emptyGroups_.clear();
+        reversedMedia_.clear();
+        cursor = selStart = selLength = 0;
+        startedNew = true;
+        openedPath.clear();
+        touch();
+        viewChanged = true;
+        return RS_OK;
+    }
+    case RO_OPEN_PROJECT: {
+        if (!host_.open) return fail("opening projects from a script is not available");
+        Project p;
+        std::string err;
+        if (!host_.open(s, &p, &err)) return fail("the project could not be opened: " + err);
+        p.nextId = std::max(project.nextId, p.nextId);
+        project = p;
+        host_.projectPath = s;
+        selection.clear();
+        selectedTracks.clear();
+        emptyGroups_.clear();
+        reversedMedia_.clear();
+        cursor = selStart = selLength = 0;
+        openedPath = s;
+        startedNew = false;
+        changed = false;
+        viewChanged = true;
+        return RS_OK;
+    }
+    case RO_SAVE_PROJECT: {
+        const std::string path = s.empty() ? host_.projectPath : s;
+        if (path.empty()) return fail("the project has no file name yet");
+        if (!host_.save) return fail("saving from a script is not available");
+        std::string err;
+        if (!host_.save(project, path, &err)) return fail("the project could not be saved: " + err);
+        host_.projectPath = path;
+        savedPaths.push_back(path);
+        return RS_OK;
+    }
+    case RO_LOG:
+        output.push_back(s);
+        if (host_.log) host_.log(s);
+        return RS_OK;
+    case RO_UPDATE_UI:
+        return RS_OK;
+    case RO_INSERT_TIME: {
+        const double at = numArg(da, 0), len = numArg(da, 1);
+        if (!(len > 0) || at < 0) return fail("insert time needs a place and a length");
+        for (Track& t : project.tracks) {
+            std::vector<Event> added;
+            for (Event& e : t.events) {
+                if (e.start >= at - kEps) {
+                    e.start += len;
+                } else if (e.end() > at + kEps) {
+                    Event right = e;
+                    right.id = project.newId();
+                    right.start = at + len;
+                    right.length = e.end() - at;
+                    right.offset = e.offset + (at - e.start) * e.rate;
+                    for (Take& k : right.takes) k.offset += (at - e.start) * e.rate;
+                    for (Envelope& env : right.envelopes) for (EnvPoint& p : env.points) p.time -= at - e.start;
+                    right.fadeIn = 0;
+                    right.transition = FxSlot();
+                    for (auto& x : right.fx) x.id = project.newId();
+                    right.group = 0;
+                    e.length = at - e.start;
+                    e.fadeOut = 0;
+                    added.push_back(right);
+                }
+            }
+            for (Event& e : added) t.events.push_back(e);
+            t.sortEvents();
+            for (Envelope& env : t.envelopes) for (EnvPoint& p : env.points) if (p.time >= at) p.time += len;
+            for (MotionKey& k : t.motion) if (k.time >= at) k.time += len;
+        }
+        for (Bus& b : project.buses) for (Envelope& env : b.envelopes) for (EnvPoint& p : env.points) if (p.time >= at) p.time += len;
+        for (Envelope& env : project.masterEnvelopes) for (EnvPoint& p : env.points) if (p.time >= at) p.time += len;
+        for (Envelope& env : project.videoEnvelopes) for (EnvPoint& p : env.points) if (p.time >= at) p.time += len;
+        for (auto& m : project.markers) if (m.time >= at) m.time += len;
+        touch();
+        return RS_OK;
+    }
+    }
+    return unsupported();
+}
+
+// A track.
+int ScriptSession::trackCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s,
+                             uint64_t* out, double* dout)
+{
+    Track* t = track(d);
+    if (!t) return RS_FAILED;
+    switch (op) {
+    case RO_ADD_EVENT: {
+        const double start = std::max(0.0, numArg(da, 0)), len = numArg(da, 1, 1.0);
+        if (!(len > 0)) return fail("an event's length must be more than 0");
+        Event e;
+        e.id = project.newId();
+        e.start = start;
+        e.length = len;
+        e.name = s;
+        e.loop = host_.loopEvents;
+        setDefaultFadeCurves(e, t->type);
+        t->events.push_back(e);
+        t->sortEvents();
+        touch();
+        *out = eventHandle(e.id);
+        return RS_OK;
+    }
+    case RO_REMOVE_EVENT: {
+        const Desc* ed = desc((uint64_t)intArg(ia, 0));
+        if (!ed || ed->kind != RK_EVENT) return fail("not an event");
+        auto it = std::find_if(t->events.begin(), t->events.end(), [&](const Event& e) { return e.id == ed->a; });
+        if (it == t->events.end()) return fail("the event is not on this track");
+        if (it->locked) return fail("the event is locked");
+        t->events.erase(it);
+        selection.erase(ed->a);
+        touch();
+        return RS_OK;
+    }
+    case RO_ADD_MOTION_KEY: {
+        if (t->type != TrackType::Video) return unsupported();
+        const double at = std::max(0.0, numArg(da, 0));
+        for (size_t k = 0; k < t->motion.size(); ++k)
+            if (std::fabs(t->motion[k].time - at) < 1e-7) { *out = handle({RK_MOTION, t->id, 0, (int64_t)k, ""}); return RS_OK; }
+        // a new key takes the motion as it is at that time (the key before it, or the whole frame)
+        MotionKey nk;
+        for (const MotionKey& k : t->motion) if (k.time <= at) nk = k;
+        if (t->motion.empty() == false && t->motion.front().time > at) nk = t->motion.front();
+        nk.time = at;
+        t->motion.push_back(nk);
+        std::stable_sort(t->motion.begin(), t->motion.end(), [](const MotionKey& a, const MotionKey& b) { return a.time < b.time; });
+        for (size_t k = 0; k < t->motion.size(); ++k)
+            if (std::fabs(t->motion[k].time - at) < 1e-12) *out = handle({RK_MOTION, t->id, 0, (int64_t)k, ""});
+        touch();
+        return RS_OK;
+    }
+    case RO_REMOVE_MOTION_KEY: {
+        const Desc* kd = desc((uint64_t)intArg(ia, 0));
+        if (!kd || kd->kind != RK_MOTION || kd->a != t->id || outOfRange(kd->c, t->motion.size())) return fail("not one of this track's keys");
+        t->motion.erase(t->motion.begin() + kd->c);
+        touch();
+        return RS_OK;
+    }
+    }
+    return unsupported();
+}
+
+// An event (and its takes).
+int ScriptSession::eventCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s,
+                             uint64_t* out, double* dout)
+{
+    Track* tr = nullptr;
+    Event* e = event(d, &tr);
+    if (!e || !tr) return RS_FAILED;
+    const bool video = tr->type == TrackType::Video;
+    switch (op) {
+    case RO_SPLIT: {
+        const double at = numArg(da, 0, -1);
+        // VEGAS (RenoEdits split_edge_cases): a split outside the event, at its start or end, does nothing and does not raise an
+        // error (the result is null); a locked event is split like any other (the lock only guards the program's own editing)
+        if (!(at > kEps && at < e->length - kEps)) return RS_OK;
+        Event right = splitEventAt(project, *e, e->start + at);
+        if (!right.id) return RS_OK;
+        right.veg = nullptr;
+        // the right part is in the same group as the left.
+        if (selection.count(e->id)) selection.insert(right.id);
+        const uint64_t rid = right.id, lid = e->id;
+        addSplitHalf(*tr, lid, right, project.autoCrossfades);
+        touch();
+        *out = eventHandle(rid);
+        return RS_OK;
+    }
+    case RO_COPY: {
+        const Desc* td = desc((uint64_t)intArg(ia, 0));
+        if (!td || td->kind != RK_TRACK) return fail("not a track");
+        Track* to = track(*td);
+        if (!to) return RS_FAILED;
+        if (to->type != tr->type) return fail("an event can only be copied to a track of the same type");
+        Event c = *e;
+        c.id = project.newId();
+        c.start = std::max(0.0, numArg(da, 0, e->start));
+        c.group = 0;
+        c.locked = false;
+        c.veg = nullptr;
+        for (auto& x : c.fx) x.id = project.newId();
+        if (!c.transition.kind.empty()) c.transition.id = project.newId();
+        const uint64_t cid = c.id;
+        to->events.push_back(c);
+        to->sortEvents();
+        touch();
+        *out = eventHandle(cid);
+        return RS_OK;
+    }
+    case RO_ADD_TAKE: case RO_REMOVE_TAKE: case RO_CLEAR_TAKES:
+        return takeOp(*e, op, ia, s, out);
+    case RO_ADJUST_START_LENGTH: {
+        const double start = numArg(da, 0, e->start), len = numArg(da, 1, e->length);
+        if (!(len > 0)) return fail("an event's length must be more than 0");
+        if (e->locked) return fail("the event is locked");
+        // VEGAS's AdjustStartLength knows nothing of the velocity envelope (RenoEdits ui_trim_start_reversed): the take offset moves
+        // by the timeline distance times the rate and the envelope's points stay where they are in the event. (The program's own
+        // trims keep the picture where it was; this is what a script gets.)
+        std::vector<Envelope> velocity;
+        if (intArg(ia, 0) != 0)
+            for (size_t k = e->envelopes.size(); k-- > 0;)
+                if (e->envelopes[k].kind == "velocity") { velocity.push_back(e->envelopes[k]); e->envelopes.erase(e->envelopes.begin() + k); }
+        adjustEventEdges(*e, start, len, intArg(ia, 0) != 0);
+        for (const Envelope& v : velocity) e->envelopes.push_back(v);
+        e->start = std::max(0.0, e->start);
+        keepOffsetInLoop(*e);
+        keepFadesInside(*e);
+        tr->sortEvents();
+        touch();
+        return RS_OK;
+    }
+    case RO_ADJUST_RATE: {
+        const double rate = numArg(da, 0, 1.0);
+        if (!(rate > 0)) return fail("the playback rate must be more than 0");
+        if (e->locked) return fail("the event is locked");
+        // VEGAS (RenoEdits playback_rate): the event keeps its start and length. Its take offset is kept in timeline time, so
+        // by default the media position it starts at changes with the rate; with adjustStart the start offset is changed
+        // so that it starts at the same place in the media as before.
+        changeRate(*e, rate, intArg(ia, 0) != 0);
+        touch();
+        return RS_OK;
+    }
+    case RO_ADD_PANCROP_KEY: {
+        if (!video) return unsupported();
+        const double at = std::max(0.0, numArg(da, 0));
+        if (e->panCrop.empty()) e->panCrop.push_back(PanCropKey());
+        for (size_t k = 0; k < e->panCrop.size(); ++k)
+            if (std::fabs(e->panCrop[k].time - at) < 1e-7) { *out = handle({RK_PANCROP, e->id, 0, (int64_t)k, ""}); return RS_OK; }
+        PanCropKey nk = e->panCrop.front();
+        for (const PanCropKey& k : e->panCrop) if (k.time <= at) nk = k;
+        nk.time = at;
+        e->panCrop.push_back(nk);
+        std::stable_sort(e->panCrop.begin(), e->panCrop.end(), [](const PanCropKey& a, const PanCropKey& b) { return a.time < b.time; });
+        for (size_t k = 0; k < e->panCrop.size(); ++k)
+            if (std::fabs(e->panCrop[k].time - at) < 1e-12) *out = handle({RK_PANCROP, e->id, 0, (int64_t)k, ""});
+        touch();
+        return RS_OK;
+    }
+    case RO_REMOVE_PANCROP_KEY: {
+        const Desc* kd = desc((uint64_t)intArg(ia, 0));
+        if (!kd || kd->kind != RK_PANCROP || kd->a != e->id) return fail("not one of this event's keys");
+        if (outOfRange(kd->c, e->panCrop.size())) return fail("the key is no longer there");
+        if (e->panCrop.size() == 1) return fail("an event's pan/crop always has one key");
+        e->panCrop.erase(e->panCrop.begin() + kd->c);
+        touch();
+        return RS_OK;
+    }
+    case RO_CLEAR_PANCROP:
+        if (!video) return unsupported();
+        if (!e->panCrop.empty()) { e->panCrop.clear(); touch(); }
+        return RS_OK;
+    case RO_SET_TRANSITION: {
+        if (!video) return unsupported();
+        if (intArg(ia, 0) == 0) { e->transition = FxSlot(); touch(); return RS_OK; }
+        const int pi = pluginIndex(intArg(ia, 0));
         if (pi < 0) return fail("not a plug-in");
         const ScriptPlugin& p = host_.plugins[(size_t)pi];
-        if (video != (p.type != ScriptPlugin::Audio)) return fail(video ? "an audio plug-in cannot go on video" : "a video plug-in cannot go on audio");
-        if (p.type == ScriptPlugin::Transition || p.type == ScriptPlugin::Generator)
-            return fail("\"" + p.name + "\" is a " + (p.type == ScriptPlugin::Transition ? "transition" : "generator") + ", not an effect");
-        *out = addFx(*c, pi, (int)I(1, -1), video);
+        if (p.type != ScriptPlugin::Transition) return fail("\"" + p.name + "\" is not a transition (Vegas.Transitions)");
+        e->transition = FxSlot();
+        e->transition.id = project.newId();
+        e->transition.kind = "ofx";
+        e->transition.pluginId = p.id;
+        e->transition.name = p.name;
+        touch();
+        *out = handle({RK_FX, e->transition.id, 0, 0, ""});
         return RS_OK;
     }
-    if (op == RO_ADD_ENVELOPE || op == RO_REMOVE_ENVELOPE || op == RO_ADD_MASTER_ENVELOPE) {
-        Desc o = d;
-        if (op == RO_ADD_MASTER_ENVELOPE) { if (d.kind != RK_APP) return unsupported(); o = {RK_BUS, 0, 1, 0, ""}; }
-        int ok = 0;
-        uint64_t oid = 0;
-        if (!envOwnerOf(o, &ok, &oid)) return unsupported();
-        Envelopes* l = envelopesOf(ok, oid);
-        if (!l) return fail("the envelopes' owner is no longer in the project");
-        if (op == RO_REMOVE_ENVELOPE) {
-            const Desc* ed = desc((uint64_t)I(0));
-            if (!ed || ed->kind != RK_ENVELOPE || (int)ed->a != ok || ed->b != oid) return fail("the envelope is not this object's");
-            const size_t before = l->size();
-            l->erase(std::remove_if(l->begin(), l->end(), [&](const Envelope& e) { return e.kind == ed->s && e.target == (uint64_t)ed->c; }), l->end());
-            if (l->size() == before) return fail("the envelope is no longer there");
-            touch();
-            return RS_OK;
-        }
-        bool audio = ok == OwnBus || ok == OwnMaster;
-        double eventLength = 0;
-        if (ok == OwnTrack) { Track* t = project.findTrack(oid); audio = t && t->type == TrackType::Audio; }
-        if (ok == OwnEvent) {
-            Track* t = nullptr;
-            Event* e = project.findEvent(oid, &t);
-            audio = t && t->type == TrackType::Audio;
-            eventLength = e ? e->length : 0;
-        }
-        const int vt = (int)I(0, -1);
-        std::string kind;
-        uint64_t target = 0;
-        if (vt >= 3 && vt <= 28) {
-            if (vt - 3 >= (int)project.buses.size()) return fail("there is no such bus in the project");
-            kind = "send";
-            target = project.buses[(size_t)(vt - 3)].id;
-        } else if (const EnvType* et = envTypeOfVegas(vt)) {
-            kind = et->kind;
-        } else {
-            return fail(strfmt("Reno cannot make envelopes of type %d (VEGAS's EnvelopeType)", vt));
-        }
-        if (!envAllowed(ok, audio, kind)) return fail("this envelope cannot go there (VEGAS's CanAddEnvelope is false)");
-        Envelope* e = findEnvelope(*l, kind, target);
-        if (!e) {
-            Envelope ne;
-            ne.kind = kind;
-            ne.target = target;
-            const EnvType* et = envTypeOfKind(kind);
-            EnvPoint p0;
-            p0.time = 0;
-            p0.value = kind == "send" ? 1.0 : et ? et->neutral : 0;
-            if (kind == "mute" || kind == "fadecolor" || kind == "motionblur" || kind == "transition") p0.value = 0;
-            if (kind == "mute") p0.curve = CurveHold;
-            ne.points.push_back(p0);
-            if (kind == "transition" && eventLength > 0) {
-                // VEGAS's Transition Progress goes from 0 to 100% along the event.
-                EnvPoint p1;
-                p1.time = eventLength;
-                p1.value = 1;
-                ne.points.push_back(p1);
-            }
-            l->push_back(ne);
-            touch();
-        } else if (!e->visible) {
-            e->visible = true;
-            touch();
-        }
-        *out = handle({RK_ENVELOPE, (uint64_t)ok, oid, (int64_t)target, kind});
+    }
+    return unsupported();
+}
+
+// A group of events.
+int ScriptSession::groupCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s,
+                             uint64_t* out, double* dout)
+{
+    const Desc* ed = desc((uint64_t)intArg(ia, 0));
+    if (!ed || ed->kind != RK_EVENT) return fail("not an event");
+    Event* e = event(*ed);
+    if (!e) return RS_FAILED;
+    if (op == RO_GROUP_ADD) {
+        e->group = d.a;
+        emptyGroups_.erase(d.a);
+        touch();
         return RS_OK;
     }
-
-    switch (d.kind) {
-    case RK_APP:
-        switch (op) {
-        case RO_ADD_TRACK: {
-            const int type = (int)I(0, 3);
-            if (type != 2 && type != 3) return fail("a track is video or audio");
-            Track t;
-            t.id = project.newId();
-            t.type = type == 2 ? TrackType::Audio : TrackType::Video;
-            if (t.type == TrackType::Audio) t.panType = "add";
-            t.name = s;
-            int at = (int)I(1, -1);
-            if (at < 0 || at > (int)project.tracks.size()) at = (int)project.tracks.size();
-            project.tracks.insert(project.tracks.begin() + at, t);
-            touch();
-            *out = trackHandle(t.id);
-            return RS_OK;
-        }
-        case RO_REMOVE_TRACK: {
-            const Desc* td = desc((uint64_t)I(0));
-            if (!td || td->kind != RK_TRACK) return fail("not a track");
-            const size_t before = project.tracks.size();
-            project.tracks.erase(std::remove_if(project.tracks.begin(), project.tracks.end(), [&](const Track& t) { return t.id == td->a; }),
-                                 project.tracks.end());
-            if (project.tracks.size() == before) return fail("the track is no longer in the project");
-            selectedTracks.erase(td->a);
-            touch();
-            return RS_OK;
-        }
-        case RO_MOVE_TRACK: {
-            const Desc* td = desc((uint64_t)I(0));
-            if (!td || td->kind != RK_TRACK) return fail("not a track");
-            auto it = std::find_if(project.tracks.begin(), project.tracks.end(), [&](const Track& t) { return t.id == td->a; });
-            if (it == project.tracks.end()) return fail("the track is no longer in the project");
-            Track t = *it;
-            project.tracks.erase(it);
-            int at = (int)I(1, 0);
-            at = std::max(0, std::min(at, (int)project.tracks.size()));
-            project.tracks.insert(project.tracks.begin() + at, t);
-            touch();
-            return RS_OK;
-        }
-        case RO_IMPORT_MEDIA: case RO_FIND_MEDIA: {
-            for (const MediaItem& m : project.media)
-                if (!m.generated && m.subclipLength <= 0 && m.path == s) { *out = mediaHandle(m.id); return RS_OK; }
-            if (op == RO_FIND_MEDIA) return RS_OK;
-            if (s.empty()) return fail("no file name");
-            MediaInfo info;
-            std::string err;
-            if (!host_.probe || !host_.probe(s, &info, &err)) return fail("the media file could not be opened: " + s + (err.empty() ? "" : " (" + err + ")"));
-            MediaItem m;
-            m.id = project.newId();
-            m.path = s;
-            m.name = pathFileName(s);
-            m.info = info;
-            project.media.push_back(m);
-            touch();
-            *out = mediaHandle(m.id);
-            return RS_OK;
-        }
-        case RO_ADD_SUBCLIP: {
-            const size_t nl = s.find('\n');
-            const std::string path = s.substr(0, nl), name = nl == std::string::npos ? std::string() : s.substr(nl + 1);
-            uint64_t parentId = 0;
-            for (const MediaItem& m : project.media)
-                if (!m.generated && m.path == path) { parentId = m.id; break; }
-            if (!parentId) {
-                uint64_t ph = 0;
-                double x = 0;
-                const int r = call(1, RO_IMPORT_MEDIA, {}, {}, path, &ph, &x);
-                if (r != RS_OK) return r;
-                parentId = desc(ph)->a;
-            }
-            MediaItem m = *project.findMedia(parentId);
-            const double full = m.subclipLength > 0 ? m.subclipLength : m.info.duration;
-            const double from = std::max(0.0, D(0)) + (m.subclipLength > 0 ? m.subclipStart : 0.0);
-            double len = D(1);
-            if (full > 0) len = std::min(len, std::max(0.0, (m.subclipLength > 0 ? m.subclipStart : 0.0) + full - from));
-            if (!(len > 0)) return fail("a subclip must have a length within its media");
-            m.id = project.newId();
-            m.subclipStart = from;
-            m.subclipLength = len;
-            m.name = name.empty() ? m.name : name;
-            m.veg = nullptr;
-            project.media.push_back(m);
-            if (I(0)) reversedMedia_.insert(m.id);
-            touch();
-            *out = mediaHandle(m.id);
-            return RS_OK;
-        }
-        case RO_REMOVE_MEDIA: {
-            const Desc* md = desc((uint64_t)I(0));
-            if (!md || md->kind != RK_MEDIA) return fail("not media");
-            for (const Track& t : project.tracks)
-                for (const Event& e : t.events) {
-                    bool used = e.mediaId == md->a;
-                    for (const Take& k : e.takes) used = used || k.mediaId == md->a;
-                    if (used) return fail("the media is used by events: remove them first");
-                }
-            const size_t before = project.media.size();
-            project.media.erase(std::remove_if(project.media.begin(), project.media.end(), [&](const MediaItem& m) { return m.id == md->a; }),
-                                project.media.end());
-            if (project.media.size() == before) return fail("the media is no longer in the project");
-            touch();
-            return RS_OK;
-        }
-        case RO_REMOVE_UNUSED_MEDIA: {
-            std::set<uint64_t> used;
-            for (const Track& t : project.tracks)
-                for (const Event& e : t.events) {
-                    used.insert(e.mediaId);
-                    for (const Take& k : e.takes) used.insert(k.mediaId);
-                }
-            const size_t before = project.media.size();
-            project.media.erase(std::remove_if(project.media.begin(), project.media.end(), [&](const MediaItem& m) { return !used.count(m.id); }),
-                                project.media.end());
-            if (project.media.size() != before) touch();
-            return RS_OK;
-        }
-        case RO_GENERATED_MEDIA: {
-            const int pi = pluginArg(I(0));
-            if (pi < 0 || host_.plugins[(size_t)pi].type != ScriptPlugin::Generator) return fail("not a generator plug-in (Vegas.Generators)");
-            const ScriptPlugin& p = host_.plugins[(size_t)pi];
-            MediaItem m;
-            m.id = project.newId();
-            m.name = p.name;
-            m.generated = true;
-            m.generator.id = project.newId();
-            m.generator.kind = "ofx";
-            m.generator.pluginId = p.id;
-            m.generator.name = p.name;
-            m.info.hasVideo = true;
-            m.info.width = project.settings.width;
-            m.info.height = project.settings.height;
-            m.info.fps = project.settings.fps();
-            project.media.push_back(m);
-            touch();
-            *out = mediaHandle(m.id);
-            return RS_OK;
-        }
-        case RO_ADD_MARKER: {
-            const int kind = (int)I(0);
-            if (kind < 0 || kind > 4) return fail("not a kind of marker");
-            Project::Marker m;
-            m.id = project.newId();
-            m.time = std::max(0.0, D(0));
-            m.region = kind == 1 || kind == 3;
-            m.length = m.region ? std::max(0.0, D(1)) : 0.0;
-            m.kind = kind == 2 ? "command" : kind == 3 ? "cdtrack" : kind == 4 ? "cdindex" : "";
-            if (kind == 2) {
-                const size_t nl = s.find('\n');
-                m.command = s.substr(0, nl);
-                m.name = nl == std::string::npos ? std::string() : s.substr(nl + 1);
-            } else {
-                m.name = s;
-            }
-            // VEGAS refuses a second marker at the same place (of the same kind)
-            for (const Project::Marker* o : markersOfKind(kind))
-                if (std::fabs(o->time - m.time) < 1e-7 && (kind != 1 || std::fabs(o->length - m.length) < 1e-7))
-                    return fail("there is already a marker at that position");
-            project.markers.push_back(m);
-            touch();
-            *out = handle({RK_MARKER, m.id, 0, 0, ""});
-            return RS_OK;
-        }
-        case RO_REMOVE_MARKER: {
-            const Desc* md = desc((uint64_t)I(0));
-            if (!md || md->kind != RK_MARKER) return fail("not a marker");
-            const size_t before = project.markers.size();
-            project.markers.erase(std::remove_if(project.markers.begin(), project.markers.end(), [&](const Project::Marker& m) { return m.id == md->a; }),
-                                  project.markers.end());
-            if (project.markers.size() == before) return fail("the marker is no longer in the project");
-            touch();
-            return RS_OK;
-        }
-        case RO_NEW_GROUP: {
-            const uint64_t g = project.newId();
-            emptyGroups_.insert(g);
-            *out = handle({RK_GROUP, g, 0, 0, ""});
-            return RS_OK;
-        }
-        case RO_REMOVE_GROUP: {
-            const Desc* gd = desc((uint64_t)I(0));
-            if (!gd || gd->kind != RK_GROUP) return fail("not a group");
-            emptyGroups_.erase(gd->a);
-            for (Track& t : project.tracks)
-                for (Event& e : t.events)
-                    if (e.group == gd->a) { e.group = 0; touch(); }
-            return RS_OK;
-        }
-        case RO_NEW_PROJECT: {
-            Project p;
-            p.settings = host_.newSettings;
-            p.nextId = std::max(project.nextId, p.nextId);
-            project = p;
-            host_.projectPath.clear();
-            selection.clear();
-            selectedTracks.clear();
-            emptyGroups_.clear();
-            reversedMedia_.clear();
-            cursor = selStart = selLength = 0;
-            startedNew = true;
-            openedPath.clear();
-            touch();
-            viewChanged = true;
-            return RS_OK;
-        }
-        case RO_OPEN_PROJECT: {
-            if (!host_.open) return fail("opening projects from a script is not available");
-            Project p;
-            std::string err;
-            if (!host_.open(s, &p, &err)) return fail("the project could not be opened: " + err);
-            p.nextId = std::max(project.nextId, p.nextId);
-            project = p;
-            host_.projectPath = s;
-            selection.clear();
-            selectedTracks.clear();
-            emptyGroups_.clear();
-            reversedMedia_.clear();
-            cursor = selStart = selLength = 0;
-            openedPath = s;
-            startedNew = false;
-            changed = false;
-            viewChanged = true;
-            return RS_OK;
-        }
-        case RO_SAVE_PROJECT: {
-            const std::string path = s.empty() ? host_.projectPath : s;
-            if (path.empty()) return fail("the project has no file name yet");
-            if (!host_.save) return fail("saving from a script is not available");
-            std::string err;
-            if (!host_.save(project, path, &err)) return fail("the project could not be saved: " + err);
-            host_.projectPath = path;
-            savedPaths.push_back(path);
-            return RS_OK;
-        }
-        case RO_LOG:
-            output.push_back(s);
-            if (host_.log) host_.log(s);
-            return RS_OK;
-        case RO_UPDATE_UI:
-            return RS_OK;
-        case RO_INSERT_TIME: {
-            const double at = D(0), len = D(1);
-            if (!(len > 0) || at < 0) return fail("insert time needs a place and a length");
-            for (Track& t : project.tracks) {
-                std::vector<Event> added;
-                for (Event& e : t.events) {
-                    if (e.start >= at - kEps) {
-                        e.start += len;
-                    } else if (e.end() > at + kEps) {
-                        Event right = e;
-                        right.id = project.newId();
-                        right.start = at + len;
-                        right.length = e.end() - at;
-                        right.offset = e.offset + (at - e.start) * e.rate;
-                        for (Take& k : right.takes) k.offset += (at - e.start) * e.rate;
-                        for (Envelope& env : right.envelopes) for (EnvPoint& p : env.points) p.time -= at - e.start;
-                        right.fadeIn = 0;
-                        right.transition = FxSlot();
-                        for (auto& x : right.fx) x.id = project.newId();
-                        right.group = 0;
-                        e.length = at - e.start;
-                        e.fadeOut = 0;
-                        added.push_back(right);
-                    }
-                }
-                for (Event& e : added) t.events.push_back(e);
-                t.sortEvents();
-                for (Envelope& env : t.envelopes) for (EnvPoint& p : env.points) if (p.time >= at) p.time += len;
-                for (MotionKey& k : t.motion) if (k.time >= at) k.time += len;
-            }
-            for (Bus& b : project.buses) for (Envelope& env : b.envelopes) for (EnvPoint& p : env.points) if (p.time >= at) p.time += len;
-            for (Envelope& env : project.masterEnvelopes) for (EnvPoint& p : env.points) if (p.time >= at) p.time += len;
-            for (Envelope& env : project.videoEnvelopes) for (EnvPoint& p : env.points) if (p.time >= at) p.time += len;
-            for (auto& m : project.markers) if (m.time >= at) m.time += len;
-            touch();
-            return RS_OK;
-        }
-        }
-        return unsupported();
-
-    case RK_TRACK: {
-        Track* t = track(d);
-        if (!t) return RS_FAILED;
-        switch (op) {
-        case RO_ADD_EVENT: {
-            const double start = std::max(0.0, D(0)), len = D(1, 1.0);
-            if (!(len > 0)) return fail("an event's length must be more than 0");
-            Event e;
-            e.id = project.newId();
-            e.start = start;
-            e.length = len;
-            e.name = s;
-            e.loop = host_.loopEvents;
-            setDefaultFadeCurves(e, t->type);
-            t->events.push_back(e);
-            t->sortEvents();
-            touch();
-            *out = eventHandle(e.id);
-            return RS_OK;
-        }
-        case RO_REMOVE_EVENT: {
-            const Desc* ed = desc((uint64_t)I(0));
-            if (!ed || ed->kind != RK_EVENT) return fail("not an event");
-            auto it = std::find_if(t->events.begin(), t->events.end(), [&](const Event& e) { return e.id == ed->a; });
-            if (it == t->events.end()) return fail("the event is not on this track");
-            if (it->locked) return fail("the event is locked");
-            t->events.erase(it);
-            selection.erase(ed->a);
-            touch();
-            return RS_OK;
-        }
-        case RO_ADD_MOTION_KEY: {
-            if (t->type != TrackType::Video) return unsupported();
-            const double at = std::max(0.0, D(0));
-            for (size_t k = 0; k < t->motion.size(); ++k)
-                if (std::fabs(t->motion[k].time - at) < 1e-7) { *out = handle({RK_MOTION, t->id, 0, (int64_t)k, ""}); return RS_OK; }
-            // a new key takes the motion as it is at that time (the key before it, or the whole frame)
-            MotionKey nk;
-            for (const MotionKey& k : t->motion) if (k.time <= at) nk = k;
-            if (t->motion.empty() == false && t->motion.front().time > at) nk = t->motion.front();
-            nk.time = at;
-            t->motion.push_back(nk);
-            std::stable_sort(t->motion.begin(), t->motion.end(), [](const MotionKey& a, const MotionKey& b) { return a.time < b.time; });
-            for (size_t k = 0; k < t->motion.size(); ++k)
-                if (std::fabs(t->motion[k].time - at) < 1e-12) *out = handle({RK_MOTION, t->id, 0, (int64_t)k, ""});
-            touch();
-            return RS_OK;
-        }
-        case RO_REMOVE_MOTION_KEY: {
-            const Desc* kd = desc((uint64_t)I(0));
-            if (!kd || kd->kind != RK_MOTION || kd->a != t->id || outOfRange(kd->c, t->motion.size())) return fail("not one of this track's keys");
-            t->motion.erase(t->motion.begin() + kd->c);
-            touch();
-            return RS_OK;
-        }
-        }
-        return unsupported();
+    if (op == RO_GROUP_REMOVE) {
+        if (e->group != d.a) return fail("the event is not in this group");
+        e->group = 0;
+        touch();
+        return RS_OK;
     }
+    return unsupported();
+}
 
-    case RK_EVENT: {
-        Track* tr = nullptr;
-        Event* e = event(d, &tr);
-        if (!e || !tr) return RS_FAILED;
-        const bool video = tr->type == TrackType::Video;
-        switch (op) {
-        case RO_SPLIT: {
-            const double at = D(0, -1);
-            // VEGAS (RenoEdits split_edge_cases): a split outside the event, at its start or end, does nothing and does not raise an
-            // error (the result is null); a locked event is split like any other (the lock only guards the program's own editing)
-            if (!(at > kEps && at < e->length - kEps)) return RS_OK;
-            Event right = splitEventAt(project, *e, e->start + at);
-            if (!right.id) return RS_OK;
-            right.veg = nullptr;
-            // the right part is in the same group as the left.
-            if (selection.count(e->id)) selection.insert(right.id);
-            const uint64_t rid = right.id, lid = e->id;
-            addSplitHalf(*tr, lid, right, project.autoCrossfades);
-            touch();
-            *out = eventHandle(rid);
-            return RS_OK;
-        }
-        case RO_COPY: {
-            const Desc* td = desc((uint64_t)I(0));
-            if (!td || td->kind != RK_TRACK) return fail("not a track");
-            Track* to = track(*td);
-            if (!to) return RS_FAILED;
-            if (to->type != tr->type) return fail("an event can only be copied to a track of the same type");
-            Event c = *e;
-            c.id = project.newId();
-            c.start = std::max(0.0, D(0, e->start));
-            c.group = 0;
-            c.locked = false;
-            c.veg = nullptr;
-            for (auto& x : c.fx) x.id = project.newId();
-            if (!c.transition.kind.empty()) c.transition.id = project.newId();
-            const uint64_t cid = c.id;
-            to->events.push_back(c);
-            to->sortEvents();
-            touch();
-            *out = eventHandle(cid);
-            return RS_OK;
-        }
-        case RO_ADD_TAKE: case RO_REMOVE_TAKE: case RO_CLEAR_TAKES:
-            return takeOp(*e, op, ia, s, out);
-        case RO_ADJUST_START_LENGTH: {
-            const double start = D(0, e->start), len = D(1, e->length);
-            if (!(len > 0)) return fail("an event's length must be more than 0");
-            if (e->locked) return fail("the event is locked");
-            // VEGAS's AdjustStartLength knows nothing of the velocity envelope (RenoEdits ui_trim_start_reversed): the take offset moves
-            // by the timeline distance times the rate and the envelope's points stay where they are in the event. (The program's own
-            // trims keep the picture where it was; this is what a script gets.)
-            std::vector<Envelope> velocity;
-            if (I(0) != 0)
-                for (size_t k = e->envelopes.size(); k-- > 0;)
-                    if (e->envelopes[k].kind == "velocity") { velocity.push_back(e->envelopes[k]); e->envelopes.erase(e->envelopes.begin() + k); }
-            adjustEventEdges(*e, start, len, I(0) != 0);
-            for (const Envelope& v : velocity) e->envelopes.push_back(v);
-            e->start = std::max(0.0, e->start);
-            keepOffsetInLoop(*e);
-            keepFadesInside(*e);
-            tr->sortEvents();
-            touch();
-            return RS_OK;
-        }
-        case RO_ADJUST_RATE: {
-            const double rate = D(0, 1.0);
-            if (!(rate > 0)) return fail("the playback rate must be more than 0");
-            if (e->locked) return fail("the event is locked");
-            // VEGAS (RenoEdits playback_rate): the event keeps its start and length. Its take offset is kept in timeline time, so
-            // by default the media position it starts at changes with the rate; with adjustStart the start offset is changed
-            // so that it starts at the same place in the media as before.
-            changeRate(*e, rate, I(0) != 0);
-            touch();
-            return RS_OK;
-        }
-        case RO_ADD_PANCROP_KEY: {
-            if (!video) return unsupported();
-            const double at = std::max(0.0, D(0));
-            if (e->panCrop.empty()) e->panCrop.push_back(PanCropKey());
-            for (size_t k = 0; k < e->panCrop.size(); ++k)
-                if (std::fabs(e->panCrop[k].time - at) < 1e-7) { *out = handle({RK_PANCROP, e->id, 0, (int64_t)k, ""}); return RS_OK; }
-            PanCropKey nk = e->panCrop.front();
-            for (const PanCropKey& k : e->panCrop) if (k.time <= at) nk = k;
-            nk.time = at;
-            e->panCrop.push_back(nk);
-            std::stable_sort(e->panCrop.begin(), e->panCrop.end(), [](const PanCropKey& a, const PanCropKey& b) { return a.time < b.time; });
-            for (size_t k = 0; k < e->panCrop.size(); ++k)
-                if (std::fabs(e->panCrop[k].time - at) < 1e-12) *out = handle({RK_PANCROP, e->id, 0, (int64_t)k, ""});
-            touch();
-            return RS_OK;
-        }
-        case RO_REMOVE_PANCROP_KEY: {
-            const Desc* kd = desc((uint64_t)I(0));
-            if (!kd || kd->kind != RK_PANCROP || kd->a != e->id) return fail("not one of this event's keys");
-            if (outOfRange(kd->c, e->panCrop.size())) return fail("the key is no longer there");
-            if (e->panCrop.size() == 1) return fail("an event's pan/crop always has one key");
-            e->panCrop.erase(e->panCrop.begin() + kd->c);
-            touch();
-            return RS_OK;
-        }
-        case RO_CLEAR_PANCROP:
-            if (!video) return unsupported();
-            if (!e->panCrop.empty()) { e->panCrop.clear(); touch(); }
-            return RS_OK;
-        case RO_SET_TRANSITION: {
-            if (!video) return unsupported();
-            if (I(0) == 0) { e->transition = FxSlot(); touch(); return RS_OK; }
-            const int pi = pluginArg(I(0));
-            if (pi < 0) return fail("not a plug-in");
-            const ScriptPlugin& p = host_.plugins[(size_t)pi];
-            if (p.type != ScriptPlugin::Transition) return fail("\"" + p.name + "\" is not a transition (Vegas.Transitions)");
-            e->transition = FxSlot();
-            e->transition.id = project.newId();
-            e->transition.kind = "ofx";
-            e->transition.pluginId = p.id;
-            e->transition.name = p.name;
-            touch();
-            *out = handle({RK_FX, e->transition.id, 0, 0, ""});
-            return RS_OK;
-        }
-        }
-        return unsupported();
-    }
-
-    case RK_GROUP: {
-        const Desc* ed = desc((uint64_t)I(0));
-        if (!ed || ed->kind != RK_EVENT) return fail("not an event");
-        Event* e = event(*ed);
-        if (!e) return RS_FAILED;
-        if (op == RO_GROUP_ADD) {
-            e->group = d.a;
-            emptyGroups_.erase(d.a);
-            touch();
-            return RS_OK;
-        }
-        if (op == RO_GROUP_REMOVE) {
-            if (e->group != d.a) return fail("the event is not in this group");
-            e->group = 0;
-            touch();
-            return RS_OK;
-        }
-        return unsupported();
-    }
-
-    case RK_ENVELOPE: {
-        Envelope* env = envelope(d);
-        if (!env) return RS_FAILED;
-        const EnvType* et = envTypeOfKind(env->kind);
-        switch (op) {
-        case RO_ADD_POINT: {
-            const double x = D(0);
-            double y = D(1);
-            y = et ? std::max(et->min, std::min(et->max, y)) : std::max(0.0, std::min(4.0, y));
-            const int curve = renoCurve((int)I(0, 1));
-            size_t at = env->points.size();
-            for (size_t k = 0; k < env->points.size(); ++k) {
-                if (std::fabs(env->points[k].time - x) < 1e-7) {
-                    env->points[k].value = y;
-                    env->points[k].curve = curve;
-                    touch();
-                    *out = handle({RK_ENVPOINT, h, 0, (int64_t)k, ""});
-                    return RS_OK;
-                }
-                if (env->points[k].time > x) { at = k; break; }
+// An envelope and its points.
+int ScriptSession::envelopeCall(uint64_t h, const Desc& d, int op, const std::vector<int64_t>& ia, const std::vector<double>& da, const std::string& s,
+                                uint64_t* out, double* dout)
+{
+    Envelope* env = envelope(d);
+    if (!env) return RS_FAILED;
+    const EnvType* et = envTypeOfKind(env->kind);
+    switch (op) {
+    case RO_ADD_POINT: {
+        const double x = numArg(da, 0);
+        double y = numArg(da, 1);
+        y = et ? std::max(et->min, std::min(et->max, y)) : std::max(0.0, std::min(4.0, y));
+        const int curve = renoCurve((int)intArg(ia, 0, 1));
+        size_t at = env->points.size();
+        for (size_t k = 0; k < env->points.size(); ++k) {
+            if (std::fabs(env->points[k].time - x) < 1e-7) {
+                env->points[k].value = y;
+                env->points[k].curve = curve;
+                touch();
+                *out = handle({RK_ENVPOINT, h, 0, (int64_t)k, ""});
+                return RS_OK;
             }
-            EnvPoint p;
-            p.time = x;
-            p.value = y;
-            p.curve = curve;
-            env->points.insert(env->points.begin() + (long)at, p);
-            touch();
-            *out = handle({RK_ENVPOINT, h, 0, (int64_t)at, ""});
-            return RS_OK;
+            if (env->points[k].time > x) { at = k; break; }
         }
-        case RO_REMOVE_POINT: {
-            const Desc* pd = desc((uint64_t)I(0));
-            if (!pd || pd->kind != RK_ENVPOINT || pd->a != h) return fail("not one of this envelope's points");
-            if (outOfRange(pd->c, env->points.size())) return fail("the point is no longer there");
-            env->points.erase(env->points.begin() + pd->c);
-            touch();
-            return RS_OK;
-        }
-        case RO_CLEAR_POINTS:
-            // VEGAS keeps an envelope's first point
-            if (env->points.size() > 1) { env->points.erase(env->points.begin() + 1, env->points.end()); touch(); }
-            return RS_OK;
-        case RO_VALUE_AT:
-            *dout = env->valueAt(D(0), et ? et->neutral : 1.0);
-            return RS_OK;
-        }
-        return unsupported();
+        EnvPoint p;
+        p.time = x;
+        p.value = y;
+        p.curve = curve;
+        env->points.insert(env->points.begin() + (long)at, p);
+        touch();
+        *out = handle({RK_ENVPOINT, h, 0, (int64_t)at, ""});
+        return RS_OK;
     }
+    case RO_REMOVE_POINT: {
+        const Desc* pd = desc((uint64_t)intArg(ia, 0));
+        if (!pd || pd->kind != RK_ENVPOINT || pd->a != h) return fail("not one of this envelope's points");
+        if (outOfRange(pd->c, env->points.size())) return fail("the point is no longer there");
+        env->points.erase(env->points.begin() + pd->c);
+        touch();
+        return RS_OK;
+    }
+    case RO_CLEAR_POINTS:
+        // VEGAS keeps an envelope's first point
+        if (env->points.size() > 1) { env->points.erase(env->points.begin() + 1, env->points.end()); touch(); }
+        return RS_OK;
+    case RO_VALUE_AT:
+        *dout = env->valueAt(numArg(da, 0), et ? et->neutral : 1.0);
+        return RS_OK;
     }
     return unsupported();
 }

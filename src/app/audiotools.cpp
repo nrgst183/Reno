@@ -400,6 +400,115 @@ bool nrtSpec(const NrtFormat& f, const Project& q, const std::string& path, Rend
     if (ext) *ext = s8(rt::fileExt(*fmt, tm));
     return true;
 }
+
+// One event Apply Non-Real-Time FX renders: its new file and the name of the take that plays it.
+struct NrtJob {
+    uint64_t event = 0, media = 0;
+    std::string path, takeName;
+};
+
+// The audio events among 'eventIds' whose media has sound that can be read, each once.
+std::vector<NrtJob> nrtJobsFor(const Project& project, const std::vector<uint64_t>& eventIds)
+{
+    std::vector<NrtJob> jobs;
+    for (uint64_t id : eventIds) {
+        const Track* tr = nullptr;
+        const Event* e = project.findEvent(id, &tr);
+        if (!e || !tr || tr->type != TrackType::Audio) continue;
+        const MediaItem* m = project.findMedia(e->mediaId);
+        if (!m || m->offline || !m->info.hasAudio) continue;
+        bool again = false;
+        for (const NrtJob& j : jobs) again = again || j.event == id;
+        if (!again) jobs.push_back(NrtJob{id, 0, std::string(), std::string()});
+    }
+    return jobs;
+}
+
+// The jobs' file paths and take names: the exact path or file name asked for (one event), else the next free names in
+// the folder. A take's file is never written over.
+bool nameNrtFiles(std::vector<NrtJob>& jobs, const Project& project, const NrtOptions& opt, const std::string& folder, const std::string& ext,
+                  std::string* error)
+{
+    std::set<std::string> reserved;
+    for (NrtJob& j : jobs) {
+        if (!opt.exactPath.empty() && jobs.size() == 1) {
+            j.path = opt.exactPath;
+            j.takeName = s8(QFileInfo(qs(j.path)).completeBaseName());
+        } else if (!opt.fileName.empty() && jobs.size() == 1) {
+            QString stem = qs(opt.fileName).trimmed();
+            if (stem.endsWith("." + qs(ext), Qt::CaseInsensitive)) stem.chop((qsizetype)ext.size() + 1);
+            if (stem.isEmpty() || stem.contains('/') || stem.contains('\\')) {
+                if (error) *error = "the file name is not usable";
+                return false;
+            }
+            j.path = s8(QDir(qs(folder)).filePath(stem + "." + qs(ext)));
+            j.takeName = s8(stem);
+            if (QFileInfo::exists(qs(j.path))) {
+                if (error) *error = "the file " + j.path + " already exists (a take's file is never written over: choose another name)";
+                return false;
+            }
+        } else {
+            const NrtFile f = nextNrtFile(project, j.event, folder, ext, reserved);
+            j.path = f.path;
+            j.takeName = f.takeName;
+        }
+        reserved.insert(j.path);
+    }
+    return true;
+}
+
+// A project that plays a rendered intermediate file (stereo float WAV) once, from time 0, in the settings of 'like'.
+Project projectPlayingWav(const Project& like, const std::string& tempWav, int rate, double length)
+{
+    MediaItem tm;
+    tm.id = 1;
+    tm.path = tempWav;
+    tm.name = "nrt";
+    tm.info.path = tempWav;
+    tm.info.hasAudio = true;
+    tm.info.sampleRate = rate;
+    tm.info.channels = 2;
+    tm.info.duration = length;
+    tm.info.audioCodec = "pcm_f32le";
+    Project p;
+    p.settings = like.settings;
+    p.media.push_back(tm);
+    Track t;
+    t.id = 1;
+    t.type = TrackType::Audio;
+    Event x;
+    x.id = 2;
+    x.mediaId = tm.id;
+    x.start = 0;
+    x.length = length;
+    x.loop = false;
+    t.events.push_back(x);
+    p.tracks.push_back(t);
+    p.nextId = 3;
+    return p;
+}
+
+// The rendered files as the events' new active takes, the chain's effects taken off the events (they were for the
+// render only).
+void putNrtTakesOn(Project& pr, const std::vector<NrtJob>& jobs, const FxChain& chain)
+{
+    std::set<uint64_t> chainIds;
+    for (const FxSlot& s : chain) chainIds.insert(s.id);
+    for (Track& t : pr.tracks)
+        for (Event& ev : t.events)
+            ev.fx.erase(std::remove_if(ev.fx.begin(), ev.fx.end(), [&](const FxSlot& s) { return chainIds.count(s.id) != 0; }), ev.fx.end());
+    for (const NrtJob& j : jobs) {
+        Event* ev = pr.findEvent(j.event);
+        if (!ev) continue;
+        Take nt;
+        nt.mediaId = j.media;
+        nt.offset = 0;                      // the new file starts where the event starts in its media
+        nt.name = j.takeName;
+        ev->takes.push_back(nt);
+        AppState::setActiveTake(*ev, (int)AppState::takesOf(*ev).size() - 1);
+    }
+}
+
 }  // namespace
 
 bool applyNonRealTimeFxToEvents(const std::vector<uint64_t>& eventIds, const FxChain& chain, const NrtOptions& opt, std::string* error)
@@ -407,18 +516,7 @@ bool applyNonRealTimeFxToEvents(const std::vector<uint64_t>& eventIds, const FxC
     AppState& app = AppState::get();
     const size_t undo0 = app.undoCount();
     const bool dirty0 = app.dirty();
-    struct Job { uint64_t event = 0, media = 0; std::string path, takeName; };
-    std::vector<Job> jobs;
-    for (uint64_t id : eventIds) {
-        const Track* tr = nullptr;
-        const Event* e = app.project().findEvent(id, &tr);
-        if (!e || !tr || tr->type != TrackType::Audio) continue;
-        const MediaItem* m = app.project().findMedia(e->mediaId);
-        if (!m || m->offline || !m->info.hasAudio) continue;
-        bool again = false;
-        for (const Job& j : jobs) again = again || j.event == id;
-        if (!again) jobs.push_back(Job{id, 0, std::string(), std::string()});
-    }
+    std::vector<NrtJob> jobs = nrtJobsFor(app.project(), eventIds);
     if (jobs.empty()) {
         if (error) *error = eventIds.size() > 1 ? "choose audio events whose media has sound that can be read" : "the event's media has no sound that can be read (choose an audio event)";
         return false;
@@ -438,32 +536,7 @@ bool applyNonRealTimeFxToEvents(const std::vector<uint64_t>& eventIds, const FxC
         if (error) *error = "the folder " + folder + " cannot be made";
         return false;
     }
-    std::set<std::string> reserved;
-    for (Job& j : jobs) {
-        if (!opt.exactPath.empty() && jobs.size() == 1) {
-            j.path = opt.exactPath;
-            j.takeName = s8(QFileInfo(qs(j.path)).completeBaseName());
-        } else if (!opt.fileName.empty() && jobs.size() == 1) {
-            QString stem = qs(opt.fileName).trimmed();
-            if (stem.endsWith("." + qs(ext), Qt::CaseInsensitive)) stem.chop((qsizetype)ext.size() + 1);
-            if (stem.isEmpty() || stem.contains('/') || stem.contains('\\')) {
-                if (error) *error = "the file name is not usable";
-                return false;
-            }
-            j.path = s8(QDir(qs(folder)).filePath(stem + "." + qs(ext)));
-            j.takeName = s8(stem);
-            if (QFileInfo::exists(qs(j.path))) {
-                if (error) *error = "the file " + j.path + " already exists (a take's file is never written over: choose another name)";
-                return false;
-            }
-        } else {
-            const NrtFile f = nextNrtFile(app.project(), j.event, folder, ext, reserved);
-            j.path = f.path;
-            j.takeName = f.takeName;
-        }
-        reserved.insert(j.path);
-    }
-
+    if (!nameNrtFiles(jobs, app.project(), opt, folder, ext, error)) return false;
     // ---- rendering
     std::unique_ptr<QProgressDialog> dlg;
     if (opt.parent) {
@@ -480,7 +553,7 @@ bool applyNonRealTimeFxToEvents(const std::vector<uint64_t>& eventIds, const FxC
         return false;
     };
     for (size_t k = 0; k < jobs.size(); ++k) {
-        Job& j = jobs[k];
+        NrtJob& j = jobs[k];
         const Event* e = app.project().findEvent(j.event);
         const MediaItem* m = e ? app.project().findMedia(e->mediaId) : nullptr;
         if (!e || !m) return fail("the event has gone");
@@ -511,32 +584,7 @@ bool applyNonRealTimeFxToEvents(const std::vector<uint64_t>& eventIds, const FxC
             made.push_back(tempWav);
             if (!writeFloatWav(tempWav, L, R, rate)) return fail("the intermediate file could not be written");
             length = std::max(1e-3, (double)L.size() / (double)rate);
-            MediaItem tm;
-            tm.id = 1;
-            tm.path = tempWav;
-            tm.name = "nrt";
-            tm.info.path = tempWav;
-            tm.info.hasAudio = true;
-            tm.info.sampleRate = rate;
-            tm.info.channels = 2;
-            tm.info.duration = length;
-            tm.info.audioCodec = "pcm_f32le";
-            Project q2;
-            q2.settings = q.settings;
-            q2.media.push_back(tm);
-            Track t;
-            t.id = 1;
-            t.type = TrackType::Audio;
-            Event x;
-            x.id = 2;
-            x.mediaId = tm.id;
-            x.start = 0;
-            x.length = length;
-            x.loop = false;
-            t.events.push_back(x);
-            q2.tracks.push_back(t);
-            q2.nextId = 3;
-            q = q2;
+            q = projectPlayingWav(q, tempWav, rate, length);
             from = 0.0;
         }
         RenderSpec spec;
@@ -557,7 +605,7 @@ bool applyNonRealTimeFxToEvents(const std::vector<uint64_t>& eventIds, const FxC
     dlg.reset();
 
     // ---- the new files become Project Media and the events' new active takes: one undo step
-    for (Job& j : jobs) {
+    for (NrtJob& j : jobs) {
         std::string why;
         j.media = app.importMedia(j.path, &why);
         if (!j.media) {
@@ -565,24 +613,7 @@ bool applyNonRealTimeFxToEvents(const std::vector<uint64_t>& eventIds, const FxC
             return fail("the rendered file could not be read back: " + why);
         }
     }
-    std::set<uint64_t> chainIds;
-    for (const FxSlot& s : chain) chainIds.insert(s.id);
-    app.edit("Apply Non-Real-Time Event FX", [&](Project& pr) {
-        // the effects were for the render only
-        for (Track& t : pr.tracks)
-            for (Event& ev : t.events)
-                ev.fx.erase(std::remove_if(ev.fx.begin(), ev.fx.end(), [&](const FxSlot& s) { return chainIds.count(s.id) != 0; }), ev.fx.end());
-        for (const Job& j : jobs) {
-            Event* ev = pr.findEvent(j.event);
-            if (!ev) continue;
-            Take nt;
-            nt.mediaId = j.media;
-            nt.offset = 0;                      // the new file starts where the event starts in its media
-            nt.name = j.takeName;
-            ev->takes.push_back(nt);
-            AppState::setActiveTake(*ev, (int)AppState::takesOf(*ev).size() - 1);
-        }
-    });
+    app.edit("Apply Non-Real-Time Event FX", [&](Project& pr) { putNrtTakesOn(pr, jobs, chain); });
     app.mergeUndo(app.undoCount() - undo0, "Apply Non-Real-Time Event FX");
     return true;
 }
@@ -596,11 +627,13 @@ bool applyNonRealTimeFx(uint64_t eventId, const FxChain& chain, const std::strin
     return applyNonRealTimeFxToEvents({eventId}, chain, o, error);
 }
 
-void runNonRealTimeEventFx(QWidget* parent, const NrtHooks& hooks)
+namespace {
+
+// The selected audio events that have sound to process (VEGAS processes the active take).
+std::vector<uint64_t> selectedAudioEventsWithSound()
 {
     AppState& app = AppState::get();
     const Project& p = app.project();
-    // selected audio events that have sound to process (VEGAS processes the active take)
     std::vector<uint64_t> ids;
     for (const Track& t : p.tracks)
         if (t.type == TrackType::Audio)
@@ -609,163 +642,217 @@ void runNonRealTimeEventFx(QWidget* parent, const NrtHooks& hooks)
                     const MediaItem* m = p.findMedia(e.mediaId);
                     if (m && !m->offline && m->info.hasAudio) ids.push_back(e.id);
                 }
-    if (ids.empty()) {
-        QMessageBox::information(parent, "Apply Non-Real-Time Event FX", "Select the audio event to process first.");
-        return;
-    }
-    const uint64_t first = ids.front();
-    const size_t undo0 = app.undoCount();
-    const bool dirty0 = app.dirty();
+    return ids;
+}
 
-    // 1. the Plug-In Chooser
+// Step 1, the Plug-In Chooser: the effects chosen are put on the event for now (after its own) so they run and can be
+// set; they are not kept. The ids of the slots added (none: nothing chosen).
+std::vector<uint64_t> putChosenEffectsOn(const FxTarget& target, QWidget* parent)
+{
+    AppState& app = AppState::get();
     PluginChooser chooser(ChooserKind::AudioFx, "Plug-In Chooser - Non-Real-Time Event FX", FxChain(), parent);
-    if (chooser.exec() != QDialog::Accepted) return;
+    if (chooser.exec() != QDialog::Accepted) return {};
     FxChain chosen = chooser.chain();
-    if (chosen.empty()) return;
+    if (chosen.empty()) return {};
     for (FxSlot& s : chosen) s.id = 0;
-    // the effects are put on the first event for now (after its own) so they run and can be set; they are not kept
-    FxTarget target;
-    target.kind = FxTarget::Event;
-    target.id = first;
     std::vector<uint64_t> before;
     FxChain all;
-    if (const Event* e = app.project().findEvent(first)) {
+    if (const Event* e = app.project().findEvent(target.id)) {
         all = e->fx;
         for (const FxSlot& s : e->fx) before.push_back(s.id);
     }
     all.insert(all.end(), chosen.begin(), chosen.end());
     applyChain(target, all, "Non-Real-Time Event FX");
     std::vector<uint64_t> added;
-    if (const Event* e = app.project().findEvent(first))
+    if (const Event* e = app.project().findEvent(target.id))
         for (const FxSlot& s : e->fx)
             if (std::find(before.begin(), before.end(), s.id) == before.end()) added.push_back(s.id);
-    auto giveUp = [&] { app.discardUndoTo(undo0, dirty0); };
-    if (added.empty()) { giveUp(); return; }
+    return added;
+}
 
-    // 2. VEGAS's Take dialog: the settings of each plug-in of the chain, and Preview
+// Step 2, VEGAS's Take dialog: the settings of each plug-in of the chain, and Preview. False if cancelled.
+bool setTakeFx(const FxTarget& target, const std::vector<uint64_t>& added, const NrtHooks& hooks, QWidget* parent)
+{
+    AppState& app = AppState::get();
+    QDialog fx(parent);
+    fx.setObjectName("nonRealTimeTakeFxDialog");
+    const Event* e = app.project().findEvent(target.id);
+    fx.setWindowTitle("Take FX" + (e && !e->name.empty() ? " - " + qs(e->name) : QString()));
+    fx.resize(640, 440);
+    auto* v = new QVBoxLayout(&fx);
+    FxWindow* win = new FxWindow(nullptr, &fx);
+    win->setObjectName("nrtFxWindow");
+    win->setOnlySlots(added, true);
+    win->showTarget(target, added.front());
+    v->addWidget(win, 1);
+    auto* row = new QHBoxLayout();
+    QPushButton* prev = new QPushButton("Preview", &fx);
+    prev->setObjectName("nrtPreview");
+    prev->setCheckable(true);
+    prev->setToolTip("Plays the event through the effects");
+    prev->setEnabled(bool(hooks.preview));
+    const double at = e ? e->start : 0.0, span = e ? e->length : 1.0;
+    QObject::connect(prev, &QPushButton::toggled, &fx, [prev, hooks, at, span, &fx](bool on) {
+        prev->setText(on ? "Stop" : "Preview");
+        if (hooks.preview) hooks.preview(on, at);
+        if (on) QTimer::singleShot((int)std::min(3.6e6, span * 1000.0 + 200.0), &fx, [prev] { if (prev->isChecked()) prev->setChecked(false); });
+    });
+    row->addWidget(prev);
+    row->addStretch(1);
+    QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &fx);
+    QObject::connect(bb, &QDialogButtonBox::accepted, &fx, &QDialog::accept);
+    QObject::connect(bb, &QDialogButtonBox::rejected, &fx, &QDialog::reject);
+    row->addWidget(bb);
+    v->addLayout(row);
+    const bool ok = fx.exec() == QDialog::Accepted;
+    if (prev->isChecked()) prev->setChecked(false);
+    return ok;
+}
+
+// Step 3, VEGAS's Apply Non Real-Time FX window: file name, folder, format and template, then Render.
+class ApplyNrtDialog : public QDialog {
+public:
+    ApplyNrtDialog(const std::vector<uint64_t>& ids, std::vector<rt::Format> formats, QWidget* parent)
+        : QDialog(parent), ids_(ids), formats_(std::move(formats))
     {
-        QDialog fx(parent);
-        fx.setObjectName("nonRealTimeTakeFxDialog");
-        const Event* e = app.project().findEvent(first);
-        fx.setWindowTitle("Take FX" + (e && !e->name.empty() ? " - " + qs(e->name) : QString()));
-        fx.resize(640, 440);
-        auto* v = new QVBoxLayout(&fx);
-        FxWindow* win = new FxWindow(nullptr, &fx);
-        win->setObjectName("nrtFxWindow");
-        win->setOnlySlots(added, true);
-        win->showTarget(target, added.front());
-        v->addWidget(win, 1);
-        auto* row = new QHBoxLayout();
-        QPushButton* prev = new QPushButton("Preview", &fx);
-        prev->setObjectName("nrtPreview");
-        prev->setCheckable(true);
-        prev->setToolTip("Plays the event through the effects");
-        prev->setEnabled(bool(hooks.preview));
-        const double at = e ? e->start : 0.0, span = e ? e->length : 1.0;
-        QObject::connect(prev, &QPushButton::toggled, &fx, [prev, hooks, at, span, &fx](bool on) {
-            prev->setText(on ? "Stop" : "Preview");
-            if (hooks.preview) hooks.preview(on, at);
-            if (on) QTimer::singleShot((int)std::min(3.6e6, span * 1000.0 + 200.0), &fx, [prev] { if (prev->isChecked()) prev->setChecked(false); });
+        setObjectName("nonRealTimeFxDialog");
+        setWindowTitle("Apply Non Real-Time FX");
+        auto* v = new QVBoxLayout(this);
+        v->addWidget(new QLabel(ids.size() > 1 ? QString("The sound of the %1 selected events is processed into new files, one per event, which become new takes.")
+                                                     .arg(ids.size())
+                                               : QString("The event's sound is processed into a new file, which becomes a new take."),
+                                this));
+        auto* form = new QFormLayout();
+        name_ = new QLineEdit(this);
+        name_->setObjectName("nrtFile");
+        form->addRow("Name:", name_);
+        folder_ = new QLineEdit(this);
+        folder_->setObjectName("nrtFolder");
+        folder_->setText(qs(nrtDefaultFolder(AppState::get().project(), ids.front())));
+        QPushButton* browse = new QPushButton("Browse...", this);
+        browse->setObjectName("nrtBrowse");
+        auto* folderRow = new QHBoxLayout();
+        folderRow->addWidget(folder_, 1);
+        folderRow->addWidget(browse);
+        form->addRow("Folder:", folderRow);
+        format_ = new QComboBox(this);
+        format_->setObjectName("nrtFormat");
+        for (const rt::Format& f : formats_) format_->addItem(f.name, f.key);
+        form->addRow("Format:", format_);
+        template_ = new QComboBox(this);
+        template_->setObjectName("nrtTemplate");
+        form->addRow("Template:", template_);
+        v->addLayout(form);
+        info_ = new QLabel(this);
+        info_->setObjectName("nrtInfo");
+        info_->setWordWrap(true);
+        v->addWidget(info_);
+        QObject::connect(format_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { fillTemplates(); });
+        QObject::connect(template_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { refreshInfo(); });
+        QObject::connect(name_, &QLineEdit::textEdited, this, [this](const QString&) { nameTyped_ = true; });
+        QObject::connect(folder_, &QLineEdit::textChanged, this, [this](const QString&) { refreshName(); });
+        QObject::connect(browse, &QPushButton::clicked, this, [this] {
+            const QString f = QFileDialog::getExistingDirectory(this, "Apply Non Real-Time FX", folder_->text());
+            if (!f.isEmpty()) folder_->setText(f);
         });
-        row->addWidget(prev);
-        row->addStretch(1);
-        QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &fx);
-        QObject::connect(bb, &QDialogButtonBox::accepted, &fx, &QDialog::accept);
-        QObject::connect(bb, &QDialogButtonBox::rejected, &fx, &QDialog::reject);
-        row->addWidget(bb);
-        v->addLayout(row);
-        const bool ok = fx.exec() == QDialog::Accepted;
-        if (prev->isChecked()) prev->setChecked(false);
-        if (!ok) { giveUp(); return; }
+        fillTemplates();
+        QDialogButtonBox* bb = new QDialogButtonBox(this);
+        QPushButton* render = bb->addButton("Render", QDialogButtonBox::AcceptRole);
+        render->setObjectName("nrtRender");
+        bb->addButton(QDialogButtonBox::Cancel);
+        QObject::connect(bb, &QDialogButtonBox::accepted, this, &QDialog::accept);
+        QObject::connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        v->addWidget(bb);
+    }
+
+    // What to render, as chosen.
+    NrtOptions options(QWidget* parent) const
+    {
+        NrtOptions o;
+        o.parent = parent;
+        o.folder = s8(folder_->text().trimmed());
+        o.format.format = s8(currentFormat().key);
+        o.format.templateName = s8(template_->currentText());
+        if (ids_.size() == 1) o.fileName = s8(name_->text().trimmed());
+        return o;
+    }
+    // After a name that is taken: the name typed is the one to change, so it is no longer made up.
+    void keepTypedName() { nameTyped_ = true; }
+
+private:
+    const rt::Format& currentFormat() const { return formats_[(size_t)std::max(0, format_->currentIndex())]; }
+    void refreshName()
+    {
+        if (ids_.size() > 1) {
+            name_->setEnabled(false);
+            name_->setText("(each event: <media name> Take <number>)");
+            return;
+        }
+        if (nameTyped_) return;
+        name_->setText(qs(nextNrtFile(AppState::get().project(), ids_.front(), s8(folder_->text()), s8(currentFormat().ext)).takeName));
+    }
+    void refreshInfo()
+    {
+        const int k = template_->currentIndex();
+        const rt::Format& f = currentFormat();
+        info_->setText(k >= 0 && k < (int)f.templates.size() ? f.templates[(size_t)k].description : QString());
+    }
+    void fillTemplates()
+    {
+        template_->clear();
+        for (const rt::Tmpl& t : currentFormat().templates) template_->addItem(t.name);
+        refreshName();
+        refreshInfo();
+    }
+
+    std::vector<uint64_t> ids_;
+    std::vector<rt::Format> formats_;
+    QLineEdit *name_ = nullptr, *folder_ = nullptr;
+    QComboBox *format_ = nullptr, *template_ = nullptr;
+    QLabel* info_ = nullptr;
+    bool nameTyped_ = false;
+};
+
+}  // namespace
+
+void runNonRealTimeEventFx(QWidget* parent, const NrtHooks& hooks)
+{
+    AppState& app = AppState::get();
+    const std::vector<uint64_t> ids = selectedAudioEventsWithSound();
+    if (ids.empty()) {
+        QMessageBox::information(parent, "Apply Non-Real-Time Event FX", "Select the audio event to process first.");
+        return;
+    }
+    // everything done on the way is taken back if the user stops before the end
+    const size_t undo0 = app.undoCount();
+    const bool dirty0 = app.dirty();
+    auto giveUp = [&] { app.discardUndoTo(undo0, dirty0); };
+
+    FxTarget target;
+    target.kind = FxTarget::Event;
+    target.id = ids.front();
+    const std::vector<uint64_t> added = putChosenEffectsOn(target, parent);
+    if (added.empty()) {
+        giveUp();
+        return;
+    }
+    if (!setTakeFx(target, added, hooks, parent)) {
+        giveUp();
+        return;
     }
     FxChain nrtChain;
-    if (const Event* e = app.project().findEvent(first))
+    if (const Event* e = app.project().findEvent(target.id))
         for (const FxSlot& s : e->fx)
             if (std::find(added.begin(), added.end(), s.id) != added.end()) nrtChain.push_back(s);
 
-    // 3. VEGAS's Apply Non Real-Time FX window: file name and format, then Render
-    const std::vector<rt::Format> formats = nrtFormatList();
-    if (formats.empty()) { giveUp(); return; }
-    QDialog dlg(parent);
-    dlg.setObjectName("nonRealTimeFxDialog");
-    dlg.setWindowTitle("Apply Non Real-Time FX");
-    auto* v = new QVBoxLayout(&dlg);
-    v->addWidget(new QLabel(ids.size() > 1 ? QString("The sound of the %1 selected events is processed into new files, one per event, which become new takes.")
-                                                 .arg(ids.size())
-                                           : QString("The event's sound is processed into a new file, which becomes a new take."),
-                            &dlg));
-    auto* form = new QFormLayout();
-    QLineEdit* name = new QLineEdit(&dlg);
-    name->setObjectName("nrtFile");
-    form->addRow("Name:", name);
-    QLineEdit* folder = new QLineEdit(&dlg);
-    folder->setObjectName("nrtFolder");
-    folder->setText(qs(nrtDefaultFolder(app.project(), first)));
-    QPushButton* browse = new QPushButton("Browse...", &dlg);
-    browse->setObjectName("nrtBrowse");
-    auto* folderRow = new QHBoxLayout();
-    folderRow->addWidget(folder, 1);
-    folderRow->addWidget(browse);
-    form->addRow("Folder:", folderRow);
-    QComboBox* format = new QComboBox(&dlg);
-    format->setObjectName("nrtFormat");
-    for (const rt::Format& f : formats) format->addItem(f.name, f.key);
-    form->addRow("Format:", format);
-    QComboBox* templ = new QComboBox(&dlg);
-    templ->setObjectName("nrtTemplate");
-    form->addRow("Template:", templ);
-    v->addLayout(form);
-    QLabel* info = new QLabel(&dlg);
-    info->setObjectName("nrtInfo");
-    info->setWordWrap(true);
-    v->addWidget(info);
-    bool edited = false;
-    auto currentFormat = [&]() -> const rt::Format& { return formats[(size_t)std::max(0, format->currentIndex())]; };
-    auto refreshName = [&] {
-        if (ids.size() > 1) {
-            name->setEnabled(false);
-            name->setText("(each event: <media name> Take <number>)");
-            return;
-        }
-        if (edited) return;
-        name->setText(qs(nextNrtFile(app.project(), first, s8(folder->text()), s8(currentFormat().ext)).takeName));
-    };
-    auto refreshInfo = [&] {
-        const int k = templ->currentIndex();
-        const rt::Format& f = currentFormat();
-        info->setText(k >= 0 && k < (int)f.templates.size() ? f.templates[(size_t)k].description : QString());
-    };
-    auto fillTemplates = [&] {
-        templ->clear();
-        for (const rt::Tmpl& t : currentFormat().templates) templ->addItem(t.name);
-        refreshName();
-        refreshInfo();
-    };
-    QObject::connect(format, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg, [fillTemplates](int) { fillTemplates(); });
-    QObject::connect(templ, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg, [refreshInfo](int) { refreshInfo(); });
-    QObject::connect(name, &QLineEdit::textEdited, &dlg, [&edited](const QString&) { edited = true; });
-    QObject::connect(folder, &QLineEdit::textChanged, &dlg, [refreshName](const QString&) { refreshName(); });
-    QObject::connect(browse, &QPushButton::clicked, &dlg, [&dlg, folder] {
-        const QString f = QFileDialog::getExistingDirectory(&dlg, "Apply Non Real-Time FX", folder->text());
-        if (!f.isEmpty()) folder->setText(f);
-    });
-    fillTemplates();
-    QDialogButtonBox* bb = new QDialogButtonBox(&dlg);
-    QPushButton* render = bb->addButton("Render", QDialogButtonBox::AcceptRole);
-    render->setObjectName("nrtRender");
-    bb->addButton(QDialogButtonBox::Cancel);
-    QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    v->addWidget(bb);
-
-    while (true) {
-        if (dlg.exec() != QDialog::Accepted) { giveUp(); return; }
-        NrtOptions o;
-        o.parent = parent;
-        o.folder = s8(folder->text().trimmed());
-        o.format.format = s8(currentFormat().key);
-        o.format.templateName = s8(templ->currentText());
-        if (ids.size() == 1) o.fileName = s8(name->text().trimmed());
+    std::vector<rt::Format> formats = nrtFormatList();
+    if (formats.empty()) {
+        giveUp();
+        return;
+    }
+    ApplyNrtDialog dlg(ids, std::move(formats), parent);
+    while (dlg.exec() == QDialog::Accepted) {
+        const NrtOptions o = dlg.options(parent);
         std::string err;
         if (applyNonRealTimeFxToEvents(ids, nrtChain, o, &err)) {
             // Take dialog edits, effects put on and new takes: one undo step
@@ -778,7 +865,7 @@ void runNonRealTimeEventFx(QWidget* parent, const NrtHooks& hooks)
         const bool exists = err.find("already exists") != std::string::npos;
         QMessageBox::warning(parent, "Apply Non-Real-Time Event FX", "The effects could not be applied: " + qs(err.empty() ? std::string("no file name") : err));
         if (!exists) break;
-        edited = true;      // the name to change is the one typed
+        dlg.keepTypedName();
     }
     giveUp();
 }

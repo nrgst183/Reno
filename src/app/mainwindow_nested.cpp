@@ -44,36 +44,23 @@ namespace reno {
 namespace app {
 
 // ------------------------------------------------------------------------------------------ nested timelines
-// VEGAS's nested timelines: the selected events are saved as a project of their own (a .veg next to this one) and
-// replaced by one event that plays it (an image and a sound event, grouped, if both kinds were selected).
-void createNestedTimeline(QWidget* parent)
+namespace {
+
+// An event chosen for nesting, with the index of its track.
+struct NestedSel {
+    size_t track;
+    const Event* e;
+};
+
+// The nested project: the same settings, the media the events use, a track for each track they are on, the events
+// moved so that the first starts at 0 (t0 in the project).
+Project nestedProjectOf(const Project& p, const std::vector<NestedSel>& sel, double t0)
 {
-    AppState& app = AppState::get();
-    const Project& p = app.project();
-    struct Sel { size_t track; const Event* e; };
-    std::vector<Sel> sel;
-    for (size_t ti = 0; ti < p.tracks.size(); ++ti)
-        for (const Event& e : p.tracks[ti].events)
-            if (app.selection().count(e.id)) sel.push_back({ti, &e});
-    if (sel.empty()) {
-        app.status("Select the events to nest first.");
-        return;
-    }
-    if (app.path().empty()) {
-        QMessageBox::information(parent, "Create Nested Timeline", "Save the project first. The nested timeline is saved as a project next to it.");
-        return;
-    }
-    double t0 = sel[0].e->start, t1 = sel[0].e->end();
-    for (const auto& s : sel) {
-        t0 = std::min(t0, s.e->start);
-        t1 = std::max(t1, s.e->end());
-    }
-    // the nested project: same settings, the media the events use, a track for each track they are on
     Project n;
     n.settings = p.settings;
     std::map<uint64_t, uint64_t> mediaMap, groupMap;
     std::map<size_t, size_t> trackMap;
-    for (const auto& s : sel) {
+    for (const NestedSel& s : sel) {
         if (!mediaMap.count(s.e->mediaId))
             if (const MediaItem* m = p.findMedia(s.e->mediaId)) {
                 MediaItem c = *m;
@@ -109,18 +96,25 @@ void createNestedTimeline(QWidget* parent)
         n.tracks[trackMap[s.track]].events.push_back(e);
     }
     for (auto& t : n.tracks) t.sortEvents();
-    // next to the project: "<project> nested 1.veg", "... 2.veg"...
-    const QFileInfo fi(QString::fromStdString(app.path()));
+    return n;
+}
+
+// "<project> nested 1.veg", "... 2.veg"...: the first that is free, next to the project.
+QString freeNestedPath(const std::string& projectPath)
+{
+    const QFileInfo fi(QString::fromStdString(projectPath));
     QString path;
     for (int k = 1;; ++k) {
         path = fi.dir().filePath(QString("%1 nested %2.veg").arg(fi.completeBaseName()).arg(k));
         if (!QFileInfo::exists(path)) break;
     }
-    const VegasSaveResult r = saveVegasProject(n, path.toStdString());
-    if (!r.ok) {
-        QMessageBox::warning(parent, "Create Nested Timeline", QString("%1\n\n%2").arg(path, QString::fromStdString(r.error)));
-        return;
-    }
+    return path;
+}
+
+// What the saved nested project plays as media (from the file; if it cannot be read back, the project's frame size and
+// the events' length).
+MediaInfo nestedMediaInfo(const QString& path, const Project& p, double length)
+{
     MediaInfo info;
     std::string err;
     if (!vegasProjectMediaInfo(path.toStdString(), info, &err)) {
@@ -129,8 +123,44 @@ void createNestedTimeline(QWidget* parent)
         info.hasVideo = info.hasAudio = true;
         info.width = p.settings.width;
         info.height = p.settings.height;
-        info.duration = t1 - t0;
+        info.duration = length;
     }
+    return info;
+}
+
+}  // namespace
+
+// VEGAS's nested timelines: the selected events are saved as a project of their own (a .veg next to this one) and
+// replaced by one event that plays it (an image and a sound event, grouped, if both kinds were selected).
+void createNestedTimeline(QWidget* parent)
+{
+    AppState& app = AppState::get();
+    const Project& p = app.project();
+    std::vector<NestedSel> sel;
+    for (size_t ti = 0; ti < p.tracks.size(); ++ti)
+        for (const Event& e : p.tracks[ti].events)
+            if (app.selection().count(e.id)) sel.push_back({ti, &e});
+    if (sel.empty()) {
+        app.status("Select the events to nest first.");
+        return;
+    }
+    if (app.path().empty()) {
+        QMessageBox::information(parent, "Create Nested Timeline", "Save the project first. The nested timeline is saved as a project next to it.");
+        return;
+    }
+    double t0 = sel[0].e->start, t1 = sel[0].e->end();
+    for (const auto& s : sel) {
+        t0 = std::min(t0, s.e->start);
+        t1 = std::max(t1, s.e->end());
+    }
+    Project n = nestedProjectOf(p, sel, t0);
+    const QString path = freeNestedPath(app.path());
+    const VegasSaveResult r = saveVegasProject(n, path.toStdString());
+    if (!r.ok) {
+        QMessageBox::warning(parent, "Create Nested Timeline", QString("%1\n\n%2").arg(path, QString::fromStdString(r.error)));
+        return;
+    }
+    const MediaInfo info = nestedMediaInfo(path, p, t1 - t0);
     bool video = false, audio = false;
     size_t videoTrack = 0, audioTrack = 0;
     for (const auto& s : sel) {

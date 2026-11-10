@@ -9,6 +9,10 @@
 // VEGAS settings for hardware and features Reno lacks (control surfaces, CD burning, GPU and stereoscopic 3D,
 // ASIO...) are not shown.
 #include "editdialogs.h"
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#endif
 #include "panels.h"
 #include "midisync.h"
 #include "playback.h"
@@ -123,6 +127,16 @@ qint64 physicalMemoryMb()
     m.dwLength = sizeof(m);
     if (GlobalMemoryStatusEx(&m)) return (qint64)(m.ullTotalPhys / (1024 * 1024));
     return 0;
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+    // (no /proc/meminfo: the system's own count)
+#  ifdef __APPLE__
+    const char* name = "hw.memsize";
+#  else
+    const char* name = "hw.physmem";
+#  endif
+    uint64_t bytes = 0;
+    size_t size = sizeof bytes;
+    return sysctlbyname(name, &bytes, &size, nullptr, 0) == 0 ? (qint64)(bytes / (1024 * 1024)) : 0;
 #else
     QFile f("/proc/meminfo");
     if (f.open(QIODevice::ReadOnly)) {

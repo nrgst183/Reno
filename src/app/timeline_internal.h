@@ -1067,6 +1067,14 @@ struct TimelineWidget::Impl {
     void drawFadeLengths(QPainter& p, const EventPaint& ev);
     void drawFadeHandles(QPainter& p, const EventPaint& ev);
     void drawEventButtons(QPainter& p, const EventPaint& ev);
+    void drawMarkerLabel(QPainter& p, double x, double top, const std::string& name, const QColor& back, const QColor& ink);
+    void drawMediaMarkers(QPainter& p, const Event& e, const MediaItem& m, const QRectF& v);
+    void drawEventLength(QPainter& p, const Event& e, const QRectF& r, const QRectF& v);
+    void drawSyncDrift(QPainter& p, const Event& e, const QRectF& r, const QRectF& v);
+    void drawTakeInfo(QPainter& p, const Event& e, const QRectF& r, const QRectF& v);
+    void drawSnapFlag(QPainter& p, const Event& e, const QRectF& r);
+    void drawLock(QPainter& p, const QRectF& r, const QRectF& v);
+    void drawEdgeSelection(QPainter& p, const Event& e, const QRectF& r, const QRectF& v);
     void drawEventExtras(QPainter& p, const Event& e, const QRectF& r, const QRectF& v, bool audioEvent);
     static QColor markerColor(const Project::Marker& m);
     void drawCrossFade(QPainter& p, const Row& row, const Event& a, const Event& b, const QRect& c);
@@ -1221,6 +1229,8 @@ struct TimelineWidget::Impl {
     void userCursor(double t);
     Mover moverOf(const Project& p, int track, const Event& e) const;
     int trackIndex(uint64_t id) const;
+    void pressLeftDuringRightDrag(const QPointF& pos);
+    bool pressHeader(const Hit& h, const QPointF& pos, bool ctrl);
     void press(QMouseEvent* ev);
     bool pressRight(QMouseEvent* ev, const QPointF& pos);
     void selectTracksForPress(const Hit& h, Qt::KeyboardModifiers mods);
@@ -1366,6 +1376,11 @@ struct TimelineWidget::Impl {
     int ownCursor = -1;
 
     void release(QMouseEvent* ev);
+    // release()'s parts: what letting go ends
+    void finishMove(const DragState& was);
+    void finishEdgeDrag(const DragState& was);
+    void finishZoomRange(const DragState& was, const QPointF& pos);
+    void clickedButton(const DragState& was, const QPointF& pos);
     QRegion dragVisualsOf(const DragState& d) const;
     void releaseRight(QMouseEvent* ev);
     bool cancelMouseDrag();

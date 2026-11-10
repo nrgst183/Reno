@@ -177,15 +177,23 @@ private:
     void readSummary(const Chunk& c);
     void readMixer(const Chunk& c);
     void readMedia(const Chunk& list);
+    void addGeneratedMedia(const Chunk* c, MediaRec& m, const char* legacyPlugin);
+    void addFileMedia(const Chunk* c, MediaRec& m);
     uint64_t mediaItemForFile(const std::string& path, const std::string& name, bool sequence = false);
     void readBuses(const Chunk& list);
     void readVideoOutFx(const Chunk& list);
     void readTrack(const Chunk& t, int index);
+    void readTrackFx(const Chunk& tc, Track& t, const std::string& label, VegTrackOrigin& to);
+    void readTrackMotionList(const Chunk& tc, Track& t, const std::string& label);
+    void readParentMotion(const Chunk& tc, Track& t);
+    void readTrackEvents(const Chunk& tc, Track& t, const std::string& label, VegTrackOrigin& to);
     void readAudioTrackSettings(const Chunk& tc, Track& t, const std::string& label, bool automation, const bool* hasEnvelope);
     void readVideoTrackSettings(const Chunk& tc, Track& t, const std::string& label, bool automation, const bool* hasEnvelope);
     bool readEnvelopeList(const Chunk& list, bool track, TrackType type, const std::string& label, Envelopes& out,
                           std::vector<VegHidden>& hidden, const FxChain* chain = nullptr);
     bool readEvent(const Chunk& ev, Track& track, const std::string& where, Event& out);
+    void readEventLevels(const Bytes& d, size_t s, bool normalize, TrackType type, const std::string& where, Event& e);
+    bool takeOf(const Bytes& tk, double rate, double length, Take& out);
     void readEventAudioSettings(const Chunk& ev, Event& e, const std::string& where);
     void readEventTransition(const Chunk& vd, Event& e, const std::string& where);
     void readEventVideoFx(const Chunk& ev, Event& e, VegEventOrigin& eo, const MediaRec& m, const std::string& where);

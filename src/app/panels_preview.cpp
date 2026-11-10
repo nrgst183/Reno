@@ -1483,7 +1483,19 @@ struct PreviewWidget::Impl {
         play->setPlaying(pb->playing());
     }
     void showMenu(QWidget* under);
+    void showZoomMenu(QWidget* button);
+    void showOverlayMenu();
+    void copySnapshot();
+    void saveSnapshot();
+    void frameShown(const QImage& image, double seconds, double ms);
+    void changed(int changes);
+    void loadSettings();
     void toggleOverlay(bool grid);
+    // Parts of the window, made once by the constructor (below it).
+    QWidget* makeRule();
+    QWidget* buildToolBar();
+    void addRenderingIndicator();
+    QWidget* buildInfoBar();
 };
 
 void PreviewWidget::Impl::setTransportSet(const QStringList& set)
@@ -1736,6 +1748,395 @@ void PreviewWidget::Impl::toggleOverlay(bool grid)
     view->update();
 }
 
+// The zoom button's menu: zoom in and out by 10%, back to 100%, a few sizes, or the zoom bypassed.
+void PreviewWidget::Impl::showZoomMenu(QWidget* button)
+{
+    QMenu menu(owner);
+    menu.setObjectName("zoomMenu");
+    PictureView* v = view;
+    QAction* in = menu.addAction("Zoom In");
+    in->setObjectName("zoomIn");
+    QAction* out = menu.addAction("Zoom Out");
+    out->setObjectName("zoomOut");
+    QAction* reset = menu.addAction("Reset Zoom (100%)");
+    reset->setObjectName("zoomReset");
+    menu.addSeparator();
+    for (int pct : {25, 50, 100, 200, 400}) {
+        QAction* a = menu.addAction(QString("%1%").arg(pct));
+        a->setCheckable(true);
+        a->setChecked(!v->zoomBypassed && v->zoomPct == pct);
+        QObject::connect(a, &QAction::triggered, &menu, [v, pct] { v->setZoom(pct); });
+    }
+    menu.addSeparator();
+    QAction* byp = menu.addAction("Bypass Zoom");
+    byp->setObjectName("zoomBypass");
+    byp->setCheckable(true);
+    byp->setChecked(v->zoomBypassed);
+    byp->setEnabled(v->zoomPct != 100);
+    QObject::connect(in, &QAction::triggered, &menu, [v] { v->setZoom((v->zoomBypassed ? 100 : v->zoomPct) + 10); });
+    QObject::connect(out, &QAction::triggered, &menu, [v] { v->setZoom((v->zoomBypassed ? 100 : v->zoomPct) - 10); });
+    QObject::connect(reset, &QAction::triggered, &menu, [v] { v->zoomBypassed = false; v->setZoom(100); });
+    QObject::connect(byp, &QAction::toggled, &menu, [v](bool on) { v->bypassZoom(on); });
+    menu.exec(button->mapToGlobal(QPoint(0, button->height())));
+}
+
+// The overlays button's menu: the effects' on-screen controls, safe areas, grid, a single colour channel, closed
+// captions and 360-degree viewing.
+void PreviewWidget::Impl::showOverlayMenu()
+{
+    QMenu menu(owner);
+    QAction* fx = menu.addAction("Show Video FX Overlays");
+    fx->setObjectName("showFxOverlays");
+    fx->setCheckable(true);
+    fx->setChecked(view->showOverlays);
+    fx->setToolTip("The on-screen controls of the effect open in the Video FX window");
+    menu.addSeparator();
+    QAction* safe = menu.addAction("Safe Areas");
+    safe->setCheckable(true);
+    safe->setChecked(view->safeAreas);
+    QAction* grid2 = menu.addAction("Grid");
+    grid2->setCheckable(true);
+    grid2->setChecked(view->grid);
+    menu.addSeparator();
+    const char* names[] = {"Red", "Green", "Blue", "Red as Grayscale", "Green as Grayscale", "Blue as Grayscale", "Alpha as Grayscale"};
+    QAction* channels[7];
+    for (int k = 0; k < 7; ++k) {
+        channels[k] = menu.addAction(names[k]);
+        channels[k]->setCheckable(true);
+        channels[k]->setChecked(view->channel == k + 1);
+    }
+    menu.addSeparator();
+    QMenu* cc = menu.addMenu("Closed Captioning");
+    QAction* ccs[4];
+    for (int k = 0; k < 4; ++k) {
+        ccs[k] = cc->addAction(QString("CC%1").arg(k + 1));
+        ccs[k]->setObjectName(QString("overlayCC%1").arg(k + 1));
+        ccs[k]->setCheckable(true);
+        ccs[k]->setChecked(view->captionChannel == k + 1);
+    }
+    QAction* m360 = menu.addAction(QString::fromUtf8("360\u00B0 Mode"));
+    m360->setObjectName("overlay360");
+    m360->setCheckable(true);
+    m360->setChecked(view->mode360);
+    m360->setEnabled(AppState::get().project().settings.output360);
+    QAction* picked = menu.exec(overlays->mapToGlobal(QPoint(0, overlays->height())));
+    for (int k = 0; k < 4; ++k)
+        if (picked == ccs[k]) {
+            owner->setCaptionChannel(view->captionChannel == k + 1 ? 0 : k + 1);
+            return;
+        }
+    if (picked == m360) {
+        owner->set360Mode(!view->mode360);
+        return;
+    }
+    for (int k = 0; k < 7; ++k)
+        if (picked == channels[k]) {
+            owner->setChannel(view->channel == k + 1 ? 0 : k + 1);
+            return;
+        }
+    if (picked == fx) owner->setShowOverlays(!view->showOverlays);
+    else if (picked) toggleOverlay(picked == grid2);
+}
+
+// Snapshot to Clipboard: the picture shown (and, when split screen shows the clipboard, the split side refreshed).
+void PreviewWidget::Impl::copySnapshot()
+{
+    if (view->image().isNull()) return;
+    QGuiApplication::clipboard()->setImage(view->image());
+    if (view->split && view->splitClipboard) refreshSplit(AppState::get().cursor());
+}
+
+// Save Snapshot to File: the picture shown, as PNG or JPEG, added to Project Media.
+void PreviewWidget::Impl::saveSnapshot()
+{
+    if (view->image().isNull()) return;
+    const AppState& app = AppState::get();
+    const QString dir = QSettings().value("preview/snapshotFolder", app.path().empty() ? QDir::homePath() : QFileInfo(qs(app.path())).absolutePath()).toString();
+    const QString suggested = QDir(dir).filePath(QString("Snapshot %1.png").arg((qlonglong)app.project().frameAt(app.cursor())));
+    const QString f = QFileDialog::getSaveFileName(owner, "Save Snapshot to File", suggested, "PNG pictures (*.png);;JPEG pictures (*.jpg)");
+    if (!f.isEmpty()) QSettings().setValue("preview/snapshotFolder", QFileInfo(f).absolutePath());
+    if (!f.isEmpty() && !view->image().save(f)) { QMessageBox::warning(owner, "Save Snapshot", QString("%1 could not be written.").arg(f)); return; }
+    if (!f.isEmpty()) {
+        std::string err;
+        if (AppState::get().importMedia(f.toStdString(), &err)) AppState::get().status(QString("Snapshot saved and added to Project Media: %1").arg(QFileInfo(f).fileName()).toStdString());
+    }
+}
+
+// A frame from playback (or a still frame rendered while paused).
+void PreviewWidget::Impl::frameShown(const QImage& image, double seconds, double ms)
+{
+    // Preferences > Preview Device, "Display frames in video preview window during playback": when cleared, the
+    // Video Preview keeps its image while playing (the time goes to the external monitor).
+    if (pb->playing() && !vprefs::on("prefs/pdShowInPreview")) {
+        lastMs = ms;
+        return;
+    }
+    view->setImage(image);
+    if (view->split) refreshSplit(seconds);
+    lastMs = ms;
+    showRenderMs();
+    showSizes();
+}
+
+// The project, cursor, playback or preferences changed.
+void PreviewWidget::Impl::changed(int changes)
+{
+    if (changes & (kCursor | kProject)) showTime();
+    if ((changes & kCursor) && pb->playing() && (!sizesShown.isValid() || sizesShown.elapsed() > 250)) {
+        sizesShown.start();
+        showSizes();
+    }
+    if (changes & kProject) showFormat();
+    if (changes & (kFxParams | kPlayback | kCursor)) syncButtons();
+    if (changes & kPrefs) {
+        arrange();
+        QSettings s;
+        const bool fit = s.value("preview/scaleToFit", true).toBool(), aspect = s.value("preview/simulateAspect", false).toBool();
+        if (fit != view->scaleToFit || aspect != view->simulateAspect) {
+            view->scaleToFit = fit;
+            view->simulateAspect = aspect;
+            view->qualityChanged();
+            showSizes();
+        }
+        view->update();
+    }
+    if (view->overlaySlot() && (changes & (kFxParams | kCursor | kProject | kPlayback))) view->overlayChanged();
+}
+
+// The preview's settings as last left: quality and size, overlays, split screen, and which bars are shown.
+void PreviewWidget::Impl::loadSettings()
+{
+    QSettings s;
+    const std::string q0 = AppState::get().prefs.previewQuality;
+    view->quality = q0 == "draft" ? PreviewQuality::Draft : q0 == "good" ? PreviewQuality::Good : q0 == "best" ? PreviewQuality::Best : PreviewQuality::Preview;
+    const int sv = s.value("preview/size", (int)PreviewSize::Full).toInt();
+    if (sv >= 0 && sv <= 3) view->size = (PreviewSize)sv;
+    view->safeAreas = s.value("preview/safeAreas", false).toBool();
+    view->grid = s.value("preview/grid", false).toBool();
+    view->showOverlays = s.value("preview/fxOverlays", true).toBool();
+    view->scaleToFit = s.value("preview/scaleToFit", true).toBool();
+    view->simulateAspect = s.value("preview/simulateAspect", false).toBool();
+    view->adjustForPlayback = s.value("preview/adjustForPlayback", false).toBool();
+    view->splitClipboard = s.value("preview/splitClipboard", false).toBool();
+    const QRectF area = s.value("preview/splitArea", QRectF(0, 0, 0.5, 1)).toRectF();
+    if (area.width() > 0.005 && area.height() > 0.005 && QRectF(0, 0, 1, 1).contains(area)) view->splitArea = area;
+    bar->setVisible(s.value("preview/toolbar", true).toBool());
+    if (!s.value("preview/statusBar", true).toBool()) setStatusShown(false);
+}
+
+// A one-pixel line across the window, between the tool bar, the picture and the information under it.
+QWidget* PreviewWidget::Impl::makeRule()
+{
+    QWidget* w = new QWidget(owner);
+    w->setFixedHeight(1);
+    w->setAutoFillBackground(true);
+    QPalette lp = w->palette();
+    lp.setColor(QPalette::Window, QColor(130, 130, 130));
+    w->setPalette(lp);
+    return w;
+}
+
+// The tool bar over the picture, and what its buttons do.
+QWidget* PreviewWidget::Impl::buildToolBar()
+{
+    PreviewWidget* q = owner;
+    Impl* impl = this;
+    bar = new QWidget(q);
+    bar->setObjectName("previewToolBar");
+    bar->setFixedHeight(29);
+    auto* tb = new QHBoxLayout(bar);
+    tb->setContentsMargins(4, 0, 4, 0);
+    tb->setSpacing(2);
+    auto* props = new GlyphButton(Glyph::Properties, "Project Video Properties", bar);
+    props->setObjectName("projectProperties");
+    auto* monitor = new GlyphButton(Glyph::Monitor, "Video Preview on External Monitor (Alt+Shift+4)", bar);
+    monitor->setObjectName("externalMonitor");
+    auto* outFx = new GlyphButton(Glyph::OutputFx, "Video Output FX", bar);
+    outFx->setObjectName("videoOutputFx");
+    split = new GlyphButton(Glyph::Split, "Split-Screen View: the picture without effects (or the clipboard's) in part of the window; "
+                                          "drag over the picture to choose the part. The arrow chooses what shows.", bar, 34);
+    split->setObjectName("splitScreen");
+    split->menuArrow = true;
+    split->setCheckable(true);
+    qualityButton = new QToolButton(bar);
+    qualityButton->setObjectName("previewQuality");
+    qualityButton->setPopupMode(QToolButton::InstantPopup);
+    qualityButton->setFocusPolicy(Qt::NoFocus);
+    qualityButton->setAutoRaise(true);
+    qualityButton->setStyleSheet("QToolButton::menu-indicator { image: none; width: 0px; } QToolButton { padding: 2px 3px; }");
+    overlays = new GlyphButton(Glyph::Overlays, "Overlays: the effects' on-screen controls, safe areas, grid", bar, 34);
+    overlays->setObjectName("overlays");
+    overlays->menuArrow = true;
+    auto* zoomBtn = new GlyphButton(Glyph::Zoom, "Zoom Video Preview: look closer at the picture (the mouse wheel zooms, the middle button pans)", bar, 34);
+    zoomBtn->setObjectName("zoomPreview");
+    zoomBtn->menuArrow = true;
+    button360 = new QToolButton(bar);
+    button360->setObjectName("preview360");
+    button360->setText(QString::fromUtf8("360\u00B0"));
+    button360->setCheckable(true);
+    button360->setAutoRaise(true);
+    button360->setFocusPolicy(Qt::NoFocus);
+    button360->setToolTip(QString::fromUtf8("360\u00B0 Preview: look round a 360\u00B0 project's picture (drag to turn, the wheel to zoom); "
+                                            "Project Properties' 360\u00B0 output makes a project a 360\u00B0 one"));
+    auto* copy = new GlyphButton(Glyph::Copy, "Copy Snapshot to Clipboard", bar);
+    copy->setObjectName("copySnapshot");
+    auto* save = new GlyphButton(Glyph::Save, "Save Snapshot to File...", bar);
+    save->setObjectName("saveSnapshot");
+    bypass = new GlyphButton(Glyph::Bypass, "Bypass All Video FX (show the picture without any effects)", bar);
+    bypass->setObjectName("bypassFx");
+    bypass->setCheckable(true);
+    for (QWidget* w : std::initializer_list<QWidget*>{props, monitor, outFx, split, qualityButton, overlays, zoomBtn, button360, copy, save, bypass}) tb->addWidget(w);
+    tb->addStretch(1);
+
+    QObject::connect(props, &QAbstractButton::clicked, q, [q] { if (q->onProjectProperties) q->onProjectProperties(); });
+    QObject::connect(monitor, &QAbstractButton::clicked, q, [q] { if (q->onExternalMonitor) q->onExternalMonitor(); });
+    QObject::connect(outFx, &QAbstractButton::clicked, q, [q] {
+        FxTarget t;
+        t.kind = FxTarget::VideoOut;
+        if (q->onOpenFx) q->onOpenFx(t, 0);
+    });
+    GlyphButton* splitBtn = split;
+    QObject::connect(splitBtn, &QAbstractButton::clicked, q, [impl, splitBtn](bool on) {
+        // a click on the arrow at the button's right opens the menu instead of turning the split on or off
+        if (splitBtn->mapFromGlobal(QCursor::pos()).x() >= splitBtn->width() - 10 && splitBtn->rect().contains(splitBtn->mapFromGlobal(QCursor::pos()))) {
+            splitBtn->setChecked(!on);
+            impl->showSplitMenu();
+            return;
+        }
+        impl->setSplit(on);
+    });
+    QMenu* qualities = new QMenu(qualityButton);
+    QObject::connect(qualities, &QMenu::aboutToShow, q, [q, impl, qualities] {
+        qualities->clear();
+        for (PreviewQuality qv : {PreviewQuality::Draft, PreviewQuality::Preview, PreviewQuality::Good, PreviewQuality::Best}) {
+            QMenu* sub = qualities->addMenu(qualityName(qv));
+            for (PreviewSize sv : {PreviewSize::Auto, PreviewSize::Quarter, PreviewSize::Half, PreviewSize::Full}) {
+                QAction* a = sub->addAction(sizeName(sv));
+                a->setCheckable(true);
+                a->setChecked(impl->view->quality == qv && impl->view->size == sv);
+                QObject::connect(a, &QAction::triggered, q, [q, qv, sv] { q->setQuality(qv, sv); });
+            }
+        }
+    });
+    qualityButton->setMenu(qualities);
+    QObject::connect(overlays, &QAbstractButton::clicked, q, [impl] { impl->showOverlayMenu(); });
+    QObject::connect(zoomBtn, &QAbstractButton::clicked, q, [impl, zoomBtn] { impl->showZoomMenu(zoomBtn); });
+    QObject::connect(button360, &QToolButton::clicked, q, [q](bool on) { q->set360Mode(on); });
+    QObject::connect(copy, &QAbstractButton::clicked, [impl] { impl->copySnapshot(); });
+    QObject::connect(save, &QAbstractButton::clicked, q, [impl] { impl->saveSnapshot(); });
+    QObject::connect(bypass, &QAbstractButton::clicked, [](bool on) {
+        AppState::get().bypassAllFx = on;
+        AppState::get().notify(kFxParams);
+    });
+    return bar;
+}
+
+// The rendering indicator over the picture's corner, checked a dozen times a second: shown once the preview has waited
+// more than 150 ms for an image.
+void PreviewWidget::Impl::addRenderingIndicator()
+{
+    PreviewWidget* q = owner;
+    Playback* playback = pb;
+    auto* busy = new RenderingIndicator(view);
+    QTimer* busyTimer = new QTimer(q);
+    busyTimer->setInterval(70);
+    PictureView* picture = view;
+    QObject::connect(busyTimer, &QTimer::timeout, q, [q, busy, picture, playback, busyTimer] {
+        // quiet: nothing playing and no picture awaited, so a slow check will do until something changes (below)
+        const bool quiet = !(playback && (playback->playing() || playback->renderingFor() > 0)) && busy->isHidden();
+        if (quiet != (busyTimer->interval() > 70)) busyTimer->setInterval(quiet ? 500 : 70);
+        const bool on = q->isVisible() && playback && playback->renderingFor() > 0.15;
+        if (on) {
+            const QRect pic = picture->target().isEmpty() ? picture->rect() : picture->target().intersected(picture->rect());
+            busy->move(std::max(0, pic.right() - busy->width() - 6), std::max(0, pic.top() + 6));
+            busy->step = (busy->step + 1) % 8;
+            if (busy->isHidden()) {
+                busy->show();
+                busy->raise();
+            }
+            busy->update();
+        } else if (!busy->isHidden()) {
+            busy->hide();
+        }
+    });
+    busyTimer->start();
+    // any change in the project, cursor or playback state: back to the quick check
+    busyListener.reset(new ListenerHandle([busyTimer](int) { if (busyTimer->interval() != 70) busyTimer->setInterval(70); }));
+}
+
+// The strip under the picture: the transport buttons and the project, preview, frame and display sizes.
+QWidget* PreviewWidget::Impl::buildInfoBar()
+{
+    PreviewWidget* q = owner;
+    Impl* impl = this;
+    under = new QWidget(q);
+    under->setObjectName("previewInfo");
+    play = new GlyphButton(Glyph::Play, "Play (Space)", under, 24, 22);
+    play->setObjectName("previewPlay");
+    auto* pauseBtn = new GlyphButton(Glyph::Pause, "Pause (Enter)", under, 24, 22);
+    pauseBtn->setObjectName("previewPause");
+    auto* stopBtn = new GlyphButton(Glyph::Stop, "Stop (Esc)", under, 24, 22);
+    stopBtn->setObjectName("previewStop");
+    auto* moreBtn = new GlyphButton(Glyph::Menu, "Snapshots and overlays", under, 24, 22);
+    moreBtn->setObjectName("previewMenu");
+    pause = pauseBtn;
+    stop = stopBtn;
+    more = moreBtn;
+    toStart = new GlyphButton(Glyph::GoToStart, "Go To Start (Ctrl+Home)", under, 24, 22);
+    toStart->setObjectName("previewGoToStart");
+    loop = new GlyphButton(Glyph::Loop, "Loop Playback (Q)", under, 24, 22);
+    loop->setObjectName("previewLoop");
+    loop->setCheckable(true);
+    record = new GlyphButton(Glyph::Record, "Record (Ctrl+R)", under, 24, 22);
+    record->setObjectName("previewRecord");
+    playStart = new GlyphButton(Glyph::PlayFromStart, "Play from Start (Shift+Space)", under, 24, 22);
+    playStart->setObjectName("previewPlayFromStart");
+    toEnd = new GlyphButton(Glyph::GoToEnd, "Go To End (Ctrl+End)", under, 24, 22);
+    toEnd->setObjectName("previewGoToEnd");
+    prevFrame = new GlyphButton(Glyph::PrevFrame, "Previous Frame (Left Arrow)", under, 24, 22);
+    prevFrame->setObjectName("previewPrevFrame");
+    nextFrame = new GlyphButton(Glyph::NextFrame, "Next Frame (Right Arrow)", under, 24, 22);
+    nextFrame->setObjectName("previewNextFrame");
+    for (GlyphButton* b : {prevFrame, nextFrame}) {
+        b->setAutoRepeat(true);
+        b->setAutoRepeatDelay(350);
+        b->setAutoRepeatInterval(60);
+    }
+    {
+        QSettings ts;
+        transportSet = ts.value("preview/transportButtons", QStringList{"play", "pause", "stop"}).toStringList();
+        transportShown = ts.value("preview/transportBar", true).toBool();
+    }
+    const char* captionText[4] = {"Project:", "Preview:", "Frame:", "Display:"};
+    for (int k = 0; k < 4; ++k) captions[k] = new QLabel(captionText[k], under);
+    project = infoLabel(under, "projectFormat", "The project's frame size and rate");
+    previewInfo = infoLabel(under, "previewSize", "The size the preview is rendered at, for the preview quality chosen");
+    frame = infoLabel(under, "frameNumber", "The frame at the cursor");
+    display = infoLabel(under, "displaySize", "The size the picture takes in this window");
+    arrange();
+
+    QObject::connect(play, &QAbstractButton::clicked, [impl] { if (!impl->pb->playing()) impl->pb->play(); });
+    QObject::connect(pauseBtn, &QAbstractButton::clicked, [impl] { impl->pb->pause(); });
+    QObject::connect(stopBtn, &QAbstractButton::clicked, [impl] { stopPlayback(impl->pb); });
+    QObject::connect(moreBtn, &QAbstractButton::clicked, [impl, moreBtn] { impl->showMenu(moreBtn); });
+    QObject::connect(toStart, &QAbstractButton::clicked, [impl] { impl->pb->jumpTo(0); });
+    QObject::connect(loop, &QAbstractButton::clicked, [](bool on) {
+        AppState::get().loopOn = on;
+        AppState::get().notify(kCursor);
+    });
+    // these do what the main window's commands of the same name do
+    auto command = [q](const char* name) {
+        if (QWidget* w = q->window())
+            if (QAction* a = w->findChild<QAction*>(name)) a->trigger();
+    };
+    QObject::connect(record, &QAbstractButton::clicked, q, [command] { command("record"); });
+    QObject::connect(playStart, &QAbstractButton::clicked, q, [command] { command("playFromStart"); });
+    QObject::connect(toEnd, &QAbstractButton::clicked, q, [command] { command("goEnd"); });
+    QObject::connect(prevFrame, &QAbstractButton::clicked, q, [command] { command("prevFrame"); });
+    QObject::connect(nextFrame, &QAbstractButton::clicked, q, [command] { command("nextFrame"); });
+    return under;
+}
+
 PreviewWidget::PreviewWidget(Playback* playback, QWidget* parent) : QWidget(parent), d(new Impl())
 {
     d->owner = this;
@@ -1748,367 +2149,28 @@ PreviewWidget::PreviewWidget(Playback* playback, QWidget* parent) : QWidget(pare
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
-    auto rule = [this](const QColor& c) {
-        QWidget* w = new QWidget(this);
-        w->setFixedHeight(1);
-        w->setAutoFillBackground(true);
-        QPalette lp = w->palette();
-        lp.setColor(QPalette::Window, c);
-        w->setPalette(lp);
-        return w;
-    };
-    d->rules[0] = rule(QColor(130, 130, 130));
+    d->rules[0] = d->makeRule();
     root->addWidget(d->rules[0]);
-
-    auto* bar = new QWidget(this);
-    bar->setObjectName("previewToolBar");
-    bar->setFixedHeight(29);
-    auto* tb = new QHBoxLayout(bar);
-    tb->setContentsMargins(4, 0, 4, 0);
-    tb->setSpacing(2);
-    auto* props = new GlyphButton(Glyph::Properties, "Project Video Properties", bar);
-    props->setObjectName("projectProperties");
-    d->bar = bar;
-    auto* monitor = new GlyphButton(Glyph::Monitor, "Video Preview on External Monitor (Alt+Shift+4)", bar);
-    monitor->setObjectName("externalMonitor");
-    auto* outFx = new GlyphButton(Glyph::OutputFx, "Video Output FX", bar);
-    outFx->setObjectName("videoOutputFx");
-    auto* split = new GlyphButton(Glyph::Split, "Split-Screen View: the picture without effects (or the clipboard's) in part of the window; "
-                                                "drag over the picture to choose the part. The arrow chooses what shows.", bar, 34);
-    split->setObjectName("splitScreen");
-    split->menuArrow = true;
-    split->setCheckable(true);
-    d->split = split;
-    d->qualityButton = new QToolButton(bar);
-    d->qualityButton->setObjectName("previewQuality");
-    d->qualityButton->setPopupMode(QToolButton::InstantPopup);
-    d->qualityButton->setFocusPolicy(Qt::NoFocus);
-    d->qualityButton->setAutoRaise(true);
-    d->qualityButton->setStyleSheet("QToolButton::menu-indicator { image: none; width: 0px; } QToolButton { padding: 2px 3px; }");
-    d->overlays = new GlyphButton(Glyph::Overlays, "Overlays: the effects' on-screen controls, safe areas, grid", bar, 34);
-    d->overlays->setObjectName("overlays");
-    d->overlays->menuArrow = true;
-    auto* zoomBtn = new GlyphButton(Glyph::Zoom, "Zoom Video Preview: look closer at the picture (the mouse wheel zooms, the middle button pans)", bar, 34);
-    zoomBtn->setObjectName("zoomPreview");
-    zoomBtn->menuArrow = true;
-    d->button360 = new QToolButton(bar);
-    d->button360->setObjectName("preview360");
-    d->button360->setText(QString::fromUtf8("360\u00B0"));
-    d->button360->setCheckable(true);
-    d->button360->setAutoRaise(true);
-    d->button360->setFocusPolicy(Qt::NoFocus);
-    d->button360->setToolTip(QString::fromUtf8("360\u00B0 Preview: look round a 360\u00B0 project's picture (drag to turn, the wheel to zoom); "
-                                               "Project Properties' 360\u00B0 output makes a project a 360\u00B0 one"));
-    auto* copy = new GlyphButton(Glyph::Copy, "Copy Snapshot to Clipboard", bar);
-    copy->setObjectName("copySnapshot");
-    auto* save = new GlyphButton(Glyph::Save, "Save Snapshot to File...", bar);
-    save->setObjectName("saveSnapshot");
-    d->bypass = new GlyphButton(Glyph::Bypass, "Bypass All Video FX (show the picture without any effects)", bar);
-    d->bypass->setObjectName("bypassFx");
-    d->bypass->setCheckable(true);
-    for (QWidget* w : std::initializer_list<QWidget*>{props, monitor, outFx, split, d->qualityButton, d->overlays, zoomBtn, d->button360, copy, save, d->bypass}) tb->addWidget(w);
-    tb->addStretch(1);
-    root->addWidget(bar);
+    root->addWidget(d->buildToolBar());
 
     d->view = new PictureView(this);
-    {
-        // rendering indicator over the frame's corner, checked a dozen times a second: shown once the preview has
-        // waited more than 150 ms for an image
-        auto* busy = new RenderingIndicator(d->view);
-        QTimer* busyTimer = new QTimer(this);
-        busyTimer->setInterval(70);
-        PictureView* view = d->view;
-        QObject::connect(busyTimer, &QTimer::timeout, this, [this, busy, view, playback, busyTimer] {
-            // quiet: nothing playing and no picture awaited, so a slow check will do until something changes (below)
-            const bool quiet = !(playback && (playback->playing() || playback->renderingFor() > 0)) && busy->isHidden();
-            if (quiet != (busyTimer->interval() > 70)) busyTimer->setInterval(quiet ? 500 : 70);
-            const bool on = isVisible() && playback && playback->renderingFor() > 0.15;
-            if (on) {
-                const QRect pic = view->target().isEmpty() ? view->rect() : view->target().intersected(view->rect());
-                busy->move(std::max(0, pic.right() - busy->width() - 6), std::max(0, pic.top() + 6));
-                busy->step = (busy->step + 1) % 8;
-                if (busy->isHidden()) {
-                    busy->show();
-                    busy->raise();
-                }
-                busy->update();
-            } else if (!busy->isHidden()) {
-                busy->hide();
-            }
-        });
-        busyTimer->start();
-        // any change in the project, cursor or playback state: back to the quick check
-        d->busyListener.reset(new ListenerHandle([busyTimer](int) { if (busyTimer->interval() != 70) busyTimer->setInterval(70); }));
-    }
     d->view->setObjectName("previewPicture");
+    d->addRenderingIndicator();
     root->addWidget(d->view, 1);
-    d->rules[1] = rule(QColor(130, 130, 130));
+    d->rules[1] = d->makeRule();
     root->addWidget(d->rules[1]);
+    root->addWidget(d->buildInfoBar());
 
-    auto* under = new QWidget(this);
-    under->setObjectName("previewInfo");
-    d->under = under;
-    d->play = new GlyphButton(Glyph::Play, "Play (Space)", under, 24, 22);
-    d->play->setObjectName("previewPlay");
-    auto* pause = new GlyphButton(Glyph::Pause, "Pause (Enter)", under, 24, 22);
-    pause->setObjectName("previewPause");
-    auto* stop = new GlyphButton(Glyph::Stop, "Stop (Esc)", under, 24, 22);
-    stop->setObjectName("previewStop");
-    auto* more = new GlyphButton(Glyph::Menu, "Snapshots and overlays", under, 24, 22);
-    more->setObjectName("previewMenu");
-    d->pause = pause;
-    d->stop = stop;
-    d->more = more;
-    d->toStart = new GlyphButton(Glyph::GoToStart, "Go To Start (Ctrl+Home)", under, 24, 22);
-    d->toStart->setObjectName("previewGoToStart");
-    d->loop = new GlyphButton(Glyph::Loop, "Loop Playback (Q)", under, 24, 22);
-    d->loop->setObjectName("previewLoop");
-    d->loop->setCheckable(true);
-    d->record = new GlyphButton(Glyph::Record, "Record (Ctrl+R)", under, 24, 22);
-    d->record->setObjectName("previewRecord");
-    d->playStart = new GlyphButton(Glyph::PlayFromStart, "Play from Start (Shift+Space)", under, 24, 22);
-    d->playStart->setObjectName("previewPlayFromStart");
-    d->toEnd = new GlyphButton(Glyph::GoToEnd, "Go To End (Ctrl+End)", under, 24, 22);
-    d->toEnd->setObjectName("previewGoToEnd");
-    d->prevFrame = new GlyphButton(Glyph::PrevFrame, "Previous Frame (Left Arrow)", under, 24, 22);
-    d->prevFrame->setObjectName("previewPrevFrame");
-    d->nextFrame = new GlyphButton(Glyph::NextFrame, "Next Frame (Right Arrow)", under, 24, 22);
-    d->nextFrame->setObjectName("previewNextFrame");
-    for (GlyphButton* b : {d->prevFrame, d->nextFrame}) {
-        b->setAutoRepeat(true);
-        b->setAutoRepeatDelay(350);
-        b->setAutoRepeatInterval(60);
-    }
-    {
-        QSettings ts;
-        d->transportSet = ts.value("preview/transportButtons", QStringList{"play", "pause", "stop"}).toStringList();
-        d->transportShown = ts.value("preview/transportBar", true).toBool();
-    }
-    const char* captionText[4] = {"Project:", "Preview:", "Frame:", "Display:"};
-    for (int k = 0; k < 4; ++k) d->captions[k] = new QLabel(captionText[k], under);
-    d->project = infoLabel(under, "projectFormat", "The project's frame size and rate");
-    d->previewInfo = infoLabel(under, "previewSize", "The size the preview is rendered at, for the preview quality chosen");
-    d->frame = infoLabel(under, "frameNumber", "The frame at the cursor");
-    d->display = infoLabel(under, "displaySize", "The size the picture takes in this window");
-    d->arrange();
-    root->addWidget(under);
-
-    {
-        QSettings s;
-        const std::string q0 = AppState::get().prefs.previewQuality;
-        d->view->quality = q0 == "draft" ? PreviewQuality::Draft : q0 == "good" ? PreviewQuality::Good : q0 == "best" ? PreviewQuality::Best : PreviewQuality::Preview;
-        const int sv = s.value("preview/size", (int)PreviewSize::Full).toInt();
-        if (sv >= 0 && sv <= 3) d->view->size = (PreviewSize)sv;
-        d->view->safeAreas = s.value("preview/safeAreas", false).toBool();
-        d->view->grid = s.value("preview/grid", false).toBool();
-        d->view->showOverlays = s.value("preview/fxOverlays", true).toBool();
-        d->view->scaleToFit = s.value("preview/scaleToFit", true).toBool();
-        d->view->simulateAspect = s.value("preview/simulateAspect", false).toBool();
-        d->view->adjustForPlayback = s.value("preview/adjustForPlayback", false).toBool();
-        d->view->splitClipboard = s.value("preview/splitClipboard", false).toBool();
-        const QRectF area = s.value("preview/splitArea", QRectF(0, 0, 0.5, 1)).toRectF();
-        if (area.width() > 0.005 && area.height() > 0.005 && QRectF(0, 0, 1, 1).contains(area)) d->view->splitArea = area;
-        bar->setVisible(s.value("preview/toolbar", true).toBool());
-        if (!s.value("preview/statusBar", true).toBool()) d->setStatusShown(false);
-    }
+    d->loadSettings();
     d->view->playback = playback;
     if (playback) playback->setFullQuality(d->view->quality == PreviewQuality::Best);
+    d->view->captionChannel = std::max(0, std::min(4, QSettings().value("preview/captions", 0).toInt()));
 
     Impl* impl = d.get();
-    QObject::connect(props, &QAbstractButton::clicked, this, [this] { if (onProjectProperties) onProjectProperties(); });
-    QObject::connect(monitor, &QAbstractButton::clicked, this, [this] { if (onExternalMonitor) onExternalMonitor(); });
-    QObject::connect(split, &QAbstractButton::clicked, this, [impl, split](bool on) {
-        if (split->mapFromGlobal(QCursor::pos()).x() >= split->width() - 10 && split->rect().contains(split->mapFromGlobal(QCursor::pos()))) {
-            split->setChecked(!on);
-            impl->showSplitMenu();
-            return;
-        }
-        impl->setSplit(on);
-    });
     d->view->onContextMenu = [impl](const QPoint& global) { impl->showContextMenu(global); };
     d->view->onSplitAreaChanged = [impl] { QSettings().setValue("preview/splitArea", impl->view->splitArea); };
-    QObject::connect(outFx, &QAbstractButton::clicked, this, [this] {
-        FxTarget t;
-        t.kind = FxTarget::VideoOut;
-        if (onOpenFx) onOpenFx(t, 0);
-    });
-    QObject::connect(d->bypass, &QAbstractButton::clicked, [](bool on) {
-        AppState::get().bypassAllFx = on;
-        AppState::get().notify(kFxParams);
-    });
-    QMenu* qualities = new QMenu(d->qualityButton);
-    QObject::connect(qualities, &QMenu::aboutToShow, this, [this, impl, qualities] {
-        qualities->clear();
-        for (PreviewQuality qv : {PreviewQuality::Draft, PreviewQuality::Preview, PreviewQuality::Good, PreviewQuality::Best}) {
-            QMenu* sub = qualities->addMenu(qualityName(qv));
-            for (PreviewSize sv : {PreviewSize::Auto, PreviewSize::Quarter, PreviewSize::Half, PreviewSize::Full}) {
-                QAction* a = sub->addAction(sizeName(sv));
-                a->setCheckable(true);
-                a->setChecked(impl->view->quality == qv && impl->view->size == sv);
-                QObject::connect(a, &QAction::triggered, this, [this, qv, sv] { setQuality(qv, sv); });
-            }
-        }
-    });
-    d->qualityButton->setMenu(qualities);
-    QObject::connect(zoomBtn, &QAbstractButton::clicked, this, [this, impl, zoomBtn] {
-        QMenu menu(this);
-        menu.setObjectName("zoomMenu");
-        PictureView* v = impl->view;
-        QAction* in = menu.addAction("Zoom In");
-        in->setObjectName("zoomIn");
-        QAction* out = menu.addAction("Zoom Out");
-        out->setObjectName("zoomOut");
-        QAction* reset = menu.addAction("Reset Zoom (100%)");
-        reset->setObjectName("zoomReset");
-        menu.addSeparator();
-        for (int pct : {25, 50, 100, 200, 400}) {
-            QAction* a = menu.addAction(QString("%1%").arg(pct));
-            a->setCheckable(true);
-            a->setChecked(!v->zoomBypassed && v->zoomPct == pct);
-            QObject::connect(a, &QAction::triggered, &menu, [v, pct] { v->setZoom(pct); });
-        }
-        menu.addSeparator();
-        QAction* byp = menu.addAction("Bypass Zoom");
-        byp->setObjectName("zoomBypass");
-        byp->setCheckable(true);
-        byp->setChecked(v->zoomBypassed);
-        byp->setEnabled(v->zoomPct != 100);
-        QObject::connect(in, &QAction::triggered, &menu, [v] { v->setZoom((v->zoomBypassed ? 100 : v->zoomPct) + 10); });
-        QObject::connect(out, &QAction::triggered, &menu, [v] { v->setZoom((v->zoomBypassed ? 100 : v->zoomPct) - 10); });
-        QObject::connect(reset, &QAction::triggered, &menu, [v] { v->zoomBypassed = false; v->setZoom(100); });
-        QObject::connect(byp, &QAction::toggled, &menu, [v](bool on) { v->bypassZoom(on); });
-        menu.exec(zoomBtn->mapToGlobal(QPoint(0, zoomBtn->height())));
-    });
-    QObject::connect(d->overlays, &QAbstractButton::clicked, this, [this, impl] {
-        QMenu menu(this);
-        QAction* fx = menu.addAction("Show Video FX Overlays");
-        fx->setObjectName("showFxOverlays");
-        fx->setCheckable(true);
-        fx->setChecked(impl->view->showOverlays);
-        fx->setToolTip("The on-screen controls of the effect open in the Video FX window");
-        menu.addSeparator();
-        QAction* safe = menu.addAction("Safe Areas");
-        safe->setCheckable(true);
-        safe->setChecked(impl->view->safeAreas);
-        QAction* grid2 = menu.addAction("Grid");
-        grid2->setCheckable(true);
-        grid2->setChecked(impl->view->grid);
-        menu.addSeparator();
-        const char* names[] = {"Red", "Green", "Blue", "Red as Grayscale", "Green as Grayscale", "Blue as Grayscale", "Alpha as Grayscale"};
-        QAction* channels[7];
-        for (int k = 0; k < 7; ++k) {
-            channels[k] = menu.addAction(names[k]);
-            channels[k]->setCheckable(true);
-            channels[k]->setChecked(impl->view->channel == k + 1);
-        }
-        menu.addSeparator();
-        QMenu* cc = menu.addMenu("Closed Captioning");
-        QAction* ccs[4];
-        for (int k = 0; k < 4; ++k) {
-            ccs[k] = cc->addAction(QString("CC%1").arg(k + 1));
-            ccs[k]->setObjectName(QString("overlayCC%1").arg(k + 1));
-            ccs[k]->setCheckable(true);
-            ccs[k]->setChecked(impl->view->captionChannel == k + 1);
-        }
-        QAction* m360 = menu.addAction(QString::fromUtf8("360\u00B0 Mode"));
-        m360->setObjectName("overlay360");
-        m360->setCheckable(true);
-        m360->setChecked(impl->view->mode360);
-        m360->setEnabled(AppState::get().project().settings.output360);
-        QAction* picked = menu.exec(impl->overlays->mapToGlobal(QPoint(0, impl->overlays->height())));
-        for (int k = 0; k < 4; ++k)
-            if (picked == ccs[k]) {
-                setCaptionChannel(impl->view->captionChannel == k + 1 ? 0 : k + 1);
-                return;
-            }
-        if (picked == m360) {
-            set360Mode(!impl->view->mode360);
-            return;
-        }
-        for (int k = 0; k < 7; ++k)
-            if (picked == channels[k]) {
-                setChannel(impl->view->channel == k + 1 ? 0 : k + 1);
-                return;
-            }
-        if (picked == fx) setShowOverlays(!impl->view->showOverlays);
-        else if (picked) impl->toggleOverlay(picked == grid2);
-    });
-    QObject::connect(copy, &QAbstractButton::clicked, [impl] {
-        if (impl->view->image().isNull()) return;
-        QGuiApplication::clipboard()->setImage(impl->view->image());
-        if (impl->view->split && impl->view->splitClipboard) impl->refreshSplit(AppState::get().cursor());
-    });
-    QObject::connect(save, &QAbstractButton::clicked, this, [this, impl] {
-        if (impl->view->image().isNull()) return;
-        const AppState& app = AppState::get();
-        const QString dir = QSettings().value("preview/snapshotFolder", app.path().empty() ? QDir::homePath() : QFileInfo(qs(app.path())).absolutePath()).toString();
-        const QString suggested = QDir(dir).filePath(QString("Snapshot %1.png").arg((qlonglong)app.project().frameAt(app.cursor())));
-        const QString f = QFileDialog::getSaveFileName(this, "Save Snapshot to File", suggested, "PNG pictures (*.png);;JPEG pictures (*.jpg)");
-        if (!f.isEmpty()) QSettings().setValue("preview/snapshotFolder", QFileInfo(f).absolutePath());
-        if (!f.isEmpty() && !impl->view->image().save(f)) { QMessageBox::warning(this, "Save Snapshot", QString("%1 could not be written.").arg(f)); return; }
-        if (!f.isEmpty()) {
-            std::string err;
-            if (AppState::get().importMedia(f.toStdString(), &err)) AppState::get().status(QString("Snapshot saved and added to Project Media: %1").arg(QFileInfo(f).fileName()).toStdString());
-        }
-    });
-    QObject::connect(d->play, &QAbstractButton::clicked, [impl] { if (!impl->pb->playing()) impl->pb->play(); });
-    QObject::connect(pause, &QAbstractButton::clicked, [impl] { impl->pb->pause(); });
-    QObject::connect(stop, &QAbstractButton::clicked, [impl] { stopPlayback(impl->pb); });
-    QObject::connect(more, &QAbstractButton::clicked, [impl, more] { impl->showMenu(more); });
-    auto command = [this](const char* name) {
-        if (QWidget* w = window())
-            if (QAction* a = w->findChild<QAction*>(name)) a->trigger();
-    };
-    QObject::connect(d->record, &QAbstractButton::clicked, this, [command] { command("record"); });
-    QObject::connect(d->playStart, &QAbstractButton::clicked, this, [command] { command("playFromStart"); });
-    QObject::connect(d->toEnd, &QAbstractButton::clicked, this, [command] { command("goEnd"); });
-    QObject::connect(d->prevFrame, &QAbstractButton::clicked, this, [command] { command("prevFrame"); });
-    QObject::connect(d->nextFrame, &QAbstractButton::clicked, this, [command] { command("nextFrame"); });
-    QObject::connect(d->button360, &QToolButton::clicked, this, [this](bool on) { set360Mode(on); });
-    d->view->captionChannel = std::max(0, std::min(4, QSettings().value("preview/captions", 0).toInt()));
-    QObject::connect(d->toStart, &QAbstractButton::clicked, [impl] {
-        impl->pb->jumpTo(0);
-    });
-    QObject::connect(d->loop, &QAbstractButton::clicked, [](bool on) {
-        AppState::get().loopOn = on;
-        AppState::get().notify(kCursor);
-    });
-
-    playback->onFrame = [impl](const QImage& image, double seconds, double ms) {
-        // Preferences > Preview Device, "Display frames in video preview window during playback": when cleared, the
-        // Video Preview keeps its image while playing (the time goes to the external monitor).
-        if (impl->pb->playing() && !vprefs::on("prefs/pdShowInPreview")) {
-            impl->lastMs = ms;
-            return;
-        }
-        impl->view->setImage(image);
-        if (impl->view->split) impl->refreshSplit(seconds);
-        impl->lastMs = ms;
-        impl->showRenderMs();
-        impl->showSizes();
-    };
-    d->listener.reset(new ListenerHandle([impl](int changes) {
-        if (changes & (kCursor | kProject)) impl->showTime();
-        if ((changes & kCursor) && impl->pb->playing() && (!impl->sizesShown.isValid() || impl->sizesShown.elapsed() > 250)) {
-            impl->sizesShown.start();
-            impl->showSizes();
-        }
-        if (changes & kProject) impl->showFormat();
-        if (changes & (kFxParams | kPlayback | kCursor)) impl->syncButtons();
-        if (changes & kPrefs) {
-            impl->arrange();
-            QSettings s;
-            const bool fit = s.value("preview/scaleToFit", true).toBool(), aspect = s.value("preview/simulateAspect", false).toBool();
-            if (fit != impl->view->scaleToFit || aspect != impl->view->simulateAspect) {
-                impl->view->scaleToFit = fit;
-                impl->view->simulateAspect = aspect;
-                impl->view->qualityChanged();
-                impl->showSizes();
-            }
-            impl->view->update();
-        }
-        if (impl->view->overlaySlot() && (changes & (kFxParams | kCursor | kProject | kPlayback))) impl->view->overlayChanged();
-    }));
+    playback->onFrame = [impl](const QImage& image, double seconds, double ms) { impl->frameShown(image, seconds, ms); };
+    d->listener.reset(new ListenerHandle([impl](int changes) { impl->changed(changes); }));
 
     if (!playback->lastFrame().isNull()) d->view->setImage(playback->lastFrame());
     d->showTime();

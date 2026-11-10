@@ -277,12 +277,13 @@ Endpoint::~Endpoint() { close(); delete d_; }
 bool Endpoint::start(const std::string& exe, std::string* error)
 {
     close();
-#ifdef __APPLE__
-    // macOS runs no 32-bit programs at all (and has no process-shared unnamed semaphores): there is no bridge to start
+#if defined(__APPLE__) || defined(__ANDROID__)
+    // macOS and iOS run no 32-bit programs at all (and have no process-shared unnamed semaphores), Android neither (and has
+    // no shm_open): there is no bridge to start
     (void)exe;
-    if (error) *error = "32-bit plug-ins cannot run on macOS";
+    if (error) *error = "32-bit plug-ins cannot run on this system";
     return false;
-#endif
+#else
     d_->owner = true;
     d_->reaped = false;
     signal(SIGPIPE, SIG_IGN);       // a write to a closed pipe is an error to handle, not a reason to exit
@@ -328,6 +329,7 @@ bool Endpoint::start(const std::string& exe, std::string* error)
     d_->wr = c2s[1];
     d_->rd = s2c[0];
     return true;
+#endif
 }
 
 bool Endpoint::attach(const std::vector<std::string>& args, std::string* error)

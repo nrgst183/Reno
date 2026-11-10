@@ -156,12 +156,179 @@ jobs:
           name: reno-macos-${{ matrix.arch }}
           path: reno-macos-${{ matrix.arch }}.zip
 
+  windows7:
+    # the Windows build for Windows 7 and later: no Windows 8/10 functions, and Qt's DLLs swapped for ones patched to run
+    # on Windows 7 (tools/use_qt_win7.ps1). Not yet tried on Windows 7, so a failure doesn't block a release.
+    runs-on: windows-2022
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: qtmultimedia
+          cache: true
+
+      - name: Install FFmpeg (full GPL build)
+        shell: pwsh
+        run: ./tools/get_ffmpeg.ps1
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DRENO_WINDOWS7=ON -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Windows 7 Qt DLLs
+        shell: pwsh
+        run: ./tools/use_qt_win7.ps1 build/bin
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path build/bin/* -DestinationPath reno-windows7-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reno-windows7-x64
+          path: reno-windows7-x64.zip
+
+  freebsd:
+    # FreeBSD in a virtual machine: Qt 6, FFmpeg and the Vulkan loader from its packages. Not yet tried on FreeBSD itself.
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build in FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '14.3'
+          usesh: true
+          prepare: pkg install -y cmake ninja pkgconf qt6-base qt6-multimedia ffmpeg vulkan-loader
+          run: |
+            set -e
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DCMAKE_PREFIX_PATH="/usr/local/lib/qt6;/usr/local" -DRENO_FFMPEG_DIR=/usr/local
+            cmake --build build
+            test -x build/bin/reno && test -x build/bin/reno_cli
+            cp resources/reno_256.png build/bin/reno.png
+            cp resources/reno.desktop build/bin/
+            tar -C build/bin -czf reno-freebsd-x64.tar.gz .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reno-freebsd-x64
+          path: reno-freebsd-x64.tar.gz
+
+  android:
+    # Android arm64 (8.0 and later with Vulkan or OpenGL ES): Qt for Android, FFmpeg built here with the NDK, an APK
+    # signed with a key made for this build (so a newer build installs only after the older one is removed).
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    env:
+      NDK_VERSION: '26.1.10909125'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build nasm
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: android
+          arch: android_arm64_v8a
+          modules: qtmultimedia
+          autodesktop: true
+          cache: true
+
+      - name: Build FFmpeg for Android
+        run: bash tools/build_ffmpeg_android.sh
+
+      - name: Configure
+        run: |
+          "$QT_ROOT_DIR/bin/qt-cmake" -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DQT_HOST_PATH="$(dirname "$QT_ROOT_DIR")/gcc_64" -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
+            -DANDROID_NDK_ROOT="$ANDROID_NDK_ROOT" -DRENO_FFMPEG_DIR="$PWD/deps/ffmpeg-android"
+
+      - name: Build
+        run: cmake --build build --target apk
+
+      - name: Sign
+        run: |
+          apk=$(find build -name '*release-unsigned.apk' | head -1)
+          [ -n "$apk" ] || apk=$(find build -name '*.apk' | head -1)
+          bt=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)
+          keytool -genkeypair -keystore ci.keystore -storepass renoci -keypass renoci -alias reno -keyalg RSA -keysize 2048 \
+            -validity 3650 -dname "CN=Reno"
+          "$bt/zipalign" -f -p 4 "$apk" aligned.apk
+          "$bt/apksigner" sign --ks ci.keystore --ks-pass pass:renoci --key-pass pass:renoci --out reno-android-arm64.apk aligned.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reno-android-arm64
+          path: reno-android-arm64.apk
+
+  ios:
+    # iOS / iPadOS arm64: Qt for iOS, FFmpeg built here as static libraries, an unsigned app (sign it with your own Apple
+    # ID, e.g. with Sideloadly or AltStore, to put it on a device).
+    runs-on: macos-15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          target: ios
+          arch: ios
+          modules: qtmultimedia
+          autodesktop: true
+          cache: true
+
+      - name: Build FFmpeg for iOS
+        run: bash tools/build_ffmpeg_ios.sh
+
+      - name: Configure
+        run: |
+          "$QT_ROOT_DIR/bin/qt-cmake" -S . -B build -G Xcode -DQT_HOST_PATH="$(dirname "$QT_ROOT_DIR")/macos" \
+            -DRENO_FFMPEG_DIR="$PWD/deps/ffmpeg-ios"
+
+      - name: Build
+        run: cmake --build build --config Release -- -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Package
+        run: |
+          app=$(find build -path '*Release-iphoneos/Reno.app' -type d | head -1)
+          mkdir Payload && cp -R "$app" Payload/
+          zip -qry reno-ios-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reno-ios-unsigned
+          path: reno-ios-unsigned.ipa
+
   # v* tag pushed        -> release with that tag
   # Run workflow + version -> creates that tag on the built commit and releases it
   # push to main / Run workflow without version -> replaces the "nightly" prerelease
   release:
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.windows.result == 'success' && needs.linux.result == 'success' }}
-    needs: [windows, linux, macos]
+    needs: [windows, linux, macos, windows7, freebsd, android, ios]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

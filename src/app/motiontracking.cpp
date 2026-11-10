@@ -273,147 +273,138 @@ struct MotionTrackingWindow::Impl {
         const int i = applyTo->findData(keep);
         if (i >= 0) applyTo->setCurrentIndex(i);
     }
-};
+    // Precision, Mode and Show Motion Vectors, over the picture.
+    void buildOptionsRow(QVBoxLayout* v)
+    {
+        auto* opts = new QHBoxLayout();
+        precisionBox = new QComboBox(q);
+        precisionBox->setObjectName("trackPrecision");
+        precisionBox->addItems({"Fast", "Balanced", "Accurate"});
+        precisionBox->setCurrentIndex(1);
+        precisionBox->setToolTip("Precision: Fast tracks smaller images (quicker), Accurate larger ones (slower)");
+        QComboBox* mode = new QComboBox(q);
+        mode->setObjectName("trackMode");
+        mode->addItems({"Location", "Rotation & Location", "Scale & Location", "Shape & Location", "Perspective"});
+        // Reno follows where the box goes; other kinds of movement are listed greyed as not available
+        if (auto* model = qobject_cast<QStandardItemModel*>(mode->model()))
+            for (int i = 1; i < model->rowCount(); ++i) {
+                model->item(i)->setEnabled(false);
+                model->item(i)->setToolTip("Not available: Reno follows the position (Location) only");
+            }
+        mode->setToolTip("Mode: the kind of movement looked for (Reno: Location)");
+        QCheckBox* vectors = new QCheckBox("Show Motion Vectors", q);
+        vectors->setObjectName("trackVectors");
+        opts->addWidget(new QLabel("Precision:", q));
+        opts->addWidget(precisionBox);
+        opts->addWidget(new QLabel("Mode:", q));
+        opts->addWidget(mode);
+        opts->addWidget(vectors);
+        opts->addStretch(1);
+        v->addLayout(opts);
+        QObject::connect(precisionBox, &QComboBox::activated, q, [this](int i) { q->setPrecision(i); });
+        QObject::connect(vectors, &QCheckBox::toggled, q, [this](bool on) {
+            view->vectors = on;
+            view->update();
+        });
+    }
 
-MotionTrackingWindow::MotionTrackingWindow(Playback* playback, QWidget* parent) : QWidget(parent), d(new Impl())
-{
-    d->q = this;
-    d->pb = playback;
-    setObjectName("motionTracking");
-    d->pool.setOpener([](const std::string& path, std::string* err) { return openReader(path, err); });
-    d->engine.reset(new VideoEngine(d->pool, AppState::get().fx));
-    Impl* impl = d.get();
-    auto* v = new QVBoxLayout(this);
-    v->setContentsMargins(4, 4, 4, 4);
-    v->setSpacing(4);
-    // VEGAS 18's panel: clip name; Precision, Mode, Show Motion Vectors; the image with the box; the motion track
-    // indicator and status line; the five track buttons; where the motion goes.
-    d->clipName = new QLabel(this);
-    d->clipName->setObjectName("trackClipName");
-    v->addWidget(d->clipName);
-    auto* opts = new QHBoxLayout();
-    d->precisionBox = new QComboBox(this);
-    d->precisionBox->setObjectName("trackPrecision");
-    d->precisionBox->addItems({"Fast", "Balanced", "Accurate"});
-    d->precisionBox->setCurrentIndex(1);
-    d->precisionBox->setToolTip("Precision: Fast tracks smaller images (quicker), Accurate larger ones (slower)");
-    QComboBox* mode = new QComboBox(this);
-    mode->setObjectName("trackMode");
-    mode->addItems({"Location", "Rotation & Location", "Scale & Location", "Shape & Location", "Perspective"});
-    // Reno follows where the box goes; other kinds of movement are listed greyed as not available
-    if (auto* model = qobject_cast<QStandardItemModel*>(mode->model()))
-        for (int i = 1; i < model->rowCount(); ++i) {
-            model->item(i)->setEnabled(false);
-            model->item(i)->setToolTip("Not available: Reno follows the position (Location) only");
-        }
-    mode->setToolTip("Mode: the kind of movement looked for (Reno: Location)");
-    QCheckBox* vectors = new QCheckBox("Show Motion Vectors", this);
-    vectors->setObjectName("trackVectors");
-    opts->addWidget(new QLabel("Precision:", this));
-    opts->addWidget(d->precisionBox);
-    opts->addWidget(new QLabel("Mode:", this));
-    opts->addWidget(mode);
-    opts->addWidget(vectors);
-    opts->addStretch(1);
-    v->addLayout(opts);
-    d->view = new TrackView(this);
-    v->addWidget(d->view, 1);
-    d->indicator = new TrackIndicator(this);
-    v->addWidget(d->indicator);
-    d->status = new QLabel(this);
-    d->status->setObjectName("trackStatus");
-    v->addWidget(d->status);
-    auto* top = new QHBoxLayout();
-    // track buttons as VEGAS numbers them: (1) backward, (2) a frame backward, (3) both directions, (4) a frame forward, (5) forward
-    QPushButton* back = new QPushButton(QString::fromUtf8("\xe2\x97\x80\xe2\x97\x80"), this);
-    back->setObjectName("trackBackward");
-    back->setToolTip("Track backward from the cursor to the start of the event (or time selection), or until the box is lost");
-    QPushButton* backOne = new QPushButton(QString::fromUtf8("\xe2\x97\x80|"), this);
-    backOne->setObjectName("trackBackOne");
-    backOne->setToolTip("Track one frame backward");
-    QPushButton* both = new QPushButton(QString::fromUtf8("\xe2\x97\x80 \xe2\x96\xb6"), this);
-    both->setObjectName("trackBoth");
-    both->setToolTip("Track both directions from the cursor");
-    QPushButton* fwdOne = new QPushButton(QString::fromUtf8("|\xe2\x96\xb6"), this);
-    fwdOne->setObjectName("trackForwardOne");
-    fwdOne->setToolTip("Track one frame forward");
-    QPushButton* fwd = new QPushButton(QString::fromUtf8("\xe2\x96\xb6\xe2\x96\xb6"), this);
-    fwd->setObjectName("trackForward");
-    fwd->setToolTip("Track forward from the cursor to the end of the event (or time selection), or until the box is lost");
-    QPushButton* clear = new QPushButton("Clear", this);
-    clear->setObjectName("trackClear");
-    for (QPushButton* b : {back, backOne, both, fwdOne, fwd}) top->addWidget(b);
-    top->addSpacing(8);
-    top->addWidget(clear);
-    top->addStretch(1);
-    // the motion transfer menu: the events, their Pan/Crop or their effects' position settings, the tracks' Track Motion
-    QToolButton* transfer = new QToolButton(this);
-    transfer->setObjectName("trackTransfer");
-    transfer->setText("Transfer Motion");
-    transfer->setToolTip("Motion transfer: choose the event, effect and position setting that should follow the tracked motion");
-    transfer->setPopupMode(QToolButton::InstantPopup);
-    QMenu* transferMenu = new QMenu(transfer);
-    transfer->setMenu(transferMenu);
-    top->addWidget(transfer);
-    v->addLayout(top);
-    auto* bottom = new QHBoxLayout();
-    d->applyTo = new QComboBox(this);
-    d->applyTo->setObjectName("trackApplyTo");
-    d->zoom = new QDoubleSpinBox(this);
-    d->zoom->setObjectName("trackZoom");
-    d->zoom->setRange(0.1, 1.0);
-    d->zoom->setSingleStep(0.05);
-    d->zoom->setValue(0.85);
-    d->zoom->setToolTip("Pan/Crop: how much of the media the box shows (smaller is zoomed in, leaving room to move)");
-    QPushButton* apply = new QPushButton("Apply", this);
-    apply->setObjectName("trackApply");
-    bottom->addWidget(new QLabel("Apply to:", this));
-    bottom->addWidget(d->applyTo, 1);
-    bottom->addWidget(new QLabel("Size:", this));
-    bottom->addWidget(d->zoom);
-    bottom->addWidget(apply);
-    v->addLayout(bottom);
-    auto run = [this](int dir) {
-        QProgressDialog progress("Tracking...", "Stop", 0, 1000, window());
+    // The five track buttons as VEGAS numbers them, Clear, and the motion transfer menu.
+    void buildTrackButtons(QVBoxLayout* v)
+    {
+        auto* top = new QHBoxLayout();
+        // track buttons as VEGAS numbers them: (1) backward, (2) a frame backward, (3) both directions, (4) a frame forward, (5) forward
+        QPushButton* back = new QPushButton(QString::fromUtf8("\xe2\x97\x80\xe2\x97\x80"), q);
+        back->setObjectName("trackBackward");
+        back->setToolTip("Track backward from the cursor to the start of the event (or time selection), or until the box is lost");
+        QPushButton* backOne = new QPushButton(QString::fromUtf8("\xe2\x97\x80|"), q);
+        backOne->setObjectName("trackBackOne");
+        backOne->setToolTip("Track one frame backward");
+        QPushButton* both = new QPushButton(QString::fromUtf8("\xe2\x97\x80 \xe2\x96\xb6"), q);
+        both->setObjectName("trackBoth");
+        both->setToolTip("Track both directions from the cursor");
+        QPushButton* fwdOne = new QPushButton(QString::fromUtf8("|\xe2\x96\xb6"), q);
+        fwdOne->setObjectName("trackForwardOne");
+        fwdOne->setToolTip("Track one frame forward");
+        QPushButton* fwd = new QPushButton(QString::fromUtf8("\xe2\x96\xb6\xe2\x96\xb6"), q);
+        fwd->setObjectName("trackForward");
+        fwd->setToolTip("Track forward from the cursor to the end of the event (or time selection), or until the box is lost");
+        QPushButton* clear = new QPushButton("Clear", q);
+        clear->setObjectName("trackClear");
+        for (QPushButton* b : {back, backOne, both, fwdOne, fwd}) top->addWidget(b);
+        top->addSpacing(8);
+        top->addWidget(clear);
+        top->addStretch(1);
+        // the motion transfer menu: the events, their Pan/Crop or their effects' position settings, the tracks' Track Motion
+        QToolButton* transfer = new QToolButton(q);
+        transfer->setObjectName("trackTransfer");
+        transfer->setText("Transfer Motion");
+        transfer->setToolTip("Motion transfer: choose the event, effect and position setting that should follow the tracked motion");
+        transfer->setPopupMode(QToolButton::InstantPopup);
+        QMenu* transferMenu = new QMenu(transfer);
+        transfer->setMenu(transferMenu);
+        top->addWidget(transfer);
+        v->addLayout(top);
+        QObject::connect(fwd, &QPushButton::clicked, q, [this] { trackWithProgress(1); });
+        QObject::connect(back, &QPushButton::clicked, q, [this] { trackWithProgress(-1); });
+        QObject::connect(fwdOne, &QPushButton::clicked, q, [this] { q->trackOneFrame(1); });
+        QObject::connect(backOne, &QPushButton::clicked, q, [this] { q->trackOneFrame(-1); });
+        QObject::connect(both, &QPushButton::clicked, q, [this] { trackWithProgress(0); });
+        QObject::connect(clear, &QPushButton::clicked, q, [this] { q->clearPoints(); });
+        QObject::connect(transferMenu, &QMenu::aboutToShow, q, [this, transferMenu] { fillTransferMenu(transferMenu); });
+    }
+
+    // Apply to: where the motion goes (Pan/Crop or a track's Track Motion), the Pan/Crop size, and Apply.
+    void buildApplyRow(QVBoxLayout* v)
+    {
+        auto* bottom = new QHBoxLayout();
+        applyTo = new QComboBox(q);
+        applyTo->setObjectName("trackApplyTo");
+        zoom = new QDoubleSpinBox(q);
+        zoom->setObjectName("trackZoom");
+        zoom->setRange(0.1, 1.0);
+        zoom->setSingleStep(0.05);
+        zoom->setValue(0.85);
+        zoom->setToolTip("Pan/Crop: how much of the media the box shows (smaller is zoomed in, leaving room to move)");
+        QPushButton* apply = new QPushButton("Apply", q);
+        apply->setObjectName("trackApply");
+        bottom->addWidget(new QLabel("Apply to:", q));
+        bottom->addWidget(applyTo, 1);
+        bottom->addWidget(new QLabel("Size:", q));
+        bottom->addWidget(zoom);
+        bottom->addWidget(apply);
+        v->addLayout(bottom);
+        QObject::connect(apply, &QPushButton::clicked, q, [this] {
+            const QString what = applyTo->currentData().toString();
+            if (what.startsWith("track:")) q->applyToTrackMotion(what.mid(6).toULongLong());
+            else q->applyToPanCrop(what == "stabilize", zoom->value());
+        });
+    }
+
+    // Tracks forward (+1), backward (-1) or both ways (0) from the cursor with a progress window that can stop it.
+    void trackWithProgress(int direction)
+    {
+        QProgressDialog progress("Tracking...", "Stop", 0, 1000, q->window());
         progress.setWindowTitle("Motion Tracking");
         progress.setWindowModality(Qt::WindowModal);
         progress.setMinimumDuration(400);
-        bool lost = false;
-        const int n = track(dir, [&](double f) {
+        auto step = [&](double f) {
             progress.setValue((int)(f * 1000));
             QCoreApplication::processEvents();
             return !progress.wasCanceled();
-        }, &lost);
+        };
+        bool lost = false;
+        const int n = direction == 0 ? q->trackBoth(step) : q->track(direction, step, &lost);
         progress.setValue(1000);
         AppState::get().status(lost ? strfmt("Motion Tracking: lost after %d frames.", n) : strfmt("Motion Tracking: %d frames followed.", n));
-    };
-    QObject::connect(fwd, &QPushButton::clicked, this, [run] { run(1); });
-    QObject::connect(back, &QPushButton::clicked, this, [run] { run(-1); });
-    QObject::connect(fwdOne, &QPushButton::clicked, this, [this] { trackOneFrame(1); });
-    QObject::connect(backOne, &QPushButton::clicked, this, [this] { trackOneFrame(-1); });
-    QObject::connect(both, &QPushButton::clicked, this, [this] {
-        QProgressDialog progress("Tracking...", "Stop", 0, 1000, window());
-        progress.setWindowTitle("Motion Tracking");
-        progress.setWindowModality(Qt::WindowModal);
-        progress.setMinimumDuration(400);
-        const int n = trackBoth([&](double f) {
-            progress.setValue((int)(f * 1000));
-            QCoreApplication::processEvents();
-            return !progress.wasCanceled();
-        });
-        progress.setValue(1000);
-        AppState::get().status(strfmt("Motion Tracking: %d frames followed.", n));
-    });
-    QObject::connect(d->precisionBox, &QComboBox::activated, this, [this](int i) { setPrecision(i); });
-    QObject::connect(vectors, &QCheckBox::toggled, this, [impl](bool on) {
-        impl->view->vectors = on;
-        impl->view->update();
-    });
-    QObject::connect(transferMenu, &QMenu::aboutToShow, this, [this, transferMenu] {
+    }
+
+    // The motion transfer menu: the events, their Pan/Crop or their effects' position settings, the tracks' Track Motion.
+    void fillTransferMenu(QMenu* transferMenu)
+    {
         transferMenu->clear();
         const Project& p = AppState::get().project();
-        const std::vector<uint64_t> evs = transferEvents();
-        if (evs.empty() || points().size() < 2) {
+        const std::vector<uint64_t> evs = q->transferEvents();
+        if (evs.empty() || q->points().size() < 2) {
             transferMenu->addAction("(track something first)")->setEnabled(false);
             return;
         }
@@ -423,15 +414,15 @@ MotionTrackingWindow::MotionTrackingWindow(Playback* playback, QWidget* parent) 
             if (!e) continue;
             QMenu* sub = transferMenu->addMenu(qs(e->name.empty() ? std::string("(event)") : e->name) + (i == 0 ? QString("  (tracked)") : QString()));
             if (i == 0) {
-                QObject::connect(sub->addAction("Pan/Crop: keep it in the middle"), &QAction::triggered, this, [this] { applyToPanCrop(false, d->zoom->value()); });
-                QObject::connect(sub->addAction("Pan/Crop: hold it still (stabilize)"), &QAction::triggered, this, [this] { applyToPanCrop(true, d->zoom->value()); });
+                QObject::connect(sub->addAction("Pan/Crop: keep it in the middle"), &QAction::triggered, q, [this] { q->applyToPanCrop(false, zoom->value()); });
+                QObject::connect(sub->addAction("Pan/Crop: hold it still (stabilize)"), &QAction::triggered, q, [this] { q->applyToPanCrop(true, zoom->value()); });
             }
-            const std::vector<FxTarget2D> ps = positionSettings(evs[i]);
+            const std::vector<FxTarget2D> ps = q->positionSettings(evs[i]);
             if (!ps.empty() && i == 0) sub->addSeparator();
             for (const FxTarget2D& t2 : ps) {
                 const uint64_t ev = evs[i], slot = t2.slot;
                 const std::string param = t2.param;
-                QObject::connect(sub->addAction(qs(t2.label)), &QAction::triggered, this, [this, ev, slot, param] { applyToFxParam(ev, slot, param); });
+                QObject::connect(sub->addAction(qs(t2.label)), &QAction::triggered, q, [this, ev, slot, param] { q->applyToFxParam(ev, slot, param); });
             }
             if (sub->isEmpty()) sub->addAction("(no effect with a position setting)")->setEnabled(false);
         }
@@ -442,15 +433,38 @@ MotionTrackingWindow::MotionTrackingWindow(Playback* playback, QWidget* parent) 
             if (t.type != TrackType::Video) continue;
             const uint64_t id = t.id;
             QObject::connect(transferMenu->addAction(QString("Track Motion of track %1%2").arg(n).arg(t.name.empty() ? QString() : " (" + qs(t.name) + ")")),
-                             &QAction::triggered, this, [this, id] { applyToTrackMotion(id); });
+                             &QAction::triggered, q, [this, id] { q->applyToTrackMotion(id); });
         }
-    });
-    QObject::connect(clear, &QPushButton::clicked, this, [this] { clearPoints(); });
-    QObject::connect(apply, &QPushButton::clicked, this, [this, impl] {
-        const QString what = impl->applyTo->currentData().toString();
-        if (what.startsWith("track:")) applyToTrackMotion(what.mid(6).toULongLong());
-        else applyToPanCrop(what == "stabilize", impl->zoom->value());
-    });
+    }
+};
+
+MotionTrackingWindow::MotionTrackingWindow(Playback* playback, QWidget* parent) : QWidget(parent), d(new Impl())
+{
+    d->q = this;
+    d->pb = playback;
+    setObjectName("motionTracking");
+    d->pool.setOpener([](const std::string& path, std::string* err) { return openReader(path, err); });
+    d->engine.reset(new VideoEngine(d->pool, AppState::get().fx));
+    auto* v = new QVBoxLayout(this);
+    v->setContentsMargins(4, 4, 4, 4);
+    v->setSpacing(4);
+    // VEGAS 18's panel: clip name; Precision, Mode, Show Motion Vectors; the image with the box; the motion track
+    // indicator and status line; the five track buttons; where the motion goes.
+    d->clipName = new QLabel(this);
+    d->clipName->setObjectName("trackClipName");
+    v->addWidget(d->clipName);
+    d->buildOptionsRow(v);
+    d->view = new TrackView(this);
+    v->addWidget(d->view, 1);
+    d->indicator = new TrackIndicator(this);
+    v->addWidget(d->indicator);
+    d->status = new QLabel(this);
+    d->status->setObjectName("trackStatus");
+    v->addWidget(d->status);
+    d->buildTrackButtons(v);
+    d->buildApplyRow(v);
+
+    Impl* impl = d.get();
     d->view->onBoxChanged = [impl] {
         impl->points.clear();
         impl->show();

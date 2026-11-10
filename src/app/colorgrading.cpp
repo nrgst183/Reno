@@ -1,5 +1,6 @@
 // The Color Grading panel: see colorgrading.h.
 #include "colorgrading.h"
+#include "onshow.h"
 #include "toolwin.h"
 #include "../engine/builtinfx.h"
 #include "../engine/catalog.h"
@@ -585,479 +586,503 @@ struct ColorGradingPanel::Impl {
 
 // The panel's pages as in VEGAS 18: section 1 (Input LUT | Color Wheels | Color Channels | Input/Output, then Reno's RL
 // Color Wheels and Utilities), section 2 (Color Curves | HSL | Look LUT) and the Finishing column.
-void ColorGradingPanel::buildPages(QHBoxLayout* root)
+// A labelled slider with a box on one field of the grade (vertical as in VEGAS's Levels / Color Channels pages, or a
+// grid row). Double-clicking the label or slider resets the field to 'neutral'.
+ColorGradingPanel::GradeField ColorGradingPanel::makeField(const QString& label, const char* name, double* field, double lo, double hi, double neutral,
+                                                           int decimals, bool vertical)
 {
     Impl* impl = d.get();
-    // A labelled slider with a box on one field of the grade (vertical as in VEGAS's Levels / Color Channels pages, or a
-    // grid row). Double-clicking the label or slider resets the field to 'neutral'.
-    auto makeField = [this, impl](const QString& label, const char* name, double* field, double lo, double hi, double neutral, int decimals, bool vertical) {
-        QLabel* l = new QLabel(label, this);
-        QSlider* sl = new QSlider(vertical ? Qt::Vertical : Qt::Horizontal, this);
-        sl->setRange(0, 1000);
-        QDoubleSpinBox* box = new QDoubleSpinBox(this);
-        box->setObjectName(QString("gradeMoreBox_%1").arg(name));
-        sl->setObjectName(QString("gradeMore_%1").arg(name));
-        box->setRange(lo, hi);
-        box->setDecimals(decimals);
-        box->setSingleStep(decimals ? 0.05 : 1);
-        box->setKeyboardTracking(false);
-        if (vertical) box->setButtonSymbols(QAbstractSpinBox::NoButtons);
-        auto toPos = [lo, hi](double v) { return (int)std::lround((v - lo) / (hi - lo) * 1000.0); };
-        QObject::connect(sl, &QSlider::sliderPressed, this, [impl] { impl->begin(); });
-        QObject::connect(sl, &QSlider::valueChanged, this, [impl, sl, box, field, lo, hi](int pos) {
-            if (impl->updating) return;
-            const double v = lo + (hi - lo) * pos / 1000.0;
-            impl->updating = true;
-            box->setValue(v);
-            impl->updating = false;
-            *field = v;
-            impl->change(!sl->isSliderDown());
-        });
-        QObject::connect(sl, &QSlider::sliderReleased, this, [impl] { impl->end(); });
-        QObject::connect(box, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [impl, field](double v) {
-            if (impl->updating) return;
-            *field = v;
-            impl->change(true);
-        });
-        d->refreshMore.push_back([sl, box, field, toPos] {
-            box->setValue(*field);
-            sl->setValue(toPos(*field));
-        });
-        for (QWidget* w : {(QWidget*)l, (QWidget*)sl}) {
-            w->installEventFilter(this);
-            w->setProperty("gradeResetBox", QVariant::fromValue<QObject*>(box));
-            w->setProperty("gradeNeutral", neutral);
-        }
-        l->setToolTip("Double-click to reset");
-        struct R { QLabel* l; QSlider* s; QDoubleSpinBox* b; };
-        return R{l, sl, box};
-    };
-    auto vcolumn = [this](QLabel* l, QSlider* s, QDoubleSpinBox* b) {
-        QWidget* w = new QWidget(this);
-        auto* v = new QVBoxLayout(w);
-        v->setContentsMargins(2, 0, 2, 0);
-        v->setSpacing(2);
-        v->addWidget(s, 1, Qt::AlignHCenter);
-        b->setFixedWidth(48);
-        v->addWidget(b, 0, Qt::AlignHCenter);
-        l->setAlignment(Qt::AlignHCenter);
-        v->addWidget(l);
-        return w;
-    };
-    auto hrow = [](QGridLayout* grid, int row, QLabel* l, QSlider* s, QDoubleSpinBox* b) {
-        grid->addWidget(l, row, 0);
-        grid->addWidget(s, row, 1);
-        grid->addWidget(b, row, 2);
-    };
-    auto heading = [this](const QString& text) {
-        QLabel* h = new QLabel(text, this);
-        h->setAlignment(Qt::AlignHCenter);
-        return h;
-    };
-    auto scrolled = [this](QWidget* page) {
-        QScrollArea* sa = new QScrollArea(this);
-        sa->setWidgetResizable(true);
-        sa->setWidget(page);
-        sa->setFrameShape(QFrame::NoFrame);
-        return sa;
-    };
+    QLabel* l = new QLabel(label, this);
+    QSlider* sl = new QSlider(vertical ? Qt::Vertical : Qt::Horizontal, this);
+    sl->setRange(0, 1000);
+    QDoubleSpinBox* box = new QDoubleSpinBox(this);
+    box->setObjectName(QString("gradeMoreBox_%1").arg(name));
+    sl->setObjectName(QString("gradeMore_%1").arg(name));
+    box->setRange(lo, hi);
+    box->setDecimals(decimals);
+    box->setSingleStep(decimals ? 0.05 : 1);
+    box->setKeyboardTracking(false);
+    if (vertical) box->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    auto toPos = [lo, hi](double v) { return (int)std::lround((v - lo) / (hi - lo) * 1000.0); };
+    QObject::connect(sl, &QSlider::sliderPressed, this, [impl] { impl->begin(); });
+    QObject::connect(sl, &QSlider::valueChanged, this, [impl, sl, box, field, lo, hi](int pos) {
+        if (impl->updating) return;
+        const double v = lo + (hi - lo) * pos / 1000.0;
+        impl->updating = true;
+        box->setValue(v);
+        impl->updating = false;
+        *field = v;
+        impl->change(!sl->isSliderDown());
+    });
+    QObject::connect(sl, &QSlider::sliderReleased, this, [impl] { impl->end(); });
+    QObject::connect(box, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [impl, field](double v) {
+        if (impl->updating) return;
+        *field = v;
+        impl->change(true);
+    });
+    d->refreshMore.push_back([sl, box, field, toPos] {
+        box->setValue(*field);
+        sl->setValue(toPos(*field));
+    });
+    for (QWidget* w : {(QWidget*)l, (QWidget*)sl}) {
+        w->installEventFilter(this);
+        w->setProperty("gradeResetBox", QVariant::fromValue<QObject*>(box));
+        w->setProperty("gradeNeutral", neutral);
+    }
+    l->setToolTip("Double-click to reset");
+    return GradeField{l, sl, box};
+}
 
-    d->sec1 = new QTabWidget(this);
-    d->sec1->setObjectName("gradeSection1");
-    d->sec2 = new QTabWidget(this);
-    d->sec2->setObjectName("gradeSection2");
+// A field's slider standing up, its box under it and its label under that (VEGAS's Levels and Color Channels pages).
+QWidget* ColorGradingPanel::sliderColumn(QLabel* l, QSlider* s, QDoubleSpinBox* b)
+{
+    QWidget* w = new QWidget(this);
+    auto* v = new QVBoxLayout(w);
+    v->setContentsMargins(2, 0, 2, 0);
+    v->setSpacing(2);
+    v->addWidget(s, 1, Qt::AlignHCenter);
+    b->setFixedWidth(48);
+    v->addWidget(b, 0, Qt::AlignHCenter);
+    l->setAlignment(Qt::AlignHCenter);
+    v->addWidget(l);
+    return w;
+}
 
-    // --- a LUT page: "Camera LUT" (before the grade; Input LUT tab) or "Look LUT" (after it; section 2's last tab)
-    auto lutPage = [this, impl, heading](bool camera) {
-        const int w = camera ? 0 : 1;
-        QWidget* page = new QWidget(this);
-        auto* grid = new QGridLayout(page);
-        grid->setHorizontalSpacing(8);
-        grid->addWidget(heading(camera ? "Camera LUT" : "Look LUT"), 0, 0, 1, 4);
-        QLineEdit* file = d->lutFile[w] = new QLineEdit(page);
-        file->setObjectName(camera ? "gradeCameraLutFile" : "gradeLookLutFile");
-        file->setReadOnly(true);
-        QPushButton* browse = new QPushButton("Browse", page);
-        browse->setObjectName(camera ? "gradeCameraLutBrowse" : "gradeLookLutBrowse");
-        QComboBox* cb = d->lutBox[w] = new QComboBox(page);
-        cb->setObjectName(camera ? "gradeCameraLut" : "gradeLookLut");
-        cb->addItem("None", "");
-        for (const LutPreset& lp : lutPresets())
-            if (lp.camera == camera) cb->addItem(QString::fromStdString(lp.label), QString::fromStdString("preset:" + lp.id));
-        QComboBox* interp = d->lutInterp[w] = new QComboBox(page);
-        interp->setObjectName(camera ? "gradeCameraLutInterp" : "gradeLookLutInterp");
-        interp->addItems({"Linear", "Tetrahedral"});
-        QPushButton* rs = new QPushButton("Reset", page);
-        rs->setObjectName(camera ? "gradeCameraLutReset" : "gradeLookLutReset");
-        QSlider* st = d->lutSlider[w] = new QSlider(Qt::Horizontal, page);
-        st->setRange(0, 100);
-        st->setObjectName(camera ? "gradeCameraLutStrengthSlider" : "gradeLookLutStrengthSlider");
-        QDoubleSpinBox* sb = d->lutStrength[w] = new QDoubleSpinBox(page);
-        sb->setObjectName(camera ? "gradeCameraLutStrength" : "gradeLookLutStrength");
-        sb->setRange(0, 1);
-        sb->setDecimals(2);
-        sb->setSingleStep(0.05);
-        sb->setValue(1);
-        sb->setKeyboardTracking(false);
-        QCheckBox* on = d->lutOn[w] = new QCheckBox("Enable", page);
-        on->setObjectName(camera ? "gradeCameraLutOn" : "gradeLookLutOn");
-        on->setChecked(true);
-        grid->addWidget(new QLabel("File:", page), 1, 0, Qt::AlignRight);
-        grid->addWidget(file, 1, 1, 1, 2);
-        grid->addWidget(browse, 1, 3);
-        grid->addWidget(new QLabel("Preset:", page), 2, 0, Qt::AlignRight);
-        grid->addWidget(cb, 2, 1, 1, 2);
-        grid->addWidget(new QLabel("Interpolation:", page), 3, 0, Qt::AlignRight);
-        grid->addWidget(interp, 3, 1);
-        grid->addWidget(rs, 3, 3);
-        grid->addWidget(new QLabel("Strength:", page), 4, 0, Qt::AlignRight);
-        auto* sr = new QHBoxLayout();
-        sr->addWidget(new QLabel("0", page));
-        sr->addWidget(st, 1);
-        sr->addWidget(new QLabel("1", page));
-        sr->addWidget(sb);
-        grid->addLayout(sr, 4, 1, 1, 2);
-        grid->addWidget(on, 5, 3);
-        grid->setColumnStretch(1, 1);
-        grid->setRowStretch(6, 1);
-        auto ref = [impl, camera]() -> LutRef& { return camera ? impl->g.cameraLut : impl->g.lookLut; };
-        QObject::connect(browse, &QPushButton::clicked, this, [impl, this, ref] {
-            const QString f = QFileDialog::getOpenFileName(this, "LUT", QSettings().value("colorGrading/lutFolder").toString(), "LUT (*.cube)");
-            if (f.isEmpty()) return;
-            QSettings().setValue("colorGrading/lutFolder", QFileInfo(f).absolutePath());
-            ref().source = "file:" + f.toStdString();
-            ref().enabled = true;
-            impl->change(true);
-            impl->load();
-        });
-        QObject::connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [impl, cb, ref](int i) {
-            if (impl->updating || i < 0) return;
-            ref().source = cb->itemData(i).toString().toStdString();
-            ref().enabled = true;
-            impl->change(true);
-            impl->load();
-        });
-        QObject::connect(interp, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [impl, ref](int i) {
-            if (impl->updating) return;
-            ref().tetrahedral = i == 1;
-            impl->change(true);
-        });
-        QObject::connect(sb, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [impl, ref, st](double v) {
-            if (impl->updating) return;
-            ref().strength = v;
-            impl->updating = true;
-            st->setValue((int)std::lround(v * 100));
-            impl->updating = false;
-            impl->change(true);
-        });
-        QObject::connect(st, &QSlider::valueChanged, this, [impl, ref, sb](int v) {
-            if (impl->updating) return;
-            ref().strength = v / 100.0;
-            impl->updating = true;
-            sb->setValue(v / 100.0);
-            impl->updating = false;
-            impl->change(true);
-        });
-        QObject::connect(on, &QCheckBox::toggled, this, [impl, ref](bool v) {
-            if (impl->updating) return;
-            ref().enabled = v;
-            impl->change(true);
-        });
-        QObject::connect(rs, &QPushButton::clicked, this, [impl, ref] {
-            ref() = LutRef();
-            impl->change(true);
-            impl->load();
-        });
-        d->refreshMore.push_back([impl, cb, file, interp, st, sb, on, ref] {
-            const LutRef& r = ref();
-            const int at = cb->findData(QString::fromStdString(r.source));
-            cb->setCurrentIndex(std::max(0, at));
-            if (r.source.rfind("file:", 0) == 0) file->setText(QString::fromStdString(r.source.substr(5)));
-            else file->setText(at > 0 ? cb->itemText(at) : QString());
-            interp->setCurrentIndex(r.tetrahedral ? 1 : 0);
-            st->setValue((int)std::lround(r.strength * 100));
-            sb->setValue(r.strength);
-            on->setChecked(r.enabled);
-            (void)impl;
-        });
-        return page;
-    };
-    d->sec1->addTab(lutPage(true), "Input LUT");
-    {
-        QWidget* page = new QWidget(this);
-        auto* row = new QHBoxLayout(page);
-        const struct { const char* name; double lo, hi, neutral; } ws[4] = {
-            {"Lift", -1.0, 1.0, 0.0}, {"Gamma", 0.1, 4.0, 1.0}, {"Gain", 0.0, 4.0, 1.0}, {"Offset", -1.0, 1.0, 0.0}};
-        for (int k = 0; k < 4; ++k) {
-            d->wheels[k] = new GradeWheel(ws[k].name, ws[k].lo, ws[k].hi, ws[k].neutral, this);
-            d->wheels[k]->setObjectName(QString("gradeWheel%1").arg(ws[k].name));
-            d->wheels[k]->onBegin = [impl] { impl->begin(); };
-            d->wheels[k]->onEnd = [impl] { impl->end(); };
-            d->wheels[k]->onChange = [impl](bool once) {
-                impl->fromWheels();
-                impl->syncChannels();
-                impl->change(once);
-            };
-            row->addWidget(d->wheels[k]);
-        }
-        d->sec1->addTab(page, "Color Wheels");
+// A field as a row of a grid: label, slider, box.
+static void gridRow(QGridLayout* grid, int row, QLabel* l, QSlider* s, QDoubleSpinBox* b)
+{
+    grid->addWidget(l, row, 0);
+    grid->addWidget(s, row, 1);
+    grid->addWidget(b, row, 2);
+}
+
+QLabel* ColorGradingPanel::pageHeading(const QString& text)
+{
+    QLabel* h = new QLabel(text, this);
+    h->setAlignment(Qt::AlignHCenter);
+    return h;
+}
+
+// A page that scrolls when the panel is short.
+QScrollArea* ColorGradingPanel::scrolledPage(QWidget* page)
+{
+    QScrollArea* sa = new QScrollArea(this);
+    sa->setWidgetResizable(true);
+    sa->setWidget(page);
+    sa->setFrameShape(QFrame::NoFrame);
+    return sa;
+}
+
+// A LUT page: "Camera LUT" (before the grade; Input LUT tab) or "Look LUT" (after it; section 2's last tab).
+QWidget* ColorGradingPanel::lutPage(bool camera)
+{
+    Impl* impl = d.get();
+    const int w = camera ? 0 : 1;
+    QWidget* page = new QWidget(this);
+    auto* grid = new QGridLayout(page);
+    grid->setHorizontalSpacing(8);
+    grid->addWidget(pageHeading(camera ? "Camera LUT" : "Look LUT"), 0, 0, 1, 4);
+    QLineEdit* file = d->lutFile[w] = new QLineEdit(page);
+    file->setObjectName(camera ? "gradeCameraLutFile" : "gradeLookLutFile");
+    file->setReadOnly(true);
+    QPushButton* browse = new QPushButton("Browse", page);
+    browse->setObjectName(camera ? "gradeCameraLutBrowse" : "gradeLookLutBrowse");
+    QComboBox* cb = d->lutBox[w] = new QComboBox(page);
+    cb->setObjectName(camera ? "gradeCameraLut" : "gradeLookLut");
+    cb->addItem("None", "");
+    for (const LutPreset& lp : lutPresets())
+        if (lp.camera == camera) cb->addItem(QString::fromStdString(lp.label), QString::fromStdString("preset:" + lp.id));
+    QComboBox* interp = d->lutInterp[w] = new QComboBox(page);
+    interp->setObjectName(camera ? "gradeCameraLutInterp" : "gradeLookLutInterp");
+    interp->addItems({"Linear", "Tetrahedral"});
+    QPushButton* rs = new QPushButton("Reset", page);
+    rs->setObjectName(camera ? "gradeCameraLutReset" : "gradeLookLutReset");
+    QSlider* st = d->lutSlider[w] = new QSlider(Qt::Horizontal, page);
+    st->setRange(0, 100);
+    st->setObjectName(camera ? "gradeCameraLutStrengthSlider" : "gradeLookLutStrengthSlider");
+    QDoubleSpinBox* sb = d->lutStrength[w] = new QDoubleSpinBox(page);
+    sb->setObjectName(camera ? "gradeCameraLutStrength" : "gradeLookLutStrength");
+    sb->setRange(0, 1);
+    sb->setDecimals(2);
+    sb->setSingleStep(0.05);
+    sb->setValue(1);
+    sb->setKeyboardTracking(false);
+    QCheckBox* on = d->lutOn[w] = new QCheckBox("Enable", page);
+    on->setObjectName(camera ? "gradeCameraLutOn" : "gradeLookLutOn");
+    on->setChecked(true);
+    grid->addWidget(new QLabel("File:", page), 1, 0, Qt::AlignRight);
+    grid->addWidget(file, 1, 1, 1, 2);
+    grid->addWidget(browse, 1, 3);
+    grid->addWidget(new QLabel("Preset:", page), 2, 0, Qt::AlignRight);
+    grid->addWidget(cb, 2, 1, 1, 2);
+    grid->addWidget(new QLabel("Interpolation:", page), 3, 0, Qt::AlignRight);
+    grid->addWidget(interp, 3, 1);
+    grid->addWidget(rs, 3, 3);
+    grid->addWidget(new QLabel("Strength:", page), 4, 0, Qt::AlignRight);
+    auto* sr = new QHBoxLayout();
+    sr->addWidget(new QLabel("0", page));
+    sr->addWidget(st, 1);
+    sr->addWidget(new QLabel("1", page));
+    sr->addWidget(sb);
+    grid->addLayout(sr, 4, 1, 1, 2);
+    grid->addWidget(on, 5, 3);
+    grid->setColumnStretch(1, 1);
+    grid->setRowStretch(6, 1);
+    auto ref = [impl, camera]() -> LutRef& { return camera ? impl->g.cameraLut : impl->g.lookLut; };
+    QObject::connect(browse, &QPushButton::clicked, this, [impl, this, ref] {
+        const QString f = QFileDialog::getOpenFileName(this, "LUT", QSettings().value("colorGrading/lutFolder").toString(), "LUT (*.cube)");
+        if (f.isEmpty()) return;
+        QSettings().setValue("colorGrading/lutFolder", QFileInfo(f).absolutePath());
+        ref().source = "file:" + f.toStdString();
+        ref().enabled = true;
+        impl->change(true);
+        impl->load();
+    });
+    QObject::connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [impl, cb, ref](int i) {
+        if (impl->updating || i < 0) return;
+        ref().source = cb->itemData(i).toString().toStdString();
+        ref().enabled = true;
+        impl->change(true);
+        impl->load();
+    });
+    QObject::connect(interp, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [impl, ref](int i) {
+        if (impl->updating) return;
+        ref().tetrahedral = i == 1;
+        impl->change(true);
+    });
+    QObject::connect(sb, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [impl, ref, st](double v) {
+        if (impl->updating) return;
+        ref().strength = v;
+        impl->updating = true;
+        st->setValue((int)std::lround(v * 100));
+        impl->updating = false;
+        impl->change(true);
+    });
+    QObject::connect(st, &QSlider::valueChanged, this, [impl, ref, sb](int v) {
+        if (impl->updating) return;
+        ref().strength = v / 100.0;
+        impl->updating = true;
+        sb->setValue(v / 100.0);
+        impl->updating = false;
+        impl->change(true);
+    });
+    QObject::connect(on, &QCheckBox::toggled, this, [impl, ref](bool v) {
+        if (impl->updating) return;
+        ref().enabled = v;
+        impl->change(true);
+    });
+    QObject::connect(rs, &QPushButton::clicked, this, [impl, ref] {
+        ref() = LutRef();
+        impl->change(true);
+        impl->load();
+    });
+    d->refreshMore.push_back([impl, cb, file, interp, st, sb, on, ref] {
+        const LutRef& r = ref();
+        const int at = cb->findData(QString::fromStdString(r.source));
+        cb->setCurrentIndex(std::max(0, at));
+        if (r.source.rfind("file:", 0) == 0) file->setText(QString::fromStdString(r.source.substr(5)));
+        else file->setText(at > 0 ? cb->itemText(at) : QString());
+        interp->setCurrentIndex(r.tetrahedral ? 1 : 0);
+        st->setValue((int)std::lround(r.strength * 100));
+        sb->setValue(r.strength);
+        on->setChecked(r.enabled);
+        (void)impl;
+    });
+    return page;
+}
+
+void ColorGradingPanel::addColorWheelsPage()
+{
+    Impl* impl = d.get();
+    QWidget* page = new QWidget(this);
+    auto* row = new QHBoxLayout(page);
+    const struct { const char* name; double lo, hi, neutral; } ws[4] = {
+        {"Lift", -1.0, 1.0, 0.0}, {"Gamma", 0.1, 4.0, 1.0}, {"Gain", 0.0, 4.0, 1.0}, {"Offset", -1.0, 1.0, 0.0}};
+    for (int k = 0; k < 4; ++k) {
+        d->wheels[k] = new GradeWheel(ws[k].name, ws[k].lo, ws[k].hi, ws[k].neutral, this);
+        d->wheels[k]->setObjectName(QString("gradeWheel%1").arg(ws[k].name));
+        d->wheels[k]->onBegin = [impl] { impl->begin(); };
+        d->wheels[k]->onEnd = [impl] { impl->end(); };
+        d->wheels[k]->onChange = [impl](bool once) {
+            impl->fromWheels();
+            impl->syncChannels();
+            impl->change(once);
+        };
+        row->addWidget(d->wheels[k]);
     }
-    {
-        // Color Channels: each wheel's red, green and blue as vertical sliders (same numbers as the R, G, B boxes)
-        QWidget* page = new QWidget(this);
-        auto* row = new QHBoxLayout(page);
-        const char* names[4] = {"Lift", "Gamma", "Gain", "Offset"};
-        const char* chan[3] = {"R", "G", "B"};
-        for (int k = 0; k < 4; ++k) {
-            auto* col = new QVBoxLayout();
-            col->addWidget(heading(names[k]));
-            auto* sl3 = new QHBoxLayout();
-            for (int c = 0; c < 3; ++c) {
-                QSlider* sl = d->chSlider[k][c] = new QSlider(Qt::Vertical, this);
-                sl->setRange(0, 1000);
-                sl->setObjectName(QString("gradeChannel_%1_%2").arg(names[k]).arg(chan[c]));
-                QDoubleSpinBox* box = d->chBox[k][c] = new QDoubleSpinBox(this);
-                box->setObjectName(QString("gradeChannelBox_%1_%2").arg(names[k]).arg(chan[c]));
-                const double lo = d->wheels[k]->lo() - 1.0, hi = d->wheels[k]->hi() + 1.0;
-                box->setRange(lo, hi);
-                box->setDecimals(3);
-                box->setSingleStep(0.05);
-                box->setKeyboardTracking(false);
-                QLabel* l = new QLabel(chan[c], this);
-                sl3->addWidget(vcolumn(l, sl, box));
-                QObject::connect(sl, &QSlider::sliderPressed, this, [impl] { impl->begin(); });
-                QObject::connect(sl, &QSlider::valueChanged, this, [impl, k, c, sl, lo, hi](int pos) {
-                    if (impl->updating) return;
-                    impl->wheels[k]->setRgb(c, lo + (hi - lo) * pos / 1000.0, !sl->isSliderDown());
-                });
-                QObject::connect(sl, &QSlider::sliderReleased, this, [impl] { impl->end(); });
-                QObject::connect(box, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [impl, k, c](double v) {
-                    if (impl->updating) return;
-                    impl->wheels[k]->setRgb(c, v, true);
-                });
-                sl->installEventFilter(this);
-                sl->setProperty("gradeResetBox", QVariant::fromValue<QObject*>(box));
-                sl->setProperty("gradeNeutral", k == 1 || k == 2 ? 1.0 : 0.0);
-            }
-            col->addLayout(sl3, 1);
-            row->addLayout(col, 1);
-        }
-        d->sec1->addTab(page, "Color Channels");
-    }
-    {
-        // Input/Output: Levels (Input Min, Output Min, Input Max, Output Max) and the Independent Controls
-        QWidget* page = new QWidget(this);
-        auto* row = new QHBoxLayout(page);
-        auto* lev = new QVBoxLayout();
-        lev->addWidget(heading("Levels"));
-        auto* levRow = new QHBoxLayout();
-        const struct { const char* label; const char* name; double* f; double neutral; } ls[4] = {
-            {"Input Min", "blackIn", &d->g.blackIn, 0}, {"Output Min", "blackOut", &d->g.blackOut, 0},
-            {"Input Max", "whiteIn", &d->g.whiteIn, 1}, {"Output Max", "whiteOut", &d->g.whiteOut, 1}};
-        for (auto& e : ls) {
-            auto f = makeField(e.label, e.name, e.f, 0, 1, e.neutral, 2, true);
-            levRow->addWidget(vcolumn(f.l, f.s, f.b));
-        }
-        lev->addLayout(levRow, 1);
-        row->addLayout(lev, 4);
-        auto* ind = new QVBoxLayout();
-        ind->addWidget(heading("Independent Controls"));
-        auto* indRow = new QHBoxLayout();
-        const struct { const char* label; const char* name; double* f; double lo, hi, neutral; int dec; } is[5] = {
-            {"Saturation", "saturation", &d->g.saturation, 0, 3, 1, 2}, {"Exposure", "exposure", &d->g.exposure, -5, 5, 0, 2},
-            {"Contrast", "contrast", &d->g.contrast, 0, 3, 1, 2}, {"Temperature", "temperature", &d->g.temperature, -100, 100, 0, 0},
-            {"Tint", "tint", &d->g.tint, -100, 100, 0, 0}};
-        for (auto& e : is) {
-            auto f = makeField(e.label, e.name, e.f, e.lo, e.hi, e.neutral, e.dec, true);
-            indRow->addWidget(vcolumn(f.l, f.s, f.b));
-        }
-        ind->addLayout(indRow, 1);
-        row->addLayout(ind, 5);
-        d->sec1->addTab(page, "Input/Output");
-    }
-    // Reno's extra pages (VEGAS Pro 23): RL Color Wheels, Utilities
-    {
-        QWidget* page = new QWidget(this);
-        auto* grid = new QGridLayout(page);
-        grid->setVerticalSpacing(3);
-        int row = 0;
-        struct { const char* label; const char* name; ColorGrade::Wheel* w; } ws[4] = {
-            {"Shadows", "shadows", &d->g.shadows}, {"Midtones", "midtones", &d->g.midtones}, {"Highlights", "highlights", &d->g.highlights}, {"Offset", "rlOffset", &d->g.rlOffset}};
-        for (auto& e : ws) {
-            const std::string n = e.name;
-            for (int part = 0; part < 3; ++part) {
-                const char* suffix[3] = {" X", " Y", " Luminance"};
-                const char* key[3] = {"X", "Y", "Master"};
-                double* f = part == 0 ? &e.w->x : part == 1 ? &e.w->y : &e.w->master;
-                auto fld = makeField(QString::fromStdString(std::string(e.label) + suffix[part]), (n + key[part]).c_str(), f, -1, 1, 0, 2, false);
-                hrow(grid, row++, fld.l, fld.s, fld.b);
-            }
-        }
-        {
-            auto f1 = makeField("Shadow / midtone threshold", "rlLow", &d->g.rlLow, 0, 1, 0.25, 2, false);
-            hrow(grid, row++, f1.l, f1.s, f1.b);
-            auto f2 = makeField("Midtone / highlight threshold", "rlHigh", &d->g.rlHigh, 0, 1, 0.75, 2, false);
-            hrow(grid, row++, f2.l, f2.s, f2.b);
-        }
-        d->sec1->addTab(scrolled(page), "RL Color Wheels");
-    }
-    {
-        QWidget* page = new QWidget(this);
-        auto* grid = new QGridLayout(page);
-        grid->setVerticalSpacing(3);
-        int row = 0;
-        const struct { const char* label; const char* name; double* f; double lo, hi, neutral; } us[3] = {
-            {"Brightness", "brightness", &d->g.brightness, -1, 1, 0}, {"Contrast center", "contrastCenter", &d->g.contrastCenter, 0, 1, 0.5},
-            {"Log exposure", "logExposure", &d->g.logExposure, -4, 4, 0}};
-        for (auto& e : us) {
-            auto f = makeField(e.label, e.name, e.f, e.lo, e.hi, e.neutral, 2, false);
-            hrow(grid, row++, f.l, f.s, f.b);
-        }
-        auto* pk = new QHBoxLayout();
-        const char* names[3] = {"Black Point", "White Point", "Select Neutral Tone"};
-        for (int k = 0; k < 3; ++k) {
-            QPushButton* b = d->pickBtn[k] = new QPushButton(names[k], page);
-            b->setCheckable(true);
-            b->setObjectName(QString("gradePick%1").arg(k));
-            b->setToolTip("Click, then click or drag over the picture in the Video Preview window");
-            pk->addWidget(b);
-            QObject::connect(b, &QPushButton::toggled, this, [this, impl, k](bool on) {
-                if (on) {
-                    for (int j = 0; j < 3; ++j)
-                        if (j != k && impl->pickBtn[j]->isChecked()) impl->pickBtn[j]->setChecked(false);
-                    impl->picking = k + 1;
-                    if (setPickerHook) setPickerHook([this](int state, const QRectF& area, const QImage& region) { pickedRegion(state, area, region); });
-                } else if (impl->picking == k + 1) {
-                    impl->picking = 0;
-                    if (setPickerHook) setPickerHook({});
-                }
+    d->sec1->addTab(page, "Color Wheels");
+}
+
+// Color Channels: each wheel's red, green and blue as vertical sliders (same numbers as the R, G, B boxes)
+void ColorGradingPanel::addColorChannelsPage()
+{
+    Impl* impl = d.get();
+    QWidget* page = new QWidget(this);
+    auto* row = new QHBoxLayout(page);
+    const char* names[4] = {"Lift", "Gamma", "Gain", "Offset"};
+    const char* chan[3] = {"R", "G", "B"};
+    for (int k = 0; k < 4; ++k) {
+        auto* col = new QVBoxLayout();
+        col->addWidget(pageHeading(names[k]));
+        auto* sl3 = new QHBoxLayout();
+        for (int c = 0; c < 3; ++c) {
+            QSlider* sl = d->chSlider[k][c] = new QSlider(Qt::Vertical, this);
+            sl->setRange(0, 1000);
+            sl->setObjectName(QString("gradeChannel_%1_%2").arg(names[k]).arg(chan[c]));
+            QDoubleSpinBox* box = d->chBox[k][c] = new QDoubleSpinBox(this);
+            box->setObjectName(QString("gradeChannelBox_%1_%2").arg(names[k]).arg(chan[c]));
+            const double lo = d->wheels[k]->lo() - 1.0, hi = d->wheels[k]->hi() + 1.0;
+            box->setRange(lo, hi);
+            box->setDecimals(3);
+            box->setSingleStep(0.05);
+            box->setKeyboardTracking(false);
+            QLabel* l = new QLabel(chan[c], this);
+            sl3->addWidget(sliderColumn(l, sl, box));
+            QObject::connect(sl, &QSlider::sliderPressed, this, [impl] { impl->begin(); });
+            QObject::connect(sl, &QSlider::valueChanged, this, [impl, k, c, sl, lo, hi](int pos) {
+                if (impl->updating) return;
+                impl->wheels[k]->setRgb(c, lo + (hi - lo) * pos / 1000.0, !sl->isSliderDown());
             });
+            QObject::connect(sl, &QSlider::sliderReleased, this, [impl] { impl->end(); });
+            QObject::connect(box, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [impl, k, c](double v) {
+                if (impl->updating) return;
+                impl->wheels[k]->setRgb(c, v, true);
+            });
+            sl->installEventFilter(this);
+            sl->setProperty("gradeResetBox", QVariant::fromValue<QObject*>(box));
+            sl->setProperty("gradeNeutral", k == 1 || k == 2 ? 1.0 : 0.0);
         }
-        d->pickInfo = new QLabel(page);
-        d->pickInfo->setObjectName("gradePickInfo");
-        pk->addWidget(d->pickInfo, 1);
-        grid->addLayout(pk, row++, 0, 1, 3);
-        QPushButton* rs = new QPushButton("Reset Utilities", page);
-        rs->setObjectName("gradeResetUtilities");
-        grid->addWidget(rs, row++, 0, 1, 3);
-        grid->setRowStretch(row, 1);
-        QObject::connect(rs, &QPushButton::clicked, this, [impl] {
-            ColorGrade n;
-            ColorGrade& g = impl->g;
-            g.brightness = n.brightness; g.contrastCenter = n.contrastCenter; g.logExposure = n.logExposure;
-            impl->change(true);
-            impl->load();
-        });
-        d->sec1->addTab(scrolled(page), "Utilities");
+        col->addLayout(sl3, 1);
+        row->addLayout(col, 1);
     }
+    d->sec1->addTab(page, "Color Channels");
+}
 
-    {
-        QWidget* page = new QWidget(this);
-        auto* lay = new QHBoxLayout(page);
-        auto* side = new QVBoxLayout();
-        auto* group = new QButtonGroup(page);
-        group->setExclusive(true);
-        const char* names[4] = {"Brightness", "Red", "Green", "Blue"};
-        for (int k = 0; k < 4; ++k) {
-            QCheckBox* c = d->curveCheck[k] = new QCheckBox(names[k], page);
-            c->setObjectName(QString("gradeCurveChannel%1").arg(k));
-            group->addButton(c, k);
-            side->addWidget(c);
+// Input/Output: Levels (Input Min, Output Min, Input Max, Output Max) and the Independent Controls
+void ColorGradingPanel::addInputOutputPage()
+{
+    QWidget* page = new QWidget(this);
+    auto* row = new QHBoxLayout(page);
+    auto* lev = new QVBoxLayout();
+    lev->addWidget(pageHeading("Levels"));
+    auto* levRow = new QHBoxLayout();
+    const struct { const char* label; const char* name; double* f; double neutral; } ls[4] = {
+        {"Input Min", "blackIn", &d->g.blackIn, 0}, {"Output Min", "blackOut", &d->g.blackOut, 0},
+        {"Input Max", "whiteIn", &d->g.whiteIn, 1}, {"Output Max", "whiteOut", &d->g.whiteOut, 1}};
+    for (auto& e : ls) {
+        auto f = makeField(e.label, e.name, e.f, 0, 1, e.neutral, 2, true);
+        levRow->addWidget(sliderColumn(f.l, f.s, f.b));
+    }
+    lev->addLayout(levRow, 1);
+    row->addLayout(lev, 4);
+    auto* ind = new QVBoxLayout();
+    ind->addWidget(pageHeading("Independent Controls"));
+    auto* indRow = new QHBoxLayout();
+    const struct { const char* label; const char* name; double* f; double lo, hi, neutral; int dec; } is[5] = {
+        {"Saturation", "saturation", &d->g.saturation, 0, 3, 1, 2}, {"Exposure", "exposure", &d->g.exposure, -5, 5, 0, 2},
+        {"Contrast", "contrast", &d->g.contrast, 0, 3, 1, 2}, {"Temperature", "temperature", &d->g.temperature, -100, 100, 0, 0},
+        {"Tint", "tint", &d->g.tint, -100, 100, 0, 0}};
+    for (auto& e : is) {
+        auto f = makeField(e.label, e.name, e.f, e.lo, e.hi, e.neutral, e.dec, true);
+        indRow->addWidget(sliderColumn(f.l, f.s, f.b));
+    }
+    ind->addLayout(indRow, 1);
+    row->addLayout(ind, 5);
+    d->sec1->addTab(page, "Input/Output");
+}
+
+// Reno's extra pages (VEGAS Pro 23): RL Color Wheels, Utilities
+void ColorGradingPanel::addRlColorWheelsPage()
+{
+    QWidget* page = new QWidget(this);
+    auto* grid = new QGridLayout(page);
+    grid->setVerticalSpacing(3);
+    int row = 0;
+    struct { const char* label; const char* name; ColorGrade::Wheel* w; } ws[4] = {
+        {"Shadows", "shadows", &d->g.shadows}, {"Midtones", "midtones", &d->g.midtones}, {"Highlights", "highlights", &d->g.highlights}, {"Offset", "rlOffset", &d->g.rlOffset}};
+    for (auto& e : ws) {
+        const std::string n = e.name;
+        for (int part = 0; part < 3; ++part) {
+            const char* suffix[3] = {" X", " Y", " Luminance"};
+            const char* key[3] = {"X", "Y", "Master"};
+            double* f = part == 0 ? &e.w->x : part == 1 ? &e.w->y : &e.w->master;
+            auto fld = makeField(QString::fromStdString(std::string(e.label) + suffix[part]), (n + key[part]).c_str(), f, -1, 1, 0, 2, false);
+            gridRow(grid, row++, fld.l, fld.s, fld.b);
         }
-        d->curveCheck[0]->setChecked(true);
-        QToolButton* autoBtn = new QToolButton(page);
-        autoBtn->setObjectName("gradeAutoColorBalance");
-        autoBtn->setText("Auto Color Balance");
-        autoBtn->setPopupMode(QToolButton::InstantPopup);
-        QMenu* am = new QMenu(autoBtn);
-        const char* autos[3] = {"Auto Color Balance", "Auto Black Point", "Auto White Point"};
-        for (int k = 0; k < 3; ++k) {
-            QAction* a = am->addAction(autos[k]);
-            QObject::connect(a, &QAction::triggered, this, [this, k] { autoAdjust(k); });
-        }
-        autoBtn->setMenu(am);
-        side->addSpacing(6);
-        side->addWidget(autoBtn);
-        QPushButton* rs = new QPushButton(QString::fromUtf8("\xe2\x86\xba Reset"), page);
-        rs->setObjectName("gradeCurveReset");
-        side->addWidget(rs);
-        side->addStretch(1);
-        lay->addLayout(side);
-        d->curves = new GradeCurves(page);
-        d->curves->setObjectName("gradeCurves");
-        d->curves->onBegin = [impl] { impl->begin(); };
-        d->curves->onEnd = [impl] { impl->end(); };
-        d->curves->onChange = [impl](bool once) {
-            for (int k = 0; k < 4; ++k) impl->g.curve[k] = impl->curves->pts[k];
-            impl->change(once);
-        };
-        lay->addWidget(d->curves, 1);
-        QObject::connect(group, QOverload<int>::of(&QButtonGroup::idClicked), this, [impl](int i) {
-            impl->curves->channel = i;
-            impl->curves->update();
-        });
-        QObject::connect(rs, &QPushButton::clicked, this, [impl] {
-            const int k = impl->curves->channel;
-            impl->curves->pts[k].clear();
-            impl->g.curve[k].clear();
-            impl->change(true);
-            impl->load();
-        });
-        d->sec2->addTab(page, "Color Curves");
     }
     {
-        // HSL: Hue, Saturation and Luminance, and (Reno's) the HSL curves
-        QWidget* page = new QWidget(this);
-        auto* lay = new QHBoxLayout(page);
-        auto* grid = new QGridLayout();
-        grid->setVerticalSpacing(3);
-        const struct { const char* label; const char* name; double* f; double lo, hi, neutral; } hs[3] = {
-            {"Hue", "hue", &d->g.hue, -1, 1, 0}, {"Saturation", "hslSaturation", &d->g.hslSaturation, 0, 3, 1}, {"Luminance", "luminance", &d->g.luminance, -1, 1, 0}};
-        int row = 0;
-        for (auto& e : hs) {
-            auto f = makeField(e.label, e.name, e.f, e.lo, e.hi, e.neutral, 2, false);
-            hrow(grid, row++, f.l, f.s, f.b);
-        }
-        QComboBox* kind = new QComboBox(page);
-        kind->setObjectName("gradeHslCurveKind");
-        kind->addItems({"Hue vs Hue", "Hue vs Sat", "Hue vs Lum", "Sat vs Sat", "Sat vs Lum", "Lum vs Sat"});
-        QPushButton* rs = new QPushButton("Reset Curve", page);
-        rs->setObjectName("gradeHslCurveReset");
-        grid->addWidget(kind, row++, 0, 1, 3);
-        grid->addWidget(rs, row++, 0, 1, 3);
-        grid->setRowStretch(row, 1);
-        lay->addLayout(grid, 1);
-        d->hslCurves = new GradeCurves(page);
-        d->hslCurves->setObjectName("gradeHslCurves");
-        d->hslCurves->hsl = true;
-        d->hslCurves->onBegin = [impl] { impl->begin(); };
-        d->hslCurves->onEnd = [impl] { impl->end(); };
-        d->hslCurves->onChange = [impl](bool once) {
-            for (int k = 0; k < ColorGrade::HslCurveCount; ++k) impl->g.hslCurve[k] = impl->hslCurves->pts[k];
-            impl->change(once);
-        };
-        lay->addWidget(d->hslCurves, 1);
-        QObject::connect(kind, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [impl](int i) {
-            impl->hslCurves->channel = i;
-            impl->hslCurves->update();
-        });
-        QObject::connect(rs, &QPushButton::clicked, this, [impl] {
-            const int k = impl->hslCurves->channel;
-            impl->hslCurves->pts[k].clear();
-            impl->g.hslCurve[k].clear();
-            impl->change(true);
-            impl->load();
-        });
-        d->refreshMore.push_back([impl] {
-            for (int k = 0; k < ColorGrade::HslCurveCount; ++k) impl->hslCurves->pts[k] = impl->g.hslCurve[k];
-            impl->hslCurves->update();
-        });
-        d->sec2->addTab(page, "HSL");
+        auto f1 = makeField("Shadow / midtone threshold", "rlLow", &d->g.rlLow, 0, 1, 0.25, 2, false);
+        gridRow(grid, row++, f1.l, f1.s, f1.b);
+        auto f2 = makeField("Midtone / highlight threshold", "rlHigh", &d->g.rlHigh, 0, 1, 0.75, 2, false);
+        gridRow(grid, row++, f2.l, f2.s, f2.b);
     }
-    d->sec2->addTab(lutPage(false), "Look LUT");
-    d->sec1->setMinimumHeight(170);
-    d->sec2->setMinimumHeight(170);
+    d->sec1->addTab(scrolledPage(page), "RL Color Wheels");
+}
 
+void ColorGradingPanel::addUtilitiesPage()
+{
+    Impl* impl = d.get();
+    QWidget* page = new QWidget(this);
+    auto* grid = new QGridLayout(page);
+    grid->setVerticalSpacing(3);
+    int row = 0;
+    const struct { const char* label; const char* name; double* f; double lo, hi, neutral; } us[3] = {
+        {"Brightness", "brightness", &d->g.brightness, -1, 1, 0}, {"Contrast center", "contrastCenter", &d->g.contrastCenter, 0, 1, 0.5},
+        {"Log exposure", "logExposure", &d->g.logExposure, -4, 4, 0}};
+    for (auto& e : us) {
+        auto f = makeField(e.label, e.name, e.f, e.lo, e.hi, e.neutral, 2, false);
+        gridRow(grid, row++, f.l, f.s, f.b);
+    }
+    auto* pk = new QHBoxLayout();
+    const char* names[3] = {"Black Point", "White Point", "Select Neutral Tone"};
+    for (int k = 0; k < 3; ++k) {
+        QPushButton* b = d->pickBtn[k] = new QPushButton(names[k], page);
+        b->setCheckable(true);
+        b->setObjectName(QString("gradePick%1").arg(k));
+        b->setToolTip("Click, then click or drag over the picture in the Video Preview window");
+        pk->addWidget(b);
+        QObject::connect(b, &QPushButton::toggled, this, [this, impl, k](bool on) {
+            if (on) {
+                for (int j = 0; j < 3; ++j)
+                    if (j != k && impl->pickBtn[j]->isChecked()) impl->pickBtn[j]->setChecked(false);
+                impl->picking = k + 1;
+                if (setPickerHook) setPickerHook([this](int state, const QRectF& area, const QImage& region) { pickedRegion(state, area, region); });
+            } else if (impl->picking == k + 1) {
+                impl->picking = 0;
+                if (setPickerHook) setPickerHook({});
+            }
+        });
+    }
+    d->pickInfo = new QLabel(page);
+    d->pickInfo->setObjectName("gradePickInfo");
+    pk->addWidget(d->pickInfo, 1);
+    grid->addLayout(pk, row++, 0, 1, 3);
+    QPushButton* rs = new QPushButton("Reset Utilities", page);
+    rs->setObjectName("gradeResetUtilities");
+    grid->addWidget(rs, row++, 0, 1, 3);
+    grid->setRowStretch(row, 1);
+    QObject::connect(rs, &QPushButton::clicked, this, [impl] {
+        ColorGrade n;
+        ColorGrade& g = impl->g;
+        g.brightness = n.brightness; g.contrastCenter = n.contrastCenter; g.logExposure = n.logExposure;
+        impl->change(true);
+        impl->load();
+    });
+    d->sec1->addTab(scrolledPage(page), "Utilities");
+}
+
+void ColorGradingPanel::addColorCurvesPage()
+{
+    Impl* impl = d.get();
+    QWidget* page = new QWidget(this);
+    auto* lay = new QHBoxLayout(page);
+    auto* side = new QVBoxLayout();
+    auto* group = new QButtonGroup(page);
+    group->setExclusive(true);
+    const char* names[4] = {"Brightness", "Red", "Green", "Blue"};
+    for (int k = 0; k < 4; ++k) {
+        QCheckBox* c = d->curveCheck[k] = new QCheckBox(names[k], page);
+        c->setObjectName(QString("gradeCurveChannel%1").arg(k));
+        group->addButton(c, k);
+        side->addWidget(c);
+    }
+    d->curveCheck[0]->setChecked(true);
+    QToolButton* autoBtn = new QToolButton(page);
+    autoBtn->setObjectName("gradeAutoColorBalance");
+    autoBtn->setText("Auto Color Balance");
+    autoBtn->setPopupMode(QToolButton::InstantPopup);
+    QMenu* am = new QMenu(autoBtn);
+    const char* autos[3] = {"Auto Color Balance", "Auto Black Point", "Auto White Point"};
+    for (int k = 0; k < 3; ++k) {
+        QAction* a = am->addAction(autos[k]);
+        QObject::connect(a, &QAction::triggered, this, [this, k] { autoAdjust(k); });
+    }
+    autoBtn->setMenu(am);
+    side->addSpacing(6);
+    side->addWidget(autoBtn);
+    QPushButton* rs = new QPushButton(QString::fromUtf8("\xe2\x86\xba Reset"), page);
+    rs->setObjectName("gradeCurveReset");
+    side->addWidget(rs);
+    side->addStretch(1);
+    lay->addLayout(side);
+    d->curves = new GradeCurves(page);
+    d->curves->setObjectName("gradeCurves");
+    d->curves->onBegin = [impl] { impl->begin(); };
+    d->curves->onEnd = [impl] { impl->end(); };
+    d->curves->onChange = [impl](bool once) {
+        for (int k = 0; k < 4; ++k) impl->g.curve[k] = impl->curves->pts[k];
+        impl->change(once);
+    };
+    lay->addWidget(d->curves, 1);
+    QObject::connect(group, QOverload<int>::of(&QButtonGroup::idClicked), this, [impl](int i) {
+        impl->curves->channel = i;
+        impl->curves->update();
+    });
+    QObject::connect(rs, &QPushButton::clicked, this, [impl] {
+        const int k = impl->curves->channel;
+        impl->curves->pts[k].clear();
+        impl->g.curve[k].clear();
+        impl->change(true);
+        impl->load();
+    });
+    d->sec2->addTab(page, "Color Curves");
+}
+
+// HSL: Hue, Saturation and Luminance, and (Reno's) the HSL curves
+void ColorGradingPanel::addHslPage()
+{
+    Impl* impl = d.get();
+    QWidget* page = new QWidget(this);
+    auto* lay = new QHBoxLayout(page);
+    auto* grid = new QGridLayout();
+    grid->setVerticalSpacing(3);
+    const struct { const char* label; const char* name; double* f; double lo, hi, neutral; } hs[3] = {
+        {"Hue", "hue", &d->g.hue, -1, 1, 0}, {"Saturation", "hslSaturation", &d->g.hslSaturation, 0, 3, 1}, {"Luminance", "luminance", &d->g.luminance, -1, 1, 0}};
+    int row = 0;
+    for (auto& e : hs) {
+        auto f = makeField(e.label, e.name, e.f, e.lo, e.hi, e.neutral, 2, false);
+        gridRow(grid, row++, f.l, f.s, f.b);
+    }
+    QComboBox* kind = new QComboBox(page);
+    kind->setObjectName("gradeHslCurveKind");
+    kind->addItems({"Hue vs Hue", "Hue vs Sat", "Hue vs Lum", "Sat vs Sat", "Sat vs Lum", "Lum vs Sat"});
+    QPushButton* rs = new QPushButton("Reset Curve", page);
+    rs->setObjectName("gradeHslCurveReset");
+    grid->addWidget(kind, row++, 0, 1, 3);
+    grid->addWidget(rs, row++, 0, 1, 3);
+    grid->setRowStretch(row, 1);
+    lay->addLayout(grid, 1);
+    d->hslCurves = new GradeCurves(page);
+    d->hslCurves->setObjectName("gradeHslCurves");
+    d->hslCurves->hsl = true;
+    d->hslCurves->onBegin = [impl] { impl->begin(); };
+    d->hslCurves->onEnd = [impl] { impl->end(); };
+    d->hslCurves->onChange = [impl](bool once) {
+        for (int k = 0; k < ColorGrade::HslCurveCount; ++k) impl->g.hslCurve[k] = impl->hslCurves->pts[k];
+        impl->change(once);
+    };
+    lay->addWidget(d->hslCurves, 1);
+    QObject::connect(kind, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [impl](int i) {
+        impl->hslCurves->channel = i;
+        impl->hslCurves->update();
+    });
+    QObject::connect(rs, &QPushButton::clicked, this, [impl] {
+        const int k = impl->hslCurves->channel;
+        impl->hslCurves->pts[k].clear();
+        impl->g.hslCurve[k].clear();
+        impl->change(true);
+        impl->load();
+    });
+    d->refreshMore.push_back([impl] {
+        for (int k = 0; k < ColorGrade::HslCurveCount; ++k) impl->hslCurves->pts[k] = impl->g.hslCurve[k];
+        impl->hslCurves->update();
+    });
+    d->sec2->addTab(page, "HSL");
+}
+
+// The Finishing column: Bypass, Bezier Mask, Broadcast Colors, Reset All, Export LUT, Pin/Unpin and Exit.
+QVBoxLayout* ColorGradingPanel::finishingColumn()
+{
     auto* fin = new QVBoxLayout();
     fin->setSpacing(4);
     QLabel* fl = new QLabel("Finishing", this);
@@ -1108,9 +1133,31 @@ void ColorGradingPanel::buildPages(QHBoxLayout* root)
             }
         hide();
     });
+    return fin;
+}
+
+void ColorGradingPanel::buildPages(QHBoxLayout* root)
+{
+    d->sec1 = new QTabWidget(this);
+    d->sec1->setObjectName("gradeSection1");
+    d->sec2 = new QTabWidget(this);
+    d->sec2->setObjectName("gradeSection2");
+
+    d->sec1->addTab(lutPage(true), "Input LUT");
+    addColorWheelsPage();
+    addColorChannelsPage();
+    addInputOutputPage();
+    addRlColorWheelsPage();
+    addUtilitiesPage();
+    addColorCurvesPage();
+    addHslPage();
+    d->sec2->addTab(lutPage(false), "Look LUT");
+    d->sec1->setMinimumHeight(170);
+    d->sec2->setMinimumHeight(170);
+
     root->addWidget(d->sec1, 6);
     root->addWidget(d->sec2, 3);
-    root->addLayout(fin, 0);
+    root->addLayout(finishingColumn(), 0);
 }
 
 // The pickers' mouse: the average colour of what is picked becomes the black point, white point or neutral tone.
@@ -1234,16 +1281,7 @@ ColorGradingPanel::ColorGradingPanel(QWidget* parent) : QWidget(parent), d(new I
         d->load();
     };
     // built when first shown (any other first use builds it too: every function below starts with ensure())
-    struct ShowBuilder : QObject {
-        Impl* impl;
-        ShowBuilder(QObject* parent, Impl* i) : QObject(parent), impl(i) {}
-        bool eventFilter(QObject*, QEvent* e) override
-        {
-            if (e->type() == QEvent::Show) impl->ensure();
-            return false;
-        }
-    };
-    installEventFilter(new ShowBuilder(this, impl));
+    callWhenShown(this, [impl] { impl->ensure(); });
 }
 
 ColorGradingPanel::~ColorGradingPanel()

@@ -1007,204 +1007,265 @@ void restoreBackupDialog(MainWindow* w)
     d.exec();
 }
 
-void advancedSaveDialog(MainWindow* w)
-{
-    QSettings s;
-    QDialog d(w);
-    d.setObjectName("advancedSaveDialog");
-    d.setWindowTitle("VEGAS Advanced Save Utility");
-    makeDialogDark(&d);   // VEGAS 18's Advanced Save Utility is dark
-    // VEGAS's window is 649 x 412 with its frame; positions are the capture's less the frame's 1 and 31
-    QFont fnt = d.font();
-    fnt.setPixelSize(12);
-    d.setFont(fnt);
-    d.setFixedSize(649 - 2, 412 - 31 - 1);
-    QPalette pal = d.palette();
-    pal.setColor(QPalette::Window, QColor(45, 45, 45));
-    pal.setColor(QPalette::Base, QColor(62, 62, 62));
-    pal.setColor(QPalette::Button, QColor(55, 55, 55));
-    for (QPalette::ColorRole r : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText}) {
-        pal.setColor(QPalette::Active, r, QColor(230, 230, 230));
-        pal.setColor(QPalette::Inactive, r, QColor(230, 230, 230));
-        pal.setColor(QPalette::Disabled, r, QColor(118, 118, 118));
+// VEGAS 18's Advanced Save Utility: Live Save, timed and real-time backups, and where the backups go. It is laid out at
+// VEGAS's own pixel positions: its window is 649 x 412 with its frame, and the positions are the capture's less the
+// frame's 1 and 31.
+class AdvancedSaveDialog : public QDialog {
+public:
+    explicit AdvancedSaveDialog(MainWindow* w) : QDialog(w), w_(w)
+    {
+        setObjectName("advancedSaveDialog");
+        setWindowTitle("VEGAS Advanced Save Utility");
+        setLook();
+        QSettings s;
+        addPanel(7, 107, 635, 131)->setObjectName("backupPanel");
+        addPanel(0, 358, 649, 54)->setObjectName("backupFooter");
+        addTopRows(s);
+        minutes_ = addRow("backupMinutes", 112, "Backup Interval", "Minutes", "backup/minutesOn", true, "backup/minutes", 10, 1, 60);
+        hours_ = addRow("backupHours", 141, "Backup Interval", "Hours", "backup/hoursOn", false, "backup/hours", 1, 1, 10);
+        daily_ = addRow("backupDaily", 171, "Archive Daily Backups", "Max", "backup/dailyOn", false, "backup/dailyCount", 10, 1, 500);
+        realtime_ = addRow("backupRealtime", 201, "Archive Real-Time Backups", "Max", "backup/realtime", false, "backup/realtimeCount", 50, 1, 500);
+        addLocation(s);
+        addFooter();
+
+        for (QAbstractButton* c : std::initializer_list<QAbstractButton*>{live_, advanced_, minutes_.on, hours_.on, daily_.on, realtime_.on, temp_, proj_, sel_})
+            QObject::connect(c, &QAbstractButton::toggled, this, [this](bool) { updateEnabled(); });
+        updateEnabled();
     }
-    d.setPalette(pal);
-    d.setStyleSheet("QPushButton { background: #373737; border: none; color: #e6e6e6; }"
-                    "QPushButton:hover:enabled { background: #464646; }"
-                    "QPushButton:disabled { color: #767676; }"
-                    "QLineEdit { background: #3e3e3e; border: 1px solid #5a5a5a; color: #e6e6e6; padding-left: 2px; }"
-                    "QLineEdit:disabled { color: #767676; border-color: #505050; }");
-    auto at = [](QWidget* wd, int x, int y, int cw, int ch) { wd->setGeometry(x - 1, y - 31, cw, ch); return wd; };
-    auto panel = [&](int x, int y, int cw, int ch) {
-        QWidget* pn = new QWidget(&d);
+
+    bool liveSave() const { return live_->isChecked(); }
+
+    void saveSettings() const
+    {
+        QSettings s;
+        s.setValue("backup/liveSave", live_->isChecked());
+        s.setValue("backup/advanced", advanced_->isChecked());
+        for (const BackupRow* r : {&minutes_, &hours_, &daily_, &realtime_}) r->save(s);
+        s.setValue("backup/location", proj_->isChecked() ? "project" : sel_->isChecked() ? "folder" : "temp");
+        s.setValue("backup/folder", QDir::fromNativeSeparators(folder_->text().trimmed()));
+    }
+
+private:
+    // A row of the backup panel: tick box, name, a number with its two arrow buttons, and the unit.
+    struct BackupRow {
+        QCheckBox* on = nullptr;
+        QLabel* name = nullptr;
+        QLineEdit* num = nullptr;
+        QPushButton *up = nullptr, *down = nullptr;
+        QLabel* unit = nullptr;
+        const char* onKey = nullptr;
+        const char* key = nullptr;
+
+        // usable: whether the row can be set at all; its number is only once its box is ticked too
+        void enable(bool usable) const
+        {
+            for (QWidget* x : std::initializer_list<QWidget*>{on, name, unit}) x->setEnabled(usable);
+            for (QWidget* x : std::initializer_list<QWidget*>{num, up, down}) x->setEnabled(usable && on->isChecked());
+        }
+        void save(QSettings& s) const
+        {
+            s.setValue(onKey, on->isChecked());
+            s.setValue(key, num->text().toInt());
+        }
+    };
+
+    static QWidget* place(QWidget* wd, int x, int y, int cw, int ch)
+    {
+        wd->setGeometry(x - 1, y - 31, cw, ch);
+        return wd;
+    }
+
+    // VEGAS 18's Advanced Save Utility is dark, with flat buttons.
+    void setLook()
+    {
+        makeDialogDark(this);
+        QFont fnt = font();
+        fnt.setPixelSize(12);
+        setFont(fnt);
+        setFixedSize(649 - 2, 412 - 31 - 1);
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, QColor(45, 45, 45));
+        pal.setColor(QPalette::Base, QColor(62, 62, 62));
+        pal.setColor(QPalette::Button, QColor(55, 55, 55));
+        for (QPalette::ColorRole r : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText}) {
+            pal.setColor(QPalette::Active, r, QColor(230, 230, 230));
+            pal.setColor(QPalette::Inactive, r, QColor(230, 230, 230));
+            pal.setColor(QPalette::Disabled, r, QColor(118, 118, 118));
+        }
+        setPalette(pal);
+        setStyleSheet("QPushButton { background: #373737; border: none; color: #e6e6e6; }"
+                      "QPushButton:hover:enabled { background: #464646; }"
+                      "QPushButton:disabled { color: #767676; }"
+                      "QLineEdit { background: #3e3e3e; border: 1px solid #5a5a5a; color: #e6e6e6; padding-left: 2px; }"
+                      "QLineEdit:disabled { color: #767676; border-color: #505050; }");
+    }
+
+    // A lighter panel behind a group of controls.
+    QWidget* addPanel(int x, int y, int cw, int ch)
+    {
+        QWidget* pn = new QWidget(this);
         pn->setAutoFillBackground(true);
         QPalette pp = pn->palette();
         pp.setColor(QPalette::Window, QColor(70, 70, 70));
         pn->setPalette(pp);
-        at(pn, x, y, cw, ch);
+        place(pn, x, y, cw, ch);
         return pn;
-    };
-    panel(7, 107, 635, 131)->setObjectName("backupPanel");
-    panel(0, 358, 649, 54)->setObjectName("backupFooter");
+    }
 
-    QCheckBox* live = new QCheckBox("Live Save", &d);
-    live->setObjectName("liveSave");
-    live->setChecked(s.value("backup/liveSave", false).toBool());
-    live->setToolTip("The project is saved after every edit (once it has been saved once)");
-    at(live, 47, 49, 540, 15);
-    QPushButton* help = new QPushButton("?", &d);
-    help->setObjectName("backupHelp");
-    at(help, 587, 44, 30, 24);
-    QCheckBox* advanced = new QCheckBox("Use Advanced Backup", &d);
-    advanced->setObjectName("useAdvancedBackup");
-    advanced->setChecked(s.value("backup/advanced", false).toBool());
-    at(advanced, 47, 78, 470, 15);
-    QPushButton* restore = new QPushButton("Restore...", &d);
-    restore->setObjectName("restoreBackups");
-    at(restore, 517, 78, 100, 24);
+    // Live Save and its help, Use Advanced Backup and Restore.
+    void addTopRows(QSettings& s)
+    {
+        live_ = new QCheckBox("Live Save", this);
+        live_->setObjectName("liveSave");
+        live_->setChecked(s.value("backup/liveSave", false).toBool());
+        live_->setToolTip("The project is saved after every edit (once it has been saved once)");
+        place(live_, 47, 49, 540, 15);
+        QPushButton* help = new QPushButton("?", this);
+        help->setObjectName("backupHelp");
+        place(help, 587, 44, 30, 24);
+        advanced_ = new QCheckBox("Use Advanced Backup", this);
+        advanced_->setObjectName("useAdvancedBackup");
+        advanced_->setChecked(s.value("backup/advanced", false).toBool());
+        place(advanced_, 47, 78, 470, 15);
+        QPushButton* restore = new QPushButton("Restore...", this);
+        restore->setObjectName("restoreBackups");
+        place(restore, 517, 78, 100, 24);
 
-    // a row of the panel: tick box, name, a number with its two arrow buttons, and the unit
-    struct Row {
-        QCheckBox* on;
-        QLineEdit* num;
-        QPushButton *up, *down;
-        QLabel *name, *unit;
-        int lo, hi;
-    };
-    auto row = [&](const char* objName, int y, const QString& label, const QString& unit, const char* onKey, bool onDefault, const char* key, int def, int lo, int hi) {
-        Row r;
-        r.lo = lo;
-        r.hi = hi;
-        r.on = new QCheckBox(&d);
+        QObject::connect(help, &QPushButton::clicked, this, [this] {
+            QMessageBox::information(this, "Advanced Save",
+                                     "Live Save saves the project after every edit. Advanced Backup keeps copies of the project: one every so many "
+                                     "minutes or hours, the last few days' (Archive Daily Backups), or one for every change (Archive Real-Time Backups). "
+                                     "Restore... opens one of them.");
+        });
+        QObject::connect(restore, &QPushButton::clicked, this, [this] {
+            accept();
+            restoreBackupDialog(w_);
+        });
+    }
+
+    BackupRow addRow(const char* objName, int y, const QString& label, const QString& unit, const char* onKey, bool onDefault, const char* key,
+                     int def, int lo, int hi)
+    {
+        QSettings s;
+        BackupRow r;
+        r.onKey = onKey;
+        r.key = key;
+        r.on = new QCheckBox(this);
         r.on->setObjectName(objName);
         r.on->setChecked(s.value(onKey, onDefault).toBool());
-        at(r.on, 67, y, 20, 29);
-        r.name = new QLabel(label, &d);
-        at(r.name, 87, y + 2, 220, 25);
-        r.num = new QLineEdit(QString::number(std::max(lo, std::min(hi, s.value(key, def).toInt()))), &d);
+        place(r.on, 67, y, 20, 29);
+        r.name = new QLabel(label, this);
+        place(r.name, 87, y + 2, 220, 25);
+        r.num = new QLineEdit(QString::number(std::max(lo, std::min(hi, s.value(key, def).toInt()))), this);
         r.num->setValidator(new QIntValidator(lo, hi, r.num));
-        at(r.num, 312, y + 5, 50, 19);
-        r.up = new QPushButton(QString::fromUtf8("\xCB\x84"), &d);
-        at(r.up, 367, y + 5, 20, 19);
-        r.down = new QPushButton(QString::fromUtf8("\xCB\x85"), &d);
-        at(r.down, 387, y + 5, 20, 19);
-        r.unit = new QLabel(unit, &d);
-        at(r.unit, 407, y + 2, unit == "Minutes" ? 53 : unit == "Hours" ? 42 : 32, unit == "Minutes" ? 25 : 26);
-        QObject::connect(r.up, &QPushButton::clicked, r.num, [r] { r.num->setText(QString::number(std::min(r.hi, r.num->text().toInt() + 1))); });
-        QObject::connect(r.down, &QPushButton::clicked, r.num, [r] { r.num->setText(QString::number(std::max(r.lo, r.num->text().toInt() - 1))); });
+        place(r.num, 312, y + 5, 50, 19);
+        r.up = new QPushButton(QString::fromUtf8("\xCB\x84"), this);
+        place(r.up, 367, y + 5, 20, 19);
+        r.down = new QPushButton(QString::fromUtf8("\xCB\x85"), this);
+        place(r.down, 387, y + 5, 20, 19);
+        r.unit = new QLabel(unit, this);
+        place(r.unit, 407, y + 2, unit == "Minutes" ? 53 : unit == "Hours" ? 42 : 32, unit == "Minutes" ? 25 : 26);
+        QLineEdit* num = r.num;
+        QObject::connect(r.up, &QPushButton::clicked, num, [num, hi] { num->setText(QString::number(std::min(hi, num->text().toInt() + 1))); });
+        QObject::connect(r.down, &QPushButton::clicked, num, [num, lo] { num->setText(QString::number(std::max(lo, num->text().toInt() - 1))); });
         return r;
-    };
-    Row minutes = row("backupMinutes", 112, "Backup Interval", "Minutes", "backup/minutesOn", true, "backup/minutes", 10, 1, 60);
-    Row hours = row("backupHours", 141, "Backup Interval", "Hours", "backup/hoursOn", false, "backup/hours", 1, 1, 10);
-    Row daily = row("backupDaily", 171, "Archive Daily Backups", "Max", "backup/dailyOn", false, "backup/dailyCount", 10, 1, 500);
-    Row realtime = row("backupRealtime", 201, "Archive Real-Time Backups", "Max", "backup/realtime", false, "backup/realtimeCount", 50, 1, 500);
+    }
 
-    QLabel* where = new QLabel("Save Location:", &d);
-    QFont bold = where->font();
-    bold.setBold(true);
-    where->setFont(bold);
-    at(where, 47, 244, 91, 26);
-    QRadioButton* temp = new QRadioButton("Temporary Files Folder", &d);
-    at(temp, 67, 270, 138, 15);
-    QRadioButton* proj = new QRadioButton("Use Current Project Folder", &d);
-    at(proj, 225, 270, 158, 15);
-    QRadioButton* sel = new QRadioButton("Select Folder", &d);
-    at(sel, 403, 270, 87, 15);
-    const QString loc = s.value("backup/location", "temp").toString();
-    (loc == "project" ? proj : loc == "folder" ? sel : temp)->setChecked(true);
-    QLineEdit* folder = new QLineEdit(QDir::toNativeSeparators(s.value("backup/folder").toString()), &d);
-    folder->setObjectName("backupFolder");
-    at(folder, 67, 292, 430, 20);
-    QPushButton* browse = new QPushButton("Browse...", &d);
-    at(browse, 517, 290, 100, 25);
-    QObject::connect(browse, &QPushButton::clicked, &d, [&d, folder, sel] {
-        const QString x = QFileDialog::getExistingDirectory(&d, "Backup Folder", QDir::fromNativeSeparators(folder->text()));
-        if (!x.isEmpty()) { folder->setText(QDir::toNativeSeparators(x)); sel->setChecked(true); }
-    });
-    QPushButton* clearAll = new QPushButton("Clear all backups", &d);
-    clearAll->setObjectName("clearAllBackups");
-    at(clearAll, 52, 328, 220, 25);
-    QPushButton* clearThis = new QPushButton("Clear current project backups", &d);
-    clearThis->setObjectName("clearProjectBackups");
-    at(clearThis, 282, 328, 220, 25);
-
-    QLabel* lastLabel = new QLabel("Last backup for current project:", &d);
-    at(lastLabel, 47, 372, 178, 26);
-    QLabel* lastTime = new QLabel("None", &d);
-    at(lastTime, 225, 372, 39, 26);
+    // Save Location: the temporary files folder, the project's folder or one of your choice; and clearing backups.
+    void addLocation(QSettings& s)
     {
-        const QStringList mine = backupFiles(true);
+        QLabel* where = new QLabel("Save Location:", this);
+        QFont bold = where->font();
+        bold.setBold(true);
+        where->setFont(bold);
+        place(where, 47, 244, 91, 26);
+        temp_ = new QRadioButton("Temporary Files Folder", this);
+        place(temp_, 67, 270, 138, 15);
+        proj_ = new QRadioButton("Use Current Project Folder", this);
+        place(proj_, 225, 270, 158, 15);
+        sel_ = new QRadioButton("Select Folder", this);
+        place(sel_, 403, 270, 87, 15);
+        const QString loc = s.value("backup/location", "temp").toString();
+        (loc == "project" ? proj_ : loc == "folder" ? sel_ : temp_)->setChecked(true);
+        folder_ = new QLineEdit(QDir::toNativeSeparators(s.value("backup/folder").toString()), this);
+        folder_->setObjectName("backupFolder");
+        place(folder_, 67, 292, 430, 20);
+        browse_ = new QPushButton("Browse...", this);
+        place(browse_, 517, 290, 100, 25);
+        QObject::connect(browse_, &QPushButton::clicked, this, [this] {
+            const QString x = QFileDialog::getExistingDirectory(this, "Backup Folder", QDir::fromNativeSeparators(folder_->text()));
+            if (x.isEmpty()) return;
+            folder_->setText(QDir::toNativeSeparators(x));
+            sel_->setChecked(true);
+        });
+        QPushButton* clearAll = new QPushButton("Clear all backups", this);
+        clearAll->setObjectName("clearAllBackups");
+        place(clearAll, 52, 328, 220, 25);
+        QPushButton* clearThis = new QPushButton("Clear current project backups", this);
+        clearThis->setObjectName("clearProjectBackups");
+        place(clearThis, 282, 328, 220, 25);
+        QObject::connect(clearAll, &QPushButton::clicked, this, [this] { clearBackups(false); });
+        QObject::connect(clearThis, &QPushButton::clicked, this, [this] { clearBackups(true); });
+    }
+
+    // The time of the project's last backup, OK and Cancel.
+    void addFooter()
+    {
+        QLabel* lastLabel = new QLabel("Last backup for current project:", this);
+        place(lastLabel, 47, 372, 178, 26);
+        QLabel* lastTime = new QLabel("None", this);
+        place(lastTime, 225, 372, 39, 26);
         QDateTime newest;
-        for (const QString& fn : mine) newest = std::max(newest, QFileInfo(fn).lastModified());
+        for (const QString& fn : backupFiles(true)) newest = std::max(newest, QFileInfo(fn).lastModified());
         if (newest.isValid()) {
             lastTime->setText(newest.toString("yyyy-MM-dd HH:mm"));
             lastTime->setFixedWidth(120);
         }
+        QPushButton* ok = new QPushButton("OK", this);
+        ok->setObjectName("ok");
+        ok->setDefault(true);
+        place(ok, 407, 373, 100, 22);
+        QPushButton* cancel = new QPushButton("Cancel", this);
+        place(cancel, 517, 373, 100, 22);
+        QObject::connect(ok, &QPushButton::clicked, this, &QDialog::accept);
+        QObject::connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
     }
-    QPushButton* ok = new QPushButton("OK", &d);
-    ok->setObjectName("ok");
-    ok->setDefault(true);
-    at(ok, 407, 373, 100, 22);
-    QPushButton* cancel = new QPushButton("Cancel", &d);
-    at(cancel, 517, 373, 100, 22);
 
-    // what is on and off: Live Save saves after each edit so no backups; Real-Time replaces the timed ones
-    auto enable = [=] {
-        const bool adv = advanced->isChecked() && !live->isChecked();
-        advanced->setEnabled(!live->isChecked());
-        const bool rt = realtime.on->isChecked();
-        for (const Row* r : {&minutes, &hours, &daily}) {
-            const bool onRow = adv && !rt;
-            r->on->setEnabled(onRow);
-            r->name->setEnabled(onRow);
-            r->num->setEnabled(onRow && r->on->isChecked());
-            r->up->setEnabled(onRow && r->on->isChecked());
-            r->down->setEnabled(onRow && r->on->isChecked());
-            r->unit->setEnabled(onRow);
-        }
-        realtime.on->setEnabled(adv);
-        realtime.name->setEnabled(adv);
-        realtime.num->setEnabled(adv && rt);
-        realtime.up->setEnabled(adv && rt);
-        realtime.down->setEnabled(adv && rt);
-        realtime.unit->setEnabled(adv);
-        folder->setEnabled(sel->isChecked());
-        browse->setEnabled(sel->isChecked());
-    };
-    for (QAbstractButton* c : std::initializer_list<QAbstractButton*>{live, advanced, minutes.on, hours.on, daily.on, realtime.on, temp, proj, sel})
-        QObject::connect(c, &QAbstractButton::toggled, &d, [enable](bool) { enable(); });
-    enable();
-    QObject::connect(help, &QPushButton::clicked, &d, [&d] {
-        QMessageBox::information(&d, "Advanced Save",
-                                 "Live Save saves the project after every edit. Advanced Backup keeps copies of the project: one every so many "
-                                 "minutes or hours, the last few days' (Archive Daily Backups), or one for every change (Archive Real-Time Backups). "
-                                 "Restore... opens one of them.");
-    });
-    QObject::connect(restore, &QPushButton::clicked, &d, [&d, w] { d.accept(); restoreBackupDialog(w); });
-    auto clear = [&d](bool current) {
-        const QStringList files = backupFiles(current);
+    // What can be set: Live Save saves after each edit, so it needs no backups; Real-Time backups replace the timed ones.
+    void updateEnabled()
+    {
+        const bool adv = advanced_->isChecked() && !live_->isChecked();
+        advanced_->setEnabled(!live_->isChecked());
+        const bool rt = realtime_.on->isChecked();
+        for (const BackupRow* r : {&minutes_, &hours_, &daily_}) r->enable(adv && !rt);
+        realtime_.enable(adv);
+        folder_->setEnabled(sel_->isChecked());
+        browse_->setEnabled(sel_->isChecked());
+    }
+
+    void clearBackups(bool currentOnly)
+    {
+        const QStringList files = backupFiles(currentOnly);
         if (files.isEmpty()) return;
-        if (QMessageBox::question(&d, "Advanced Save", QString("Delete %1 backup file%2?").arg(files.size()).arg(files.size() == 1 ? "" : "s")) != QMessageBox::Yes) return;
+        if (QMessageBox::question(this, "Advanced Save", QString("Delete %1 backup file%2?").arg(files.size()).arg(files.size() == 1 ? "" : "s")) != QMessageBox::Yes) return;
         for (const QString& fn : files) QFile::remove(fn);
-    };
-    QObject::connect(clearAll, &QPushButton::clicked, &d, [clear] { clear(false); });
-    QObject::connect(clearThis, &QPushButton::clicked, &d, [clear] { clear(true); });
-    QObject::connect(ok, &QPushButton::clicked, &d, &QDialog::accept);
-    QObject::connect(cancel, &QPushButton::clicked, &d, &QDialog::reject);
+    }
+
+    MainWindow* w_;
+    QCheckBox* live_ = nullptr;
+    QCheckBox* advanced_ = nullptr;
+    BackupRow minutes_, hours_, daily_, realtime_;
+    QRadioButton *temp_ = nullptr, *proj_ = nullptr, *sel_ = nullptr;
+    QLineEdit* folder_ = nullptr;
+    QPushButton* browse_ = nullptr;
+};
+
+void advancedSaveDialog(MainWindow* w)
+{
+    AdvancedSaveDialog d(w);
     if (d.exec() != QDialog::Accepted) return;
-    s.setValue("backup/liveSave", live->isChecked());
-    s.setValue("backup/advanced", advanced->isChecked());
-    s.setValue("backup/minutesOn", minutes.on->isChecked());
-    s.setValue("backup/minutes", minutes.num->text().toInt());
-    s.setValue("backup/hoursOn", hours.on->isChecked());
-    s.setValue("backup/hours", hours.num->text().toInt());
-    s.setValue("backup/dailyOn", daily.on->isChecked());
-    s.setValue("backup/dailyCount", daily.num->text().toInt());
-    s.setValue("backup/realtime", realtime.on->isChecked());
-    s.setValue("backup/realtimeCount", realtime.num->text().toInt());
-    s.setValue("backup/location", proj->isChecked() ? "project" : sel->isChecked() ? "folder" : "temp");
-    s.setValue("backup/folder", QDir::fromNativeSeparators(folder->text().trimmed()));
-    if (live->isChecked() && AppState::get().path().empty())
+    d.saveSettings();
+    if (d.liveSave() && AppState::get().path().empty())
         AppState::get().status("Live Save starts once the project has been saved (File > Save).");
 }
 
@@ -1408,219 +1469,242 @@ private:
 
 }  // namespace
 
+// File > Import: media from another project, EDL text files and Broadcast Wave; the interchange formats Reno cannot read.
+static void addImportCommands(MainWindow* w, QMenu* file, const QString& interchange)
+{
+    QMenu* imp = subMenu(file, "Import");
+    if (!imp) return;
+    imp->addAction(command(w, "importFromProject", "Media from &Project...", "Adds the media of another project to this one (with its bins if wanted)",
+                           [w] { importMediaFromProjectDialog(w); }));
+    imp->addAction(unavailable(w, "importAaf", "&AAF...", interchange));
+    imp->addAction(unavailable(w, "importPremiere", "P&remiere/After Effects (*.prproj)...", interchange));
+    imp->addAction(unavailable(w, "importFcp7", "&Final Cut Pro 7/DaVinci Resolve (*.xml)...", interchange));
+    imp->addAction(unavailable(w, "importFcpx", "Final Cut Pro &X (*.fcpxml)...", interchange));
+    imp->addAction(command(w, "importEdl", "&EDL Text File (*.txt)...", "Opens a VEGAS EDL text file as a new project", [w] {
+        const QString fn = QFileDialog::getOpenFileName(w, "Import EDL Text File", w->projectFolder(), "EDL text files (*.txt);;All files (*)");
+        if (fn.isEmpty()) return;
+        Project p;
+        QString err;
+        if (!readEdl(fn, p, &err)) { QMessageBox::warning(w, "Import EDL Text File", err); return; }
+        const QString tmp = QDir(QDir::tempPath()).filePath(QFileInfo(fn).completeBaseName() + " (EDL).reno");
+        std::string e2;
+        if (!p.save(s8(tmp), &e2)) { QMessageBox::warning(w, "Import EDL Text File", qs(e2)); return; }
+        if (w->openProject(tmp)) {
+            AppState::get().untieFromFile();
+            AppState::get().status(s8("Opened the EDL " + QDir::toNativeSeparators(fn) + " (events on one video and up to four audio tracks; transitions as cross-fades)."));
+        }
+        QFile::remove(tmp);
+    }));
+    imp->addAction(command(w, "importBwf", "&Broadcast Wave Format...", "Adds Broadcast Wave files at the times they were recorded", [w] { importBwfDialog(w); }));
+    QAction* dvd = unavailable(w, "importDvdCamcorder", "&DVD Camcorder Disc...", "importing from DVD camcorders needs the camera's disc reader (VEGAS hides it unless Preferences > Deprecated Features shows it)");
+    imp->addAction(dvd);
+    QObject::connect(imp, &QMenu::aboutToShow, imp, [dvd] { dvd->setVisible(vprefs::on("prefs/depDvdCamcorder")); });
+}
+
+// File > Export, and VEGAS's capture, CD, Share Online and Connect commands (those that need hardware or MAGIX's services
+// are there, greyed, so the menu reads as VEGAS's does).
+static void addExportAndCaptureCommands(MainWindow* w, QMenu* file, const QString& interchange)
+{
+    if (!file) return;
+    QMenu* exp = new QMenu("E&xport", file);
+    exp->setObjectName("exportMenu");
+    exp->addAction(command(w, "exportArchive", "&VEGAS Project Archive (*.veg)...", "The project and its media copied into a folder of their own", [w] { archiveDialog(w); }));
+    exp->addAction(unavailable(w, "exportProToolsAaf", "&Pro Tools AAF File (*.aaf)...", interchange));
+    exp->addAction(unavailable(w, "exportAvidAaf", "&Media Composer AAF File (*.aaf)...", interchange));
+    exp->addAction(unavailable(w, "exportPremiere", "Premiere/&After Effects (*.prproj)...", interchange));
+    exp->addAction(unavailable(w, "exportFcp7", "&Final Cut Pro 7/DaVinci Resolve (*.xml)...", interchange));
+    exp->addAction(unavailable(w, "exportFcpx", "Final Cut Pro &X (*.fcpxml)...", interchange));
+    exp->addAction(command(w, "exportEdl", "&EDL Text File (*.txt)...", "Writes the project's events as a VEGAS EDL text file", [w] {
+        const std::string cur = AppState::get().path();
+        const QString sug = QDir(w->projectFolder()).filePath((cur.empty() ? QString("Untitled") : QFileInfo(qs(cur)).completeBaseName()) + ".txt");
+        const QString fn = QFileDialog::getSaveFileName(w, "Export EDL Text File", sug, "EDL text files (*.txt)");
+        if (fn.isEmpty()) return;
+        QString err;
+        if (writeEdl(AppState::get().project(), fn, &err)) AppState::get().status(s8("EDL written to " + QDir::toNativeSeparators(fn)));
+        else QMessageBox::warning(w, "Export EDL Text File", err);
+    }));
+    exp->addAction(unavailable(w, "exportXdcam", "XDCAM &Disc...", "writing XDCAM discs needs an XDCAM drive"));
+    QAction* addMedia = findItem(file, "addMedia");
+    QAction* props = findItem(file, "properties");
+    // Export goes before Add Media when there is an Import menu (as in VEGAS), else before Properties.
+    file->insertMenu(subMenu(file, "Import") && addMedia ? addMedia : props, exp);
+    QAction* dvdTop = unavailable(w, "dvdCamcorderTop", "Import &DVD Camcorder Disc...", "importing from DVD camcorders needs the camera's disc reader");
+    QAction* capture = unavailable(w, "vegasCapture", "VEGAS Capt&ure...", "VEGAS Capture is a separate MAGIX program (screen and camera recording)");
+    QAction* captureVideo = unavailable(w, "captureVideo", "Capture &Video...", "capturing from DV / HDV / SDI devices needs capture hardware");
+    QAction* cd = unavailable(w, "extractCd", "&Extract Audio from CD...", "Reno reads no audio CDs (rip the tracks to files and import them)");
+    QMenu* share = new QMenu("S&hare Online...", file);
+    share->setObjectName("shareOnlineMenu");
+    share->addAction(unavailable(w, "uploadVimeo", "Upload to &Vimeo...", "an online service (render the file and upload it in the browser)"));
+    share->addAction(unavailable(w, "uploadYoutube", "Upload to &YouTube...", "an online service (render the file and upload it in the browser)"));
+    QAction* connect1 = unavailable(w, "prepareConnect", "Prepare for VEGAS Pro Co&nnect...", "VEGAS Pro Connect is MAGIX's iPad companion app");
+    QAction* connect2 = unavailable(w, "manageConnect", "Manage VEGAS Pro Conne&ct Clips...", "VEGAS Pro Connect is MAGIX's iPad companion app");
+    file->insertAction(props, dvdTop);
+    file->insertAction(props, capture);
+    file->insertAction(props, captureVideo);
+    file->insertAction(props, cd);
+    file->insertSeparator(props);
+    file->insertMenu(props, share);
+    file->insertSeparator(props);
+    file->insertAction(props, connect1);
+    file->insertAction(props, connect2);
+    file->insertSeparator(props);
+    QObject::connect(file, &QMenu::aboutToShow, file, [dvdTop] { dvdTop->setVisible(vprefs::on("prefs/depDvdCamcorder")); });
+}
+
+// View > Window: VEGAS's windows Reno has no counterpart for.
+static void addOldWindowCommands(MainWindow* w, QMenu* view)
+{
+    QMenu* win = subMenu(view, "Window");
+    if (!win) return;
+    win->addAction(unavailable(w, "showMediaManager", "Media Ma&nager", "VEGAS's old media database (VEGAS Pro 18 hides it too); Project Media's bins, tags and search do its work"));
+    QAction* xdcam = unavailable(w, "showXdcamExplorer", "XD&CAM Explorer", "XDCAM drives and decks are hardware Reno does not drive (the Device Explorer imports XDCAM cards)");
+    win->addAction(xdcam);
+    win->addAction(unavailable(w, "showHubExplorer", "&Hub Explorer (Beta)", "VEGAS Prepare's collections and VEGAS Cloud are MAGIX services"));
+    QObject::connect(win, &QMenu::aboutToShow, win, [xdcam] { xdcam->setVisible(vprefs::on("prefs/depXdcamExplorer")); });
+}
+
+// Insert > Insert Subtitles from File and from Regions: title events on a new top track.
+static void addSubtitleCommands(MainWindow* w, QMenu* insert)
+{
+    if (!insert) return;
+    QAction* fromFile = command(w, "insertSubtitlesFile", "Insert Subtitles from File", "Title events from the lines of a .txt or .csv file, on a new top track", [w] {
+        QString fn, preset;
+        if (!subtitleDialog(w, true, &fn, &preset)) return;
+        QString err;
+        const std::vector<Subtitle> subs = readSubtitleFile(fn, fpsOf(AppState::get().project()), &err);
+        if (subs.empty()) { QMessageBox::warning(w, "Insert Subtitles", err.isEmpty() ? QString("No subtitles in that file.") : err); return; }
+        const int n = insertSubtitles(subs, preset);
+        AppState::get().status(s8(QString("%1 subtitle%2 inserted.").arg(n).arg(n == 1 ? "" : "s")));
+    });
+    QAction* fromRegions = command(w, "insertSubtitlesRegions", "Insert Subtitles from Regions", "Title events with the regions' names, over the regions, on a new top track", [w] {
+        std::vector<Subtitle> subs;
+        for (const Project::Marker& m : AppState::get().project().markers)
+            if (m.region && !m.name.empty() && m.length > 0) {
+                Subtitle s;
+                s.start = m.time;
+                s.length = m.length;
+                s.text = qs(m.name);
+                subs.push_back(s);
+            }
+        if (subs.empty()) { QMessageBox::information(w, "Insert Subtitles from Regions", "There are no named regions (select a time, press R and type the subtitle)."); return; }
+        QString preset;
+        if (!subtitleDialog(w, false, nullptr, &preset)) return;
+        const int n = insertSubtitles(subs, preset);
+        AppState::get().status(s8(QString("%1 subtitle%2 inserted.").arg(n).arg(n == 1 ? "" : "s")));
+    });
+    insertBefore(insert, fromFile, "addMissingStream");
+    insertBefore(insert, fromRegions, "addMissingStream");
+}
+
+// Tools > Advanced Save.
+static void addAdvancedSaveCommand(MainWindow* w, QMenu* toolsMenu)
+{
+    if (!toolsMenu) return;
+    QAction* adv = command(w, "advancedSave", "Advanced Save...", "Live Save, timed and real-time backups, Restore Backup", [w] { advancedSaveDialog(w); });
+    QAction* sep = toolsMenu->insertSeparator(findItem(toolsMenu, "cleanProjectMedia"));
+    toolsMenu->insertAction(sep, adv);
+    toolsMenu->insertSeparator(adv);
+}
+
+// Options: the metronome, Mute All Audio / Video, and customizing the tool bars.
+static void addPlaybackOptions(MainWindow* w, QMenu* options)
+{
+    if (!options) return;
+    QAction* metronome = new QAction("Metr&onome", w);
+    metronome->setObjectName("metronome");
+    metronome->setCheckable(true);
+    metronome->setStatusTip("Clicks at the project's tempo while recording (not in renders)");
+    metronome->setChecked(QSettings().value("options/metronome", false).toBool());
+    QObject::connect(metronome, &QAction::toggled, w, [w](bool on) {
+        QSettings().setValue("options/metronome", on);
+        updateMetronome(w);
+    });
+    updateMetronome(w);
+    const int l = AppState::get().addListener([w](int changes) { if (changes & kPrefs) updateMetronome(w); });
+    QObject::connect(w, &QObject::destroyed, [l] { AppState::get().removeListener(l); });
+    w->addAction(metronome);
+    insertAfter(options, metronome, "loop");
+    QMenu* loud = options->findChild<QMenu*>("loudnessMetersMenu");
+    if (loud) {
+        options->removeAction(loud->menuAction());
+        insertAfter(options, loud->menuAction(), "metronome");
+    }
+    QAction* muteA = new QAction("&Mute All Audio", w);
+    QAction* muteV = new QAction("Mute All Vi&deo", w);
+    muteA->setObjectName("muteAllAudio");
+    muteV->setObjectName("muteAllVideo");
+    muteA->setStatusTip("Plays no audio track (the project is not changed, renders are not affected)");
+    muteV->setStatusTip("Shows no video track (the project is not changed, renders are not affected)");
+    for (QAction* m : {muteA, muteV}) {
+        m->setCheckable(true);
+        w->addAction(m);
+    }
+    QObject::connect(muteA, &QAction::toggled, w, [](bool on) {
+        AppState::get().muteAllAudio = on;
+    });
+    QObject::connect(muteV, &QAction::toggled, w, [](bool on) {
+        AppState& a = AppState::get();
+        a.muteAllVideo = on;
+        a.notify(kFxParams);
+    });
+    {
+        const QList<QAction*> all = options->actions();
+        const int at = loud ? all.indexOf(loud->menuAction()) : -1;
+        QAction* next = at >= 0 && at + 1 < all.size() ? all[at + 1] : nullptr;
+        options->insertSeparator(next);
+        options->insertAction(next, muteA);
+        options->insertAction(next, muteV);
+    }
+    QAction* tb = command(w, "customizeToolbar", "Customize &Toolbar...", "Adds, removes and rearranges the main tool bar's buttons", [w] { runCustomizeToolbar(w, false); });
+    QAction* ttb = command(w, "customizeTimelineToolbar", "Customize Timeline Toolbar...", "Adds, removes and rearranges the editing tool bar's buttons", [w] { runCustomizeToolbar(w, true); });
+    QAction* keyboard = nullptr;
+    for (QAction* a : options->actions())
+        if (plainMenuText(a->text()).startsWith("Customize Keyboard")) keyboard = a;
+    options->insertAction(keyboard, tb);
+    options->insertAction(keyboard, ttb);
+}
+
+// Help: MAGIX's online pages and services, greyed.
+static void addOnlineHelpCommands(MainWindow* w, QMenu* help)
+{
+    if (!help) return;
+    QAction* shortcuts = findItem(help, "shortcuts");
+    QList<QAction*> online = {unavailable(w, "showMeHow", "&Show Me How...", "MAGIX's online help pages"),
+                              unavailable(w, "interactiveTutorials", "Interactive Tutorial&s...", "MAGIX's interactive tutorials ship with VEGAS itself (Help > Contents and Index has Reno's read-me)")};
+    QAction* after = nullptr;
+    {
+        const QList<QAction*> all = help->actions();
+        const int i = all.indexOf(shortcuts);
+        after = i >= 0 && i + 1 < all.size() ? all[i + 1] : nullptr;
+    }
+    for (QAction* a : online) help->insertAction(after, a);
+    help->insertSeparator(after);
+    for (QAction* a : {unavailable(w, "checkUpdates", "Check for Software &Updates...", "Reno has no update service"),
+                       unavailable(w, "checkDrivers", "Check for &Driver Updates...", "Reno has no update service"),
+                       unavailable(w, "checkNews", "Check for News...", "MAGIX's news service"),
+                       unavailable(w, "deactivate", "Deactivate the Software on this PC...", "Reno needs no activation"),
+                       unavailable(w, "ratings", "Ratings and Reviews", "MAGIX's web pages"),
+                       unavailable(w, "community", "&VEGAS Community...", "MAGIX's web pages")})
+        help->insertAction(after, a);
+    help->insertSeparator(after);
+}
+
 void installManualExtras(MainWindow* w)
 {
-    AppState& app = AppState::get();
     QMenu* file = topMenu(w, "File");
-    QMenu* view = topMenu(w, "View");
-    QMenu* insert = topMenu(w, "Insert");
-    QMenu* toolsMenu = topMenu(w, "Tools");
-    QMenu* options = topMenu(w, "Options");
-    QMenu* help = topMenu(w, "Help");
     const QString interchange = "a project interchange format Reno cannot read or write (VEGAS projects, EDL text files and media are what it takes)";
-
-    if (QMenu* imp = subMenu(file, "Import")) {
-        imp->addAction(command(w, "importFromProject", "Media from &Project...", "Adds the media of another project to this one (with its bins if wanted)",
-                               [w] { importMediaFromProjectDialog(w); }));
-        imp->addAction(unavailable(w, "importAaf", "&AAF...", interchange));
-        imp->addAction(unavailable(w, "importPremiere", "P&remiere/After Effects (*.prproj)...", interchange));
-        imp->addAction(unavailable(w, "importFcp7", "&Final Cut Pro 7/DaVinci Resolve (*.xml)...", interchange));
-        imp->addAction(unavailable(w, "importFcpx", "Final Cut Pro &X (*.fcpxml)...", interchange));
-        imp->addAction(command(w, "importEdl", "&EDL Text File (*.txt)...", "Opens a VEGAS EDL text file as a new project", [w] {
-            const QString fn = QFileDialog::getOpenFileName(w, "Import EDL Text File", w->projectFolder(), "EDL text files (*.txt);;All files (*)");
-            if (fn.isEmpty()) return;
-            Project p;
-            QString err;
-            if (!readEdl(fn, p, &err)) { QMessageBox::warning(w, "Import EDL Text File", err); return; }
-            const QString tmp = QDir(QDir::tempPath()).filePath(QFileInfo(fn).completeBaseName() + " (EDL).reno");
-            std::string e2;
-            if (!p.save(s8(tmp), &e2)) { QMessageBox::warning(w, "Import EDL Text File", qs(e2)); return; }
-            if (w->openProject(tmp)) {
-                AppState::get().untieFromFile();
-                AppState::get().status(s8("Opened the EDL " + QDir::toNativeSeparators(fn) + " (events on one video and up to four audio tracks; transitions as cross-fades)."));
-            }
-            QFile::remove(tmp);
-        }));
-        imp->addAction(command(w, "importBwf", "&Broadcast Wave Format...", "Adds Broadcast Wave files at the times they were recorded", [w] { importBwfDialog(w); }));
-        QAction* dvd = unavailable(w, "importDvdCamcorder", "&DVD Camcorder Disc...", "importing from DVD camcorders needs the camera's disc reader (VEGAS hides it unless Preferences > Deprecated Features shows it)");
-        imp->addAction(dvd);
-        QObject::connect(imp, &QMenu::aboutToShow, imp, [dvd] { dvd->setVisible(vprefs::on("prefs/depDvdCamcorder")); });
-    }
-    if (file) {
-        QMenu* exp = new QMenu("E&xport", file);
-        exp->setObjectName("exportMenu");
-        exp->addAction(command(w, "exportArchive", "&VEGAS Project Archive (*.veg)...", "The project and its media copied into a folder of their own", [w] { archiveDialog(w); }));
-        exp->addAction(unavailable(w, "exportProToolsAaf", "&Pro Tools AAF File (*.aaf)...", interchange));
-        exp->addAction(unavailable(w, "exportAvidAaf", "&Media Composer AAF File (*.aaf)...", interchange));
-        exp->addAction(unavailable(w, "exportPremiere", "Premiere/&After Effects (*.prproj)...", interchange));
-        exp->addAction(unavailable(w, "exportFcp7", "&Final Cut Pro 7/DaVinci Resolve (*.xml)...", interchange));
-        exp->addAction(unavailable(w, "exportFcpx", "Final Cut Pro &X (*.fcpxml)...", interchange));
-        exp->addAction(command(w, "exportEdl", "&EDL Text File (*.txt)...", "Writes the project's events as a VEGAS EDL text file", [w] {
-            const std::string cur = AppState::get().path();
-            const QString sug = QDir(w->projectFolder()).filePath((cur.empty() ? QString("Untitled") : QFileInfo(qs(cur)).completeBaseName()) + ".txt");
-            const QString fn = QFileDialog::getSaveFileName(w, "Export EDL Text File", sug, "EDL text files (*.txt)");
-            if (fn.isEmpty()) return;
-            QString err;
-            if (writeEdl(AppState::get().project(), fn, &err)) AppState::get().status(s8("EDL written to " + QDir::toNativeSeparators(fn)));
-            else QMessageBox::warning(w, "Export EDL Text File", err);
-        }));
-        exp->addAction(unavailable(w, "exportXdcam", "XDCAM &Disc...", "writing XDCAM discs needs an XDCAM drive"));
-        QAction* addMedia = findItem(file, "addMedia");
-        QAction* props = findItem(file, "properties");
-        QAction* expAct = exp->menuAction();
-        if (QMenu* imp = subMenu(file, "Import")) file->insertMenu(addMedia ? addMedia : props, exp), (void)imp;
-        else file->insertMenu(props, exp);
-        (void)expAct;
-        QAction* dvdTop = unavailable(w, "dvdCamcorderTop", "Import &DVD Camcorder Disc...", "importing from DVD camcorders needs the camera's disc reader");
-        QAction* capture = unavailable(w, "vegasCapture", "VEGAS Capt&ure...", "VEGAS Capture is a separate MAGIX program (screen and camera recording)");
-        QAction* captureVideo = unavailable(w, "captureVideo", "Capture &Video...", "capturing from DV / HDV / SDI devices needs capture hardware");
-        QAction* cd = unavailable(w, "extractCd", "&Extract Audio from CD...", "Reno reads no audio CDs (rip the tracks to files and import them)");
-        QMenu* share = new QMenu("S&hare Online...", file);
-        share->setObjectName("shareOnlineMenu");
-        share->addAction(unavailable(w, "uploadVimeo", "Upload to &Vimeo...", "an online service (render the file and upload it in the browser)"));
-        share->addAction(unavailable(w, "uploadYoutube", "Upload to &YouTube...", "an online service (render the file and upload it in the browser)"));
-        QAction* connect1 = unavailable(w, "prepareConnect", "Prepare for VEGAS Pro Co&nnect...", "VEGAS Pro Connect is MAGIX's iPad companion app");
-        QAction* connect2 = unavailable(w, "manageConnect", "Manage VEGAS Pro Conne&ct Clips...", "VEGAS Pro Connect is MAGIX's iPad companion app");
-        file->insertAction(props, dvdTop);
-        file->insertAction(props, capture);
-        file->insertAction(props, captureVideo);
-        file->insertAction(props, cd);
-        file->insertSeparator(props);
-        file->insertMenu(props, share);
-        file->insertSeparator(props);
-        file->insertAction(props, connect1);
-        file->insertAction(props, connect2);
-        file->insertSeparator(props);
-        QObject::connect(file, &QMenu::aboutToShow, file, [dvdTop] { dvdTop->setVisible(vprefs::on("prefs/depDvdCamcorder")); });
-    }
-
-    if (QMenu* win = subMenu(view, "Window")) {
-        win->addAction(unavailable(w, "showMediaManager", "Media Ma&nager", "VEGAS's old media database (VEGAS Pro 18 hides it too); Project Media's bins, tags and search do its work"));
-        QAction* xdcam = unavailable(w, "showXdcamExplorer", "XD&CAM Explorer", "XDCAM drives and decks are hardware Reno does not drive (the Device Explorer imports XDCAM cards)");
-        win->addAction(xdcam);
-        win->addAction(unavailable(w, "showHubExplorer", "&Hub Explorer (Beta)", "VEGAS Prepare's collections and VEGAS Cloud are MAGIX services"));
-        QObject::connect(win, &QMenu::aboutToShow, win, [xdcam] { xdcam->setVisible(vprefs::on("prefs/depXdcamExplorer")); });
-    }
-
-    if (insert) {
-        QAction* fromFile = command(w, "insertSubtitlesFile", "Insert Subtitles from File", "Title events from the lines of a .txt or .csv file, on a new top track", [w] {
-            QString fn, preset;
-            if (!subtitleDialog(w, true, &fn, &preset)) return;
-            QString err;
-            const std::vector<Subtitle> subs = readSubtitleFile(fn, fpsOf(AppState::get().project()), &err);
-            if (subs.empty()) { QMessageBox::warning(w, "Insert Subtitles", err.isEmpty() ? QString("No subtitles in that file.") : err); return; }
-            const int n = insertSubtitles(subs, preset);
-            AppState::get().status(s8(QString("%1 subtitle%2 inserted.").arg(n).arg(n == 1 ? "" : "s")));
-        });
-        QAction* fromRegions = command(w, "insertSubtitlesRegions", "Insert Subtitles from Regions", "Title events with the regions' names, over the regions, on a new top track", [w] {
-            std::vector<Subtitle> subs;
-            for (const Project::Marker& m : AppState::get().project().markers)
-                if (m.region && !m.name.empty() && m.length > 0) {
-                    Subtitle s;
-                    s.start = m.time;
-                    s.length = m.length;
-                    s.text = qs(m.name);
-                    subs.push_back(s);
-                }
-            if (subs.empty()) { QMessageBox::information(w, "Insert Subtitles from Regions", "There are no named regions (select a time, press R and type the subtitle)."); return; }
-            QString preset;
-            if (!subtitleDialog(w, false, nullptr, &preset)) return;
-            const int n = insertSubtitles(subs, preset);
-            AppState::get().status(s8(QString("%1 subtitle%2 inserted.").arg(n).arg(n == 1 ? "" : "s")));
-        });
-        insertBefore(insert, fromFile, "addMissingStream");
-        insertBefore(insert, fromRegions, "addMissingStream");
-    }
-
-    if (toolsMenu) {
-        QAction* adv = command(w, "advancedSave", "Advanced Save...", "Live Save, timed and real-time backups, Restore Backup", [w] { advancedSaveDialog(w); });
-        QAction* sep = toolsMenu->insertSeparator(findItem(toolsMenu, "cleanProjectMedia"));
-        toolsMenu->insertAction(sep, adv);
-        toolsMenu->insertSeparator(adv);
-    }
-
-    if (options) {
-        QAction* metronome = new QAction("Metr&onome", w);
-        metronome->setObjectName("metronome");
-        metronome->setCheckable(true);
-        metronome->setStatusTip("Clicks at the project's tempo while recording (not in renders)");
-        metronome->setChecked(QSettings().value("options/metronome", false).toBool());
-        QObject::connect(metronome, &QAction::toggled, w, [w](bool on) {
-            QSettings().setValue("options/metronome", on);
-            updateMetronome(w);
-        });
-        updateMetronome(w);
-        const int l = app.addListener([w](int changes) { if (changes & kPrefs) updateMetronome(w); });
-        QObject::connect(w, &QObject::destroyed, [l] { AppState::get().removeListener(l); });
-        w->addAction(metronome);
-        insertAfter(options, metronome, "loop");
-        QMenu* loud = options->findChild<QMenu*>("loudnessMetersMenu");
-        if (loud) {
-            options->removeAction(loud->menuAction());
-            insertAfter(options, loud->menuAction(), "metronome");
-        }
-        QAction* muteA = new QAction("&Mute All Audio", w);
-        QAction* muteV = new QAction("Mute All Vi&deo", w);
-        muteA->setObjectName("muteAllAudio");
-        muteV->setObjectName("muteAllVideo");
-        muteA->setStatusTip("Plays no audio track (the project is not changed, renders are not affected)");
-        muteV->setStatusTip("Shows no video track (the project is not changed, renders are not affected)");
-        for (QAction* m : {muteA, muteV}) {
-            m->setCheckable(true);
-            w->addAction(m);
-        }
-        QObject::connect(muteA, &QAction::toggled, w, [](bool on) {
-            AppState::get().muteAllAudio = on;
-        });
-        QObject::connect(muteV, &QAction::toggled, w, [](bool on) {
-            AppState& a = AppState::get();
-            a.muteAllVideo = on;
-            a.notify(kFxParams);
-        });
-        {
-            const QList<QAction*> all = options->actions();
-            const int at = loud ? all.indexOf(loud->menuAction()) : -1;
-            QAction* next = at >= 0 && at + 1 < all.size() ? all[at + 1] : nullptr;
-            options->insertSeparator(next);
-            options->insertAction(next, muteA);
-            options->insertAction(next, muteV);
-        }
-        QAction* tb = command(w, "customizeToolbar", "Customize &Toolbar...", "Adds, removes and rearranges the main tool bar's buttons", [w] { runCustomizeToolbar(w, false); });
-        QAction* ttb = command(w, "customizeTimelineToolbar", "Customize Timeline Toolbar...", "Adds, removes and rearranges the editing tool bar's buttons", [w] { runCustomizeToolbar(w, true); });
-        QAction* keyboard = nullptr;
-        for (QAction* a : options->actions())
-            if (plainMenuText(a->text()).startsWith("Customize Keyboard")) keyboard = a;
-        options->insertAction(keyboard, tb);
-        options->insertAction(keyboard, ttb);
-    }
-
-    if (help) {
-        QAction* shortcuts = findItem(help, "shortcuts");
-        QList<QAction*> online = {unavailable(w, "showMeHow", "&Show Me How...", "MAGIX's online help pages"),
-                                  unavailable(w, "interactiveTutorials", "Interactive Tutorial&s...", "MAGIX's interactive tutorials ship with VEGAS itself (Help > Contents and Index has Reno's read-me)")};
-        QAction* after = nullptr;
-        {
-            const QList<QAction*> all = help->actions();
-            const int i = all.indexOf(shortcuts);
-            after = i >= 0 && i + 1 < all.size() ? all[i + 1] : nullptr;
-        }
-        for (QAction* a : online) help->insertAction(after, a);
-        help->insertSeparator(after);
-        for (QAction* a : {unavailable(w, "checkUpdates", "Check for Software &Updates...", "Reno has no update service"),
-                           unavailable(w, "checkDrivers", "Check for &Driver Updates...", "Reno has no update service"),
-                           unavailable(w, "checkNews", "Check for News...", "MAGIX's news service"),
-                           unavailable(w, "deactivate", "Deactivate the Software on this PC...", "Reno needs no activation"),
-                           unavailable(w, "ratings", "Ratings and Reviews", "MAGIX's web pages"),
-                           unavailable(w, "community", "&VEGAS Community...", "MAGIX's web pages")})
-            help->insertAction(after, a);
-        help->insertSeparator(after);
-    }
+    addImportCommands(w, file, interchange);
+    addExportAndCaptureCommands(w, file, interchange);
+    addOldWindowCommands(w, topMenu(w, "View"));
+    addSubtitleCommands(w, topMenu(w, "Insert"));
+    addAdvancedSaveCommand(w, topMenu(w, "Tools"));
+    addPlaybackOptions(w, topMenu(w, "Options"));
+    addOnlineHelpCommands(w, topMenu(w, "Help"));
 
     installToolbars(w);
     new MatchMediaPrompt(w);
     new BackupKeeper(w);
     new BackgroundWatcher(w);
-    (void)app;
 }
 
 }  // namespace app

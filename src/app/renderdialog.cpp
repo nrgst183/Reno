@@ -8,6 +8,12 @@
 #ifdef __APPLE__
 #include <mach/mach.h>
 #endif
+#ifdef __FreeBSD__
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
+#include <unistd.h>
+#endif
 #include "logbook.h"
 #include "vprefs.h"
 #include "renderdialog.h"
@@ -112,6 +118,12 @@ qint64 processMemory()
     mach_task_basic_info info;
     mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
     if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) == KERN_SUCCESS) return (qint64)info.resident_size;
+    return 0;
+#elif defined(__FreeBSD__)
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid()};
+    kinfo_proc kp;
+    size_t size = sizeof kp;
+    if (sysctl(mib, 4, &kp, &size, nullptr, 0) == 0) return (qint64)kp.ki_rssize * (qint64)getpagesize();
     return 0;
 #else
     QFile f("/proc/self/statm");

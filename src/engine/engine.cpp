@@ -1366,6 +1366,54 @@ void requestProxy(const std::string& path, bool force)
 }
 
 // Builds the proxy of the project at 'path'. 0 made, 1 failed, 2 stopped.
+// After a proxy's sound is rendered: 0 if it can be kept, else 1 (an effect of a project it uses could not be made, so
+// the sound is wrong) or 3 (the project was saved again meanwhile), with the reason in *message.
+static int proxyStillGood(const std::string& path, int64_t vegTime, uint64_t leftOut, std::string* message)
+{
+    if (nestedEffectsLeftOut() != leftOut) {
+        if (message) *message = "the effects of a project it uses could not be made";
+        return 1;
+    }
+    if (vegasfiles::fileTime(path) != vegTime) {
+        if (message) *message = pathFileName(path) + " was saved again while its sound was being rendered";
+        return 3;
+    }
+    return 0;
+}
+
+// Keeps a proxy's sound in memory (where its file cannot be written), dropping the least recently used others once
+// they take more than the limit.
+static void keepMemoryProxy(const std::string& path, int64_t vegTime, int64_t depTime, int rate, std::shared_ptr<std::vector<float>> l,
+                            std::shared_ptr<std::vector<float>> r)
+{
+    std::lock_guard<std::mutex> lk(gMemProxyMutex);
+    MemProxy mp;
+    mp.vegTime = vegTime;
+    mp.depTime = depTime;
+    mp.rate = rate;
+    mp.l = std::move(l);
+    mp.r = std::move(r);
+    mp.lastUse = ++gMemProxyTick;
+    gMemProxies[samePath(path)] = mp;
+    while (memProxyBytes() > kMemProxyLimit && gMemProxies.size() > 1) {
+        auto oldest = gMemProxies.begin();
+        for (auto it = gMemProxies.begin(); it != gMemProxies.end(); ++it)
+            if (it->second.lastUse < oldest->second.lastUse) oldest = it;
+        gMemProxies.erase(oldest);
+    }
+}
+
+// Closes the proxies of 'path' being read (on Windows an open file cannot be replaced).
+static void closeOpenProxies(ProxyBook& b, const std::string& path)
+{
+    std::lock_guard<std::mutex> lk(b.mutex);
+    auto it = b.open.find(samePath(path));
+    if (it == b.open.end()) return;
+    for (auto& wp : it->second)
+        if (auto f = wp.lock()) f->close();
+    b.open.erase(it);
+}
+
 int buildProxy(const std::string& path, std::string* message)
 {
     ProxyBook& b = proxyBook();
@@ -1450,54 +1498,17 @@ int buildProxy(const std::string& path, std::string* message)
         --gNestedDepth;
     }
     if (toMemory) {
-        if (nestedEffectsLeftOut() != leftOut) {
-            if (message) *message = "the effects of a project it uses could not be made";
-            return 1;
-        }
-        if (vegasfiles::fileTime(path) != vegTime) {
-            if (message) *message = pathFileName(path) + " was saved again while its sound was being rendered";
-            return 3;
-        }
-        {
-            std::lock_guard<std::mutex> lk(gMemProxyMutex);
-            MemProxy mp;
-            mp.vegTime = vegTime;
-            mp.depTime = memDep;
-            mp.rate = rate;
-            mp.l = memL;
-            mp.r = memR;
-            mp.lastUse = ++gMemProxyTick;
-            gMemProxies[samePath(path)] = mp;
-            while (memProxyBytes() > kMemProxyLimit && gMemProxies.size() > 1) {
-                auto oldest = gMemProxies.begin();
-                for (auto it = gMemProxies.begin(); it != gMemProxies.end(); ++it)
-                    if (it->second.lastUse < oldest->second.lastUse) oldest = it;
-                gMemProxies.erase(oldest);
-            }
-        }
+        if (const int bad = proxyStillGood(path, vegTime, leftOut, message)) return bad;
+        keepMemoryProxy(path, vegTime, memDep, rate, memL, memR);
         gProxyGeneration.fetch_add(1);
         return 0;
     }
-    if (nestedEffectsLeftOut() != leftOut) {
+    if (const int bad = proxyStillGood(path, vegTime, leftOut, message)) {
         w.abort();
-        if (message) *message = "the effects of a project it uses could not be made";
-        return 1;
+        return bad;
     }
-    if (vegasfiles::fileTime(path) != vegTime) {
-        w.abort();
-        if (message) *message = pathFileName(path) + " was saved again while its sound was being rendered";
-        return 3;
-    }
-    // the proxies of it being read are closed first (on Windows an open file cannot be replaced), then it is put in place
-    {
-        std::lock_guard<std::mutex> lk(b.mutex);
-        auto it = b.open.find(samePath(path));
-        if (it != b.open.end()) {
-            for (auto& wp : it->second)
-                if (auto f = wp.lock()) f->close();
-            b.open.erase(it);
-        }
-    }
+    // the proxies of it being read are closed first, then it is put in place
+    closeOpenProxies(b, path);
     const bool ok = w.finish(vegTime, &err);
     gProxyGeneration.fetch_add(1);
     if (!ok) {

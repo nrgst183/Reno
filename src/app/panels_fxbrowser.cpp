@@ -1,5 +1,6 @@
 // The plug-in lists (Video FX, Transitions, Media Generators, Audio FX).
 #include "panels_internal.h"
+#include "onshow.h"
 #include "vprefs.h"
 #include "audiotools.h"
 #include "../engine/colormgmt.h"
@@ -565,6 +566,124 @@ struct FxBrowser::Impl {
         else counts = QString("%1 %2").arg(all.size()).arg(noun(all.size() != 1));
         describe(tree->currentItem());
     }
+    // Above the list (not for audio effects): the category tabs and the Filter (who makes them) box.
+    void buildCategoryRow(QVBoxLayout* root)
+    {
+        QHBoxLayout* cats = new QHBoxLayout();
+        cats->setContentsMargins(0, 0, 0, 0);
+        cats->setSpacing(4);
+        category = new CategoryBar(owner);
+        providerLabel = new QLabel("Filter:", owner);
+        provider = new QComboBox(owner);
+        provider->setObjectName("fxProvider");
+        cats->addWidget(category, 1);
+        cats->addWidget(providerLabel);
+        cats->addWidget(provider);
+        root->addLayout(cats);
+        QObject::connect(category, &QTabBar::currentChanged, owner, [this](int) {
+            QSettings().setValue(QString("fxCategory/%1").arg((int)kind), category->currentData());
+            rebuild();
+        });
+        QObject::connect(provider, QOverload<int>::of(&QComboBox::currentIndexChanged), owner, [this](int) { rebuild(); });
+        QSignalBlocker b(category);
+        category->addItem("All Plug-ins", QSettings().value(QString("fxCategory/%1").arg((int)kind), "all").toString());
+    }
+
+    // The page shown before plug-ins have been looked for, with the button that looks for them.
+    QWidget* buildEmptyPage()
+    {
+        emptyPage = new QWidget(stack);
+        emptyPage->setObjectName("noPlugins");
+        auto* empty = new QVBoxLayout(emptyPage);
+        empty->setContentsMargins(12, 20, 12, 12);
+        auto* explain = new QLabel("Plug-ins have not been looked for yet.\n\nReno finds OpenFX effects and VST sound effects installed on this computer. This can take a minute the first time.", emptyPage);
+        explain->setWordWrap(true);
+        explain->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+        auto* scan = new QPushButton("Look for Plug-Ins...", emptyPage);
+        scan->setObjectName("lookForPlugins");
+        empty->addWidget(explain);
+        empty->addWidget(scan, 0, Qt::AlignLeft);
+        empty->addStretch(1);
+        QObject::connect(scan, &QPushButton::clicked, [this] { runPluginScan(owner->window(), false); });
+        return emptyPage;
+    }
+
+    // The list beside a preset pane (not for audio effects): the picked plug-in's presets as pictures, the one under the
+    // mouse animated.
+    QSplitter* buildPresetPane(const char* format)
+    {
+        QSplitter* split = new QSplitter(Qt::Horizontal, owner);
+        split->setObjectName("fxBrowserSplit");
+        split->setChildrenCollapsible(false);
+        split->addWidget(stack);
+        QWidget* pbox = new QWidget(split);
+        QVBoxLayout* pv = new QVBoxLayout(pbox);
+        pv->setContentsMargins(0, 0, 0, 0);
+        pv->setSpacing(2);
+        presetsTitle = new QLabel("Presets: pick a plug-in above", pbox);
+        presetsTitle->setObjectName("fxPresetsTitle");
+        presetsTitle->setTextFormat(Qt::PlainText);
+        presets = new PresetList(format, pbox);
+        presets->setObjectName("fxPresetThumbs");
+        presets->setMinimumHeight(90);
+        presetsTitle->hide();   // (VEGAS shows the presets with no heading)
+        pv->addWidget(presetsTitle);
+        pv->addWidget(presets, 1);
+        split->addWidget(pbox);
+        split->setStretchFactor(0, 0);
+        split->setStretchFactor(1, 1);
+        split->setSizes({210, 480});
+        stack->setMinimumWidth(140);
+        thumbTimer = new QTimer(owner);
+        animTimer = new QTimer(owner);
+        animTimer->setInterval(140);
+        QObject::connect(thumbTimer, &QTimer::timeout, owner, [this] { drawNextThumb(); });
+        QObject::connect(animTimer, &QTimer::timeout, owner, [this] { animate(); });
+        QObject::connect(presets, &QListWidget::itemEntered, owner, [this](QListWidgetItem* it) { startAnimating(it); });
+        QObject::connect(presets, &QListWidget::itemActivated, owner, [this](QListWidgetItem* it) {
+            if (it && owner->onActivated) owner->onActivated(kind, it->data(Qt::UserRole).toString().toStdString());
+        });
+        QObject::connect(tree, &QTreeWidget::currentItemChanged, owner, [this](QTreeWidgetItem* it, QTreeWidgetItem*) {
+            fillPresets(it);
+            describe(it);
+        });
+        return split;
+    }
+
+    // The preset under the mouse plays its animation; the one it left goes back to its still picture.
+    void startAnimating(QListWidgetItem* it)
+    {
+        if (animItem == it) return;
+        if (animItem) {
+            const QImage img = thumbOf(animItem, 0.5);
+            if (!img.isNull()) animItem->setIcon(QIcon(QPixmap::fromImage(img)));
+        }
+        animItem = it;
+        animStep = 3;
+        animTimer->start();
+    }
+
+    // A plug-in's shortcut menu: Add to Favorites or Remove from Favorites.
+    void showTreeMenu(const QPoint& pos)
+    {
+        QTreeWidgetItem* it = tree->itemAt(pos);
+        if (!it || !it->data(0, kRoleLeaf).toBool() || it->data(0, kRolePackage).toBool()) return;
+        FxRow r;
+        r.pluginId = it->data(0, kRolePlugin).toString().toStdString();
+        r.data = it->data(0, kRoleData).toString();
+        const QString key = favoriteKeyOf(r);
+        const bool is = favorites().contains(key);
+        QMenu menu(owner);
+        menu.setObjectName("fxMenu");
+        menu.addAction(is ? "Remove from Favorites" : "Add to Favorites", [this, key, is] {
+            QStringList f = favorites();
+            if (is) f.removeAll(key);
+            else f << key;
+            QSettings().setValue(favoritesKey(), f);
+            rebuild();
+        });
+        menu.exec(tree->viewport()->mapToGlobal(pos));
+    }
 };
 
 FxBrowser::FxBrowser(Kind kind, QWidget* parent) : QWidget(parent), d(new Impl())
@@ -588,26 +707,7 @@ FxBrowser::FxBrowser(Kind kind, QWidget* parent) : QWidget(parent), d(new Impl()
     top->addWidget(d->search);
     top->addStretch(1);
     root->addLayout(top);
-    if (kind != AudioFx) {
-        QHBoxLayout* cats = new QHBoxLayout();
-        cats->setContentsMargins(0, 0, 0, 0);
-        cats->setSpacing(4);
-        d->category = new CategoryBar(this);
-        d->providerLabel = new QLabel("Filter:", this);
-        d->provider = new QComboBox(this);
-        d->provider->setObjectName("fxProvider");
-        cats->addWidget(d->category, 1);
-        cats->addWidget(d->providerLabel);
-        cats->addWidget(d->provider);
-        root->addLayout(cats);
-        QObject::connect(d->category, &QTabBar::currentChanged, this, [impl](int) {
-            QSettings().setValue(QString("fxCategory/%1").arg((int)impl->kind), impl->category->currentData());
-            impl->rebuild();
-        });
-        QObject::connect(d->provider, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [impl](int) { impl->rebuild(); });
-        QSignalBlocker b(d->category);
-        d->category->addItem("All Plug-ins", QSettings().value(QString("fxCategory/%1").arg((int)kind), "all").toString());
-    }
+    if (kind != AudioFx) d->buildCategoryRow(root);
 
     d->stack = new QStackedWidget(this);
     d->tree = new FxTree(format, d->stack);
@@ -618,121 +718,31 @@ FxBrowser::FxBrowser(Kind kind, QWidget* parent) : QWidget(parent), d(new Impl()
     d->tree->setAnimated(false);
     d->tree->setUniformRowHeights(false);   // (the group rows are a sliver: VEGAS lists the plug-ins flat under its category tabs)
     d->tree->setIconSize(QSize(14, 14));
+    d->tree->setContextMenuPolicy(Qt::CustomContextMenu);
     d->stack->addWidget(d->tree);
-
-    d->emptyPage = new QWidget(d->stack);
-    d->emptyPage->setObjectName("noPlugins");
-    auto* empty = new QVBoxLayout(d->emptyPage);
-    empty->setContentsMargins(12, 20, 12, 12);
-    auto* explain = new QLabel("Plug-ins have not been looked for yet.\n\nReno finds OpenFX effects and VST sound effects installed on this computer. This can take a minute the first time.", d->emptyPage);
-    explain->setWordWrap(true);
-    explain->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    auto* scan = new QPushButton("Look for Plug-Ins...", d->emptyPage);
-    scan->setObjectName("lookForPlugins");
-    empty->addWidget(explain);
-    empty->addWidget(scan, 0, Qt::AlignLeft);
-    empty->addStretch(1);
-    d->stack->addWidget(d->emptyPage);
-    if (kind == AudioFx) {
-        root->addWidget(d->stack, 1);
-    } else {
-        QSplitter* split = new QSplitter(Qt::Horizontal, this);
-        split->setObjectName("fxBrowserSplit");
-        split->setChildrenCollapsible(false);
-        split->addWidget(d->stack);
-        QWidget* pbox = new QWidget(split);
-        QVBoxLayout* pv = new QVBoxLayout(pbox);
-        pv->setContentsMargins(0, 0, 0, 0);
-        pv->setSpacing(2);
-        d->presetsTitle = new QLabel("Presets: pick a plug-in above", pbox);
-        d->presetsTitle->setObjectName("fxPresetsTitle");
-        d->presetsTitle->setTextFormat(Qt::PlainText);
-        d->presets = new PresetList(format, pbox);
-        d->presets->setObjectName("fxPresetThumbs");
-        d->presets->setMinimumHeight(90);
-        d->presetsTitle->hide();   // (VEGAS shows the presets with no heading)
-        pv->addWidget(d->presetsTitle);
-        pv->addWidget(d->presets, 1);
-        split->addWidget(pbox);
-        split->setStretchFactor(0, 0);
-        split->setStretchFactor(1, 1);
-        split->setSizes({210, 480});
-        d->stack->setMinimumWidth(140);
-        root->addWidget(split, 1);
-        d->thumbTimer = new QTimer(this);
-        d->animTimer = new QTimer(this);
-        d->animTimer->setInterval(140);
-        QObject::connect(d->thumbTimer, &QTimer::timeout, this, [impl] { impl->drawNextThumb(); });
-        QObject::connect(d->animTimer, &QTimer::timeout, this, [impl] { impl->animate(); });
-        QObject::connect(d->presets, &QListWidget::itemEntered, this, [impl](QListWidgetItem* it) {
-            if (impl->animItem == it) return;
-            if (impl->animItem) {
-                const QImage img = impl->thumbOf(impl->animItem, 0.5);
-                if (!img.isNull()) impl->animItem->setIcon(QIcon(QPixmap::fromImage(img)));
-            }
-            impl->animItem = it;
-            impl->animStep = 3;
-            impl->animTimer->start();
-        });
-        QObject::connect(d->presets, &QListWidget::itemActivated, this, [this](QListWidgetItem* it) {
-            if (it && onActivated) onActivated(d->kind, it->data(Qt::UserRole).toString().toStdString());
-        });
-        QObject::connect(d->tree, &QTreeWidget::currentItemChanged, this, [impl](QTreeWidgetItem* it, QTreeWidgetItem*) { impl->fillPresets(it); impl->describe(it); });
-    }
+    d->stack->addWidget(d->buildEmptyPage());
+    if (kind == AudioFx) root->addWidget(d->stack, 1);
+    else root->addWidget(d->buildPresetPane(format), 1);
 
     d->status = new QLabel(this);
     d->status->setObjectName("fxStatus");
-    d->status->setPalette([this] {
-        QPalette p = palette();
-        p.setColor(QPalette::WindowText, QColor(160, 160, 165));
-        return p;
-    }());
+    QPalette statusPal = palette();
+    statusPal.setColor(QPalette::WindowText, QColor(160, 160, 165));
+    d->status->setPalette(statusPal);
     root->addWidget(d->status);
 
     QObject::connect(d->search, &QLineEdit::textChanged, [impl](const QString&) { impl->rebuild(); });
-    QObject::connect(scan, &QPushButton::clicked, [this] { runPluginScan(window(), false); });
     QObject::connect(d->tree, &QTreeWidget::itemActivated, [this, impl](QTreeWidgetItem* it, int) {
         if (!it || !it->data(0, kRoleLeaf).toBool() || !it->data(0, kRoleWorks).toBool()) return;
         if (onActivated) onActivated(impl->kind, it->data(0, kRoleData).toString().toStdString());
     });
+    QObject::connect(d->tree, &QWidget::customContextMenuRequested, this, [impl](const QPoint& pos) { impl->showTreeMenu(pos); });
     d->listener.reset(new ListenerHandle([impl](int changes) {
         if (changes & kCatalog) impl->rebuild();
     }));
     d->packagesListener = onPackagesChanged([impl] { impl->rebuild(); });
-    d->tree->setContextMenuPolicy(Qt::CustomContextMenu);
-    QObject::connect(d->tree, &QWidget::customContextMenuRequested, this, [this, impl](const QPoint& pos) {
-        QTreeWidgetItem* it = impl->tree->itemAt(pos);
-        if (!it || !it->data(0, kRoleLeaf).toBool() || it->data(0, kRolePackage).toBool()) return;
-        FxRow r;
-        r.pluginId = it->data(0, kRolePlugin).toString().toStdString();
-        r.data = it->data(0, kRoleData).toString();
-        const QString key = Impl::favoriteKeyOf(r);
-        QStringList favs = impl->favorites();
-        const bool is = favs.contains(key);
-        QMenu menu(this);
-        menu.setObjectName("fxMenu");
-        menu.addAction(is ? "Remove from Favorites" : "Add to Favorites", [impl, key, is] {
-            QStringList f = impl->favorites();
-            if (is) f.removeAll(key);
-            else f << key;
-            QSettings().setValue(impl->favoritesKey(), f);
-            impl->rebuild();
-        });
-        menu.exec(impl->tree->viewport()->mapToGlobal(pos));
-    });
-    // filled when first shown
-    struct FillOnShow : QObject {
-        std::function<void()> fill;
-        bool eventFilter(QObject*, QEvent* e) override
-        {
-            if (e->type() == QEvent::Show) fill();
-            return false;
-        }
-    };
-    auto* onShow = new FillOnShow();
-    onShow->setParent(this);
-    onShow->fill = [impl] { impl->ensureFilled(); };
-    installEventFilter(onShow);
+    // the list is filled when the browser is first shown, not when it is made
+    callWhenShown(this, [impl] { impl->ensureFilled(); });
     d->rebuild();
 }
 

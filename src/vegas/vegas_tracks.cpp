@@ -278,6 +278,119 @@ static MotionKey motionKeyOf(const TrackMotionKey& k, double W, double H, double
 }
 
 
+// A track motion key that leaves the picture where it is (VEGAS writes one when only a shadow or glow is set).
+static bool isRestingMotion(const MotionKey& k)
+{
+    return std::fabs(k.x - 0.5) < 1e-9 && std::fabs(k.y - 0.5) < 1e-9 && std::fabs(k.w - 1) < 1e-9 && std::fabs(k.h - 1) < 1e-9 &&
+           std::fabs(k.rotation) < 1e-9 && !k.has3d() && k.smoothness == 0 && k.curve == 0;
+}
+
+// The frame aspect a track motion record was made for, else the project's (W x H).
+static double motionAspect(const TrackMotionRecord& r, double W, double H)
+{
+    return (std::isfinite(r.aspect) && r.aspect > 0.01 && r.aspect < 100) ? r.aspect : W / H;
+}
+
+// The effects on the whole track: OpenFX plug-ins, VEGAS managed effects Reno has stand-ins for, and the sound effects.
+// Others are kept in the file where they were.
+void Importer::readTrackFx(const Chunk& tc, Track& t, const std::string& label, VegTrackOrigin& to)
+{
+    if (const Chunk* fx = childList(tc, G::TrackFx)) {
+        for (const auto& k : fx->kids) {
+            OfxRecord r;
+            FxSlot managed;
+            if (!k.isList && k.id == G::Fx && readOfxRecord(k.data, 0, r)) {
+                t.fx.push_back(fxSlotOf(r, label, &k, 0, false));
+            } else if (managedFxSlotOf(k, label, managed)) {
+                t.fx.push_back(managed);
+            } else {
+                VegHidden hd;
+                hd.before = t.fx.size();
+                hd.chunks.push_back(&k);
+                to.hiddenFx.push_back(hd);
+                if (!noteSkippedManagedFx(k, label))
+                    notes_.add(label + ": a video effect that is not an OpenFX plug-in is not used by Reno (it is kept in the file).");
+            }
+        }
+    }
+    if (const Chunk* fx = childList(tc, G::TrackAudioFx)) {
+        if (const Chunk* d = childChunk(*fx, G::TrackAudioFx)) audioChain(d, 0, label, t.fx);
+    }
+}
+
+// The track's motion (2D and 3D), shadow and glow, in Reno's units.
+void Importer::readTrackMotionList(const Chunk& tc, Track& t, const std::string& label)
+{
+    if (const Chunk* tm = childList(tc, G::TrackMotionList)) {
+        for (const Chunk* m : childChunks(*tm, G::TrackMotion)) {
+            TrackMotionRecord r;
+            if (!readTrackMotion(m->data, r)) notes_.add(label + ": its track motion could not be read (it is kept in the file).");
+            else if (!r.untouched) {
+                // VEGAS's units (see TrackMotionRecord) to Reno's: the frame's middle as a fraction of the frame (y down),
+                // sizes as fractions of the frame, degrees. The position unit is half the frame height.
+                const double W = std::max(1, p_->settings.width), H = std::max(1, p_->settings.height);
+                const double asp = motionAspect(r, W, H);
+                for (const TrackMotionKey& k : r.motion) t.motion.push_back(motionKeyOf(k, W, H, asp));
+                // VEGAS's one untouched key (when only the shadow or glow was set) is no motion
+                if (t.motion.size() == 1 && isRestingMotion(t.motion[0])) t.motion.clear();
+                auto glowKeys = [&](const std::vector<TrackMotionKey>& from, std::vector<GlowKey>& to) {
+                    for (const TrackMotionKey& k : from) {
+                        GlowKey g;
+                        g.time = std::max(0.0, k.time);
+                        g.x = k.posX / (2 * asp);
+                        g.y = -k.posY / 2;
+                        g.w = k.sclX;
+                        g.h = k.sclY;
+                        g.blur = k.blur;
+                        g.intensity = k.intensity;
+                        auto ch = [&](int c) { return (uint32_t)std::lround(std::max(0.0f, std::min(1.0f, std::isfinite(k.colour[c]) ? k.colour[c] : 0.0f)) * 255.0f); };
+                        g.color = (ch(3) << 24) | (ch(2) << 16) | (ch(1) << 8) | ch(0);
+                        g.curve = keyCurveFromVegas(k.type);
+                        to.push_back(g);
+                    }
+                };
+                if (r.flags & 0x08) glowKeys(r.shadow, t.shadow2d);
+                if (r.flags & 0x10) glowKeys(r.glow, t.glow2d);
+            }
+        }
+    }
+}
+
+// Parent Motion (where a compositing parent's finished group goes): a list b12f5229 after the track motion list, holding one
+// track motion chunk of the same layout (coverage run 20261105, tracks_video_parentchild: the keys of the script's ParentMotion).
+void Importer::readParentMotion(const Chunk& tc, Track& t)
+{
+    for (const auto& k : tc.kids) {
+        if (!k.isList || k.type != "b12f5229-c44c-413e-84bd-a6eff5746218") continue;
+        for (const Chunk* m : childChunks(k, G::TrackMotion)) {
+            TrackMotionRecord r;
+            if (!readTrackMotion(m->data, r) || r.untouched) continue;
+            const double W = std::max(1, p_->settings.width), H = std::max(1, p_->settings.height);
+            const double asp = motionAspect(r, W, H);
+            for (const TrackMotionKey& mk : r.motion) t.parentMotion.push_back(motionKeyOf(mk, W, H, asp));
+            if (t.parentMotion.size() == 1 && isRestingMotion(t.parentMotion[0])) t.parentMotion.clear();
+        }
+    }
+}
+
+// The track's events; those Reno cannot read are kept in the file in their places.
+void Importer::readTrackEvents(const Chunk& tc, Track& t, const std::string& label, VegTrackOrigin& to)
+{
+    if (const Chunk* evs = childList(tc, G::Events)) {
+        for (const auto& ev : evs->kids) {
+            Event e;
+            if (ev.isList && ev.type == G::Event && readEvent(ev, t, label, e)) {
+                t.events.push_back(e);
+            } else {
+                VegHidden hd;
+                hd.before = t.events.size();
+                hd.chunks.push_back(&ev);
+                to.hiddenEvents.push_back(hd);
+            }
+        }
+    }
+}
+
 void Importer::readTrack(const Chunk& tc, int index)
 {
     const Chunk* hc = childChunk(tc, G::TrackHeader);
@@ -325,85 +438,9 @@ void Importer::readTrack(const Chunk& tc, int index)
         readVideoTrackSettings(tc, t, label, automation, hasEnvelope);
     }
 
-    // effects on the whole track
-    if (const Chunk* fx = childList(tc, G::TrackFx)) {
-        for (const auto& k : fx->kids) {
-            OfxRecord r;
-            FxSlot managed;
-            if (!k.isList && k.id == G::Fx && readOfxRecord(k.data, 0, r)) {
-                t.fx.push_back(fxSlotOf(r, label, &k, 0, false));
-            } else if (managedFxSlotOf(k, label, managed)) {
-                t.fx.push_back(managed);
-            } else {
-                VegHidden hd;
-                hd.before = t.fx.size();
-                hd.chunks.push_back(&k);
-                to->hiddenFx.push_back(hd);
-                if (!noteSkippedManagedFx(k, label))
-                    notes_.add(label + ": a video effect that is not an OpenFX plug-in is not used by Reno (it is kept in the file).");
-            }
-        }
-    }
-    if (const Chunk* fx = childList(tc, G::TrackAudioFx)) {
-        if (const Chunk* d = childChunk(*fx, G::TrackAudioFx)) audioChain(d, 0, label, t.fx);
-    }
-    if (const Chunk* tm = childList(tc, G::TrackMotionList)) {
-        for (const Chunk* m : childChunks(*tm, G::TrackMotion)) {
-            TrackMotionRecord r;
-            if (!readTrackMotion(m->data, r)) notes_.add(label + ": its track motion could not be read (it is kept in the file).");
-            else if (!r.untouched) {
-                // VEGAS's units (see TrackMotionRecord) to Reno's: the frame's middle as a fraction of the frame (y down),
-                // sizes as fractions of the frame, degrees. The position unit is half the frame height.
-                const double W = std::max(1, p_->settings.width), H = std::max(1, p_->settings.height);
-                const double asp = (std::isfinite(r.aspect) && r.aspect > 0.01 && r.aspect < 100) ? r.aspect : W / H;
-                const double deg = 180.0 / kPi;
-                for (const TrackMotionKey& k : r.motion) t.motion.push_back(motionKeyOf(k, W, H, asp));
-                // VEGAS's one untouched key (when only the shadow or glow was set) is no motion
-                if (t.motion.size() == 1) {
-                    const MotionKey& k = t.motion[0];
-                    if (std::fabs(k.x - 0.5) < 1e-9 && std::fabs(k.y - 0.5) < 1e-9 && std::fabs(k.w - 1) < 1e-9 && std::fabs(k.h - 1) < 1e-9 &&
-                        std::fabs(k.rotation) < 1e-9 && !k.has3d() && k.smoothness == 0 && k.curve == 0)
-                        t.motion.clear();
-                }
-                auto glowKeys = [&](const std::vector<TrackMotionKey>& from, std::vector<GlowKey>& to) {
-                    for (const TrackMotionKey& k : from) {
-                        GlowKey g;
-                        g.time = std::max(0.0, k.time);
-                        g.x = k.posX / (2 * asp);
-                        g.y = -k.posY / 2;
-                        g.w = k.sclX;
-                        g.h = k.sclY;
-                        g.blur = k.blur;
-                        g.intensity = k.intensity;
-                        auto ch = [&](int c) { return (uint32_t)std::lround(std::max(0.0f, std::min(1.0f, std::isfinite(k.colour[c]) ? k.colour[c] : 0.0f)) * 255.0f); };
-                        g.color = (ch(3) << 24) | (ch(2) << 16) | (ch(1) << 8) | ch(0);
-                        g.curve = keyCurveFromVegas(k.type);
-                        to.push_back(g);
-                    }
-                };
-                if (r.flags & 0x08) glowKeys(r.shadow, t.shadow2d);
-                if (r.flags & 0x10) glowKeys(r.glow, t.glow2d);
-            }
-        }
-    }
-    // Parent Motion (where a compositing parent's finished group goes): a list b12f5229 after the track motion list, holding one track motion
-    // chunk of the same layout (coverage run 20261105, tracks_video_parentchild: the keys of the script's ParentMotion)
-    for (const auto& k : tc.kids) {
-        if (!k.isList || k.type != "b12f5229-c44c-413e-84bd-a6eff5746218") continue;
-        for (const Chunk* m : childChunks(k, G::TrackMotion)) {
-            TrackMotionRecord r;
-            if (!readTrackMotion(m->data, r) || r.untouched) continue;
-            const double W = std::max(1, p_->settings.width), H = std::max(1, p_->settings.height);
-            const double asp = (std::isfinite(r.aspect) && r.aspect > 0.01 && r.aspect < 100) ? r.aspect : W / H;
-            for (const TrackMotionKey& mk : r.motion) t.parentMotion.push_back(motionKeyOf(mk, W, H, asp));
-            if (t.parentMotion.size() == 1) {
-                const MotionKey& q = t.parentMotion[0];
-                if (std::fabs(q.x - 0.5) < 1e-9 && std::fabs(q.y - 0.5) < 1e-9 && std::fabs(q.w - 1) < 1e-9 && std::fabs(q.h - 1) < 1e-9 && std::fabs(q.rotation) < 1e-9 &&
-                    !q.has3d() && q.smoothness == 0 && q.curve == 0)
-                    t.parentMotion.clear();
-            }
-        }
-    }
+    readTrackFx(tc, t, label, *to);
+    readTrackMotionList(tc, t, label);
+    readParentMotion(tc, t);
     if (const Chunk* env = childList(tc, G::TrackEnvelopes)) readEnvelopeList(*env, true, t.type, label, t.envelopes, to->hiddenEnvelopes, &t.fx);
     for (const auto& k : tc.kids) {
         if (!k.isList && k.id == G::TrackHeader) continue;
@@ -414,19 +451,7 @@ void Importer::readTrack(const Chunk& tc, int index)
         unknown("tracks");
     }
 
-    if (const Chunk* evs = childList(tc, G::Events)) {
-        for (const auto& ev : evs->kids) {
-            Event e;
-            if (ev.isList && ev.type == G::Event && readEvent(ev, t, label, e)) {
-                t.events.push_back(e);
-            } else {
-                VegHidden hd;
-                hd.before = t.events.size();
-                hd.chunks.push_back(&ev);
-                to->hiddenEvents.push_back(hd);
-            }
-        }
-    }
+    readTrackEvents(tc, t, label, *to);
     t.sortEvents();
     to->asRead = t;
     to->asRead.events.clear();
@@ -686,6 +711,58 @@ if (const Chunk* pc = childChunk(ev, G::PanCrop)) {
 }
 }
 
+// The event's level, its normalising gain and its fades: the record after the name, at 's'.
+void Importer::readEventLevels(const Bytes& d, size_t s, bool normalize, TrackType type, const std::string& where, Event& e)
+{
+    const float gain = d.f32(s + 0x0c), norm = d.f32(s + 0x10);
+    double g = (std::isfinite(gain) && gain >= 0 && gain < 64) ? gain : 1.0;
+    // Edit > Switches > Normalize: VEGAS stores the measured normalising gain apart from the event's level
+    if (normalize && type == TrackType::Audio && std::isfinite(norm) && norm > 0 && norm < 1000) {
+        e.normalize = true;
+        e.normalizeGain = norm;
+    }
+    e.gain = g;
+    const double length = e.length;
+    const double fin = (double)d.i64(s + 0x28) / 1e7, fout = (double)d.i64(s + 0x30) / 1e7;
+    if (fin > 0 && fin <= length) e.fadeIn = fin;
+    if (fout > 0 && fout <= length) e.fadeOut = fout;
+    bool k1 = true, k2 = true;
+    e.fadeInCurve = curveFromVegas(d.i32(s + 0x14), &k1);
+    e.fadeOutCurve = curveFromVegas(d.i32(s + 0x18), &k2);
+    // +0x1c is FadeIn.ReciprocalCurve: how the previous event fades out under this one (VEGAS keeps both curves
+    // of a cross-fade on the later event). +0x20 FadeOut.ReciprocalCurve is not used.
+    bool k3 = true;
+    const int recip = curveFromVegas(d.i32(s + 0x1c), &k3);
+    if (k3) e.fadeInRecipCurve = recip;
+    if ((!k1 && e.fadeIn > 0) || (!k2 && e.fadeOut > 0)) notes_.count("%d fade(s) have a curve Reno does not know; they are straight lines in Reno", where);
+}
+
+// A take: the media record it plays and the offset in it (timeline time, from the record's start: a subclip's start,
+// or for a reversed subclip its end), and its name. False if its media record was not read.
+bool Importer::takeOf(const Bytes& tk, double rate, double length, Take& out)
+{
+    auto it = media_.find(tk.u32(0x24));
+    if (it == media_.end()) return false;
+    const MediaRec& m = it->second;
+    double off = (double)tk.i64(0x10) / 1e7 * rate;
+    if (!(off >= 0) || off > 1e7) off = 0;
+    out.mediaId = m.renoId;
+    out.reverse = false;
+    if (m.kind == VegMediaRecord::Subclip) {
+        if (m.subReversed) {
+            out.offset = std::max(0.0, mirrorEndOf(m) - off - length * rate);
+            out.reverse = true;
+        } else {
+            out.offset = m.subStart + off;
+        }
+    } else {
+        out.offset = off;
+    }
+    const uint32_t nameAt = tk.u32(0), nameLen = tk.u32(0x20);
+    if (nameAt >= 0x28 && nameLen < 0x10000) out.name = tk.text(nameAt, nameLen);
+    return true;
+}
+
 // Take: u32 0x2a, ..., i64 offset at 0x10, i64 length at 0x18, u32 name bytes at 0x20, u32 media id at 0x24, name
 // at 0x2a. The offset is in timeline time: the media position is offset x rate (a slowed event in the samples
 // starts 2283.6 s "in" to a 628 s video: 570.9 s at rate 0.25).
@@ -727,28 +804,7 @@ bool Importer::readEvent(const Chunk& ev, Track& track, const std::string& label
     e.locked = (f0 & 0x08) != 0;
     e.loop = (f1 & 0x01) != 0;
     const bool normalize = (f1 & 0x02) != 0;
-    if (d.has(s, 0x38)) {
-        const float gain = d.f32(s + 0x0c), norm = d.f32(s + 0x10);
-        double g = (std::isfinite(gain) && gain >= 0 && gain < 64) ? gain : 1.0;
-        // Edit > Switches > Normalize: VEGAS stores the measured normalising gain apart from the event's level
-        if (normalize && track.type == TrackType::Audio && std::isfinite(norm) && norm > 0 && norm < 1000) {
-            e.normalize = true;
-            e.normalizeGain = norm;
-        }
-        e.gain = g;
-        const double fin = (double)d.i64(s + 0x28) / 1e7, fout = (double)d.i64(s + 0x30) / 1e7;
-        if (fin > 0 && fin <= length) e.fadeIn = fin;
-        if (fout > 0 && fout <= length) e.fadeOut = fout;
-        bool k1 = true, k2 = true;
-        e.fadeInCurve = curveFromVegas(d.i32(s + 0x14), &k1);
-        e.fadeOutCurve = curveFromVegas(d.i32(s + 0x18), &k2);
-        // +0x1c is FadeIn.ReciprocalCurve: how the previous event fades out under this one (VEGAS keeps both curves
-        // of a cross-fade on the later event). +0x20 FadeOut.ReciprocalCurve is not used.
-        bool k3 = true;
-        const int recip = curveFromVegas(d.i32(s + 0x1c), &k3);
-        if (k3) e.fadeInRecipCurve = recip;
-        if ((!k1 && e.fadeIn > 0) || (!k2 && e.fadeOut > 0)) notes_.count("%d fade(s) have a curve Reno does not know; they are straight lines in Reno", where);
-    }
+    if (d.has(s, 0x38)) readEventLevels(d, s, normalize, track.type, where, e);
 
     // active take
     const std::vector<const Chunk*> takes = childChunks(ev, G::Take);
@@ -759,34 +815,9 @@ bool Importer::readEvent(const Chunk& ev, Track& track, const std::string& label
     const uint32_t active = std::min<uint32_t>(d.u32(0x20), (uint32_t)takes.size() - 1);
     eo->activeTake = active;
     if (rate <= 0 || !std::isfinite(rate)) rate = 1.0;
-    // Each take: the media record it plays and the offset in it (timeline time, from the record's start: a
-    // subclip's start, or for a reversed subclip its end), and its name.
-    auto takeOf = [&](const Bytes& tk, Take& out, const MediaRec** rec) -> bool {
-        auto it = media_.find(tk.u32(0x24));
-        if (it == media_.end()) return false;
-        const MediaRec& m = it->second;
-        if (rec) *rec = &m;
-        double off = (double)tk.i64(0x10) / 1e7 * rate;
-        if (!(off >= 0) || off > 1e7) off = 0;
-        out.mediaId = m.renoId;
-        out.reverse = false;
-        if (m.kind == VegMediaRecord::Subclip) {
-            if (m.subReversed) {
-                out.offset = std::max(0.0, mirrorEndOf(m) - off - length * rate);
-                out.reverse = true;
-            } else {
-                out.offset = m.subStart + off;
-            }
-        } else {
-            out.offset = off;
-        }
-        const uint32_t nameAt = tk.u32(0), nameLen = tk.u32(0x20);
-        if (nameAt >= 0x28 && nameLen < 0x10000) out.name = tk.text(nameAt, nameLen);
-        return true;
-    };
     for (size_t i = 0; i < takes.size(); ++i) {
         Take tk;
-        const bool ok = takeOf(takes[i]->data, tk, nullptr);
+        const bool ok = takeOf(takes[i]->data, rate, length, tk);
         eo->takesRead.push_back(tk);
         eo->takesOk.push_back(ok);
         if (i != active && ok) e.takes.push_back(tk);
@@ -801,7 +832,7 @@ bool Importer::readEvent(const Chunk& ev, Track& track, const std::string& label
     eo->takeMedia = mid;
     const MediaRec& m = mit->second;
     Take act;
-    takeOf(tk, act, nullptr);
+    takeOf(tk, rate, length, act);
     e.mediaId = act.mediaId;
     e.rate = rate;
     e.offset = act.offset;

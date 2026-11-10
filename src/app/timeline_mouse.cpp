@@ -366,25 +366,104 @@ void TimelineWidget::Impl::pressInvertPhase(const Hit& h)
     });
 }
 
+// VEGAS: the right button held and then the left pressed on an event moves that event alone, out of its group (the
+// right-drag the right button began is dropped; its release shows no menu).
+void TimelineWidget::Impl::pressLeftDuringRightDrag(const QPointF& pos)
+{
+    drag = DragState();
+    const Hit h0 = hitTest(pos);
+    if (h0.part == Part::EventBody) {
+        groupBypass = true;
+        groupBypassWas = opt.ignoreGrouping;
+        opt.ignoreGrouping = true;
+        swallowRight = true;
+        app.setSelection(std::set<uint64_t>{h0.event});
+    }
+}
+
+// A press on a track header's buttons and controls. True if the press is over (a menu was shown).
+bool TimelineWidget::Impl::pressHeader(const Hit& h, const QPointF& pos, bool ctrl)
+{
+    switch (h.part) {
+    case Part::HeaderMenu: {
+        const Row* r = rowOf(h.track);
+        const QPoint below = r ? headerRects(*r).menu.bottomLeft() + QPoint(0, 2) : pos.toPoint();
+        drag = DragState();
+        setCurrentTrack(h.track);
+        if (q->onBeforeMenu) q->onBeforeMenu();
+        QMenu menu(q);
+        trackHamburger(menu, h.track);
+        q->update();
+        menu.exec(q->mapToGlobal(below));
+        return true;
+    }
+    case Part::HeaderGap:
+        drag.kind = Drag::HeaderWidth;
+        drag.started = true;
+        drag.startValue = headerW;
+        break;
+    case Part::HeaderArm: {
+        const uint64_t id = h.track;
+        if (q->onArmTrack) q->onArmTrack(id);
+        else {
+            if (app.armedTracks.count(id)) app.armedTracks.erase(id);
+            else app.armedTracks.insert(id);
+            app.notify(kSelection);
+        }
+        break;
+    }
+    case Part::HeaderMute:
+    case Part::HeaderSolo:
+        pressMuteSolo(h, ctrl);
+        break;
+    case Part::HeaderLevel:
+    case Part::HeaderPan:
+    case Part::HeaderFade:
+        beginSlider(h, pos, h.part == Part::HeaderPan);
+        break;
+    case Part::HeaderAuto: {
+        const Row* r = rowOf(h.track);
+        const QRect b = r ? headerRects(*r).autoBtn : QRect();
+        if (!b.isEmpty() && pos.x() >= b.right() - 6) {
+            QMenu m(q);
+            automationMenu(m, h.track);
+            drag = DragState();
+            m.exec(q->mapToGlobal(b.bottomLeft() + QPoint(0, 2)));
+            return true;
+        }
+        toggleAutomation(h.track);
+        break;
+    }
+    case Part::HeaderPhase:
+        pressInvertPhase(h);
+        break;
+    case Part::HeaderBus: {
+        const Row* r = rowOf(h.track);
+        QMenu m(q);
+        busChoiceMenu(m, h.track);
+        drag = DragState();
+        m.exec(q->mapToGlobal(r ? headerRects(*r).bus.bottomLeft() + QPoint(0, 2) : pos.toPoint()));
+        return true;
+    }
+    case Part::HeaderSurround:
+        if (const Row* r = rowOf(h.track))
+            if (const Track* t = trackOf(*r))
+                if (t->surround.route == "surround") drag.kind = Drag::SurroundPoint;
+        break;
+    default:
+        break;
+    }
+    return false;
+}
+
 void TimelineWidget::Impl::press(QMouseEvent* ev)
 {
     const QPointF pos = ev->position();
     q->setFocus(Qt::MouseFocusReason);
     if (pressRight(ev, pos)) return;
 
-    // VEGAS: the right button held and then the left pressed on an event moves that event alone, out of its group (the
-    // right-drag the right button began is dropped; its release shows no menu)
-    if (ev->button() == Qt::LeftButton && drag.right && !drag.started && (ev->buttons() & Qt::RightButton) && opt.tool == EditTool::Normal) {
-        drag = DragState();
-        const Hit h0 = hitTest(pos);
-        if (h0.part == Part::EventBody) {
-            groupBypass = true;
-            groupBypassWas = opt.ignoreGrouping;
-            opt.ignoreGrouping = true;
-            swallowRight = true;
-            app.setSelection(std::set<uint64_t>{h0.event});
-        }
-    }
+    if (ev->button() == Qt::LeftButton && drag.right && !drag.started && (ev->buttons() & Qt::RightButton) && opt.tool == EditTool::Normal)
+        pressLeftDuringRightDrag(pos);
     if (ev->button() != Qt::LeftButton || drag.kind != Drag::None) return;
     drag = DragState();
     drag.pressPos = drag.lastPos = pos;
@@ -449,70 +528,19 @@ void TimelineWidget::Impl::press(QMouseEvent* ev)
     case Part::EventSnap:
         pressSnapFlag(h);
         break;
-    case Part::HeaderMenu: {
-        const Row* r = rowOf(h.track);
-        const QPoint below = r ? headerRects(*r).menu.bottomLeft() + QPoint(0, 2) : pos.toPoint();
-        drag = DragState();
-        setCurrentTrack(h.track);
-        if (q->onBeforeMenu) q->onBeforeMenu();
-        QMenu menu(q);
-        trackHamburger(menu, h.track);
-        q->update();
-        menu.exec(q->mapToGlobal(below));
-        return;
-    }
+    case Part::HeaderMenu:
     case Part::HeaderGap:
-        drag.kind = Drag::HeaderWidth;
-        drag.started = true;
-        drag.startValue = headerW;
-        break;
-    case Part::HeaderArm: {
-        const uint64_t id = h.track;
-        if (q->onArmTrack) q->onArmTrack(id);
-        else {
-            if (app.armedTracks.count(id)) app.armedTracks.erase(id);
-            else app.armedTracks.insert(id);
-            app.notify(kSelection);
-        }
-        break;
-    }
+    case Part::HeaderArm:
     case Part::HeaderMute:
     case Part::HeaderSolo:
-        pressMuteSolo(h, ctrl);
-        break;
     case Part::HeaderLevel:
     case Part::HeaderPan:
     case Part::HeaderFade:
-        beginSlider(h, pos, h.part == Part::HeaderPan);
-        break;
-    case Part::HeaderAuto: {
-        const Row* r = rowOf(h.track);
-        const QRect b = r ? headerRects(*r).autoBtn : QRect();
-        if (!b.isEmpty() && pos.x() >= b.right() - 6) {
-            QMenu m(q);
-            automationMenu(m, h.track);
-            drag = DragState();
-            m.exec(q->mapToGlobal(b.bottomLeft() + QPoint(0, 2)));
-            return;
-        }
-        toggleAutomation(h.track);
-        break;
-    }
+    case Part::HeaderAuto:
     case Part::HeaderPhase:
-        pressInvertPhase(h);
-        break;
-    case Part::HeaderBus: {
-        const Row* r = rowOf(h.track);
-        QMenu m(q);
-        busChoiceMenu(m, h.track);
-        drag = DragState();
-        m.exec(q->mapToGlobal(r ? headerRects(*r).bus.bottomLeft() + QPoint(0, 2) : pos.toPoint()));
-        return;
-    }
+    case Part::HeaderBus:
     case Part::HeaderSurround:
-        if (const Row* r = rowOf(h.track))
-            if (const Track* t = trackOf(*r))
-                if (t->surround.route == "surround") drag.kind = Drag::SurroundPoint;
+        if (pressHeader(h, pos, ctrl)) return;
         break;
     default:
         break;

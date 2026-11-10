@@ -4621,6 +4621,256 @@ public:
         updateStatus();
         if (panel) panel->refresh(false);
     }
+
+    // The header row, then the chain of effects under it.
+    void buildHeader(QVBoxLayout* v)
+    {
+        // VEGAS's header: the track's chip and the name of the event or track, then (at the right) the Plug-In Chain ("fx"
+        // with a plus) and Remove Plug-In ("fx" with a cross) buttons.
+        QHBoxLayout* top = new QHBoxLayout();
+        top->setSpacing(6);
+        chip = new TargetChip(q);
+        chip->hide();
+        top->addWidget(chip);
+        targetName = new QLabel(q);
+        targetName->setObjectName("fxTargetName");
+        targetName->setTextFormat(Qt::PlainText);
+        top->addWidget(targetName);
+        top->addStretch(1);
+        modeBtn = new QToolButton(q);
+        modeBtn->setObjectName("fxAudioMode");
+        modeBtn->setText("Sliders");
+        modeBtn->setCheckable(true);
+        modeBtn->setToolTip("Show plain sliders instead of the effect's own page or window");
+        modeBtn->hide();
+        top->addWidget(modeBtn);
+        addBtn = new QToolButton(q);
+        addBtn->setObjectName("fxAdd");
+        addBtn->setText("Add");
+        addBtn->setIcon(glyphIcon(Glyph::Add, q->palette()));
+        addBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        addBtn->setPopupMode(QToolButton::InstantPopup);
+        addBtn->setToolTip("Add an effect to the end of the chain");
+        addMenu = new QMenu(addBtn);
+        addMenu->setObjectName("fxAddMenu");
+        addMenu->setToolTipsVisible(true);
+        addBtn->setMenu(addMenu);
+        top->addWidget(addBtn);
+        leftBtn = smallButton(q, glyphIcon(Glyph::Left, q->palette()), "Move the picked effect earlier in the chain", "fxMoveLeft");
+        rightBtn = smallButton(q, glyphIcon(Glyph::Right, q->palette()), "Move the picked effect later in the chain", "fxMoveRight");
+        for (QToolButton* b : {leftBtn, rightBtn}) {
+            b->setAutoRaise(false);
+            top->addWidget(b);
+        }
+        chainBtn = new QToolButton(q);
+        chainBtn->setObjectName("fxPluginChain");
+        chainBtn->setIcon(fxIcon(true));
+        chainBtn->setIconSize(QSize(28, 22));
+        chainBtn->setAutoRaise(true);
+        chainBtn->setToolTip("Plug-In Chain...");
+        chainBtn->setFocusPolicy(Qt::NoFocus);
+        top->addWidget(chainBtn);
+        removeBtn = smallButton(q, fxIcon(false), "Remove the picked effect", "fxRemove");
+        removeBtn->setIconSize(QSize(28, 22));
+        top->addWidget(removeBtn);
+        v->addLayout(top);
+        chainBar = new ChainBar(q);
+        v->addWidget(chainBar);
+    }
+
+    // The row under the chain: presets, VST preset files and the buttons that only some effects show.
+    void buildPresetRow(QVBoxLayout* v)
+    {
+        presetRow = new QWidget(q);
+        presetRow->setObjectName("fxPresetRow");
+        QHBoxLayout* pr = new QHBoxLayout(presetRow);
+        pr->setContentsMargins(0, 0, 0, 0);
+        pr->setSpacing(4);
+        QLabel* presetLabel = new QLabel("Preset:", presetRow);
+        pr->addWidget(presetLabel);
+        presetBox = new QComboBox(presetRow);
+        presetBox->setObjectName("fxPreset");
+        presetBox->setEditable(true);
+        presetBox->setInsertPolicy(QComboBox::NoInsert);
+        presetBox->setMinimumWidth(220);
+        presetBox->setMaximumWidth(340);
+        presetBox->setMaxVisibleItems(24);
+        presetBox->setToolTip("The effect's presets and your own. Type a name and click Save Preset to save the current settings.");
+        presetLabel->setBuddy(presetBox);
+        pr->addWidget(presetBox, 1);
+        presetSave = smallButton(presetRow, presetIcon(q->palette(), true), "Save Preset", "fxPresetSave");
+        presetDelete = smallButton(presetRow, presetIcon(q->palette(), false), "Delete Preset", "fxPresetDelete");
+        for (QToolButton* b : {presetSave, presetDelete}) b->setIconSize(QSize(20, 20));
+        pr->addWidget(presetSave);
+        pr->addWidget(presetDelete);
+        presetHelp = smallButton(presetRow, helpIcon(), "Help on presets", "fxPresetHelp");
+        presetHelp->setIconSize(QSize(20, 20));
+        pr->addWidget(presetHelp);
+        QObject::connect(presetHelp, &QToolButton::clicked, q, [this] {
+            QMessageBox::information(q, "Presets",
+                                     "A preset is a saved set of the effect's settings. Pick one from the list to use it. To save the current "
+                                     "settings, type a name in the list and click Save Preset (the disk). Delete Preset (the red cross) removes "
+                                     "a preset of your own.");
+        });
+        presetFile = new QToolButton(presetRow);
+        presetFile->setObjectName("fxPresetFile");
+        presetFile->setText("...");
+        presetFile->setToolTip("VST preset files: load a program (.fxp) or bank (.fxb), save the program or the whole bank");
+        presetFile->setPopupMode(QToolButton::InstantPopup);
+        presetFile->setFocusPolicy(Qt::NoFocus);
+        QMenu* m = new QMenu(presetFile);
+        QObject::connect(m->addAction("&Load Program or Bank (.fxp, .fxb)..."), &QAction::triggered, q, [this] { loadVstFile(QString()); });
+        QObject::connect(m->addAction("Save &Program As (.fxp)..."), &QAction::triggered, q, [this] { saveVstFile(false, QString()); });
+        QObject::connect(m->addAction("Save &Bank As (.fxb)..."), &QAction::triggered, q, [this] { saveVstFile(true, QString()); });
+        presetFile->setMenu(m);
+        presetFile->hide();
+        pr->addWidget(presetFile);
+        bypassAuto = new QToolButton(presetRow);
+        bypassAuto->setObjectName("fxBypassAutomation");
+        bypassAuto->setText("Bypass FX Automation");
+        bypassAuto->setCheckable(true);
+        bypassAuto->setFocusPolicy(Qt::NoFocus);
+        bypassAuto->hide();
+        pr->addWidget(bypassAuto);
+        QObject::connect(bypassAuto, &QToolButton::clicked, q, [this](bool on) {
+            const uint64_t id = picked;
+            const FxTarget t = target;
+            AppState::get().edit(on ? "Bypass FX Automation" : "Follow FX Automation", [&](Project& p) {
+                if (FxChain* c = AppState::get().chainOf(p, t))
+                    for (FxSlot& s : *c)
+                        if (s.id == id) s.bypassAutomation = on;
+            });
+        });
+        pr->addStretch(0);
+        // VEGAS's Transition Progress button (a transition's window): puts the Transition Progress envelope on the event, to
+        // hold, reverse or repeat the transition; pressed again it takes the envelope off
+        progressBtn = new QToolButton(presetRow);
+        progressBtn->setObjectName("fxTransitionProgress");
+        progressBtn->setText("Transition Progress");
+        progressBtn->setCheckable(true);
+        progressBtn->setFocusPolicy(Qt::NoFocus);
+        progressBtn->setToolTip("Add the Transition Progress envelope (click again to remove it); its points hold, reverse or repeat the transition");
+        progressBtn->hide();
+        pr->addWidget(progressBtn);
+        QObject::connect(progressBtn, &QToolButton::clicked, q, [this](bool on) {
+            if (target.kind != FxTarget::Transition) return;
+            EnvelopeRef r;
+            r.owner.kind = EnvelopeOwner::Event;
+            r.owner.id = target.id;
+            r.kind = "transition";
+            if (on) { if (!app.insertEnvelope(r)) app.showEnvelope(r, true); }
+            else app.removeEnvelope(r);
+        });
+        adjustLenBtn = new QToolButton(presetRow);
+        adjustLenBtn->setObjectName("fxAdjustEventLength");
+        adjustLenBtn->setText("Adjust Event Length");
+        adjustLenBtn->setFocusPolicy(Qt::NoFocus);
+        adjustLenBtn->setToolTip("Stretch the event to the Slow Motion playback rate so no frames are cut off");
+        adjustLenBtn->hide();
+        pr->addWidget(adjustLenBtn);
+        QObject::connect(adjustLenBtn, &QToolButton::clicked, q, [this] {
+            if (target.kind != FxTarget::Event) return;
+            const uint64_t id = target.id;
+            const Event* ev = app.project().findEvent(id);
+            if (!ev) return;
+            const double rate = eventFxRate(*ev);
+            if (!(rate > 0)) return;
+            const double len = ev->length / rate;
+            app.edit("Adjust Event Length", [&](Project& p) {
+                if (Event* o = p.findEvent(id)) o->length = len;
+            });
+        });
+        animateBtn = new QToolButton(presetRow);
+        animateBtn->setObjectName("fxAnimate");
+        animateBtn->setText("Animate");
+        animateBtn->setCheckable(true);
+        animateBtn->setFocusPolicy(Qt::NoFocus);
+        animateBtn->setToolTip("Show the keyframes of the effect's settings over time, under its controls");
+        animateBtn->setChecked(QSettings().value("fxWindow/animate", false).toBool());
+        pr->addWidget(animateBtn);
+        // VEGAS's Play and Stop in its effect windows: the project played from the cursor with the effect as it is set now,
+        // and stopped (back to where play began).
+        for (int k = 0; k < 2; ++k) {
+            QToolButton* b = new QToolButton(presetRow);
+            b->setObjectName(k == 0 ? "fxPlay" : "fxStop");
+            b->setText(k == 0 ? "Play" : "Stop");
+            b->setToolTip(k == 0 ? "Play from the cursor, to see the effect as it is set now" : "Stop playing (back to where play began)");
+            b->setFocusPolicy(Qt::NoFocus);
+            pr->addWidget(b);
+            QObject::connect(b, &QToolButton::clicked, q, [this, k] {
+                if (!playback) return;
+                if (k == 0) { if (!playback->playing()) playback->play(); }
+                else playback->stop();
+            });
+        }
+        presetRow->hide();
+        v->addWidget(presetRow);
+    }
+
+    // The effect's controls (scrolled), with the keyframe strip under them.
+    void buildBody(QVBoxLayout* v)
+    {
+        banner = new QLabel(q);
+        banner->setObjectName("fxBanner");
+        banner->setTextFormat(Qt::PlainText);
+        banner->setWordWrap(true);
+        banner->hide();
+        v->addWidget(banner);
+
+        scroll = new QScrollArea(q);
+        scroll->setObjectName("fxScroll");
+        scroll->setWidgetResizable(true);
+        holder = new QWidget();
+        holder->setObjectName("fxHolder");
+        holderLayout = new QVBoxLayout(holder);
+        holderLayout->setContentsMargins(0, 0, 0, 0);
+        holderLayout->setSpacing(0);
+        scroll->setWidget(holder);
+        v->addWidget(scroll, 1);
+
+        keys = new KeyPanel(q);
+        keys->setMaximumHeight(240);
+        keys->hide();
+        v->addWidget(keys);
+        KeyStrip* ks = keys->strip;
+        ks->live = [this] { return pickedOfx(); };
+        ks->now = [this] { return fxTime(); };
+        ks->seek = [this](double frames) { seekFx(frames); };
+        ks->span = [this] { return keySpan(); };
+        ks->rate = [this] { return app.project().settings.fps(); };
+        QObject::connect(animateBtn, &QToolButton::toggled, q, [this](bool on) {
+            QSettings().setValue("fxWindow/animate", on);
+            syncKeys();
+        });
+    }
+
+    // What the header's and preset row's buttons do, and the timers that keep the controls current.
+    void connectButtons()
+    {
+        QObject::connect(addMenu, &QMenu::aboutToShow, q, [this] { fillAddMenu(); });
+        QObject::connect(leftBtn, &QToolButton::clicked, q, [this] { if (picked) app.moveFx(target, picked, -1); });
+        QObject::connect(rightBtn, &QToolButton::clicked, q, [this] { if (picked) app.moveFx(target, picked, 1); });
+        QObject::connect(removeBtn, &QToolButton::clicked, q, [this] { removePicked(); });
+        QObject::connect(chainBtn, &QToolButton::clicked, q, [this] { openChooser(); });
+        QObject::connect(presetBox, QOverload<int>::of(&QComboBox::activated), q, [this](int i) { presetChosen(i); });
+        QObject::connect(presetBox, &QComboBox::currentIndexChanged, q, [this](int) { updatePresetButtons(); });
+        QObject::connect(presetSave, &QToolButton::clicked, q, [this] { savePresetNow(); });
+        QObject::connect(presetDelete, &QToolButton::clicked, q, [this] { deletePresetNow(); });
+        QObject::connect(modeBtn, &QToolButton::toggled, q, [this](bool on) {
+            preferSliders = on;
+            rebuildPanel(false);
+        });
+
+        slowTimer = new QTimer(q);
+        slowTimer->setInterval(300);
+        QObject::connect(slowTimer, &QTimer::timeout, q, [this] { slowTick(); });
+        idleTimer = new QTimer(q);
+        idleTimer->setInterval(50);
+        QObject::connect(idleTimer, &QTimer::timeout, q, [this] {
+            if (panel && panel->wantsIdle()) panel->idle();
+            else idleTimer->stop();
+        });
+    }
 };
 
 FxWindow::FxWindow(Playback* playback, QWidget* parent) : QWidget(parent), d(new Impl())
@@ -4635,258 +4885,12 @@ FxWindow::FxWindow(Playback* playback, QWidget* parent) : QWidget(parent), d(new
     QVBoxLayout* v = new QVBoxLayout(this);
     v->setContentsMargins(8, 8, 8, 8);
     v->setSpacing(6);
-
-    // VEGAS's header: the track's chip and the name of the event or track, then (at the right) the Plug-In Chain ("fx"
-    // with a plus) and Remove Plug-In ("fx" with a cross) buttons.
-    QHBoxLayout* top = new QHBoxLayout();
-    top->setSpacing(6);
-    d->chip = new TargetChip(this);
-    d->chip->hide();
-    top->addWidget(d->chip);
-    d->targetName = new QLabel(this);
-    d->targetName->setObjectName("fxTargetName");
-    d->targetName->setTextFormat(Qt::PlainText);
-    top->addWidget(d->targetName);
-    top->addStretch(1);
-    d->modeBtn = new QToolButton(this);
-    d->modeBtn->setObjectName("fxAudioMode");
-    d->modeBtn->setText("Sliders");
-    d->modeBtn->setCheckable(true);
-    d->modeBtn->setToolTip("Show plain sliders instead of the effect's own page or window");
-    d->modeBtn->hide();
-    top->addWidget(d->modeBtn);
-    d->addBtn = new QToolButton(this);
-    d->addBtn->setObjectName("fxAdd");
-    d->addBtn->setText("Add");
-    d->addBtn->setIcon(glyphIcon(Glyph::Add, palette()));
-    d->addBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    d->addBtn->setPopupMode(QToolButton::InstantPopup);
-    d->addBtn->setToolTip("Add an effect to the end of the chain");
-    d->addMenu = new QMenu(d->addBtn);
-    d->addMenu->setObjectName("fxAddMenu");
-    d->addMenu->setToolTipsVisible(true);
-    d->addBtn->setMenu(d->addMenu);
-    top->addWidget(d->addBtn);
-    d->leftBtn = smallButton(this, glyphIcon(Glyph::Left, palette()), "Move the picked effect earlier in the chain", "fxMoveLeft");
-    d->rightBtn = smallButton(this, glyphIcon(Glyph::Right, palette()), "Move the picked effect later in the chain", "fxMoveRight");
-    for (QToolButton* b : {d->leftBtn, d->rightBtn}) {
-        b->setAutoRaise(false);
-        top->addWidget(b);
-    }
-    d->chainBtn = new QToolButton(this);
-    d->chainBtn->setObjectName("fxPluginChain");
-    d->chainBtn->setIcon(fxIcon(true));
-    d->chainBtn->setIconSize(QSize(28, 22));
-    d->chainBtn->setAutoRaise(true);
-    d->chainBtn->setToolTip("Plug-In Chain...");
-    d->chainBtn->setFocusPolicy(Qt::NoFocus);
-    top->addWidget(d->chainBtn);
-    d->removeBtn = smallButton(this, fxIcon(false), "Remove the picked effect", "fxRemove");
-    d->removeBtn->setIconSize(QSize(28, 22));
-    top->addWidget(d->removeBtn);
-    v->addLayout(top);
-    d->chainBar = new ChainBar(this);
-    v->addWidget(d->chainBar);
-
-    d->presetRow = new QWidget(this);
-    d->presetRow->setObjectName("fxPresetRow");
-    QHBoxLayout* pr = new QHBoxLayout(d->presetRow);
-    pr->setContentsMargins(0, 0, 0, 0);
-    pr->setSpacing(4);
-    QLabel* presetLabel = new QLabel("Preset:", d->presetRow);
-    pr->addWidget(presetLabel);
-    d->presetBox = new QComboBox(d->presetRow);
-    d->presetBox->setObjectName("fxPreset");
-    d->presetBox->setEditable(true);
-    d->presetBox->setInsertPolicy(QComboBox::NoInsert);
-    d->presetBox->setMinimumWidth(220);
-    d->presetBox->setMaximumWidth(340);
-    d->presetBox->setMaxVisibleItems(24);
-    d->presetBox->setToolTip("The effect's presets and your own. Type a name and click Save Preset to save the current settings.");
-    presetLabel->setBuddy(d->presetBox);
-    pr->addWidget(d->presetBox, 1);
-    d->presetSave = smallButton(d->presetRow, presetIcon(palette(), true), "Save Preset", "fxPresetSave");
-    d->presetDelete = smallButton(d->presetRow, presetIcon(palette(), false), "Delete Preset", "fxPresetDelete");
-    for (QToolButton* b : {d->presetSave, d->presetDelete}) b->setIconSize(QSize(20, 20));
-    pr->addWidget(d->presetSave);
-    pr->addWidget(d->presetDelete);
-    d->presetHelp = smallButton(d->presetRow, helpIcon(), "Help on presets", "fxPresetHelp");
-    d->presetHelp->setIconSize(QSize(20, 20));
-    pr->addWidget(d->presetHelp);
-    QObject::connect(d->presetHelp, &QToolButton::clicked, this, [this] {
-        QMessageBox::information(this, "Presets",
-                                 "A preset is a saved set of the effect's settings. Pick one from the list to use it. To save the current "
-                                 "settings, type a name in the list and click Save Preset (the disk). Delete Preset (the red cross) removes "
-                                 "a preset of your own.");
-    });
-    d->presetFile = new QToolButton(d->presetRow);
-    d->presetFile->setObjectName("fxPresetFile");
-    d->presetFile->setText("...");
-    d->presetFile->setToolTip("VST preset files: load a program (.fxp) or bank (.fxb), save the program or the whole bank");
-    d->presetFile->setPopupMode(QToolButton::InstantPopup);
-    d->presetFile->setFocusPolicy(Qt::NoFocus);
-    {
-        QMenu* m = new QMenu(d->presetFile);
-        Impl* im = d.get();
-        QObject::connect(m->addAction("&Load Program or Bank (.fxp, .fxb)..."), &QAction::triggered, this, [im] { im->loadVstFile(QString()); });
-        QObject::connect(m->addAction("Save &Program As (.fxp)..."), &QAction::triggered, this, [im] { im->saveVstFile(false, QString()); });
-        QObject::connect(m->addAction("Save &Bank As (.fxb)..."), &QAction::triggered, this, [im] { im->saveVstFile(true, QString()); });
-        d->presetFile->setMenu(m);
-    }
-    d->presetFile->hide();
-    pr->addWidget(d->presetFile);
-    d->bypassAuto = new QToolButton(d->presetRow);
-    d->bypassAuto->setObjectName("fxBypassAutomation");
-    d->bypassAuto->setText("Bypass FX Automation");
-    d->bypassAuto->setCheckable(true);
-    d->bypassAuto->setFocusPolicy(Qt::NoFocus);
-    d->bypassAuto->hide();
-    pr->addWidget(d->bypassAuto);
-    {
-        Impl* im = d.get();
-        QObject::connect(d->bypassAuto, &QToolButton::clicked, this, [im](bool on) {
-            const uint64_t id = im->picked;
-            const FxTarget t = im->target;
-            AppState::get().edit(on ? "Bypass FX Automation" : "Follow FX Automation", [&](Project& p) {
-                if (FxChain* c = AppState::get().chainOf(p, t))
-                    for (FxSlot& s : *c)
-                        if (s.id == id) s.bypassAutomation = on;
-            });
-        });
-    }
-    pr->addStretch(0);
-    // VEGAS's Transition Progress button (a transition's window): puts the Transition Progress envelope on the event, to
-    // hold, reverse or repeat the transition; pressed again it takes the envelope off
-    d->progressBtn = new QToolButton(d->presetRow);
-    d->progressBtn->setObjectName("fxTransitionProgress");
-    d->progressBtn->setText("Transition Progress");
-    d->progressBtn->setCheckable(true);
-    d->progressBtn->setFocusPolicy(Qt::NoFocus);
-    d->progressBtn->setToolTip("Add the Transition Progress envelope (click again to remove it); its points hold, reverse or repeat the transition");
-    d->progressBtn->hide();
-    pr->addWidget(d->progressBtn);
-    {
-        Impl* im = d.get();
-        QObject::connect(d->progressBtn, &QToolButton::clicked, this, [im](bool on) {
-            if (im->target.kind != FxTarget::Transition) return;
-            EnvelopeRef r;
-            r.owner.kind = EnvelopeOwner::Event;
-            r.owner.id = im->target.id;
-            r.kind = "transition";
-            if (on) { if (!im->app.insertEnvelope(r)) im->app.showEnvelope(r, true); }
-            else im->app.removeEnvelope(r);
-        });
-    }
-    d->adjustLenBtn = new QToolButton(d->presetRow);
-    d->adjustLenBtn->setObjectName("fxAdjustEventLength");
-    d->adjustLenBtn->setText("Adjust Event Length");
-    d->adjustLenBtn->setFocusPolicy(Qt::NoFocus);
-    d->adjustLenBtn->setToolTip("Stretch the event to the Slow Motion playback rate so no frames are cut off");
-    d->adjustLenBtn->hide();
-    pr->addWidget(d->adjustLenBtn);
-    {
-        Impl* im = d.get();
-        QObject::connect(d->adjustLenBtn, &QToolButton::clicked, this, [im] {
-            if (im->target.kind != FxTarget::Event) return;
-            const uint64_t id = im->target.id;
-            const Event* ev = im->app.project().findEvent(id);
-            if (!ev) return;
-            const double rate = eventFxRate(*ev);
-            if (!(rate > 0)) return;
-            const double len = ev->length / rate;
-            im->app.edit("Adjust Event Length", [&](Project& p) {
-                if (Event* o = p.findEvent(id)) o->length = len;
-            });
-        });
-    }
-    d->animateBtn = new QToolButton(d->presetRow);
-    d->animateBtn->setObjectName("fxAnimate");
-    d->animateBtn->setText("Animate");
-    d->animateBtn->setCheckable(true);
-    d->animateBtn->setFocusPolicy(Qt::NoFocus);
-    d->animateBtn->setToolTip("Show the keyframes of the effect's settings over time, under its controls");
-    d->animateBtn->setChecked(QSettings().value("fxWindow/animate", false).toBool());
-    pr->addWidget(d->animateBtn);
-    // VEGAS's Play and Stop in its effect windows: the project played from the cursor with the effect as it is set now,
-    // and stopped (back to where play began).
-    for (int k = 0; k < 2; ++k) {
-        QToolButton* b = new QToolButton(d->presetRow);
-        b->setObjectName(k == 0 ? "fxPlay" : "fxStop");
-        b->setText(k == 0 ? "Play" : "Stop");
-        b->setToolTip(k == 0 ? "Play from the cursor, to see the effect as it is set now" : "Stop playing (back to where play began)");
-        b->setFocusPolicy(Qt::NoFocus);
-        pr->addWidget(b);
-        Impl* im = d.get();
-        QObject::connect(b, &QToolButton::clicked, this, [im, k] {
-            if (!im->playback) return;
-            if (k == 0) { if (!im->playback->playing()) im->playback->play(); }
-            else im->playback->stop();
-        });
-    }
-    d->presetRow->hide();
-    v->addWidget(d->presetRow);
-
-    d->banner = new QLabel(this);
-    d->banner->setObjectName("fxBanner");
-    d->banner->setTextFormat(Qt::PlainText);
-    d->banner->setWordWrap(true);
-    d->banner->hide();
-    v->addWidget(d->banner);
-
-    d->scroll = new QScrollArea(this);
-    d->scroll->setObjectName("fxScroll");
-    d->scroll->setWidgetResizable(true);
-    d->holder = new QWidget();
-    d->holder->setObjectName("fxHolder");
-    d->holderLayout = new QVBoxLayout(d->holder);
-    d->holderLayout->setContentsMargins(0, 0, 0, 0);
-    d->holderLayout->setSpacing(0);
-    d->scroll->setWidget(d->holder);
-    v->addWidget(d->scroll, 1);
-
-    d->keys = new KeyPanel(this);
-    d->keys->setMaximumHeight(240);
-    d->keys->hide();
-    v->addWidget(d->keys);
-    {
-        Impl* im = d.get();
-        KeyStrip* ks = d->keys->strip;
-        ks->live = [im] { return im->pickedOfx(); };
-        ks->now = [im] { return im->fxTime(); };
-        ks->seek = [im](double frames) { im->seekFx(frames); };
-        ks->span = [im] { return im->keySpan(); };
-        ks->rate = [im] { return im->app.project().settings.fps(); };
-        QObject::connect(d->animateBtn, &QToolButton::toggled, this, [im](bool on) {
-            QSettings().setValue("fxWindow/animate", on);
-            im->syncKeys();
-        });
-    }
+    d->buildHeader(v);
+    d->buildPresetRow(v);
+    d->buildBody(v);
+    d->connectButtons();
 
     Impl* im = d.get();
-    QObject::connect(d->addMenu, &QMenu::aboutToShow, this, [im] { im->fillAddMenu(); });
-    QObject::connect(d->leftBtn, &QToolButton::clicked, this, [im] { if (im->picked) im->app.moveFx(im->target, im->picked, -1); });
-    QObject::connect(d->rightBtn, &QToolButton::clicked, this, [im] { if (im->picked) im->app.moveFx(im->target, im->picked, 1); });
-    QObject::connect(d->removeBtn, &QToolButton::clicked, this, [im] { im->removePicked(); });
-    QObject::connect(d->chainBtn, &QToolButton::clicked, this, [im] { im->openChooser(); });
-    QObject::connect(d->presetBox, QOverload<int>::of(&QComboBox::activated), this, [im](int i) { im->presetChosen(i); });
-    QObject::connect(d->presetBox, &QComboBox::currentIndexChanged, this, [im](int) { im->updatePresetButtons(); });
-    QObject::connect(d->presetSave, &QToolButton::clicked, this, [im] { im->savePresetNow(); });
-    QObject::connect(d->presetDelete, &QToolButton::clicked, this, [im] { im->deletePresetNow(); });
-    QObject::connect(d->modeBtn, &QToolButton::toggled, this, [im](bool on) {
-        im->preferSliders = on;
-        im->rebuildPanel(false);
-    });
-
-    d->slowTimer = new QTimer(this);
-    d->slowTimer->setInterval(300);
-    QObject::connect(d->slowTimer, &QTimer::timeout, this, [im] { im->slowTick(); });
-    d->idleTimer = new QTimer(this);
-    d->idleTimer->setInterval(50);
-    QObject::connect(d->idleTimer, &QTimer::timeout, this, [im] {
-        if (im->panel && im->panel->wantsIdle()) im->panel->idle();
-        else im->idleTimer->stop();
-    });
-
     d->listener = d->app.addListener([im](int changes) { im->changed(changes); });
     Impl::windows().insert(im);
     d->syncChain();

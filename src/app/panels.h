@@ -10,6 +10,11 @@
 #include <memory>
 #include <vector>
 
+class QAbstractItemView;
+class QModelIndex;
+class QSplitter;
+class QToolButton;
+
 namespace reno {
 namespace app {
 
@@ -171,6 +176,15 @@ public:
     void deleteSelected();
 private:
     void applyViews();
+    void activate(const QModelIndex& i);
+    void currentChanged();
+    void startPreview(const QString& file);
+    void showFileMenu(QAbstractItemView* view, const QPoint& pos);
+    void showFolderMenu(const QPoint& pos);
+    QWidget* buildToolBar();
+    void buildViewsMenu(QToolButton* views);
+    QSplitter* buildPanes();
+    void showFavoritesMenu(const QPoint& pos);
     void showDetails(const QString& file);
     struct Impl;
     std::unique_ptr<Impl> d;

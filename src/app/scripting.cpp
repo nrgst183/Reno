@@ -424,6 +424,121 @@ bool describeOfx(const std::string& id, const std::string& context, const Projec
     return true;
 }
 
+// The plug-ins a script can list (Vegas.VideoFX, Vegas.AudioFX, Vegas.Transitions, Vegas.Generators).
+static std::vector<ScriptPlugin> scriptPlugins()
+{
+    std::vector<ScriptPlugin> plugins;
+    for (const VideoFxEntry& v : Catalog::get().video()) {
+        if (!v.ok) continue;
+        ScriptPlugin p;
+        p.type = v.transition ? ScriptPlugin::Transition : v.generator ? ScriptPlugin::Generator : ScriptPlugin::VideoFilter;
+        if (!v.filter && !v.transition && !v.generator) continue;
+        p.id = v.id;
+        p.name = v.label;
+        p.group = v.group;
+        plugins.push_back(p);
+    }
+    for (const AudioFxEntry& a : Catalog::get().audio()) {
+        if (!a.ok || a.desc.isInstrument) continue;
+        ScriptPlugin p;
+        p.type = ScriptPlugin::Audio;
+        p.id = a.desc.key();
+        p.name = a.desc.name;
+        p.group = a.desc.vendor;
+        p.audio = a.desc;
+        plugins.push_back(p);
+    }
+    return plugins;
+}
+
+// Render As's formats with only the templates this FFmpeg can make (formats left with none are left out).
+static std::vector<rt::Format> scriptFormats()
+{
+    std::vector<rt::Format> formats;
+    for (rt::Format f : rt::loadFormats()) {
+        if (!f.unavailable.isEmpty()) continue;
+        std::vector<rt::Tmpl> ok;
+        for (const rt::Tmpl& t : f.templates)
+            if (rt::templateAvailable(f, t)) ok.push_back(t);
+        if (ok.empty()) continue;
+        f.templates = ok;
+        formats.push_back(f);
+    }
+    return formats;
+}
+
+// Vegas.Renderers: the formats and their templates as a script sees them.
+static std::vector<ScriptRenderer> scriptRenderers(const std::vector<rt::Format>& formats)
+{
+    std::vector<ScriptRenderer> out;
+    for (const rt::Format& f : formats) {
+        ScriptRenderer r;
+        r.name = f.name.toStdString();
+        r.ext = f.ext.toStdString();
+        r.description = f.blurb.toStdString();
+        r.hasVideo = f.hasVideo;
+        r.hasAudio = f.hasAudio;
+        for (const rt::Tmpl& t : f.templates) {
+            ScriptRenderTemplate st;
+            st.name = t.name.toStdString();
+            st.description = t.description.toStdString();
+            st.ext = t.ext.toStdString();
+            st.video = f.hasVideo && t.video;
+            st.audio = f.hasAudio && t.audio;
+            st.width = t.width;
+            st.height = t.height;
+            st.fpsNum = t.fpsNum;
+            st.fpsDen = t.fpsDen;
+            st.sampleRate = t.sampleRate;
+            st.channels = t.channels;
+            st.bits = t.bits;
+            st.videoKbps = st.video ? t.kbps : 0;
+            st.audioKbps = st.audio ? t.audioKbps : 0;
+            st.par = t.par;
+            r.templates.push_back(st);
+        }
+        out.push_back(r);
+    }
+    return out;
+}
+
+// Vegas.Render: renders 'p' with a format and template of 'formats'. 4 when it is done, 5 when it was stopped, 6 when
+// it failed (with the reason in *error).
+static int renderForScript(const std::vector<rt::Format>& formats, AppState& app, const Project& p, const ScriptRenderRequest& r, std::string* error)
+{
+    if (r.renderer < 0 || r.renderer >= (int)formats.size() || r.tmpl < 0 || r.tmpl >= (int)formats[(size_t)r.renderer].templates.size()) {
+        *error = "no such render template";
+        return 6;
+    }
+    const rt::Format& fmt = formats[(size_t)r.renderer];
+    const rt::Tmpl& t = fmt.templates[(size_t)r.tmpl];
+    if (fmt.sequence) {
+        *error = "rendering an image sequence from a script is not supported by Reno";
+        return 6;
+    }
+    rt::RenderChoices choices;
+    choices.writerPath = r.output;
+    choices.useRotation = r.useRotation;
+    choices.markers = r.markers;
+    RenderSpec spec;
+    QString specError;
+    if (!rt::makeRenderSpec(fmt, t, choices, p.settings, &spec, &specError)) {
+        *error = specError.toStdString();
+        return 6;
+    }
+    if (QFileInfo::exists(qs(r.output))) QFile::remove(qs(r.output));
+    std::string e, description;
+    bool ok = false;
+    try {
+        ok = renderProjectAs(p, app.fx, spec, r.from, r.to, [](const ExportProgress&) { return true; }, &e, app.mediaOpener, &description);
+    } catch (const std::exception& x) {
+        e = x.what();
+    }
+    if (ok) return 4;
+    *error = e;
+    return e == "stopped" ? 5 : 6;
+}
+
 ScriptHost makeHost(AppState& app, QWidget* parent, const std::string& script, const std::string& args)
 {
     ScriptHost h;
@@ -441,26 +556,7 @@ ScriptHost makeHost(AppState& app, QWidget* parent, const std::string& script, c
         *info = r->info();
         return true;
     };
-    for (const VideoFxEntry& v : Catalog::get().video()) {
-        if (!v.ok) continue;
-        ScriptPlugin p;
-        p.type = v.transition ? ScriptPlugin::Transition : v.generator ? ScriptPlugin::Generator : ScriptPlugin::VideoFilter;
-        if (!v.filter && !v.transition && !v.generator) continue;
-        p.id = v.id;
-        p.name = v.label;
-        p.group = v.group;
-        h.plugins.push_back(p);
-    }
-    for (const AudioFxEntry& a : Catalog::get().audio()) {
-        if (!a.ok || a.desc.isInstrument) continue;
-        ScriptPlugin p;
-        p.type = ScriptPlugin::Audio;
-        p.id = a.desc.key();
-        p.name = a.desc.name;
-        p.group = a.desc.vendor;
-        p.audio = a.desc;
-        h.plugins.push_back(p);
-    }
+    h.plugins = scriptPlugins();
     h.newSettings = app.project().settings;
     h.loopEvents = app.prefs.loopEvents;
     h.stillLength = app.prefs.stillLength;
@@ -469,83 +565,11 @@ ScriptHost makeHost(AppState& app, QWidget* parent, const std::string& script, c
     h.describeOfx = [st](const std::string& id, const std::string& context, ScriptOfxDesc* d, std::string* error) {
         return describeOfx(id, context, st, d, error);
     };
-    // Vegas.Renderers and Vegas.Render: Render As's formats with the templates this FFmpeg can make
-    auto formats = std::make_shared<std::vector<rt::Format>>();
-    {
-        for (rt::Format f : rt::loadFormats()) {
-            if (!f.unavailable.isEmpty()) continue;
-            std::vector<rt::Tmpl> ok;
-            for (const rt::Tmpl& t : f.templates)
-                if (rt::templateAvailable(f, t)) ok.push_back(t);
-            if (ok.empty()) continue;
-            f.templates = ok;
-            formats->push_back(f);
-        }
-    }
-    h.renderers = [formats]() {
-        std::vector<ScriptRenderer> out;
-        for (const rt::Format& f : *formats) {
-            ScriptRenderer r;
-            r.name = f.name.toStdString();
-            r.ext = f.ext.toStdString();
-            r.description = f.blurb.toStdString();
-            r.hasVideo = f.hasVideo;
-            r.hasAudio = f.hasAudio;
-            for (const rt::Tmpl& t : f.templates) {
-                ScriptRenderTemplate st;
-                st.name = t.name.toStdString();
-                st.description = t.description.toStdString();
-                st.ext = t.ext.toStdString();
-                st.video = f.hasVideo && t.video;
-                st.audio = f.hasAudio && t.audio;
-                st.width = t.width;
-                st.height = t.height;
-                st.fpsNum = t.fpsNum;
-                st.fpsDen = t.fpsDen;
-                st.sampleRate = t.sampleRate;
-                st.channels = t.channels;
-                st.bits = t.bits;
-                st.videoKbps = st.video ? t.kbps : 0;
-                st.audioKbps = st.audio ? t.audioKbps : 0;
-                st.par = t.par;
-                r.templates.push_back(st);
-            }
-            out.push_back(r);
-        }
-        return out;
-    };
-    h.render = [formats, &app](const Project& p, const ScriptRenderRequest& r, std::string* error) -> int {
-        if (r.renderer < 0 || r.renderer >= (int)formats->size() || r.tmpl < 0 || r.tmpl >= (int)(*formats)[(size_t)r.renderer].templates.size()) {
-            *error = "no such render template";
-            return 6;
-        }
-        const rt::Format& fmt = (*formats)[(size_t)r.renderer];
-        const rt::Tmpl& t = fmt.templates[(size_t)r.tmpl];
-        if (fmt.sequence) {
-            *error = "rendering an image sequence from a script is not supported by Reno";
-            return 6;
-        }
-        rt::RenderChoices choices;
-        choices.writerPath = r.output;
-        choices.useRotation = r.useRotation;
-        choices.markers = r.markers;
-        RenderSpec spec;
-        QString specError;
-        if (!rt::makeRenderSpec(fmt, t, choices, p.settings, &spec, &specError)) {
-            *error = specError.toStdString();
-            return 6;
-        }
-        if (QFileInfo::exists(qs(r.output))) QFile::remove(qs(r.output));
-        std::string e, description;
-        bool ok = false;
-        try {
-            ok = renderProjectAs(p, app.fx, spec, r.from, r.to, [](const ExportProgress&) { return true; }, &e, app.mediaOpener, &description);
-        } catch (const std::exception& x) {
-            e = x.what();
-        }
-        if (ok) return 4;
-        *error = e;
-        return e == "stopped" ? 5 : 6;
+    // Vegas.Renderers and Vegas.Render
+    auto formats = std::make_shared<std::vector<rt::Format>>(scriptFormats());
+    h.renderers = [formats] { return scriptRenderers(*formats); };
+    h.render = [formats, &app](const Project& p, const ScriptRenderRequest& r, std::string* error) {
+        return renderForScript(*formats, app, p, r, error);
     };
     h.presets = [](const std::string& id, const std::string& context) {
         std::vector<ScriptPreset> out;
@@ -593,6 +617,88 @@ static bool letProjectGo(QWidget* parent, AppState& app, const QString& script)
     return true;
 }
 
+// What the script starts from besides the project: the selection, the cursor, the time selection and loop, Bypass FX.
+static void giveSessionTheView(ScriptSession& session, const AppState& app)
+{
+    session.selection = app.selection();
+    if (app.currentTrack) session.selectedTracks.insert(app.currentTrack);
+    session.cursor = app.cursor();
+    session.selStart = app.loopStart;
+    session.selLength = std::max(0.0, app.loopEnd - app.loopStart);
+    session.loopOn = app.loopOn;
+    session.bypassFx = app.bypassAllFx;
+}
+
+// Runs the script in .NET (Windows only): false if .NET could not be started (the user is told). A script that could
+// not be started is a failed session.
+static bool executeScript(QWidget* parent, AppState& app, ScriptSession& session, const QString& dll, const QString& name)
+{
+#ifdef _WIN32
+    QString error;
+    ICLRRuntimeHostMin* clr = clrHost(&error);
+    if (!clr) {
+        QMessageBox::warning(parent, "Run Script", "The script cannot run: " + error);
+        return false;
+    }
+    // Windows Forms dialogs need this thread in a single-threaded COM apartment; Qt already made it one (for drag and
+    // drop), so this only checks (and counts once more, undone below).
+    const HRESULT apartment = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (apartment == RPC_E_CHANGED_MODE) app.status("Note: the interface thread is not a single-threaded COM apartment: a script's file dialogs may fail.");
+    app.status("Running " + s8(name) + "...");
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const std::wstring arg = QString("api=%1").arg((quint64)(uintptr_t)session.api(), 0, 16).toStdWString();
+    const std::wstring wdll = QDir::toNativeSeparators(dll).toStdWString();
+    DWORD ret = 0;
+    const HRESULT h = clr->ExecuteInDefaultAppDomain(wdll.c_str(), L"ScriptPortal.Vegas.RenoHost", L"Run", arg.c_str(), &ret);
+    QApplication::restoreOverrideCursor();
+    if (SUCCEEDED(apartment)) CoUninitialize();
+    if (FAILED(h) && !session.finished) {
+        session.finished = session.failed = true;
+        session.message = s8("Reno's ScriptPortal.Vegas could not be started (" + hr(h) + "). If this keeps happening, delete the folder " +
+                             QDir::toNativeSeparators(QFileInfo(dll).path()) + " so that Reno compiles it again.");
+    }
+    return true;
+#else
+    (void)parent;
+    (void)app;
+    (void)dll;
+    (void)name;
+    session.finished = session.failed = true;
+    session.message = "Running VEGAS scripts needs Windows.";
+    return true;
+#endif
+}
+
+// The selection, cursor, time selection, loop and Bypass FX as the script left them.
+static void takeSessionView(const ScriptSession& session, AppState& app)
+{
+    std::set<uint64_t> sel;
+    for (uint64_t id : session.selection)
+        if (app.project().findEvent(id)) sel.insert(id);
+    app.setSelection(sel);
+    if (!session.selectedTracks.empty()) app.currentTrack = *session.selectedTracks.begin();
+    app.setCursor(session.cursor);
+    app.setLoop(session.selStart, session.selStart + std::max(0.0, session.selLength));
+    app.loopOn = session.loopOn;
+    app.bypassAllFx = session.bypassFx;
+    app.notify(kSelection | kCursor | kPlayback);
+}
+
+// The script's error, with the first lines it printed, in a message box.
+static void showScriptFailure(QWidget* parent, const ScriptSession& session, const QString& name, const std::vector<std::string>& output)
+{
+    QString text = qs(session.message);
+    if (!output.empty()) {
+        text += "\n\nThe script's output:";
+        for (size_t k = 0; k < output.size() && k < 30; ++k) text += "\n" + qs(output[k]);
+    }
+    QMessageBox box(QMessageBox::Warning, "Run Script", name + ": the script stopped with an error.", QMessageBox::Ok, parent);
+    box.setInformativeText(session.changed && !session.cancelled ? "What it changed before the error is kept (Edit > Undo takes it back)." : QString());
+    box.setDetailedText(text);
+    box.setText(name + ": " + text.left(600));
+    box.exec();
+}
+
 void runScript(QWidget* parent, const std::string& path, const std::string& args)
 {
     AppState& app = AppState::get();
@@ -637,41 +743,9 @@ void runScript(QWidget* parent, const std::string& path, const std::string& args
     host.log = [&output](const std::string& s) { output.push_back(s); };
     ScriptSession session(start, host);
     running = &session;
-    session.selection = app.selection();
-    if (app.currentTrack) session.selectedTracks.insert(app.currentTrack);
-    session.cursor = app.cursor();
-    session.selStart = app.loopStart;
-    session.selLength = std::max(0.0, app.loopEnd - app.loopStart);
-    session.loopOn = app.loopOn;
-    session.bypassFx = app.bypassAllFx;
+    giveSessionTheView(session, app);
 
-#ifdef _WIN32
-    ICLRRuntimeHostMin* clr = clrHost(&error);
-    if (!clr) {
-        QMessageBox::warning(parent, "Run Script", "The script cannot run: " + error);
-        return;
-    }
-    // Windows Forms dialogs need this thread in a single-threaded COM apartment; Qt already made it one (for drag and
-    // drop), so this only checks (and counts once more, undone below).
-    const HRESULT apartment = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    if (apartment == RPC_E_CHANGED_MODE) app.status("Note: the interface thread is not a single-threaded COM apartment: a script's file dialogs may fail.");
-    app.status("Running " + s8(name) + "...");
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    const std::wstring arg = QString("api=%1").arg((quint64)(uintptr_t)session.api(), 0, 16).toStdWString();
-    const std::wstring wdll = QDir::toNativeSeparators(dll).toStdWString();
-    DWORD ret = 0;
-    const HRESULT h = clr->ExecuteInDefaultAppDomain(wdll.c_str(), L"ScriptPortal.Vegas.RenoHost", L"Run", arg.c_str(), &ret);
-    QApplication::restoreOverrideCursor();
-    if (SUCCEEDED(apartment)) CoUninitialize();
-    if (FAILED(h) && !session.finished) {
-        session.finished = session.failed = true;
-        session.message = s8("Reno's ScriptPortal.Vegas could not be started (" + hr(h) + "). If this keeps happening, delete the folder " +
-                             QDir::toNativeSeparators(QFileInfo(dll).path()) + " so that Reno compiles it again.");
-    }
-#else
-    session.finished = session.failed = true;
-    session.message = "Running VEGAS scripts needs Windows.";
-#endif
+    if (!executeScript(parent, app, session, dll, name)) return;
     running = nullptr;
 
     if (!session.undoLabel.empty()) label = session.undoLabel;
@@ -682,11 +756,10 @@ void runScript(QWidget* parent, const std::string& path, const std::string& args
     } else if (!replaceOk) {
         app.status(s8(name) + ": the project the script made was not used (the open project was kept).");
     } else {
-        if (committed) {
-        } else if (!session.openedPath.empty()) {
+        if (!committed && !session.openedPath.empty()) {
             std::string err;
             if (!app.open(session.openedPath, &err)) QMessageBox::warning(parent, "Run Script", qs("The project the script opened could not be opened: " + err));
-        } else if (session.startedNew) {
+        } else if (!committed && session.startedNew) {
             app.newProject();
         }
         if (session.changed || session.startedNew) {
@@ -700,32 +773,10 @@ void runScript(QWidget* parent, const std::string& path, const std::string& args
                 live = result;
             }, fxIds);
         }
-        if (session.viewChanged || session.changed) {
-            std::set<uint64_t> sel;
-            for (uint64_t id : session.selection)
-                if (app.project().findEvent(id)) sel.insert(id);
-            app.setSelection(sel);
-            if (!session.selectedTracks.empty()) app.currentTrack = *session.selectedTracks.begin();
-            app.setCursor(session.cursor);
-            app.setLoop(session.selStart, session.selStart + std::max(0.0, session.selLength));
-            app.loopOn = session.loopOn;
-            app.bypassAllFx = session.bypassFx;
-            app.notify(kSelection | kCursor | kPlayback);
-        }
+        if (session.viewChanged || session.changed) takeSessionView(session, app);
         app.status(session.failed ? s8(name) + " stopped with an error." : s8(name) + (session.changed || committed ? ": done." : ": done (nothing was changed)."));
     }
-    if (session.failed) {
-        QString text = qs(session.message);
-        if (!output.empty()) {
-            text += "\n\nThe script's output:";
-            for (size_t k = 0; k < output.size() && k < 30; ++k) text += "\n" + qs(output[k]);
-        }
-        QMessageBox box(QMessageBox::Warning, "Run Script", name + ": the script stopped with an error.", QMessageBox::Ok, parent);
-        box.setInformativeText(session.changed && !session.cancelled ? "What it changed before the error is kept (Edit > Undo takes it back)." : QString());
-        box.setDetailedText(text);
-        box.setText(name + ": " + text.left(600));
-        box.exec();
-    }
+    if (session.failed) showScriptFailure(parent, session, name, output);
 }
 
 void runScriptDialog(QWidget* parent)
