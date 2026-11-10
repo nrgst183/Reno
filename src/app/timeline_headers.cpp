@@ -459,11 +459,18 @@ void TimelineWidget::Impl::paintHeaders(QPainter& p, const QRect& clip)
         }
         });
     }
-    if (trackListFocus && q->hasFocus()) {
-        p.setPen(QPen(kSnapLine, 1.0));
-        p.setBrush(Qt::NoBrush);
-        p.drawRect(QRect(0, kTopH, headerW - kHeaderGap - 1, std::max(0, lanesBottom() - kTopH - 1)));
-    }
+    // When the track list has the keyboard (a click on a header; Tab goes back), the current track's header is outlined,
+    // as a focused item in a list is, rather than the whole column.
+    if (trackListFocus && q->hasFocus())
+        for (const Row& r : rows) {
+            if (r.id != app.currentTrack) continue;
+            const HeaderRects h = headerRects(r);
+            if (!h.all.intersects(c)) break;
+            p.setPen(QPen(kSnapLine, 1.0, Qt::DotLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(h.all.adjusted(kHeaderMargin, 0, -kHeaderGap - 1, -1));
+            break;
+        }
     for (const BusRow& b : busRows) {
         const QRect all(0, busTop(b), headerW, b.h);
         if (!all.intersects(c)) continue;
