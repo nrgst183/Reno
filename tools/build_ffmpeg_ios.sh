@@ -19,7 +19,7 @@ rm -rf "build-ios" && mkdir "build-ios" && cd "build-ios"
   --enable-cross-compile --target-os=darwin --arch=arm64 --cc="$CC" --sysroot="$SDK" \
   --extra-cflags="-arch arm64 -miphoneos-version-min=$MIN" --extra-ldflags="-arch arm64 -miphoneos-version-min=$MIN" \
   --enable-static --disable-shared --enable-pic --disable-programs --disable-doc \
-  --disable-avdevice --disable-avfilter --disable-postproc --enable-videotoolbox --enable-audiotoolbox
+  --disable-avdevice --disable-avfilter --enable-videotoolbox --enable-audiotoolbox
 make -j"$(sysctl -n hw.ncpu)"
 make install
 echo "FFmpeg for iOS is in $ROOT/deps/ffmpeg-ios"

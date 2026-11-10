@@ -22,7 +22,7 @@ rm -rf "build-android" && mkdir "build-android" && cd "build-android"
   --cc="$TC/aarch64-linux-android$API-clang" --cxx="$TC/aarch64-linux-android$API-clang++" \
   --ar="$TC/llvm-ar" --nm="$TC/llvm-nm" --ranlib="$TC/llvm-ranlib" --strip="$TC/llvm-strip" \
   --enable-shared --disable-static --enable-pic --disable-programs --disable-doc \
-  --disable-avdevice --disable-avfilter --disable-postproc --enable-jni --enable-mediacodec
+  --disable-avdevice --disable-avfilter --enable-jni --enable-mediacodec
 make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 make install
 echo "FFmpeg for Android is in $ROOT/deps/ffmpeg-android"
