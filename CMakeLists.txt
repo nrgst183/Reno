@@ -1,10 +1,16 @@
 cmake_minimum_required(VERSION 3.21)
 # macOS: runs on macOS 11 and later (the first with Apple Silicon); the architecture is the machine's own unless
-# CMAKE_OSX_ARCHITECTURES says otherwise (arm64 or x86_64; FFmpeg from Homebrew is one architecture only)
-if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+# CMAKE_OSX_ARCHITECTURES says otherwise (arm64 or x86_64; FFmpeg from Homebrew is one architecture only). Not when
+# a toolchain file is given: that is a build for iOS (or Android) made on a Mac, set below once project() has read it.
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Oldest macOS Reno runs on")
 endif()
 project(Reno LANGUAGES CXX)
+# iOS: 16 and later, the oldest Qt 6.8 runs on and what tools/build_ffmpeg_ios.sh builds FFmpeg for (Xcode's own
+# default, iOS 11, has no std::filesystem)
+if(IOS AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "16.0" CACHE STRING "Oldest iOS Reno runs on")
+endif()
 
 # Reno builds on Windows (Visual Studio 2022 with clang-cl - the default in build_msvc.bat and Reno.sln - or MSVC), Linux (GCC or Clang) and macOS (Apple Clang), and
 # cross-compiles for Windows from Linux with clang-cl (cmake/toolchains/windows-clangcl.cmake). It also builds for FreeBSD

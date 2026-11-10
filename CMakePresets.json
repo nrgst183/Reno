@@ -118,11 +118,11 @@
     {
       "name": "ios",
       "displayName": "iOS (Xcode project)",
-      "description": "On a Mac with Xcode: needs RENO_QT_IOS (Qt for iOS), RENO_QT_HOST (Qt for macOS of the same version) and RENO_FFMPEG_IOS (FFmpeg built for iOS as static libraries); sign and run from the Xcode project made in build/ios",
+      "description": "On a Mac with Xcode: needs RENO_QT_IOS (Qt for iOS), RENO_QT_HOST (Qt for macOS of the same version) and RENO_FFMPEG_IOS (FFmpeg built for iOS as static libraries); for iOS 16 and later; sign and run from the Xcode project made in build/ios",
       "inherits": "base",
       "generator": "Xcode",
       "toolchainFile": "$env{RENO_QT_IOS}/lib/cmake/Qt6/qt.toolchain.cmake",
-      "cacheVariables": { "QT_HOST_PATH": "$env{RENO_QT_HOST}", "RENO_FFMPEG_DIR": "$env{RENO_FFMPEG_IOS}" },
+      "cacheVariables": { "QT_HOST_PATH": "$env{RENO_QT_HOST}", "RENO_FFMPEG_DIR": "$env{RENO_FFMPEG_IOS}", "CMAKE_OSX_DEPLOYMENT_TARGET": "16.0" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
     }
   ],
