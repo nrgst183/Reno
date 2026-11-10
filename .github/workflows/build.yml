@@ -327,7 +327,9 @@ jobs:
 
       - name: Package
         run: |
-          app=$(find build -path '*Release-iphoneos/Reno.app' -type d | head -1)
+          # (Reno's own output folder puts it in build/bin/Release, not Xcode's Release-iphoneos)
+          app=$(find build -name Reno.app -type d -not -path '*.dSYM*' | head -1)
+          [ -n "$app" ] || { echo "::error::Reno.app was not found under build/"; exit 1; }
           mkdir Payload && cp -R "$app" Payload/
           zip -qry reno-ios-unsigned.ipa Payload
 
