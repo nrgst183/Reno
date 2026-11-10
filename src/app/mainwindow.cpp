@@ -108,6 +108,7 @@
 #include "mainwindow_internal.h"
 #include "logo.h"
 #include "readoutlabel.h"
+#include "startprogram.h"
 #include "vprefs.h"
 #include "prefsapply.h"
 #include "vegasextras.h"
@@ -162,7 +163,6 @@
 #include <QPainterPath>
 #include <QPalette>
 #include <QPlainTextEdit>
-#include <QProcess>
 #include <QHash>
 #include <QIcon>
 #include <QProxyStyle>
@@ -2874,7 +2874,7 @@ bool MainWindow::openInAudioEditor(uint64_t eventId)
         app.applyPreferences();
     }
     const QString editor = QString::fromStdString(app.prefs.audioEditor);
-    if (!QProcess::startDetached(editor, QStringList() << QDir::toNativeSeparators(QString::fromStdString(m->path)))) {
+    if (!startProgram(editor, QStringList() << QDir::toNativeSeparators(QString::fromStdString(m->path)))) {
         app.status("Could not start the audio editor " + app.prefs.audioEditor + " (Options > Preferences > Editing sets it).");
         return false;
     }

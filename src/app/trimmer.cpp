@@ -5,6 +5,7 @@
 // the waveform on another (a few seconds at a time, shown as it arrives), and the sound, while playing, on the sound
 // device's.
 #include "trimmer.h"
+#include "startprogram.h"
 #include "toolwin.h"
 #include "panels.h"
 #include "playback.h"
@@ -16,7 +17,6 @@
 #include <set>
 #include <QComboBox>
 #include <QDir>
-#include <QProcess>
 #include <QDrag>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -1122,7 +1122,7 @@ bool TrimmerWindow::openInAudioEditor()
         return false;
     }
     const QString editor = QString::fromStdString(app.prefs.audioEditor);
-    if (!QProcess::startDetached(editor, QStringList() << QDir::toNativeSeparators(d->path))) {
+    if (!startProgram(editor, QStringList() << QDir::toNativeSeparators(d->path))) {
         app.status("Could not start the audio editor " + app.prefs.audioEditor + " (Options > Preferences > Editing sets it).");
         return false;
     }

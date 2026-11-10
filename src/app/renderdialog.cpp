@@ -15,6 +15,7 @@
 #include <unistd.h>
 #endif
 #include "logbook.h"
+#include "startprogram.h"
 #include "vprefs.h"
 #include "renderdialog.h"
 #include "../engine/colormgmt.h"
@@ -1965,9 +1966,9 @@ public:
             QSettings().setValue("render/closeWhenDone", closeWhenDone_->isChecked());
             if (mode_ == RenderAs && shutdown_->isChecked()) {
 #ifdef _WIN32
-                QProcess::startDetached("shutdown", {"/s", "/t", "30"});
+                startProgram("shutdown", {"/s", "/t", "30"});
 #else
-                QProcess::startDetached("shutdown", {"-h", "+1"});
+                startProgram("shutdown", {"-h", "+1"});
 #endif
             }
             if (mode_ == NewTrack || closeWhenDone_->isChecked()) QTimer::singleShot(0, this, [this] { accept(); });

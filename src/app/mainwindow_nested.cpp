@@ -2,6 +2,7 @@
 #include "audioproxyui.h"
 #include "mainwindow.h"
 #include "mainwindow_internal.h"
+#include "startprogram.h"
 #include "vprefs.h"
 #include "prefsapply.h"
 #include "vegasextras.h"
@@ -24,7 +25,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMessageBox>
-#include <QProcess>
 #include "automationctl.h"
 #include <algorithm>
 #include <map>
@@ -236,7 +236,7 @@ void openNestedTimeline(QWidget* parent)
                 QFile f(QString::fromLocal8Bit(log));
                 if (f.open(QIODevice::Append)) f.write(path.toUtf8() + "\n" + args.join(" | ").toUtf8() + "\n");
             } else {
-                QProcess::startDetached(QCoreApplication::applicationFilePath(), args);
+                startProgram(QCoreApplication::applicationFilePath(), args);
             }
             app.status("Opening " + m->path + " in another Reno");
             return;
@@ -310,7 +310,7 @@ void openParentTimeline()
         app.status("The parent project is not there any more: " + parent.toStdString());
         return;
     }
-    QProcess::startDetached(QCoreApplication::applicationFilePath(), QStringList() << parent);
+    startProgram(QCoreApplication::applicationFilePath(), QStringList() << parent);
     app.status("Opening the parent project " + parent.toStdString() + " in another Reno");
 }
 
