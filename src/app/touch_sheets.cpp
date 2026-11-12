@@ -1,3 +1,5 @@
+#include "touch_ui.h"
+#if RENO_TOUCH_UI  // (the whole file: phones and tablets only)
 // The sheets the touch interface's tools open. Changes are AppState edits: a slider's whole drag is one undo step
 // (AppState's drag steps for project values, beginFxEdit / endFxEdit for effect settings).
 #include "touch_shell_internal.h"
@@ -1085,3 +1087,4 @@ void TouchShellImpl::commandsSheet()
 
 }  // namespace app
 }  // namespace reno
+#endif  // RENO_TOUCH_UI

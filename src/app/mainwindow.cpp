@@ -1291,9 +1291,11 @@ void MainWindow::restyle()
 
 MainWindow::~MainWindow()
 {
+#if RENO_TOUCH_UI
     // the touch interface goes first: it uses the playback engine and the preview, which go below
     delete touch_;
     touch_ = nullptr;
+#endif
     for (int id : ownedListeners_) AppState::get().removeListener(id);
     AutomationHooks::wake = nullptr;
     if (layoutSaver_) layoutSaver_->stop();

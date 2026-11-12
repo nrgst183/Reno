@@ -1,3 +1,5 @@
+#include "touch_ui.h"
+#if RENO_TOUCH_UI  // (the whole file: phones and tablets only)
 #include "touch_style.h"
 #include <QApplication>
 #include <QPainter>
@@ -378,3 +380,4 @@ QString styleSheet()
 }  // namespace touch
 }  // namespace app
 }  // namespace reno
+#endif  // RENO_TOUCH_UI

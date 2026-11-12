@@ -1,4 +1,5 @@
-// Switching the main window between the desktop interface and the touch one (touch_shell.h).
+// Switching the main window between the desktop interface and the touch one (touch_shell.h). Builds without the touch
+// interface (touch_ui.h) have empty stand-ins at the end.
 #include "mainwindow.h"
 #include "mainwindow_internal.h"
 #include "timeline.h"
@@ -13,6 +14,8 @@
 
 namespace reno {
 namespace app {
+
+#if RENO_TOUCH_UI
 
 // View > Touch Interface: one of Reno's own items (after VEGAS's in the View menu).
 void MainWindow::addTouchAction()
@@ -50,8 +53,13 @@ void MainWindow::setTouchMode(bool on)
         hideIt(statusBar());
         for (QToolBar* tb : findChildren<QToolBar*>(QString(), Qt::FindDirectChildrenOnly)) hideIt(tb);
         for (QDockWidget* dw : findChildren<QDockWidget*>(QString(), Qt::FindDirectChildrenOnly)) hideIt(dw);
+        // (taking it out leaves it without a parent: it is kept as a hidden child of the window, so it still goes
+        // with the window, its thumbnail thread and all, when Reno closes in touch mode)
         desktopCentral_ = takeCentralWidget();
-        if (desktopCentral_) desktopCentral_->hide();
+        if (desktopCentral_) {
+            desktopCentral_->setParent(this);
+            desktopCentral_->hide();
+        }
         touch_ = new TouchShell(this);
         touch_->onLeave = [this] {
             setTouchInterfaceWanted(false);
@@ -78,6 +86,15 @@ void MainWindow::setTouchMode(bool on)
     }
     AppState::get().notify(kView);
 }
+
+#else
+
+void MainWindow::addTouchAction() {}
+void MainWindow::setTouchMode(bool) {}
+bool touchInterfaceWanted() { return false; }
+void setTouchInterfaceWanted(bool) {}
+
+#endif  // RENO_TOUCH_UI
 
 }  // namespace app
 }  // namespace reno

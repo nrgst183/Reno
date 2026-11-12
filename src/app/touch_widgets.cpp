@@ -1,3 +1,5 @@
+#include "touch_ui.h"
+#if RENO_TOUCH_UI  // (the whole file: phones and tablets only)
 #include "touch_widgets.h"
 #include <QConicalGradient>
 #include <QEasingCurve>
@@ -518,3 +520,4 @@ void Sheet::mouseReleaseEvent(QMouseEvent* e)
 }  // namespace touch
 }  // namespace app
 }  // namespace reno
+#endif  // RENO_TOUCH_UI

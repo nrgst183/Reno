@@ -1,3 +1,5 @@
+#include "touch_ui.h"
+#if RENO_TOUCH_UI  // (the whole file: phones and tablets only)
 // The touch interface's Export: a few choices (video or sound, size), then the render with its progress in the sheet.
 // It renders with Render As's templates (rendertemplates.h), a frame size and rate of 0 meaning the project's, on a
 // thread of its own as the Render As dialog does; Render As itself stays a tap away for every other format.
@@ -404,3 +406,4 @@ void TouchShellImpl::stopExport()
 
 }  // namespace app
 }  // namespace reno
+#endif  // RENO_TOUCH_UI

@@ -1,3 +1,5 @@
+#include "touch_ui.h"
+#if RENO_TOUCH_UI  // (the whole file: phones and tablets only)
 #include "touch_shell_internal.h"
 #include "panels.h"
 #include <QAction>
@@ -25,11 +27,7 @@ using namespace touch;
 bool touchInterfaceWanted()
 {
     if (qEnvironmentVariableIsSet("RENO_TOUCH")) return qEnvironmentVariable("RENO_TOUCH") != "0";
-#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
     return QSettings().value("touch/enabled", true).toBool();
-#else
-    return QSettings().value("touch/enabled", false).toBool();
-#endif
 }
 
 void setTouchInterfaceWanted(bool on) { QSettings().setValue("touch/enabled", on); }
@@ -712,3 +710,4 @@ void TouchShell::showEvent(QShowEvent*)
 
 }  // namespace app
 }  // namespace reno
+#endif  // RENO_TOUCH_UI

@@ -4,7 +4,9 @@
 //
 //   touch_test <output folder> [testfx.ofx ...]
 //
-// QT_QPA_PLATFORM=offscreen. Prints PASS/FAIL lines and a summary; exits non-zero on failure.
+// QT_QPA_PLATFORM=offscreen. Prints PASS/FAIL lines and a summary; exits non-zero on failure. The touch interface is
+// in Android and iOS builds; to test it elsewhere, build the app with RENO_TOUCH_UI=1 defined (touch_ui.h). Without it
+// the test only says so.
 #include "../../src/app/mainwindow.h"
 #include "../../src/app/panels.h"
 #include "../../src/app/playback.h"
@@ -28,6 +30,8 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+
+#if RENO_TOUCH_UI
 
 using namespace reno;
 using namespace reno::app;
@@ -723,3 +727,13 @@ int main(int argc, char** argv)
     uitest::shot(&w, gOut + "/desktop_after.png");
     return uitest::summary();
 }
+
+#else
+
+int main()
+{
+    std::printf("SKIP: this build has no touch interface (RENO_TOUCH_UI)\nSUMMARY: 0 passed, 0 failed\n");
+    return 0;
+}
+
+#endif  // RENO_TOUCH_UI

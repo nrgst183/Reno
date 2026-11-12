@@ -1,4 +1,4 @@
-// The touch interface for phones and tablets (and for touch screens on a desktop: View > Touch Interface). It takes the
+// The touch interface for phones and tablets (Android and iOS builds only; touch_ui.h). It takes the
 // main window's place while it is on: project bar at the top, the Video Preview, the transport, the touch timeline and
 // a tool bar whose tools follow the selection. Tools open sheets with large controls. Everything else the desktop
 // window can do stays reachable: the menu's "All commands" lists every command of its menus.
@@ -6,6 +6,7 @@
 // It works on the same AppState, Playback and Video Preview as the desktop window (the preview is moved in while the
 // touch interface is shown and back afterwards), so edits, undo and playback are shared.
 #pragma once
+#include "touch_ui.h"
 #include <QWidget>
 #include <functional>
 #include <memory>
@@ -46,8 +47,8 @@ private:
     std::unique_ptr<struct TouchShellImpl> d;
 };
 
-// Whether Reno starts with the touch interface: on phones and tablets unless the user switched to the desktop one,
-// elsewhere only when chosen (View > Touch Interface, or RENO_TOUCH=1).
+// Whether Reno starts with the touch interface: unless the user switched to the desktop one (RENO_TOUCH=0 also says
+// no). Always false in a build without it.
 bool touchInterfaceWanted();
 void setTouchInterfaceWanted(bool on);
 

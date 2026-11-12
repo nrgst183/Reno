@@ -88,8 +88,8 @@ against every VEGAS version. Known gaps are listed in [docs/NOTES.md](docs/NOTES
 
 ### Phones and tablets
 
-On Android and iOS Reno starts with a touch interface; on a computer with a touch screen, View > Touch Interface
-switches to it. The playhead stays in the middle of the timeline and the tracks move under it:
+On Android and iOS Reno starts with a touch interface. The playhead stays in the middle of the timeline and the
+tracks move under it:
 
 - Drag across the tracks to move through the project, and flick to keep going. Pinch with two fingers to zoom.
 - Tap a clip to select it, and tap an empty place to clear the selection. A selected clip has handles at its ends:

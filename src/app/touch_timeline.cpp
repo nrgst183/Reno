@@ -1,3 +1,5 @@
+#include "touch_ui.h"
+#if RENO_TOUCH_UI  // (the whole file: phones and tablets only)
 #include "touch_timeline.h"
 #include "appstate.h"
 #include "medialoader.h"
@@ -1546,3 +1548,4 @@ void TouchTimeline::wheelEvent(QWheelEvent* e)
 
 }  // namespace app
 }  // namespace reno
+#endif  // RENO_TOUCH_UI
