@@ -2296,6 +2296,20 @@ void PreviewWidget::setStatusBarVisible(bool on) { d->setStatusShown(on); }
 bool PreviewWidget::statusBarVisible() const { return d->statusShown; }
 QRect PreviewWidget::pictureRect() const { return d->view->target(); }
 
+void PreviewWidget::setBare(bool bare)
+{
+    for (int k = 0; k < layout()->count(); ++k) {
+        QWidget* w = layout()->itemAt(k)->widget();
+        if (!w || w == d->view) continue;
+        if (bare) {
+            w->setProperty("renoBareShown", !w->isHidden());
+            w->hide();
+        } else if (w->property("renoBareShown").toBool()) {
+            w->show();
+        }
+    }
+}
+
 void PreviewWidget::showPicture(const QImage& img)
 {
     if (!img.isNull()) {

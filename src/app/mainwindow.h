@@ -22,6 +22,7 @@ namespace reno {
 namespace app {
 
 class TimelineWidget;
+class TouchShell;
 class FxWindow;
 class VegasCommandBuilder;
 
@@ -199,7 +200,18 @@ private:
     void selectivePasteDialog();        // Edit > Selectively Paste Event Attributes...
 public:
     QAction* vegasAction(const char* name) const;   // one of the window's commands by object name (null: none)
+    // The touch interface (touch_shell.h) in place of the menus, tool bars and docked windows, or back
+    // (mainwindow_touch.cpp; View > Touch Interface).
+    void setTouchMode(bool on);
+    bool touchMode() const { return touch_ != nullptr; }
+    TouchShell* touchShell() const { return touch_; }
+    bool maybeSaveChanges() { return maybeSave(); }    // asks to save a changed project; false if the user cancelled
 private:
+    void addTouchAction();
+    TouchShell* touch_ = nullptr;
+    QWidget* desktopCentral_ = nullptr;         // the timeline area, while the touch interface is in its place
+    QByteArray touchSavedState_;
+    std::vector<QWidget*> touchHidden_;
 
     std::unique_ptr<Playback> playback_;
     TimelineWidget* timeline_ = nullptr;

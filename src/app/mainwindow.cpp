@@ -105,6 +105,7 @@
 #include "cachedscroll.h"
 #include "audioproxyui.h"
 #include "mainwindow.h"
+#include "touch_shell.h"
 #include "mainwindow_internal.h"
 #include "logo.h"
 #include "readoutlabel.h"
@@ -1234,6 +1235,7 @@ MainWindow::MainWindow() : a_(new Actions())
     installKeyboardMap(this);
     installTrackDefaults();
     addPreferenceFileItems(this);
+    addTouchAction();
     conformMenusToVegas(menuBar());
 
     buildStatusBar();
@@ -1253,11 +1255,13 @@ MainWindow::MainWindow() : a_(new Actions())
     timeline_->setFocus();
 
     watchLayoutChanges();
+    if (touchInterfaceWanted()) setTouchMode(true);
 }
 
 void MainWindow::saveWindowLayout()
 {
-    if (firstShow_) return;
+    // (the touch interface hides the docked windows: that is not a layout to keep)
+    if (firstShow_ || touch_) return;
     QSettings s;
     s.setValue("window/geometry", saveGeometry());
     s.setValue("window/state", timelineMaximized_ && !beforeMaximize_.isEmpty() ? beforeMaximize_ : saveState(kLayoutVersion));
@@ -1287,6 +1291,9 @@ void MainWindow::restyle()
 
 MainWindow::~MainWindow()
 {
+    // the touch interface goes first: it uses the playback engine and the preview, which go below
+    delete touch_;
+    touch_ = nullptr;
     for (int id : ownedListeners_) AppState::get().removeListener(id);
     AutomationHooks::wake = nullptr;
     if (layoutSaver_) layoutSaver_->stop();
@@ -2631,11 +2638,12 @@ void MainWindow::showEvent(QShowEvent* e)
     QMainWindow::showEvent(e);
     if (firstShow_) {
         firstShow_ = false;
-        if (!startLayoutRestored_) {
+        // with the touch interface the desktop layout is arranged when the window goes back to it
+        if (!startLayoutRestored_ && !touch_) {
             applyLayout(DefaultLayout);
             const QSize was = size();
             QTimer::singleShot(300, this, [this, was] {
-                if (size() != was && currentLayout_ == builtinLayoutName(DefaultLayout)) applyLayout(DefaultLayout);
+                if (!touch_ && size() != was && currentLayout_ == builtinLayoutName(DefaultLayout)) applyLayout(DefaultLayout);
             });
         }
     }

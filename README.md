@@ -57,13 +57,12 @@ Things to know for each system:
   KB2999226), and GPU effects need a graphics driver with Vulkan for Windows 7.
 - **FreeBSD:** install Qt and FFmpeg from packages first:
   `pkg install qt6-base qt6-multimedia ffmpeg vulkan-loader`.
-- **Android:** one finger works as the mouse; two fingers pinch to zoom the timeline and drag to scroll it. Each build
-  is signed with a key of its own, so uninstall the older one before installing a newer one.
+- **Android:** each build is signed with a key of its own, so uninstall the older one before installing a newer one.
 - **iOS:** the app is not signed. Sign it with your own Apple ID (for example with Sideloadly or AltStore) to install it.
 
 32-bit plug-ins and VEGAS's DirectX audio plug-ins work on Windows only. On Android and iOS Reno has its own effects
 only (plug-ins are desktop programs and can't load there), no `reno_cli`, and FFmpeg's own encoders instead of x264 and
-x265. The interface is the desktop one, so a tablet with a mouse or keyboard works best.
+x265.
 
 ## Formats and codecs
 
@@ -86,6 +85,22 @@ each one in its own process, so a plug-in that crashes can't take Reno down with
 
 Keep backups of your projects. Reno saves the previous file as `<name>.veg.bak`, but its `.veg` output isn't tested
 against every VEGAS version. Known gaps are listed in [docs/NOTES.md](docs/NOTES.md).
+
+### Phones and tablets
+
+On Android and iOS Reno starts with a touch interface; on a computer with a touch screen, View > Touch Interface
+switches to it. The playhead stays in the middle of the timeline and the tracks move under it:
+
+- Drag across the tracks to move through the project, and flick to keep going. Pinch with two fingers to zoom.
+- Tap a clip to select it, and tap an empty place to clear the selection. A selected clip has handles at its ends:
+  drag them to trim it. Drag a selected clip to move it, or hold a finger on any clip to pick it up. Edges snap to the
+  playhead, markers and other clips.
+- The tool bar at the bottom follows the selection: with nothing selected it adds media, sound, text, effects and
+  tracks; with clips selected it splits them, changes their speed, volume and fades, and adds effects and
+  transitions. Tap a track's name at the left for its settings.
+- Tap the picture to play or pause. Export renders MP4 video or the sound alone, with Render As for every other
+  format. The menu at the top left opens and saves projects, and lists every command of the desktop menus. It also
+  switches to the desktop interface.
 
 ### Command line
 
