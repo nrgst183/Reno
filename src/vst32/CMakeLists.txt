@@ -41,4 +41,7 @@ else()
 endif()
 if(WIN32)
   target_link_libraries(reno_vst32 PRIVATE user32 gdi32 ole32 oleaut32 uuid shell32 advapi32 comdlg32 winmm)
+  # its icon and version info
+  enable_language(RC)
+  target_sources(reno_vst32 PRIVATE ${SRC}/../resources/reno_vst32.rc)
 endif()

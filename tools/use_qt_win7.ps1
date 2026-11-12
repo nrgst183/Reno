@@ -14,6 +14,17 @@ if (-not (Test-Path $dest)) {
     $url = "https://github.com/crystalidea/qt6windows7/releases/download/v$Version/qt6_x64_to_run_on_windows7.7z"
     Write-Host "Downloading $url"
     Invoke-WebRequest $url -OutFile $archive
+    # the release's SHA-256 (another version is used unchecked, with a warning)
+    $known = @{ '6.8.4' = '26ab166e6f6c53a0b79240b80e3c30b04d341c862f9e9a6b50f26769a3e60b76' }
+    $got = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+    if ($known.ContainsKey($Version)) {
+        if ($got -ne $known[$Version]) {
+            Remove-Item $archive
+            throw "the Windows 7 Qt download is not the file expected (SHA-256 $got, expected $($known[$Version]))"
+        }
+    } else {
+        Write-Warning "no SHA-256 known for the Windows 7 Qt $Version download ($got)"
+    }
     $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
     if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe' }
     if (-not (Test-Path $sevenZip)) { throw '7-Zip is needed to unpack the Windows 7 Qt DLLs (7-zip.org)' }

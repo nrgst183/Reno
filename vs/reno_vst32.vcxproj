@@ -80,6 +80,9 @@
     <ClCompile Include="..\src\core\dynlib.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ResourceCompile Include="..\resources\reno_vst32.rc" />
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="..\src\audiofx\vst32proto.h" />
     <ClInclude Include="..\src\audiofx\vst32ipc.h" />
   </ItemGroup>
