@@ -213,8 +213,9 @@ MediaPool::EntryPtr MediaPool::get(std::vector<EntryPtr>& list, size_t limit, si
     EntryPtr e, waitFor;
     double waitAt = 0;                                  // the time waitFor's reader is reading
     // Only the reader of a media file is waited for, not that of a nested project or a generator (see the note on
-    // waiting below).
-    const bool mayWait = !m.generated && !isProjectFile(m.path);
+    // waiting below). Nor that of an image sequence or a still: each of their frames is a picture of its own, so a
+    // second reader makes the next one as cheaply alongside instead of queueing behind the first.
+    const bool mayWait = !m.generated && !isProjectFile(m.path) && m.sequenceFps <= 0 && !m.info.isStill;
     Opener opener;
     {
         std::lock_guard<std::mutex> lk(mutex_);
