@@ -1,5 +1,6 @@
 // Painting the timeline: what a repaint covers, the ruler, tracks, events and envelopes.
 #include "timeline_internal.h"
+#include <array>
 
 namespace reno {
 namespace app {
@@ -1106,57 +1107,92 @@ int TimelineWidget::Impl::sliverOf(const Row& row, const Event& e, const QRect& 
     return 1;
 }
 
-// Which of a row's events are drawn over completely by a later one ('covered', indexed from range.first). After Trim
-// Start to Cursor over a stutter edit hundreds of selected events start together, each longer than the one before, and
-// each drew its pictures and its translucent selection wash only for the next one to cover them: a repaint took seconds.
-// An event's body and all that is drawn inside it (drawEvent: clipped to its rectangle 'vd', its extras to 'v') fill at
-// most its rectangle, and a later event that is not muted fills its own rectangle with an opaque colour first, which
-// replaces whatever was there. Qt fills and clips a rectangle by rounding its edges, so a rectangle inside another one
-// covers no pixel the other does not: an event whose rectangle lies inside a later opaque one's can leave its body out
-// and not one pixel changes. Events come in the order they start, so a later event reaches as far left as an earlier
-// one only when both start at the same place (or both before the view's left edge); going from the last back, the
-// furthest a later opaque body with the same left edge reaches is all that need be kept.
+// What of a row's events a later event paints over, pixel for pixel (indexed from range.first; drawEvent leaves it out).
+// After Trim Start to Cursor over a stutter edit thousands of selected events start together, each longer than the one
+// before, and each drew its pictures, its translucent selection wash, its outline and its handles only for the next one
+// to paint over them: a repaint took seconds. Three things make that sure, with nothing guessed about how Qt draws:
+// - An event's body and all that is drawn inside it (drawEvent: clipped to its rectangle 'vd', its extras to 'v') stay
+//   inside its rectangle, and a later event that is not muted first fills its own rectangle with an opaque colour, which
+//   replaces whatever was there. Qt fills and clips a rectangle by rounding its edges, so a rectangle inside another one
+//   covers no pixel the other does not.
+// - An outline or a fade handle drawn again later, the same shape at the same place in the same opaque colour without
+//   smoothing, sets the very same pixels again.
+// - Its buttons (drawEventButtons: strokes and text within a few pixels of each button) well inside a later opaque body.
+// Events come in the order they start, so a later event reaches as far left as an earlier one only when both start at
+// the same place (or both before the view's left edge): going from the last back, only the later bodies and outlines
+// with the same left edge need be kept.
 void TimelineWidget::Impl::hiddenEvents(QPainter& p, const Row& row, const Track& tr, std::pair<size_t, size_t> range, double from, double to,
-                                        const QRect& c, const RowLook& look, std::vector<char>& covered) const
+                                        const QRect& c, const RowLook& look, std::vector<Hidden>& hidden) const
 {
-    covered.assign(range.second - range.first, 0);
-    // the bodies replace what is under them only when the painter draws them as they are
+    hidden.assign(range.second - range.first, Hidden());
+    // later drawing replaces what is under it only when the painter draws it as it is
     if (p.opacity() < 1.0 || p.compositionMode() != QPainter::CompositionMode_SourceOver) return;
     const QRect lanes = lanesRect();
     const bool reversed = !row.video && reverseBg;
-    struct Body { double top, bottom, right; };
-    std::vector<Body> later;  // the later opaque bodies whose left edge is 'left' (more than one only with take lanes)
+    std::vector<QRectF> bodies;     // the later opaque bodies ('vd') whose left edge is 'left', the widest of each height
+    // the later selected outlines with that left edge: their right edge, top, bottom and whether they are narrow (thousands
+    // of events start together after Trim Start: looked up, not gone through)
+    std::set<std::tuple<double, double, double, bool>> outlines;
     double left = 0;
+    std::set<std::array<double, 9>> tabs;  // the later fade handles: their colour and corners
+    auto tabKey = [](const QPolygonF& tab, const QColor& color) {
+        std::array<double, 9> key{};
+        key[0] = (double)color.rgba();
+        for (int i = 0; i < tab.size() && i < 4; ++i) {
+            key[1 + 2 * i] = tab[i].x();
+            key[2 + 2 * i] = tab[i].y();
+        }
+        if (tab.size() < 4) key[7] = key[8] = -1e300;  // a triangle is never the same as a tab
+        return key;
+    };
     for (size_t k = range.second; k-- > range.first;) {
         const Event& e = tr.events[k];
         if (!(e.end() >= from && e.start <= to)) continue;
-        // as drawEvent and sliverOf place it; those not drawn and the slivers drawn together are left alone
+        // placed as drawEvent and sliverOf place it; those not drawn and the slivers drawn together are left alone
         const QRectF r = eventRect(row, e);
         if (r.right() < c.left() - 2 || r.left() > c.right() + 2) continue;
         const QRectF v(QPointF(std::max(r.left(), lanes.left() - 16.0), r.top()), QPointF(std::min(r.right(), lanes.right() + 16.0), r.bottom()));
+        const QRectF vd(QPointF(std::max(v.left(), c.left() - 16.0), v.top()), QPointF(std::min(v.right(), c.right() + 16.0), v.bottom()));
         const bool selected = app.selection().count(e.id) != 0;
-        const bool wide = !(v.width() < 5.0);
+        const bool wide = !(v.width() < 5.0), narrow = v.width() < 12.0;
         if (!wide && !e.mute && !selected) continue;
-        if (later.empty() || v.left() != left) {
-            later.clear();
+        if ((bodies.empty() && outlines.empty()) || v.left() != left) {
+            bodies.clear();
+            outlines.clear();
             left = v.left();
         }
-        for (const Body& b : later)
-            if (b.top <= v.top() && b.bottom >= v.bottom() && b.right >= v.right()) {
-                covered[k - range.first] = 1;
+        Hidden& h = hidden[k - range.first];
+        // inside a later body: 'v' inside its 'v' is 'vd' inside its 'vd', and both are the same within the paint
+        for (const QRectF& b : bodies)
+            if (b.top() <= vd.top() && b.bottom() >= vd.bottom() && b.right() >= vd.right()) {
+                h.cover = b;
                 break;
             }
-        // and what this one's body hides of those before it: drawn opaque when it isn't muted (and is wide enough to have
+        // (a narrow one draws no top line: the same outline without it hides a narrow one's only)
+        if (selected && !reversed && wide)
+            h.outline = outlines.count({vd.right(), vd.top(), vd.bottom(), false}) || (narrow && outlines.count({vd.right(), vd.top(), vd.bottom(), true}));
+        const bool handles = wide && hasFadeHandles(r);
+        for (int side = 0; handles && side < 2; ++side) {
+            QPolygonF tab;
+            QColor color;
+            if (fadeHandle(e, r, c, side, &tab, &color)) {
+                const std::array<double, 9> key = tabKey(tab, color);
+                h.handles[side] = tabs.count(key) != 0;
+                if (!e.mute && color.alpha() == 255) tabs.insert(key);
+            }
+        }
+        // and what this one paints over of those before it: drawn opaque when it isn't muted (and is wide enough to have
         // a body: drawEvent fills a narrower one with the selection's or time selection's wash on top)
         const QColor body = reversed && selected ? highlightBody(look.tc) : look.body;
         if (!wide || e.mute || body.alpha() != 255) continue;
         bool merged = false;
-        for (Body& b : later)
-            if (b.top == v.top() && b.bottom == v.bottom()) {
-                b.right = std::max(b.right, v.right());
+        for (QRectF& b : bodies)
+            if (b.top() == vd.top() && b.bottom() == vd.bottom()) {
+                if (vd.right() > b.right()) b = vd;
                 merged = true;
             }
-        if (!merged) later.push_back({v.top(), v.bottom(), v.right()});
+        if (!merged) bodies.push_back(vd);
+        if (selected && !reversed) outlines.insert({vd.right(), vd.top(), vd.bottom(), narrow});
     }
 }
 
@@ -1177,8 +1213,9 @@ QColor timeSelectedSliver(const QColor& body, bool reversed, const QColor& tc)
                             b.blueF() * (1 - a) + kEventSelectionWash.blueF() * a);
 }
 
-void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e, const QRect& c, const RowLook& look, bool covered)
+void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e, const QRect& c, const RowLook& look, const Hidden* hidden)
 {
+    const bool covered = hidden && !hidden->cover.isEmpty();
     const QRectF r = eventRect(row, e);
     if (r.right() < c.left() - 2 || r.left() > c.right() + 2) return;
     const MediaItem* m = mediaOf(e.mediaId);
@@ -1212,7 +1249,7 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     const QRectF vd(QPointF(std::max(v.left(), c.left() - 16.0), v.top()), QPointF(std::min(v.right(), c.right() + 16.0), v.bottom()));
     RowLook lk = look;
     if (reversed && selected) lk.wave = highlightWave(look.tc);
-    const EventPaint ev{row, e, m, c, lk, r, v, vd, selected, narrow, covered};
+    const EventPaint ev{row, e, m, c, lk, r, v, vd, selected, narrow, hidden};
     // Under a later event's body (hiddenEvents) its own body and everything drawn inside it would be painted over pixel
     // for pixel: they are left out (they are all clipped to 'vd'), and only what is drawn round its edges is drawn.
     if (!covered) {
@@ -1457,6 +1494,8 @@ void TimelineWidget::Impl::drawEventOutline(QPainter& p, const EventPaint& ev)
 {
     const QRectF &r = ev.r, &v = ev.v, &vd = ev.vd;
     const bool selected = ev.selected, narrow = ev.narrow;
+    // under a later event's body; the same outline drawn again by a later event (hiddenEvents)
+    const bool covered = ev.hidden && !ev.hidden->cover.isEmpty(), repeated = ev.hidden && ev.hidden->outline;
     p.setRenderHint(QPainter::Antialiasing, false);
     const bool reversed = !ev.row.video && reverseBg;
     if (selected && reversed) {
@@ -1469,15 +1508,15 @@ void TimelineWidget::Impl::drawEventOutline(QPainter& p, const EventPaint& ev)
             p.drawRect(vd.adjusted(1, 1, -2, -2));
         }
     } else if (selected) {
-        if (!ev.covered) p.fillRect(vd, QColor(255, 255, 255, 58));  // (inside 'vd': a later body paints over it)
+        if (!covered) p.fillRect(vd, QColor(255, 255, 255, 58));  // (inside 'vd': a later body paints over it)
         p.setPen(QColor(236, 236, 236));
         p.setBrush(Qt::NoBrush);
-        p.drawRect(vd.adjusted(0, 0, -1, -1));
+        if (!repeated) p.drawRect(vd.adjusted(0, 0, -1, -1));
     } else {
         if (r.left() >= v.left() - 0.5) p.fillRect(QRectF(std::floor(r.left()), v.top(), 1.0, v.height()), QColor(0, 0, 0, 120));
         if (r.right() <= v.right() + 0.5) p.fillRect(QRectF(std::floor(r.right()) - 1.0, v.top(), 1.0, v.height()), QColor(0, 0, 0, 120));
     }
-    if (!narrow && !(selected && reversed)) {
+    if (!narrow && !(selected && reversed) && !repeated) {
         p.fillRect(QRectF(vd.left(), std::floor(r.top()), vd.width(), 1.0), QColor(216, 216, 216));
     }
     if (ev.row.video || narrow || r.width() < 16.0) return;
@@ -1538,36 +1577,45 @@ void TimelineWidget::Impl::drawFadeLengths(QPainter& p, const EventPaint& ev)
     }
 }
 
-void TimelineWidget::Impl::drawFadeHandles(QPainter& p, const EventPaint& ev)
+// A fade handle (side 0: the fade-in's, 1: the fade-out's) as drawFadeHandles draws it, unsmoothed: false if it is not in
+// this paint.
+bool TimelineWidget::Impl::fadeHandle(const Event& e, const QRectF& r, const QRect& c, int side, QPolygonF* tab, QColor* color) const
 {
-    const Event& e = ev.e;
-    const QRectF& r = ev.r;
-    const QRect& c = ev.c;
-    if (!hasFadeHandles(r)) return;
-    p.setRenderHint(QPainter::Antialiasing, !dense);
     const double fi = clampd(xAtF(e.start + e.fadeIn), r.left() + 5.0, r.right() - 5.0);
     const double fo = clampd(xAtF(e.end() - e.fadeOut), r.left() + 5.0, r.right() - 5.0);
+    const bool hot = hover.event == e.id && hover.part == (side == 0 ? Part::FadeIn : Part::FadeOut);
+    const double x = side == 0 ? fi : fo;
+    if (x + 7.0 < c.left() || x - 7.0 > c.right()) return false;
+    // VEGAS 18's: small and pure blue; a corner of a triangle in the event's corner while there is no fade, a short
+    // tab hanging from the top edge where a fade ends (bigger and lighter under the mouse)
+    *color = hot ? kSnapLine : kFadeHandle;
+    const double fadeLen = side == 0 ? e.fadeIn : e.fadeOut;
+    const double t = std::floor(r.top());
+    tab->clear();
+    if (fadeLen <= 0 && !hot) {
+        const double cx = side == 0 ? std::floor(r.left()) : std::floor(r.right());
+        const double d = side == 0 ? 1.0 : -1.0;
+        *tab << QPointF(cx, t) << QPointF(cx + d * 4.0, t) << QPointF(cx, t + 4.0);
+    } else {
+        const double w = hot ? 6.0 : 4.0, h = hot ? 4.0 : 2.5;
+        *tab << QPointF(x - w, t) << QPointF(x + w, t) << QPointF(x + w - h, t + h) << QPointF(x - w + h, t + h);
+    }
+    return true;
+}
+
+void TimelineWidget::Impl::drawFadeHandles(QPainter& p, const EventPaint& ev)
+{
+    if (!hasFadeHandles(ev.r)) return;
+    p.setRenderHint(QPainter::Antialiasing, !dense);
     for (int side = 0; side < 2; ++side) {
-        const bool hot = hover.event == e.id && hover.part == (side == 0 ? Part::FadeIn : Part::FadeOut);
-        const double x = side == 0 ? fi : fo;
-        if (x + 7.0 < c.left() || x - 7.0 > c.right()) continue;
-        // VEGAS 18's: small and pure blue; a corner of a triangle in the event's corner while there is no fade, a short
-        // tab hanging from the top edge where a fade ends (bigger and lighter under the mouse)
-        p.setPen(Qt::NoPen);
-        p.setBrush(hot ? kSnapLine : kFadeHandle);
-        const double fadeLen = side == 0 ? e.fadeIn : e.fadeOut;
-        const double t = std::floor(r.top());
         QPolygonF tab;
-        if (fadeLen <= 0 && !hot) {
-            const double cx = side == 0 ? std::floor(r.left()) : std::floor(r.right());
-            const double d = side == 0 ? 1.0 : -1.0;
-            tab << QPointF(cx, t) << QPointF(cx + d * 4.0, t) << QPointF(cx, t + 4.0);
-        } else {
-            const double w = hot ? 6.0 : 4.0, h = hot ? 4.0 : 2.5;
-            tab << QPointF(x - w, t) << QPointF(x + w, t) << QPointF(x + w - h, t + h) << QPointF(x - w + h, t + h);
-        }
+        QColor color;
+        if (!fadeHandle(ev.e, ev.r, ev.c, side, &tab, &color)) continue;
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
         p.setRenderHint(QPainter::Antialiasing, false);
-        p.drawPolygon(tab);
+        // (the painter left as it would be: what comes next may draw with it)
+        if (!(ev.hidden && ev.hidden->handles[side])) p.drawPolygon(tab);
     }
 }
 
@@ -1579,6 +1627,13 @@ void TimelineWidget::Impl::drawEventButtons(QPainter& p, const EventPaint& ev)
     const QRect& c = ev.c;
     auto button = [&](const QRectF& b, Part part) {
         if (b.right() < c.left() || b.left() > c.right()) return;
+        // Inside a later event's opaque body (hiddenEvents): nothing of it shows. What a button draws stays within 'ink':
+        // the icons drawn outlined (shifted a pixel each way), the crop icon's 1.6 pixel square-capped strokes reaching
+        // 0.2 of the button's height in from its edges, the italic "fx" clipped to the button raised a pixel (and leaning
+        // out of it sideways), the ring under the mouse a pixel outside it; and every pixel such a smoothed shape touches
+        // is filled by the body when the shape is half a pixel inside the body's rectangle (Qt rounds its edges).
+        const QRectF ink = b.adjusted(-6.0, -4.0, 6.0, 2.5);
+        if (ev.hidden && ev.hidden->cover.adjusted(0.5, 0.5, -0.5, -0.5).contains(ink)) return;
         const bool hot = hover.event == e.id && hover.part == part;
         p.setRenderHint(QPainter::Antialiasing, !dense);
         if (hot) {
@@ -1832,15 +1887,23 @@ void TimelineWidget::Impl::drawCrossFade(QPainter& p, const Row& row, const Even
     {
         // the cross-fade's length in a small white box in the middle ("3.09" = 3 s 9 frames; Vegas 8 tutorial 23:44)
         const QString len = secondsFramesLabel(a.end() - b.start, fps());
-        const double w = smallFm.horizontalAdvance(len) + 6.0, h = smallFm.height() + 1.0;
+        if (fadeLabels.size() > 1000) fadeLabels.clear();
+        FadeLabel& label = fadeLabels[len];
+        if (label.advance < 0) label.advance = smallFm.horizontalAdvance(len);
+        const double w = label.advance + 6.0, h = smallFm.height() + 1.0;
         if (x1 - x0 > w + 6.0 && rb.height() > h + 6.0) {
             const QRectF box((x0 + x1 - w) * 0.5, rb.bottom() - h - 3.0, w, h);
             p.setRenderHint(QPainter::Antialiasing, false);
             p.setPen(QColor(20, 20, 20));
             p.setBrush(QColor(255, 255, 255));
-            p.drawRect(box.adjusted(0.5, 0.5, -0.5, -0.5));
             p.setFont(smallFont);
-            p.drawText(box, Qt::AlignCenter, len);
+            // Drawn only if it is in this paint (a stutter edit's thousands of cross-fades mostly end far off to the
+            // right; the text stays inside the box), and the text laid out once for all the cross-fades of that length
+            // (the painter is set up as before either way: what comes next draws with it).
+            if (box.adjusted(-4.0, -4.0, 4.0, 4.0).intersects(QRectF(c))) {
+                p.drawRect(box.adjusted(0.5, 0.5, -0.5, -0.5));
+                drawKeptText(p, box, len, label.text, true);
+            }
         }
     }
     if (transition && x1 - x0 > 34.0) {
@@ -1919,7 +1982,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         const double x0 = clampd(xAtF(app.loopStart), c.left() - 2.0, c.right() + 2.0), x1 = clampd(xAtF(app.loopEnd), c.left() - 2.0, c.right() + 2.0);
         p.fillRect(QRectF(x0, kTopH, x1 - x0, tracksBottom - kTopH), kSelectionWash);
     }
-    std::vector<char> covered;  // hiddenEvents
+    std::vector<Hidden> hidden;  // hiddenEvents
     for (const Row& r : rows) {
         const int y = rowTop(r);
         if (y + r.h <= c.top() || y > c.bottom()) continue;
@@ -1927,7 +1990,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         const double from = timeAtF(c.left() - 20.0), to = timeAtF(c.right() + 20.0);
         const std::pair<size_t, size_t> range = eventRange((size_t)r.index, from, to);
         const RowLook look = rowLook(r);
-        hiddenEvents(p, r, tr, range, from, to, c, look, covered);
+        hiddenEvents(p, r, tr, range, from, to, c, look, hidden);
         QRectF run;
         QColor runColor;
         bool inRun = false;
@@ -1951,7 +2014,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
             }
             if (inRun) p.fillRect(run, runColor);
             inRun = false;
-            drawEvent(p, r, e, c, look, covered[k - range.first] != 0);
+            drawEvent(p, r, e, c, look, &hidden[k - range.first]);
         }
         if (inRun) p.fillRect(run, runColor);
         for (size_t k = range.first; k < range.second; ++k) {

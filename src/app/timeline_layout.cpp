@@ -709,6 +709,7 @@ void TimelineWidget::Impl::updateFonts()
     rulerLabelW = 0;
     rulerShortLabelW = 0;
     titles.clear();
+    fadeLabels.clear();
     ++headerGeneration;
     // VEGAS draws the track header texts (volume, pan), marker tags and the like in the window font itself, the ruler labels
     // 9 px (digit height 7 rows, digits 5 px apart) and the label above the time display 10 px (uifont.h). The font the

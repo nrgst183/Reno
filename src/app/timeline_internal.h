@@ -1047,11 +1047,16 @@ struct TimelineWidget::Impl {
     RowLook rowLook(const Row& row) const;
     bool inTimeSelection(const QRectF& v) const;
     int sliverOf(const Row& row, const Event& e, const QRect& c, const RowLook& look, QRectF* rect, QColor* color) const;
-    // 'covered': a later event's opaque body hides every pixel of this one's body (hiddenEvents): only what is drawn
-    // round its edges is drawn
-    void drawEvent(QPainter& p, const Row& row, const Event& e, const QRect& c, const RowLook& look, bool covered = false);
+    // What of an event a later event in the same row paints over, pixel for pixel (hiddenEvents): left out by drawEvent.
+    struct Hidden {
+        QRectF cover;                       // a later event's opaque body ('vd') holding all of this one's (empty: none)
+        bool outline = false;               // a later event draws the very same selected outline and top line
+        bool handles[2] = {false, false};   // ... the very same fade-in / fade-out handle
+    };
+    void drawEvent(QPainter& p, const Row& row, const Event& e, const QRect& c, const RowLook& look, const Hidden* hidden = nullptr);
     void hiddenEvents(QPainter& p, const Row& row, const Track& tr, std::pair<size_t, size_t> range, double from, double to, const QRect& c,
-                      const RowLook& look, std::vector<char>& covered) const;
+                      const RowLook& look, std::vector<Hidden>& hidden) const;
+    bool fadeHandle(const Event& e, const QRectF& r, const QRect& c, int side, QPolygonF* tab, QColor* color) const;
     struct EventPaint {
         const Row& row;
         const Event& e;
@@ -1062,7 +1067,7 @@ struct TimelineWidget::Impl {
         QRectF v;
         QRectF vd;
         bool selected, narrow;
-        bool covered = false;  // under a later event's opaque body (drawEvent)
+        const Hidden* hidden = nullptr;  // what a later event paints over (drawEvent)
     };
     void drawEventContent(QPainter& p, const EventPaint& ev, double titleH);
     void drawStretchMark(QPainter& p, const EventPaint& ev, const QRectF& content);
@@ -1090,6 +1095,11 @@ struct TimelineWidget::Impl {
     void paintDrop(QPainter& p, const QRect& c, int tracksBottom);
 
     mutable KeptText fxSigns[2];
+    struct FadeLabel {
+        int advance = -1;
+        KeptText text;
+    };
+    std::map<QString, FadeLabel> fadeLabels;  // a cross-fade's length ("3.09") measured and laid out once (drawCrossFade)
     void drawFxIcon(QPainter& p, const QRectF& b, const QColor& color, bool bold) const;
     static void drawCropIcon(QPainter& p, const QRectF& b, const QColor& color);
 
