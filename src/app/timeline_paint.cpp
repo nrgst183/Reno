@@ -1106,6 +1106,60 @@ int TimelineWidget::Impl::sliverOf(const Row& row, const Event& e, const QRect& 
     return 1;
 }
 
+// Which of a row's events are drawn over completely by a later one ('covered', indexed from range.first). After Trim
+// Start to Cursor over a stutter edit hundreds of selected events start together, each longer than the one before, and
+// each drew its pictures and its translucent selection wash only for the next one to cover them: a repaint took seconds.
+// An event's body and all that is drawn inside it (drawEvent: clipped to its rectangle 'vd', its extras to 'v') fill at
+// most its rectangle, and a later event that is not muted fills its own rectangle with an opaque colour first, which
+// replaces whatever was there. Qt fills and clips a rectangle by rounding its edges, so a rectangle inside another one
+// covers no pixel the other does not: an event whose rectangle lies inside a later opaque one's can leave its body out
+// and not one pixel changes. Events come in the order they start, so a later event reaches as far left as an earlier
+// one only when both start at the same place (or both before the view's left edge); going from the last back, the
+// furthest a later opaque body with the same left edge reaches is all that need be kept.
+void TimelineWidget::Impl::hiddenEvents(QPainter& p, const Row& row, const Track& tr, std::pair<size_t, size_t> range, double from, double to,
+                                        const QRect& c, const RowLook& look, std::vector<char>& covered) const
+{
+    covered.assign(range.second - range.first, 0);
+    // the bodies replace what is under them only when the painter draws them as they are
+    if (p.opacity() < 1.0 || p.compositionMode() != QPainter::CompositionMode_SourceOver) return;
+    const QRect lanes = lanesRect();
+    const bool reversed = !row.video && reverseBg;
+    struct Body { double top, bottom, right; };
+    std::vector<Body> later;  // the later opaque bodies whose left edge is 'left' (more than one only with take lanes)
+    double left = 0;
+    for (size_t k = range.second; k-- > range.first;) {
+        const Event& e = tr.events[k];
+        if (!(e.end() >= from && e.start <= to)) continue;
+        // as drawEvent and sliverOf place it; those not drawn and the slivers drawn together are left alone
+        const QRectF r = eventRect(row, e);
+        if (r.right() < c.left() - 2 || r.left() > c.right() + 2) continue;
+        const QRectF v(QPointF(std::max(r.left(), lanes.left() - 16.0), r.top()), QPointF(std::min(r.right(), lanes.right() + 16.0), r.bottom()));
+        const bool selected = app.selection().count(e.id) != 0;
+        const bool wide = !(v.width() < 5.0);
+        if (!wide && !e.mute && !selected) continue;
+        if (later.empty() || v.left() != left) {
+            later.clear();
+            left = v.left();
+        }
+        for (const Body& b : later)
+            if (b.top <= v.top() && b.bottom >= v.bottom() && b.right >= v.right()) {
+                covered[k - range.first] = 1;
+                break;
+            }
+        // and what this one's body hides of those before it: drawn opaque when it isn't muted (and is wide enough to have
+        // a body: drawEvent fills a narrower one with the selection's or time selection's wash on top)
+        const QColor body = reversed && selected ? highlightBody(look.tc) : look.body;
+        if (!wide || e.mute || body.alpha() != 255) continue;
+        bool merged = false;
+        for (Body& b : later)
+            if (b.top == v.top() && b.bottom == v.bottom()) {
+                b.right = std::max(b.right, v.right());
+                merged = true;
+            }
+        if (!merged) later.push_back({v.top(), v.bottom(), v.right()});
+    }
+}
+
 // whether most of this stretch of the timeline is in the time selection
 bool TimelineWidget::Impl::inTimeSelection(const QRectF& v) const
 {
@@ -1123,7 +1177,7 @@ QColor timeSelectedSliver(const QColor& body, bool reversed, const QColor& tc)
                             b.blueF() * (1 - a) + kEventSelectionWash.blueF() * a);
 }
 
-void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e, const QRect& c, const RowLook& look)
+void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e, const QRect& c, const RowLook& look, bool covered)
 {
     const QRectF r = eventRect(row, e);
     if (r.right() < c.left() - 2 || r.left() > c.right() + 2) return;
@@ -1139,6 +1193,7 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     const QRect lanes = lanesRect();
     const QRectF v(QPointF(std::max(r.left(), lanes.left() - 16.0), r.top()), QPointF(std::min(r.right(), lanes.right() + 16.0), r.bottom()));
     if (v.width() < 5.0) {
+        if (covered) return;  // all of it inside the later event's body
         const qreal opacity = p.opacity();
         if (e.mute) p.setOpacity(0.42);
         p.fillRect(v, row.video ? look.tc : body);
@@ -1155,43 +1210,46 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
     // Its body and outline are drawn only as far as 16 pixels past what this paint covers: the same pixels there, and
     // an event running across the whole view is not outlined from end to end.
     const QRectF vd(QPointF(std::max(v.left(), c.left() - 16.0), v.top()), QPointF(std::min(v.right(), c.right() + 16.0), v.bottom()));
-    p.fillRect(vd, body);
-
     RowLook lk = look;
     if (reversed && selected) lk.wave = highlightWave(look.tc);
-    const EventPaint ev{row, e, m, c, lk, r, v, vd, selected, narrow};
-    const double titleH = eventTitleH(r);
-    p.save();
-    p.setClipRect(vd.intersected(QRectF(c)));
-    drawEventContent(p, ev, titleH);
-    // The time selection: VEGAS tints its stretch over the events as well as the empty lanes (kSelectionWash, under the
-    // events). An audio event's part in it is drawn as a selected one (reversed: the dark background and the light
-    // waveform) under a blue wash, the waveform drawn again on top; a video event's background turns blue between its
-    // thumbnails, the thumbnails themselves untinted.
-    if (app.timeSel()) {
-        const double x0 = std::max(vd.left(), xAtF(app.loopStart)), x1 = std::min(vd.right(), xAtF(app.loopEnd));
-        if (x1 > x0) {
-            const QRectF ts(QPointF(x0, vd.top()), QPointF(x1, vd.bottom()));
-            p.save();
-            p.setClipRect(ts, Qt::IntersectClip);
-            RowLook hl = lk;
-            if (reversed) hl.wave = highlightWave(look.tc);
-            p.fillRect(ts, reversed ? highlightBody(look.tc) : body);
-            p.fillRect(ts, kEventSelectionWash);
-            const EventPaint ev2{row, e, m, c, hl, r, v, vd, selected, narrow};
-            drawEventContent(p, ev2, titleH);
-            p.restore();
+    const EventPaint ev{row, e, m, c, lk, r, v, vd, selected, narrow, covered};
+    // Under a later event's body (hiddenEvents) its own body and everything drawn inside it would be painted over pixel
+    // for pixel: they are left out (they are all clipped to 'vd'), and only what is drawn round its edges is drawn.
+    if (!covered) {
+        p.fillRect(vd, body);
+        const double titleH = eventTitleH(r);
+        p.save();
+        p.setClipRect(vd.intersected(QRectF(c)));
+        drawEventContent(p, ev, titleH);
+        // The time selection: VEGAS tints its stretch over the events as well as the empty lanes (kSelectionWash, under the
+        // events). An audio event's part in it is drawn as a selected one (reversed: the dark background and the light
+        // waveform) under a blue wash, the waveform drawn again on top; a video event's background turns blue between its
+        // thumbnails, the thumbnails themselves untinted.
+        if (app.timeSel()) {
+            const double x0 = std::max(vd.left(), xAtF(app.loopStart)), x1 = std::min(vd.right(), xAtF(app.loopEnd));
+            if (x1 > x0) {
+                const QRectF ts(QPointF(x0, vd.top()), QPointF(x1, vd.bottom()));
+                p.save();
+                p.setClipRect(ts, Qt::IntersectClip);
+                RowLook hl = lk;
+                if (reversed) hl.wave = highlightWave(look.tc);
+                p.fillRect(ts, reversed ? highlightBody(look.tc) : body);
+                p.fillRect(ts, kEventSelectionWash);
+                const EventPaint ev2{row, e, m, c, hl, r, v, vd, selected, narrow};
+                drawEventContent(p, ev2, titleH);
+                p.restore();
+            }
         }
+        drawEventTitle(p, ev, titleH);
+        drawFadesAndGain(p, ev);
+        drawLoopNotches(p, ev);
+        p.restore();
     }
-    drawEventTitle(p, ev, titleH);
-    drawFadesAndGain(p, ev);
-    drawLoopNotches(p, ev);
-    p.restore();
     drawEventOutline(p, ev);
     drawFadeLengths(p, ev);
     drawFadeHandles(p, ev);
     drawEventButtons(p, ev);
-    drawEventExtras(p, e, r, v, !row.video);
+    if (!covered) drawEventExtras(p, e, r, v, !row.video);  // clipped to 'v', inside the later event's body too
     p.restore();
 }
 
@@ -1411,7 +1469,7 @@ void TimelineWidget::Impl::drawEventOutline(QPainter& p, const EventPaint& ev)
             p.drawRect(vd.adjusted(1, 1, -2, -2));
         }
     } else if (selected) {
-        p.fillRect(vd, QColor(255, 255, 255, 58));
+        if (!ev.covered) p.fillRect(vd, QColor(255, 255, 255, 58));  // (inside 'vd': a later body paints over it)
         p.setPen(QColor(236, 236, 236));
         p.setBrush(Qt::NoBrush);
         p.drawRect(vd.adjusted(0, 0, -1, -1));
@@ -1861,6 +1919,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         const double x0 = clampd(xAtF(app.loopStart), c.left() - 2.0, c.right() + 2.0), x1 = clampd(xAtF(app.loopEnd), c.left() - 2.0, c.right() + 2.0);
         p.fillRect(QRectF(x0, kTopH, x1 - x0, tracksBottom - kTopH), kSelectionWash);
     }
+    std::vector<char> covered;  // hiddenEvents
     for (const Row& r : rows) {
         const int y = rowTop(r);
         if (y + r.h <= c.top() || y > c.bottom()) continue;
@@ -1868,6 +1927,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         const double from = timeAtF(c.left() - 20.0), to = timeAtF(c.right() + 20.0);
         const std::pair<size_t, size_t> range = eventRange((size_t)r.index, from, to);
         const RowLook look = rowLook(r);
+        hiddenEvents(p, r, tr, range, from, to, c, look, covered);
         QRectF run;
         QColor runColor;
         bool inRun = false;
@@ -1891,7 +1951,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
             }
             if (inRun) p.fillRect(run, runColor);
             inRun = false;
-            drawEvent(p, r, e, c, look);
+            drawEvent(p, r, e, c, look, covered[k - range.first] != 0);
         }
         if (inRun) p.fillRect(run, runColor);
         for (size_t k = range.first; k < range.second; ++k) {

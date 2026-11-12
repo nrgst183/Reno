@@ -1047,7 +1047,11 @@ struct TimelineWidget::Impl {
     RowLook rowLook(const Row& row) const;
     bool inTimeSelection(const QRectF& v) const;
     int sliverOf(const Row& row, const Event& e, const QRect& c, const RowLook& look, QRectF* rect, QColor* color) const;
-    void drawEvent(QPainter& p, const Row& row, const Event& e, const QRect& c, const RowLook& look);
+    // 'covered': a later event's opaque body hides every pixel of this one's body (hiddenEvents): only what is drawn
+    // round its edges is drawn
+    void drawEvent(QPainter& p, const Row& row, const Event& e, const QRect& c, const RowLook& look, bool covered = false);
+    void hiddenEvents(QPainter& p, const Row& row, const Track& tr, std::pair<size_t, size_t> range, double from, double to, const QRect& c,
+                      const RowLook& look, std::vector<char>& covered) const;
     struct EventPaint {
         const Row& row;
         const Event& e;
@@ -1058,6 +1062,7 @@ struct TimelineWidget::Impl {
         QRectF v;
         QRectF vd;
         bool selected, narrow;
+        bool covered = false;  // under a later event's opaque body (drawEvent)
     };
     void drawEventContent(QPainter& p, const EventPaint& ev, double titleH);
     void drawStretchMark(QPainter& p, const EventPaint& ev, const QRectF& content);
