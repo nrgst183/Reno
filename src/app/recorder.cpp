@@ -395,7 +395,10 @@ Recorder::Recorder(Playback* playback) : pb_(playback)
             // input busses take their sound from the cards while the project plays
             AppState& app = AppState::get();
             const bool want = !app.project().inputBuses.empty() && pb_ && pb_->playing();
-            if (want != busesOpen_ || (changes & kProject)) {
+            // (a project change while nothing is armed, open or wanted would only close what is already closed: most
+            // edits, many times a second while dragging)
+            const bool idle = !want && !busesOpen_ && !open_ && app.armedTracks.empty();
+            if (want != busesOpen_ || ((changes & kProject) && !idle)) {
                 busesOpen_ = want;
                 syncArming();
             }

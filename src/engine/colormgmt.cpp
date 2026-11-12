@@ -260,89 +260,158 @@ bool linearLightProject(const ProjectSettings& s)
 }
 bool floatProject(const ProjectSettings& s) { return s.pixelFormat == "32bit"; }
 
-void colorToSceneLinear(float c[3], const std::string& cs)
+// A color space (or view transform) name is worked out once into one of these, so the per-pixel loops below do no
+// string comparisons. The steps keep the order and arithmetic of the per-name code they replace exactly.
+namespace {
+
+// Code values -> scene-linear Rec. 709: a curve on each channel (or the ADX one), S-Log2 3200K's white balance, then a
+// matrix to Rec. 709 primaries.
+struct DecodePlan {
+    float (*curve)(float) = nullptr;
+    int adxBits = 0;                    // 10 or 16: ADX's density curve instead of 'curve'
+    bool slog2Tungsten = false;         // slog2_3200
+    const M3* matrix = nullptr;
+};
+
+DecodePlan decodePlanOf(const std::string& cs)
 {
-    auto each = [&](float (*f)(float)) { for (int k = 0; k < 3; ++k) c[k] = f(c[k]); };
-    if (cs.empty() || cs == "rec709") each(rec709Decode);
-    else if (cs == "srgb") each(srgbDecode);
-    else if (cs == "rec2020") { each(rec709Decode); mul(k2020To709, c); }
-    else if (cs == "aces") mul(kAp0To709, c);
-    else if (cs == "acescg") mul(kAp1To709, c);
-    else if (cs == "acescc") { each(acesccDecode); mul(kAp1To709, c); }
-    else if (cs == "acescct") { each(acescctDecode); mul(kAp1To709, c); }
-    else if (cs == "acesproxy") { each(acesproxyDecode); mul(kAp1To709, c); }
-    else if (cs == "adx10") for (int k = 0; k < 3; ++k) c[k] = adxDecode(c[k], false);
-    else if (cs == "adx16") for (int k = 0; k < 3; ++k) c[k] = adxDecode(c[k], true);
-    else if (cs == "slog1") each(slog1Decode);
-    else if (starts(cs, "slog2")) {
-        each(slog2Decode);
-        if (cs == "slog2_3200") { c[0] *= 0.93f; c[2] *= 1.08f; }
-    }
-    else if (cs == "slog3") each(slog3Decode);
-    else if (cs == "logc") each(logcDecode);
-    else if (cs == "clog") each(clogDecode);
-    else if (cs == "protune") each(protuneDecode);
-    else if (cs == "vlog") each(vlogDecode);
-    else if (cs == "log3g10") each(log3g10Decode);
-    else if (cs == "log") each(logDecode);
-    else each(rec709Decode);
+    DecodePlan d;
+    if (cs.empty() || cs == "rec709") d.curve = rec709Decode;
+    else if (cs == "srgb") d.curve = srgbDecode;
+    else if (cs == "rec2020") { d.curve = rec709Decode; d.matrix = &k2020To709; }
+    else if (cs == "aces") d.matrix = &kAp0To709;
+    else if (cs == "acescg") d.matrix = &kAp1To709;
+    else if (cs == "acescc") { d.curve = acesccDecode; d.matrix = &kAp1To709; }
+    else if (cs == "acescct") { d.curve = acescctDecode; d.matrix = &kAp1To709; }
+    else if (cs == "acesproxy") { d.curve = acesproxyDecode; d.matrix = &kAp1To709; }
+    else if (cs == "adx10") d.adxBits = 10;
+    else if (cs == "adx16") d.adxBits = 16;
+    else if (cs == "slog1") d.curve = slog1Decode;
+    else if (starts(cs, "slog2")) { d.curve = slog2Decode; d.slog2Tungsten = cs == "slog2_3200"; }
+    else if (cs == "slog3") d.curve = slog3Decode;
+    else if (cs == "logc") d.curve = logcDecode;
+    else if (cs == "clog") d.curve = clogDecode;
+    else if (cs == "protune") d.curve = protuneDecode;
+    else if (cs == "vlog") d.curve = vlogDecode;
+    else if (cs == "log3g10") d.curve = log3g10Decode;
+    else if (cs == "log") d.curve = logDecode;
+    else d.curve = rec709Decode;
+    return d;
 }
 
-void colorFromSceneLinear(float c[3], const std::string& t)
+void decodeColor(const DecodePlan& d, float c[3])
 {
-    auto each = [&](float (*f)(float)) { for (int k = 0; k < 3; ++k) c[k] = f(c[k]); };
-    if (t.empty() || t == "off" || t == "rec709") { each(rec709Encode); return; }
-    if (t == "srgb") { each(srgbEncode); return; }
-    if (t == "rec2020") { mul(k709To2020, c); each(rec709Encode); return; }
-    if (t == "aces") { mul(k709ToAp0, c); return; }
-    if (t == "acescg") { mul(k709ToAp1, c); return; }
-    if (t == "acescc") { mul(k709ToAp1, c); each(acesccEncode); return; }
-    if (t == "acescct") { mul(k709ToAp1, c); each(acescctEncode); return; }
-    if (t == "acesproxy") { mul(k709ToAp1, c); each(acesproxyEncode); return; }
-    if (t == "adx10" || t == "adx16") { for (int k = 0; k < 3; ++k) c[k] = adxEncode(c[k], t == "adx16"); return; }
-    if (t == "slog1") { each(slog1Encode); return; }
-    if (starts(t, "slog2")) {
-        if (t == "slog2_3200") { c[0] /= 0.93f; c[2] /= 1.08f; }
-        each(slog2Encode);
-        return;
-    }
-    if (t == "slog3") { each(slog3Encode); return; }
-    if (t == "logc") { each(logcEncode); return; }
-    if (t == "clog") { each(clogEncode); return; }
-    if (t == "protune") { each(protuneEncode); return; }
-    if (t == "vlog") { each(vlogEncode); return; }
-    if (t == "log3g10") { each(log3g10Encode); return; }
-    if (t == "log" || t == "log_srgb") { each(logEncode); return; }
-    if (!starts(t, "rrt_")) { each(rec709Encode); return; }
+    if (d.adxBits) for (int k = 0; k < 3; ++k) c[k] = adxDecode(c[k], d.adxBits == 16);
+    else if (d.curve) for (int k = 0; k < 3; ++k) c[k] = d.curve(c[k]);
+    if (d.slog2Tungsten) { c[0] *= 0.93f; c[2] *= 1.08f; }
+    if (d.matrix) mul(*d.matrix, c);
+}
+
+// The ACES RRT's display outputs ("rrt_..." view transforms).
+enum class RrtOut { Srgb, Rec709, Rec2020, Xyz, P3 };
+
+// Scene-linear Rec. 709 -> code values: a matrix from Rec. 709, S-Log2 3200K's white balance undone, then a curve on
+// each channel (or the ADX one); or the ACES RRT with an HDR or SDR output.
+struct EncodePlan {
+    const M3* matrix = nullptr;
+    bool slog2Tungsten = false;
+    float (*curve)(float) = nullptr;
+    int adxBits = 0;
+    bool rrt = false;
+    // HDR outputs: the light rolled off towards 'peak' nits, then PQ or HLG (after 'matrix')
+    bool hdr = false, hlg = false;
+    float peak = 1000.f;
+    // SDR outputs: the fitted RRT, the D60 white simulation, then the display's coding
+    bool d60 = false;
+    RrtOut out = RrtOut::Srgb;
+};
+
+EncodePlan encodePlanOf(const std::string& t)
+{
+    EncodePlan e;
+    if (t.empty() || t == "off" || t == "rec709") { e.curve = rec709Encode; return e; }
+    if (t == "srgb") { e.curve = srgbEncode; return e; }
+    if (t == "rec2020") { e.matrix = &k709To2020; e.curve = rec709Encode; return e; }
+    if (t == "aces") { e.matrix = &k709ToAp0; return e; }
+    if (t == "acescg") { e.matrix = &k709ToAp1; return e; }
+    if (t == "acescc") { e.matrix = &k709ToAp1; e.curve = acesccEncode; return e; }
+    if (t == "acescct") { e.matrix = &k709ToAp1; e.curve = acescctEncode; return e; }
+    if (t == "acesproxy") { e.matrix = &k709ToAp1; e.curve = acesproxyEncode; return e; }
+    if (t == "adx10" || t == "adx16") { e.adxBits = t == "adx16" ? 16 : 10; return e; }
+    if (t == "slog1") { e.curve = slog1Encode; return e; }
+    if (starts(t, "slog2")) { e.slog2Tungsten = t == "slog2_3200"; e.curve = slog2Encode; return e; }
+    if (t == "slog3") { e.curve = slog3Encode; return e; }
+    if (t == "logc") { e.curve = logcEncode; return e; }
+    if (t == "clog") { e.curve = clogEncode; return e; }
+    if (t == "protune") { e.curve = protuneEncode; return e; }
+    if (t == "vlog") { e.curve = vlogEncode; return e; }
+    if (t == "log3g10") { e.curve = log3g10Encode; return e; }
+    if (t == "log" || t == "log_srgb") { e.curve = logEncode; return e; }
+    if (!starts(t, "rrt_")) { e.curve = rec709Encode; return e; }
     // ACES RRT with an output transform
+    e.rrt = true;
     const std::string od = t.substr(4);
-    if (starts(od, "pq") || od == "rrt_p3d65_pq108" || od == "p3d65_pq108" || starts(od, "hlg")) {
+    if (starts(od, "pq") || od == "p3d65_pq108" || starts(od, "hlg")) {
+        e.hdr = true;
+        e.hlg = starts(od, "hlg");
+        e.peak = od == "p3d65_pq108" ? 108.f : od == "pq2000" ? 2000.f : od == "pq4000" ? 4000.f : 1000.f;
+        e.matrix = od == "p3d65_pq108" ? &k709ToP3 : &k709To2020;
+        return e;
+    }
+    e.d60 = od.find("d60") != std::string::npos && od != "p3d60";
+    if (starts(od, "srgb")) e.out = RrtOut::Srgb;
+    else if (starts(od, "rec709")) e.out = RrtOut::Rec709;
+    else if (starts(od, "rec2020")) e.out = RrtOut::Rec2020;
+    else if (starts(od, "xyz")) e.out = RrtOut::Xyz;
+    else if (starts(od, "p3")) e.out = RrtOut::P3;
+    else e.out = RrtOut::Srgb;
+    return e;
+}
+
+void encodeRrt(const EncodePlan& e, float c[3])
+{
+    if (e.hdr) {
         // HDR: the scene's light (1.0 = 100 nits) rolled off towards the display's peak, then PQ or HLG
-        const float peak = od == "p3d65_pq108" ? 108.f : od == "pq2000" ? 2000.f : od == "pq4000" ? 4000.f : 1000.f;
-        if (od == "p3d65_pq108") mul(k709ToP3, c);
-        else mul(k709To2020, c);
+        mul(*e.matrix, c);
         for (int k = 0; k < 3; ++k) {
             const float x = std::max(0.f, c[k]) * 100.f;
-            const float nits = x / (1.f + x / peak);
-            c[k] = starts(od, "hlg") ? hlgEncode(nits / peak) : pqEncode(nits);
+            const float nits = x / (1.f + x / e.peak);
+            c[k] = e.hlg ? hlgEncode(nits / e.peak) : pqEncode(nits);
         }
         return;
     }
     rrtFit(c);
-    if (od.find("d60") != std::string::npos && od != "p3d60") { c[1] *= 0.985f; c[2] *= 0.92f; }
-    if (starts(od, "srgb")) each(srgbEncode);
-    else if (starts(od, "rec709")) for (int k = 0; k < 3; ++k) c[k] = gammaEncode(c[k], 2.4f);
-    else if (starts(od, "rec2020")) { mul(k709To2020, c); for (int k = 0; k < 3; ++k) c[k] = gammaEncode(std::max(0.f, c[k]), 2.4f); }
-    else if (starts(od, "xyz")) { mul(k709ToXyz, c); for (int k = 0; k < 3; ++k) c[k] = gammaEncode(std::max(0.f, c[k]) * 48.f / 52.37f, 2.6f); }
-    else if (starts(od, "p3")) { mul(k709ToP3, c); for (int k = 0; k < 3; ++k) c[k] = gammaEncode(std::max(0.f, c[k]), 2.6f); }
-    else each(srgbEncode);
+    if (e.d60) { c[1] *= 0.985f; c[2] *= 0.92f; }
+    switch (e.out) {
+    case RrtOut::Srgb: for (int k = 0; k < 3; ++k) c[k] = srgbEncode(c[k]); break;
+    case RrtOut::Rec709: for (int k = 0; k < 3; ++k) c[k] = gammaEncode(c[k], 2.4f); break;
+    case RrtOut::Rec2020: mul(k709To2020, c); for (int k = 0; k < 3; ++k) c[k] = gammaEncode(std::max(0.f, c[k]), 2.4f); break;
+    case RrtOut::Xyz: mul(k709ToXyz, c); for (int k = 0; k < 3; ++k) c[k] = gammaEncode(std::max(0.f, c[k]) * 48.f / 52.37f, 2.6f); break;
+    case RrtOut::P3: mul(k709ToP3, c); for (int k = 0; k < 3; ++k) c[k] = gammaEncode(std::max(0.f, c[k]), 2.6f); break;
+    }
 }
+
+void encodeColor(const EncodePlan& e, float c[3])
+{
+    if (e.rrt) { encodeRrt(e, c); return; }
+    if (e.matrix) mul(*e.matrix, c);
+    if (e.slog2Tungsten) { c[0] /= 0.93f; c[2] /= 1.08f; }
+    if (e.adxBits) for (int k = 0; k < 3; ++k) c[k] = adxEncode(c[k], e.adxBits == 16);
+    else if (e.curve) for (int k = 0; k < 3; ++k) c[k] = e.curve(c[k]);
+}
+
+}  // namespace
+
+void colorToSceneLinear(float c[3], const std::string& cs) { decodeColor(decodePlanOf(cs), c); }
+
+void colorFromSceneLinear(float c[3], const std::string& t) { encodeColor(encodePlanOf(t), c); }
 
 ImagePtr toSceneLinear(const ImagePtr& src, const std::string& cs)
 {
     if (!src) return src;
     ImagePtr img = src->depth == PixelDepth::Float ? src->clone() : src->converted(PixelDepth::Float);
     if (!img) return src;
+    const DecodePlan plan = decodePlanOf(cs);
     parallelRows(img->h, (size_t)img->w * 24, [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y) {
             float* p = (float*)img->row(y);
@@ -350,7 +419,7 @@ ImagePtr toSceneLinear(const ImagePtr& src, const std::string& cs)
                 const float a = p[3];
                 if (a <= 1e-6f) { p[0] = p[1] = p[2] = 0; continue; }
                 float c[3] = {p[0] / a, p[1] / a, p[2] / a};
-                colorToSceneLinear(c, cs);
+                decodeColor(plan, c);
                 p[0] = c[0] * a; p[1] = c[1] * a; p[2] = c[2] * a;
             }
         }
@@ -361,6 +430,7 @@ ImagePtr toSceneLinear(const ImagePtr& src, const std::string& cs)
 void fromSceneLinear(Image& img, const std::string& t)
 {
     if (img.depth != PixelDepth::Float) return;
+    const EncodePlan plan = encodePlanOf(t);
     parallelRows(img.h, (size_t)img.w * 24, [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y) {
             float* p = (float*)img.row(y);
@@ -368,7 +438,7 @@ void fromSceneLinear(Image& img, const std::string& t)
                 const float a = p[3];
                 if (a <= 1e-6f) { p[0] = p[1] = p[2] = 0; continue; }
                 float c[3] = {p[0] / a, p[1] / a, p[2] / a};
-                colorFromSceneLinear(c, t);
+                encodeColor(plan, c);
                 p[0] = c[0] * a; p[1] = c[1] * a; p[2] = c[2] * a;
             }
         }

@@ -481,6 +481,22 @@ public:
         std::unique_lock<std::mutex> lk(job->m);
         job->done.wait(lk, [&] { return job->left.load() == 0; });
     }
+    // Runs the bands left of the oldest job waiting, on the calling thread (see helpWithPoolWork).
+    bool helpOnce()
+    {
+        std::shared_ptr<Job> job;
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            while (!queue_.empty() && !job) {
+                job = queue_.front();
+                queue_.pop_front();
+                if (job->next.load() >= job->bands) job.reset();     // (all its bands taken already)
+            }
+        }
+        if (!job) return false;
+        work(*job);
+        return true;
+    }
 
 private:
     RowPool()
@@ -588,6 +604,12 @@ void parallelTaskStats(uint64_t& jobs, uint64_t& tasks, uint64_t& tasksOnHelpers
     jobs = gTaskJobs.load();
     tasks = gTasks.load();
     tasksOnHelpers = gTasksOnHelpers.load();
+}
+
+bool helpWithPoolWork()
+{
+    RowPool& pool = RowPool::get();
+    return pool.workers() > 0 && pool.helpOnce();
 }
 
 void parallelTasks(int n, const std::function<void(int index)>& fn)

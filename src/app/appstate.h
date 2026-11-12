@@ -7,6 +7,7 @@
 #include <set>
 #include <mutex>
 #include <atomic>
+#include <memory>
 
 class QTimer;
 
@@ -445,7 +446,11 @@ private:
     struct ClipItem { Event event; TrackType type; int trackOffset; };
     std::vector<ClipItem> clipboard_;
     double clipboardStart_ = 0;
-    std::vector<std::pair<int, std::function<void(int)>>> listeners_;
+    // Shared so that notify() can hold on to a listener while it runs (it may remove itself) without copying the
+    // function and what it captured, many times a second while playing. Null once removed.
+    typedef std::shared_ptr<const std::function<void(int)>> ListenerFn;
+    std::vector<std::pair<int, ListenerFn>> listeners_;
+    bool listenersRemoved_ = false;     // null entries to sweep out after the outermost notify()
     int nextListener_ = 1;
     int notifyDepth_ = 0;
     int pending_ = 0;

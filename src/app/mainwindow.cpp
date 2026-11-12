@@ -1287,6 +1287,7 @@ void MainWindow::restyle()
 
 MainWindow::~MainWindow()
 {
+    for (int id : ownedListeners_) AppState::get().removeListener(id);
     AutomationHooks::wake = nullptr;
     if (layoutSaver_) layoutSaver_->stop();
     stopAudioProxies(false);

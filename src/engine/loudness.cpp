@@ -85,9 +85,12 @@ double LoudnessMeter::peakOversampled(int ch, float x, std::vector<double>* hist
     const int L = 4;
     for (int k = 0; k < L; ++k) {
         double y = 0;
+        // the newest sample is at histPos_, older ones before it going round the ring (no modulo per tap: it was
+        // most of the meter's time)
+        int idx = histPos_;
         for (int j = 0; j < tapsPerPhase_; ++j) {
-            const int idx = (histPos_ - j + tapsPerPhase_) % tapsPerPhase_;
             y += taps_[(size_t)(j * L + k)] * h[(size_t)idx];
+            if (--idx < 0) idx = tapsPerPhase_ - 1;
         }
         m = std::max(m, std::fabs(y));
     }

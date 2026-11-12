@@ -76,13 +76,17 @@ std::shared_ptr<const Project> AppState::snapshot() const
 
 int AppState::addListener(std::function<void(int)> fn)
 {
-    listeners_.emplace_back(nextListener_, std::move(fn));
+    listeners_.emplace_back(nextListener_, std::make_shared<const std::function<void(int)>>(std::move(fn)));
     return nextListener_++;
 }
 
 void AppState::removeListener(int id)
 {
-    for (auto& l : listeners_) if (l.first == id) l.second = nullptr;
+    for (auto& l : listeners_)
+        if (l.first == id && l.second) {
+            l.second = nullptr;
+            listenersRemoved_ = true;
+        }
 }
 
 void AppState::notify(int changes)
@@ -90,19 +94,23 @@ void AppState::notify(int changes)
     if (notifyDepth_ > 0) { pending_ |= changes; return; }
     ++notifyDepth_;
     while (changes) {
+        // listeners added while this runs are called from the next round on
         const size_t n = listeners_.size();
         for (size_t k = 0; k < n; ++k) {
-            if (!listeners_[k].second) continue;
-            // called on a copy: a listener that makes a window (adding listeners) or removes itself would otherwise free
-            // the running function
-            const std::function<void(int)> fn = listeners_[k].second;
-            fn(changes);
+            // held by a reference of its own: a listener that makes a window (adding listeners) or removes itself would
+            // otherwise free the running function
+            const ListenerFn fn = listeners_[k].second;
+            if (fn) (*fn)(changes);
         }
         changes = pending_;
         pending_ = 0;
     }
     --notifyDepth_;
-    listeners_.erase(std::remove_if(listeners_.begin(), listeners_.end(), [](const std::pair<int, std::function<void(int)>>& l) { return !l.second; }), listeners_.end());
+    if (listenersRemoved_) {
+        listenersRemoved_ = false;
+        listeners_.erase(std::remove_if(listeners_.begin(), listeners_.end(), [](const std::pair<int, ListenerFn>& l) { return !l.second; }),
+                         listeners_.end());
+    }
 }
 
 // (the one AppState's drag: the effect slots at beginDrag, and whether this step leaves them as they were)

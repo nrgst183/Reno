@@ -64,7 +64,12 @@ inline float fusedMad(float a, float b, float c) { return std::fmaf(a, b, c); }
 inline void applyStore(std::vector<float>& v, StoreFn store)
 {
     if (!store) return;
-    for (float& x : v) x = store(x);
+    // (in blocks of 4096 values, shared out by vfxgauss::forLines: every value stands alone)
+    const size_t block = 4096, n = v.size();
+    vfxgauss::forLines((int)((n + block - 1) / block), block * 4, [&](int first, int end) {
+        const size_t to = std::min(n, (size_t)end * block);
+        for (size_t i = (size_t)first * block; i < to; ++i) v[i] = store(v[i]);
+    });
 }
 
 // The two row pictures r1, r2 (each stored) of the picture 'in' (W x H, rows bottom first): kernel 0 along the columns with the coefficients cy (two stored pictures), kernel 1 along the
@@ -77,20 +82,25 @@ inline void blurHalves(const std::vector<float>& in, int W, int H, const vfxgaus
     applyStore(t1, store);
     applyStore(t2, store);
     // the row kernel reads t1 + t2; along the rows is along the columns of the transposed picture
+    // (the rows of these copies are shared out by vfxgauss::forLines)
     std::vector<float> sumT((size_t)W * H * 4);
-    for (int y = 0; y < H; ++y)
+    vfxgauss::forLines(H, (size_t)W * 16, [&](int y0, int y1) {
+    for (int y = y0; y < y1; ++y)
         for (int x = 0; x < W; ++x)
             for (int k = 0; k < 4; ++k) sumT[((size_t)x * H + y) * 4 + k] = t1[((size_t)y * W + x) * 4 + k] + t2[((size_t)y * W + x) * 4 + k];
+    });
     std::vector<float> ra, rb;
     vfxgauss::passColumns(cx, sumT, H, W, ra, rb, fma);
     r1.resize((size_t)W * H * 4);
     r2.resize((size_t)W * H * 4);
-    for (int y = 0; y < H; ++y)
+    vfxgauss::forLines(H, (size_t)W * 32, [&](int y0, int y1) {
+    for (int y = y0; y < y1; ++y)
         for (int x = 0; x < W; ++x)
             for (int k = 0; k < 4; ++k) {
                 r1[((size_t)y * W + x) * 4 + k] = ra[((size_t)x * H + y) * 4 + k];
                 r2[((size_t)y * W + x) * 4 + k] = rb[((size_t)x * H + y) * 4 + k];
             }
+    });
     applyStore(r1, store);
     applyStore(r2, store);
 }

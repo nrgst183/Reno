@@ -136,7 +136,11 @@ void installToolbars(QMainWindow* w)
     for (bool timeline : {false, true}) {
         QToolBar* tb = w->findChild<QToolBar*>(timeline ? "timelineToolBar" : "mainToolBar");
         if (!tb) continue;
+        // keyed by the tool bar's address: forgotten with the tool bar, or a later window's tool bar made at the same
+        // address would take over the old one's (deleted) buttons
         Registry& r = registries()[tb];
+        r = Registry();
+        QObject::connect(tb, &QObject::destroyed, [tb] { registries().erase(tb); });
         for (QAction* a : tb->actions()) {
             r.factory << nameOf(a);
             if (qobject_cast<QWidgetAction*>(a)) r.widgets[nameOf(a)] = a;

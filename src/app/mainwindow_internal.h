@@ -5,6 +5,7 @@
 #include <QActionGroup>
 #include <QIcon>
 #include <QMenu>
+#include <QPointer>
 #include <QWidget>
 #include <map>
 #include <vector>
@@ -42,6 +43,8 @@ struct MainWindow::Actions {
     QActionGroup* ripple = nullptr;
     std::vector<QAction*> loadLayouts;
     QMenu* toolbars = nullptr;          // View > Toolbars
+    // MainWindow::vegasAction's last answer for each name (looked up among hundreds of children otherwise)
+    std::map<std::string, QPointer<QAction>> byObjectName;
 };
 
 // Where the docking area is: over the timeline, or under it when Preferences > Display "Display timeline at bottom of

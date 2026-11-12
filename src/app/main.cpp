@@ -13,6 +13,7 @@
 #include <QApplication>
 #include <QFileInfo>
 #include <QTimer>
+#include <clocale>
 #include <memory>
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -78,6 +79,10 @@ int main(int argc, char** argv)
     QApplication::setApplicationName("Reno");
     reno::app::prefsapply::earlyEnvironment();
     QApplication qapp(argc, argv);
+    // On Unix, making the Qt application applies the environment's locale to the C library; with a decimal comma
+    // (de_DE and others) strtod and printf would then misread and miswrite the numbers in .veg text, JSON, LUTs and
+    // timecodes, so they keep the C locale's point (Qt's own text uses QLocale and is not affected).
+    std::setlocale(LC_NUMERIC, "C");
     QApplication::setWindowIcon(reno::app::renoIcon());
     QApplication::setApplicationVersion(reno::app::renoVersion());   // logo on every window and in the task bar
     QApplication::setOrganizationName("Reno");

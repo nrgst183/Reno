@@ -179,6 +179,16 @@ struct MeterState {
     void reset() { *this = MeterState(); }
 };
 
+// Whether two meter states draw the same (levels, held peaks, clip marks, channel count): the meters are fed 30 times a
+// second, and a silent channel's meter need not be repainted each time.
+bool drawsSame(const MeterState& a, const MeterState& b)
+{
+    if (a.channels != b.channels || a.active != b.active) return false;
+    for (int k = 0; k < a.channels; ++k)
+        if (a.level[k] != b.level[k] || a.hold[k] != b.hold[k] || a.clip[k] != b.clip[k]) return false;
+    return true;
+}
+
 struct Listener {
     int id = 0;
     explicit Listener(std::function<void(int)> fn) { id = AppState::get().addListener(std::move(fn)); }
@@ -256,19 +266,15 @@ public:
 
     void feedN(const float* v, int n, double now, double dt)
     {
+        const MeterState before = meter;
         meter.feedN(v, n, now, dt, holdPeaks);
-        setProperty("meterChannels", meter.channels);
-        feed(meter.level[0], meter.level[1], now, -1);
+        meterFed(before);
     }
     void feed(float l, float r, double now, double dt)
     {
-        if (dt >= 0) meter.feed(l, r, now, dt, holdPeaks);
-        setProperty("meterChannels", meter.channels);
-        setProperty("levelLeft", meter.level[0]);
-        setProperty("levelRight", meter.level[1]);
-        setProperty("holdLeft", meter.hold[0]);
-        setProperty("holdRight", meter.hold[1]);
-        update();
+        const MeterState before = meter;
+        meter.feed(l, r, now, dt, holdPeaks);
+        meterFed(before);
     }
     void clearMeter()
     {
@@ -281,6 +287,12 @@ public:
         update();
     }
     bool split() const { return splitOn && value2 && apply2; }
+    // The project changed: repaints only if the fader shows something else now (the meter repaints itself as sound
+    // comes in). A console of many strips otherwise repainted every fader at every step of any drag.
+    void projectChanged()
+    {
+        if (shownKey() != painted_) update();
+    }
     QRect capRect(int which = 0) const { return which ? capAt(value2 ? gainToPos(value2()) : 0.0, geo().grooveX2) : capAt(value ? gainToPos(value()) : 0.0, geo().grooveX); }
     int faderY(double gain) const { return yAt(gainToPos(gain)); }
 
@@ -291,6 +303,7 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, false);
+        painted_ = shownKey();
         const Geo g = geo();
         setProperty("cap", capRect());
         setProperty("readout", readoutRect());
@@ -501,6 +514,33 @@ protected:
     }
 
 private:
+    // After the meter took in sound: the values the tests read, and a repaint if what the meter shows changed.
+    void meterFed(const MeterState& before)
+    {
+        setProperty("meterChannels", meter.channels);
+        setProperty("levelLeft", meter.level[0]);
+        setProperty("levelRight", meter.level[1]);
+        setProperty("holdLeft", meter.hold[0]);
+        setProperty("holdRight", meter.hold[1]);
+        if (!drawsSame(before, meter)) update();
+    }
+    // What of the project the fader shows: its level(s), whether it is split, and the view options.
+    struct ShownKey {
+        double v = -1, v2 = -1;
+        bool split = false;
+        int options = -1;
+        bool operator!=(const ShownKey& o) const { return v != o.v || v2 != o.v2 || split != o.split || options != o.options; }
+    };
+    ShownKey shownKey() const
+    {
+        ShownKey k;
+        k.v = value ? value() : 0.0;
+        k.v2 = value2 ? value2() : 0.0;
+        k.split = split();
+        k.options = (int)showFader | (int)showMeter << 1 | (int)ticks << 2 | (int)meterScale << 3 | (int)holdPeaks << 4;
+        return k;
+    }
+    ShownKey painted_;
     struct Geo {
         int x0, grooveX, grooveX2, meterX, meterW, meterGap, scaleX, top, bottom;
     };
@@ -746,12 +786,19 @@ public:
 
     QRect groove() const { return QRect(8, 17, width() - 16, 5); }
     int xOf(double pan) const { return groove().left() + (int)std::lround((pan + 1.0) * 0.5 * groove().width()); }
+    // The project changed: repaints only if the pan shown moved.
+    void projectChanged()
+    {
+        if (!paintedOnce_ || (value ? value() : 0.0) != paintedPan_) update();
+    }
 
 protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
         const double pan = value ? value() : 0.0;
+        paintedPan_ = pan;
+        paintedOnce_ = true;
         setProperty("knobX", xOf(pan));
         setProperty("groove", groove());
         QFont f = font();
@@ -820,6 +867,8 @@ private:
         AppState::get().status("Pan: " + panText(pan).toStdString());
     }
     DragValue drag_;
+    double paintedPan_ = 0;
+    bool paintedOnce_ = false;
 };
 
 // ------------------------------------------------------------------------------------------ sends
@@ -956,11 +1005,21 @@ public:
     bool selected = false;
     std::function<void(Qt::KeyboardModifiers)> onClick;
     std::function<void()> onDoubleClick;
+    // The fields above were set again: repaints only if they changed since the last paint.
+    void fieldsSet()
+    {
+        if (!paintedOnce_ || number != paintedNumber_ || name != paintedName_ || color != paintedColor_ || selected != paintedSelected_) update();
+    }
 
 protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
+        paintedNumber_ = number;
+        paintedName_ = name;
+        paintedColor_ = color;
+        paintedSelected_ = selected;
+        paintedOnce_ = true;
         const QRect r = rect().adjusted(0, 0, -1, -1);
         QLinearGradient g(r.topLeft(), r.bottomLeft());
         g.setColorAt(0, color.darker(115));
@@ -999,6 +1058,11 @@ protected:
     {
         if (e->button() == Qt::LeftButton && onDoubleClick) onDoubleClick();
     }
+
+private:
+    QString paintedNumber_, paintedName_;
+    QColor paintedColor_;
+    bool paintedSelected_ = false, paintedOnce_ = false;
 };
 
 const char* kButtonStyle =
@@ -1016,6 +1080,12 @@ const char* kButtonStyle =
     "QToolButton:disabled { color: #66666c; background: #333336; }"
     "QToolButton[tool=\"true\"] { padding: 2px 8px; }"
     "QToolButton[tool=\"true\"]:checked { background: #2d4f6e; border-color: #3d84c6; color: white; }";
+
+// setToolTip sends the widget an event even when the text is the same; the strips set theirs on every project change.
+void setToolTipIfChanged(QWidget* w, const QString& tip)
+{
+    if (w->toolTip() != tip) w->setToolTip(tip);
+}
 
 void setActive(QWidget* w, bool on)
 {
@@ -1096,11 +1166,18 @@ public:
     }
     QRect rowRect(int k) const { return QRect(0, k * kFxRowH, width(), kFxRowH - 1); }
     QRect switchRect(int k) const { return QRect(2, k * kFxRowH + 2, 10, kFxRowH - 5); }
+    // The project changed: repaints only if the effects listed (names, bypass switches) changed.
+    void projectChanged()
+    {
+        if (!paintedOnce_ || shownKey() != painted_) update();
+    }
 
 protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
+        painted_ = shownKey();
+        paintedOnce_ = true;
         const FxChain* c = chain();
         const int n = c ? (int)c->size() : 0;
         QFont f = font();
@@ -1234,6 +1311,24 @@ public:
             });
         });
     }
+private:
+    // What the rows show: how many effects there are, and the first rows' names and bypass switches.
+    struct ShownKey {
+        size_t count = 0;
+        std::vector<std::pair<std::string, bool>> rows;
+        bool operator!=(const ShownKey& o) const { return count != o.count || rows != o.rows; }
+    };
+    ShownKey shownKey() const
+    {
+        ShownKey k;
+        if (const FxChain* c = chain()) {
+            k.count = c->size();
+            for (size_t i = 0; i < c->size() && i < (size_t)kFxRows; ++i) k.rows.emplace_back((*c)[i].name, (*c)[i].bypass);
+        }
+        return k;
+    }
+    ShownKey painted_;
+    bool paintedOnce_ = false;
 };
 
 // ------------------------------------------------------------------------------------------ a strip
@@ -1551,7 +1646,7 @@ public:
             soloed = t->solo;
             fillOutputs(p, t->output, 0);
             source->setText(QFontMetrics(source->font()).elidedText(recordInputText(p, t->recordInput), Qt::ElideRight, width() - 18));
-            source->setToolTip("Record Input: " + recordInputText(p, t->recordInput) + (t->recordInput.monitor != "off" ? QString(" (monitoring %1)").arg(qs(t->recordInput.monitor)) : QString()));
+            setToolTipIfChanged(source, "Record Input: " + recordInputText(p, t->recordInput) + (t->recordInput.monitor != "off" ? QString(" (monitoring %1)").arg(qs(t->recordInput.monitor)) : QString()));
             if (phase) {
                 const QSignalBlocker pb(phase);
                 phase->setChecked(t->invertPhase);
@@ -1576,7 +1671,7 @@ public:
             ri.first = b->first;
             ri.channels = b->channels;
             source->setText(QFontMetrics(source->font()).elidedText(recordInputText(p, ri), Qt::ElideRight, width() - 18));
-            source->setToolTip("Input: " + recordInputText(p, ri));
+            setToolTipIfChanged(source, "Input: " + recordInputText(p, ri));
         } else if (kind_ == BusStrip) {
             const reno::Bus* b = p.findBus(id_);
             if (!b) return;
@@ -1626,13 +1721,13 @@ public:
             surround->update();
         }
         header->name = name(p);
-        header->setToolTip(header->name);
-        header->update();
+        setToolTipIfChanged(header, header->name);
+        header->fieldsSet();
         fx->setText(QFontMetrics(fx->font()).elidedText(chainText(*chain), Qt::ElideRight, width() - 18));
-        fx->setToolTip(chainTip(*chain, kind_ == MasterStrip ? QString("Master Bus FX") : kind_ == BusStrip ? QString(assignable(p) ? "Assignable FX" : "Bus FX") : kind_ == InputStrip ? QString("Input Bus FX") : QString("Track FX")) +
+        setToolTipIfChanged(fx, chainTip(*chain, kind_ == MasterStrip ? QString("Master Bus FX") : kind_ == BusStrip ? QString(assignable(p) ? "Assignable FX" : "Bus FX") : kind_ == InputStrip ? QString("Input Bus FX") : QString("Track FX")) +
                        "\n(right-click: Enable All, Bypass All, Delete All" + (kind_ == TrackStrip || kind_ == InputStrip ? QString(")") : QString(", Post Volume)")));
         setActive(fx, !chain->empty());
-        fxSlots->update();
+        fxSlots->projectChanged();
         {
             const QSignalBlocker b1(mute), b2(solo);
             mute->setChecked(muted);
@@ -1646,10 +1741,10 @@ public:
             const EnvelopeOwner o{kind_ == TrackStrip ? EnvelopeOwner::Track : EnvelopeOwner::Bus, id_};
             const QSignalBlocker b4(automation);
             automation->setChecked(automationControlsOn(p, o));
-            automation->setToolTip(QString("Automation Settings (%1)").arg(automationModeName(automationModeOf(p, o))));
+            setToolTipIfChanged(automation, QString("Automation Settings (%1)").arg(automationModeName(automationModeOf(p, o))));
         }
-        pan->update();
-        fader->update();
+        pan->projectChanged();
+        fader->projectChanged();
         for (QWidget* s : sends->findChildren<QWidget*>()) s->update();
     }
 
@@ -2271,16 +2366,22 @@ struct MixerWindow::Impl {
         master->refresh(p, 0);
         preview->header->selected = selected.count(preview->key()) != 0;
         preview->refresh(p, 0);
-        if (channelList)
+        if (channelList) {
+            const std::vector<Strip*> every = all();
             for (int i = 0; i < channelList->count(); ++i) {
                 QListWidgetItem* it = channelList->item(i);
-                for (Strip* s : all())
-                    if (s->key() == it->data(Qt::UserRole).toString() && it->text() != s->name(p)) {
+                const QString key = it->data(Qt::UserRole).toString();
+                for (Strip* s : every) {
+                    if (s->key() != key) continue;
+                    const QString name = s->name(p);
+                    if (it->text() != name) {
                         filling = true;
-                        it->setText(s->name(p));
+                        it->setText(name);
                         filling = false;
                     }
+                }
             }
+        }
         deleteBus->setEnabled(!p.buses.empty() || p.findInputBus(selectedBus));
         const reno::Bus* sel = p.findBus(selectedBus);
         if (const reno::InputBus* ib = p.findInputBus(selectedBus)) deleteBus->setToolTip(QString("Delete %1 (tracks recording from it record from the default input)").arg(qs(ib->name)));
@@ -3118,15 +3219,17 @@ public:
 
     void feed(float l, float r, double now, double dt)
     {
+        const MeterState before = meter;
         meter.feed(l, r, now, dt);
         publish();
-        update();
+        if (!drawsSame(before, meter)) update();
     }
     void feedN(const float* v, int n, double now, double dt)
     {
+        const MeterState before = meter;
         meter.feedN(v, n, now, dt);
         publish();
-        update();
+        if (!drawsSame(before, meter)) update();
     }
     void clearMeter()
     {
@@ -3472,16 +3575,31 @@ struct MasterBusWidget::Impl {
     PollRate* rate = nullptr;
     MeterFeed<MasterMeter> feed;
 
+    // Called on every project change (each step of a drag): the icons are drawn and set only when what they show
+    // changes, since setting an icon re-lays out and repaints its button.
+    int shownFx = -1, shownMute = -1;      // -1: not set yet
+    double shownVolume = -1;
     void refresh()
     {
         const Project& p = AppState::get().project();
-        fx->setToolTip(chainTip(p.audioOut, "Master Bus FX"));
-        fx->setIcon(mbIcon(MbIcon::Fx, !p.audioOut.empty()));
-        setActive(fx, !p.audioOut.empty());
+        const bool hasFx = !p.audioOut.empty();
+        setToolTipIfChanged(fx, chainTip(p.audioOut, "Master Bus FX"));
+        if (shownFx != (int)hasFx) {
+            fx->setIcon(mbIcon(MbIcon::Fx, hasFx));
+            shownFx = hasFx;
+        }
+        setActive(fx, hasFx);
         const QSignalBlocker b(mute);
         mute->setChecked(p.masterMute);
-        mute->setIcon(mbIcon(MbIcon::Mute, p.masterMute));
-        meters->update();
+        if (shownMute != (int)p.masterMute) {
+            mute->setIcon(mbIcon(MbIcon::Mute, p.masterMute));
+            shownMute = p.masterMute;
+        }
+        // the fader's level is the only thing of the project the meters show
+        if (p.masterVolume != shownVolume) {
+            shownVolume = p.masterVolume;
+            meters->update();
+        }
     }
     void tickMeters()
     {

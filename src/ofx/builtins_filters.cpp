@@ -1,6 +1,7 @@
 // Built-in stand-ins for the VEGAS Pro 18 stock video effects, with VEGAS's identifiers and parameter names, for when
 // VEGAS's plug-ins are not installed. The output approximates VEGAS's. See builtins.h.
 #include "../core/rmath.h"
+#include "../core/base.h"
 #include <mutex>
 #include "builtins_impl.h"
 #include "builtins_more_internal.h"
@@ -1569,7 +1570,10 @@ static void chromaKeyerOpenCl(Ctx& c)
         // (VEGAS's rows run bottom first: the kernels' first row is the bottom row of the picture)
         std::vector<float> plane((size_t)W * H);
         for (int y = 0; y < H; ++y) std::memcpy(&plane[(size_t)(H - 1 - y) * W], &alpha[(size_t)y * W], sizeof(float) * (size_t)W);
-        vcol::keyerBlurPlane(k.A, k.B, k.C, k.D, k.E, W, H, plane, c.host8 ? oclStore12Fn : nullptr);
+        // down the columns, then along the rows (each line on its own, so they are shared out between the processors)
+        float (*store)(float) = c.host8 ? oclStore12Fn : nullptr;
+        parallelRows(W, (size_t)H * 16, [&](int x0, int x1) { vcol::keyerBlurColumns(k.A, k.B, k.C, k.D, k.E, W, H, plane, store, x0, x1); });
+        parallelRows(H, (size_t)W * 16, [&](int y0, int y1) { vcol::keyerBlurRows(k.A, k.B, k.C, k.D, k.E, W, plane, store, y0, y1); });
         for (int y = 0; y < H; ++y) std::memcpy(&alpha[(size_t)y * W], &plane[(size_t)(H - 1 - y) * W], sizeof(float) * (size_t)W);
     }
     const bool q = c.host8;

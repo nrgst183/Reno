@@ -114,14 +114,17 @@ public:
     void process(float* left, float* right, int frames) override
     {
         if (!built_ || frames <= 0) return;
-        std::vector<float> inL(left, left + frames), inR(right, right + frames);
-        std::vector<float> oL((size_t)frames), oR((size_t)frames);
+        // (all of the input is read before 'left' and 'right' are written below, so it is read where it is; the output
+        // buffers are kept from block to block)
+        outL_.resize((size_t)frames);
+        outR_.resize((size_t)frames);
         int offered = frames;
         int off = 0;
         while (offered > 0) {
             int nIn = offered, nOut = frames;
-            call(inL.data() + off, inR.data() + off, &nIn, oL.data(), oR.data(), &nOut);
-            for (int i = 0; i < nOut; ++i) { qL_.push_back(oL[(size_t)i]); qR_.push_back(oR[(size_t)i]); }
+            call(left + off, right + off, &nIn, outL_.data(), outR_.data(), &nOut);
+            qL_.insert(qL_.end(), outL_.begin(), outL_.begin() + nOut);
+            qR_.insert(qR_.end(), outR_.begin(), outR_.begin() + nOut);
             off += nIn;
             offered -= nIn;
             if (nIn == 0 && nOut == 0) break;
@@ -151,6 +154,7 @@ private:
     std::vector<double> filter_;
     std::vector<float> work_[2], tail_[2];
     std::vector<float> qL_, qR_;
+    std::vector<float> outL_, outR_;        // (process's scratch)
     size_t qHead_ = 0;
     uint32_t polled_ = 0, pollEvery_ = 20480;
     int inFill_ = 0, outPos_ = 0, state_ = 0;

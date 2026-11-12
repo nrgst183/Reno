@@ -13,10 +13,28 @@
 namespace vcol {
 
 inline float mixf(float x, float y, float a) { return x + (y - x) * a; }
+// level / 255 for each level, made by the compiler: readLevels runs on every channel of every pixel, and the table is
+// the same division without its cost (and without floor(), a library call on plain x86-64).
+struct ByteLevels { float level[256]; };
+constexpr ByteLevels makeByteLevels()
+{
+    ByteLevels t{};
+    for (int n = 0; n < 256; ++n) t.level[n] = (float)n / 255.0f;
+    return t;
+}
+inline constexpr ByteLevels kByteLevels = makeByteLevels();
+
+// floor(v * 255 + 0.5) / 255: for 0 <= x < 256 the cast is the floor and the table holds the division's result.
+inline float readLevel(float v)
+{
+    const float x = v * 255.0f + 0.5f;
+    if (x >= 0.0f && x < 256.0f) return kByteLevels.level[(int)x];
+    return std::floor(x) / 255.0f;
+}
 // An 8-bit frame is read by the kernels as level / 255 (a division); Reno's loader makes its floats as level * (1 / 255), which is a unit in the last place off for half of the levels.
 inline void readLevels(const float* p, float* q)
 {
-    for (int k = 0; k < 4; ++k) q[k] = std::floor(p[k] * 255.0f + 0.5f) / 255.0f;
+    for (int k = 0; k < 4; ++k) q[k] = readLevel(p[k]);
 }
 inline float clamp01(float v) { return std::min(std::max(v, 0.0f), 1.0f); }
 
@@ -850,21 +868,34 @@ inline void keyerBlurLine(const float* A, const float* B, const float* C, const 
         }
     }
 }
-// The whole blur of an alpha plane (W x H floats, row 0 = VEGAS's first memory row): down the columns, then along the rows; the plane holds the blurred alpha afterwards.
-inline void keyerBlurPlane(const float* A, const float* B, const float* C, const float* D, const float* E, int W, int H, std::vector<float>& plane, float (*store)(float))
+// The blur of columns [x0, x1) of an alpha plane (W x H floats), in place. Each column stands alone.
+inline void keyerBlurColumns(const float* A, const float* B, const float* C, const float* D, const float* E, int W, int H, std::vector<float>& plane, float (*store)(float),
+                             int x0, int x1)
 {
     std::vector<float> col((size_t)H), f((size_t)H), b((size_t)H);
-    for (int x = 0; x < W; ++x) {
+    for (int x = x0; x < x1; ++x) {
         for (int y = 0; y < H; ++y) col[(size_t)y] = plane[(size_t)y * W + x];
         keyerBlurLine(A, B, C, D, E, col.data(), H, f.data(), b.data(), store);
         for (int y = 0; y < H; ++y) plane[(size_t)y * W + x] = f[(size_t)y] + b[(size_t)y];
     }
+}
+// The blur of rows [y0, y1) of an alpha plane (W x H floats), in place. Each row stands alone.
+inline void keyerBlurRows(const float* A, const float* B, const float* C, const float* D, const float* E, int W, std::vector<float>& plane, float (*store)(float),
+                          int y0, int y1)
+{
     std::vector<float> rf((size_t)W), rb((size_t)W);
-    for (int y = 0; y < H; ++y) {
+    for (int y = y0; y < y1; ++y) {
         float* row = &plane[(size_t)y * W];
         keyerBlurLine(A, B, C, D, E, row, W, rf.data(), rb.data(), store);
         for (int x = 0; x < W; ++x) row[x] = rf[(size_t)x] + rb[(size_t)x];
     }
+}
+// The whole blur of an alpha plane (W x H floats, row 0 = VEGAS's first memory row): down the columns, then along the rows; the plane holds the blurred alpha afterwards.
+// (Reno's Chroma Keyer shares the columns and then the rows out between the processors; the result is the same.)
+inline void keyerBlurPlane(const float* A, const float* B, const float* C, const float* D, const float* E, int W, int H, std::vector<float>& plane, float (*store)(float))
+{
+    keyerBlurColumns(A, B, C, D, E, W, H, plane, store, 0, W);
+    keyerBlurRows(A, B, C, D, E, W, plane, store, 0, H);
 }
 
 }  // namespace vcol

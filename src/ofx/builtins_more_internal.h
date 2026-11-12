@@ -57,11 +57,23 @@ inline float oclStore12(float v);
 inline float oclWriteLevel(float v) { return oclStore12(v); }
 // The 8-bit store of the kernels of Levels and Convolution Kernel (checked bit for bit on their captures; the same rule as Add Noise): the value kept in 0..1 is cut to 12 bits and
 // scaled to a byte with the half down, byte = ((int)floor(v * 4096) * 255 + 2047) >> 12 (not a number: 0). Returns the level as a float level / 255.
+// The result for each of the 4096 steps, made by the compiler (so it is there before anything runs): the store runs on
+// every channel of every pixel of many effects, and its floor() and division cost more than the effects' own arithmetic.
+struct OclStore12Levels { float level[4096]; };
+constexpr OclStore12Levels makeOclStore12Levels()
+{
+    OclStore12Levels t{};
+    for (int n = 0; n < 4096; ++n) t.level[n] = (float)((n * 255 + 2047) >> 12) / 255.f;
+    return t;
+}
+inline constexpr OclStore12Levels kOclStore12 = makeOclStore12Levels();
+
 inline float oclStore12(float v)
 {
+    // Inside (0, 1), v * 4096 is exact (a power of two) and positive, so the cast is its floor: the step's entry.
+    if (v > 0.f && v < 1.f) return kOclStore12.level[(int)(v * 4096.f)];
     if (!(v == v)) return 0.f;
-    const int n = (int)std::floor(std::min(std::max(v, 0.f), 1.f) * 4096.f);
-    return (float)((n * 255 + 2047) >> 12) / 255.f;
+    return v >= 1.f ? 1.f : 0.f;            // (held to 0..1: step 4096 is level 255, step 0 level 0)
 }
 
 

@@ -83,6 +83,9 @@ public:
     // Windows and tools added by mainwindow_tools.cpp (Trimmer, recording, Loudness Meters...); see mainwindow_tools.h.
     struct Tools;
     Tools* tools() { return tools_.get(); }
+    // An AppState listener of something added to this window from outside its class (it uses the window or its
+    // playback): removed as the window's destructor begins, before any of what it uses is gone.
+    void ownListener(int id) { ownedListeners_.push_back(id); }
 
 protected:
     void closeEvent(QCloseEvent*) override;
@@ -232,6 +235,7 @@ private:
     std::pair<double, double> lastSelection_{0, 0};
     bool restoringSelection_ = false;
     int listener_ = 0;
+    std::vector<int> ownedListeners_;   // ownListener()
     std::unique_ptr<Actions> a_;
     std::unique_ptr<Tools> tools_;
 };

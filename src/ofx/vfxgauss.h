@@ -7,12 +7,30 @@
 #pragma once
 #include "../core/rmath.h"
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace reno {
 namespace ofx {
 namespace vfxgauss {
+
+// How the passes run their independent lines: fn(first, end) for the lines [first, end) of [0, n), in bands that may run at
+// the same time ('work' says how much one line is, for deciding whether to split at all). Unset (a test program that has
+// only this header) the lines run in one band on the calling thread; Reno's built-in effects set it to parallelRows
+// (builtins.cpp), which takes this very signature. The results do not depend on it: every line stands alone.
+using LineRunner = void (*)(int n, size_t work, const std::function<void(int first, int end)>& fn);
+inline LineRunner& lineRunner()
+{
+    static LineRunner runner = nullptr;
+    return runner;
+}
+inline void forLines(int n, size_t work, const std::function<void(int first, int end)>& fn)
+{
+    if (LineRunner run = lineRunner()) run(n, work, fn);
+    else fn(0, n);
+}
 
 // The five sets of five numbers the host hands the kernels as float8 (as floats): n (causal numerator), d (feedback, d[0] = 0), m (anti-causal numerator), bn, bm (edge terms).
 struct Coefs {
@@ -174,7 +192,9 @@ inline void passColumns(const Coefsf& cf, const std::vector<float>& in, int W, i
     b.assign((size_t)W * H * 4, 0.f);
     auto at = [&](std::vector<float>& v, int x, int y) { return &v[((size_t)y * W + x) * 4]; };
     auto atc = [&](const std::vector<float>& v, int x, int y) { return &v[((size_t)y * W + x) * 4]; };
-    for (int x = 0; x < W; ++x) {
+    // (each column x is filtered on its own: the columns are shared out by forLines)
+    forLines(W, (size_t)H * 64, [&](int firstColumn, int endColumn) {
+    for (int x = firstColumn; x < endColumn; ++x) {
         for (int pass = 0; pass < 2; ++pass) {
             // pass 0: causal, y = 0 .. H-1 (kernel branch x < W); pass 1: anti-causal, y = H-1 .. 0 (branch W <= x < 2 W)
             const float* nn = pass == 0 ? cf.n : cf.m;
@@ -232,6 +252,7 @@ inline void passColumns(const Coefsf& cf, const std::vector<float>& in, int W, i
             }
         }
     }
+    });
 }
 
 }  // namespace vfxgauss

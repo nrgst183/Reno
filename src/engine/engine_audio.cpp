@@ -84,16 +84,15 @@ void envelopeSamples(const Envelope& env, int64_t s0, int rate, double origin, i
 // An event's channel mapping (VEGAS's Channels: Both, Left Only, Right Only, Swap, Combine), in place.
 void mapChannels(const std::string& channels, float* l, float* r, int n)
 {
-    if (channels.empty() || channels == "both") return;
-    for (int k = 0; k < n; ++k) {
-        const float a = l[k], b = r[k];
-        if (channels == "left") r[k] = a;                       // the left channel on both sides
-        else if (channels == "right") l[k] = b;
-        else if (channels == "muteleft") l[k] = 0.0f;           // VEGAS's Mute Left: that side is silent, the other stays on its side
-        else if (channels == "muteright") r[k] = 0.0f;
-        else if (channels == "swap") { l[k] = b; r[k] = a; }
-        else if (channels == "combine") l[k] = r[k] = 0.5f * (a + b);     // a mono mix (half each, so it cannot clip)
-    }
+    // (the setting is looked at once per block, not once per sample)
+    if (n <= 0 || channels.empty() || channels == "both") return;
+    if (channels == "left") std::copy(l, l + n, r);                     // the left channel on both sides
+    else if (channels == "right") std::copy(r, r + n, l);
+    else if (channels == "muteleft") std::fill(l, l + n, 0.0f);         // VEGAS's Mute Left: that side is silent, the other stays on its side
+    else if (channels == "muteright") std::fill(r, r + n, 0.0f);
+    else if (channels == "swap") std::swap_ranges(l, l + n, r);
+    else if (channels == "combine")
+        for (int k = 0; k < n; ++k) l[k] = r[k] = 0.5f * (l[k] + r[k]);     // a mono mix (half each, so it cannot clip)
 }
 
 // Which parameter of an audio plug-in an "fx" envelope moves: by its name, else (a number) by its index. -1: none.

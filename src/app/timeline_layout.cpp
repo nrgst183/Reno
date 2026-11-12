@@ -707,6 +707,7 @@ void TimelineWidget::Impl::updateFonts()
     fontsMade = true;
     fontsFor = q->font();
     rulerLabelW = 0;
+    rulerShortLabelW = 0;
     titles.clear();
     ++headerGeneration;
     // VEGAS draws the track header texts (volume, pan), marker tags and the like in the window font itself, the ruler labels

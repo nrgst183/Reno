@@ -1,4 +1,5 @@
 #include "json.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -31,6 +32,13 @@ void Json::push(const Json& v)
     if (type_ != Array) *this = array();
     detach();
     d_->arr.push_back(v);
+}
+
+void Json::push(Json&& v)
+{
+    if (type_ != Array) *this = array();
+    detach();
+    d_->arr.push_back(std::move(v));
 }
 
 const std::vector<Json>& Json::items() const
@@ -70,6 +78,15 @@ Json& Json::operator[](const std::string& key)
     return d_->obj.back().second;
 }
 
+// snprintf and strtod follow the C library's locale (LC_NUMERIC), which the program or a plug-in may have set to one
+// with a decimal comma (Qt applies the environment's locale on Unix); JSON numbers always have a point.
+static char localeDecimalPoint()
+{
+    char b[8];
+    std::snprintf(b, sizeof b, "%.1f", 0.5);
+    return b[1];
+}
+
 static void writeString(std::string& out, const std::string& s)
 {
     out.push_back('"');
@@ -98,7 +115,12 @@ void Json::write(std::string& out, int indent, int depth) const
         char b[40];
         if (!std::isfinite(num_)) { out += "0"; break; }
         if (num_ == std::floor(num_) && std::fabs(num_) < 9.0e15) std::snprintf(b, sizeof b, "%.0f", num_);
-        else std::snprintf(b, sizeof b, "%.17g", num_);
+        else {
+            std::snprintf(b, sizeof b, "%.17g", num_);
+            // (in this format only the decimal point can be a ',': see localeDecimalPoint)
+            for (char* c = b; *c; ++c)
+                if (*c == ',') *c = '.';
+        }
         out += b;
         break;
     }
@@ -145,6 +167,7 @@ struct JsonParser {
     const char* end;
     std::string err;
     int depth = 0;
+    char point = '.';                       // the decimal point strtod reads (localeDecimalPoint)
 
     void ws() { while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p; }
     bool fail(const char* m) { if (err.empty()) err = m; return false; }
@@ -268,7 +291,7 @@ struct JsonParser {
             else for (;;) {
                 Json v;
                 if (!value(v)) { ok = false; break; }
-                out.push(v);
+                out.push(std::move(v));
                 ws();
                 if (p < end && *p == ',') { ++p; continue; }
                 if (p < end && *p == ']') { ++p; break; }
@@ -278,7 +301,7 @@ struct JsonParser {
         } else if (c == '"') {
             std::string s;
             ok = str(s);
-            if (ok) out = Json(s);
+            if (ok) out = Json(std::move(s));
         } else if (end - p >= 4 && !std::strncmp(p, "true", 4)) { p += 4; out = Json(true); }
         else if (end - p >= 5 && !std::strncmp(p, "false", 5)) { p += 5; out = Json(false); }
         else if (end - p >= 4 && !std::strncmp(p, "null", 4)) { p += 4; out = Json(); }
@@ -286,7 +309,11 @@ struct JsonParser {
             const char* s = p;
             while (p < end && (std::strchr("+-.eE", *p) || (*p >= '0' && *p <= '9'))) ++p;
             if (p == s) ok = fail("unexpected character");
-            else out = Json(std::strtod(std::string(s, p).c_str(), nullptr));
+            else {
+                std::string number(s, p);
+                if (point != '.') std::replace(number.begin(), number.end(), '.', point);
+                out = Json(std::strtod(number.c_str(), nullptr));
+            }
         }
         --depth;
         return ok;
@@ -296,6 +323,7 @@ struct JsonParser {
 bool Json::parse(const std::string& text, Json& out, std::string* error)
 {
     JsonParser ps;
+    ps.point = localeDecimalPoint();
     ps.p = text.data();
     ps.end = text.data() + text.size();
     if (text.size() >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ps.p += 3;
@@ -303,7 +331,7 @@ bool Json::parse(const std::string& text, Json& out, std::string* error)
     bool ok = ps.value(v);
     if (ok) { ps.ws(); if (ps.p != ps.end) ok = ps.fail("text after the end"); }
     if (!ok) { if (error) *error = ps.err; return false; }
-    out = v;
+    out = std::move(v);
     return true;
 }
 

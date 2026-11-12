@@ -702,6 +702,7 @@ struct TimelineWidget::Impl {
     bool fontsMade = false;
     QFontMetrics smallFm{QFont()};
     mutable double rulerLabelW = 0;
+    mutable double rulerShortLabelW = 0;      // a whole-second timecode label ("00:00:15"); 0: measure again
     mutable double rulerLabelFps = 0, rulerLabelWide = 0;
     // Each track's events by time: AppState keeps them in order of start, and 'maxEnd' (the latest end among events [0,
     // k]) lets the ones that reach into a time span be found by binary search instead of scanning thousands. Rebuilt.

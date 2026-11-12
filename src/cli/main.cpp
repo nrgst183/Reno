@@ -36,6 +36,7 @@ extern "C" {
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <clocale>
 #include <cmath>
 #include <cctype>
 #include <csignal>
@@ -175,7 +176,7 @@ const char* kHelp =
     "  --version, -h / --help\n"
     "\n"
     "Profiling the preview:\n"
-    "  reno_cli fxbench [--cpu | --gpu | --both] [--size WxH] [--repeat N] [--only TEXT] [--chain a,b,c] [--device N] [--software] [--float]\n"
+    "  reno_cli fxbench [--cpu | --gpu | --both] [--size WxH] [--repeat N] [--only TEXT] [--chain a,b,c] [--device N] [--software] [--float] [--hash]\n"
     "                           ms per frame of each built-in effect on the CPU, the card's kernels and the card with transfers, and of a chain\n"
     "  reno_cli gpupick [--again] [--device N] [--software]\n"
     "                           times each built-in effect with a Vulkan kernel on the CPU and on the card at 1080p and says which\n"
@@ -2008,6 +2009,12 @@ int renderJob(AppState& app, const Job& job)
 }  // namespace
 
 // ================================================================================================ main
+// On Unix, constructing the Qt application applies the environment's locale to the C library (setlocale(LC_ALL, "")).
+// Under a locale that writes decimal commas (de_DE, fr_FR ...) every printf and strtod of the engine would then write
+// and read "1,5": projects, effect states and settings saved as JSON would be broken, and numbers read from .veg text,
+// LUTs and subtitles misread. Numbers go back to the C locale's; Qt's own formatting does not use it.
+static void keepCNumbers() { std::setlocale(LC_NUMERIC, "C"); }
+
 // gpupick: measures every built-in effect with a Vulkan kernel on the CPU and on the card and prints which is quicker (Reno does the same behind the
 // splash screen, once per card; --again measures even if the saved result is for this card)
 static int runGpuPick(const std::vector<std::string>& args)
@@ -2043,6 +2050,7 @@ static int runToolCommand(std::vector<std::string> args)
             char arg0[] = "reno_cli";
             char* qargv[] = {arg0, nullptr};
             QGuiApplication qapp(qargc, qargv);
+            keepCNumbers();
             installBuiltinTextRasterizer();
             return runPluginCheckCommand(cmd, args);
         }
@@ -2113,6 +2121,7 @@ int main(int argc, char** argv)
     char arg0[] = "reno_cli";
     char* qargv[] = {arg0, nullptr};
     QGuiApplication qapp(qargc, qargv);
+    keepCNumbers();
     QGuiApplication::setOrganizationName("Reno");
     QGuiApplication::setApplicationName("Reno");
     installBuiltinTextRasterizer();

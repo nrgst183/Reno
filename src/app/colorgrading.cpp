@@ -425,10 +425,19 @@ struct ColorGradingPanel::Impl {
     bool built = false;
     void ensure()
     {
-        if (built) return;
-        built = true;
-        if (build) build();
+        if (!built) {
+            built = true;
+            if (build) build();
+            return;
+        }
+        if (stale) {
+            stale = false;
+            load();
+        }
     }
+    // The project or selection changed while the panel was hidden: the controls are filled when it is shown again (or
+    // asked for something), not at every edit made elsewhere.
+    bool stale = false;
     QComboBox* applyBox = nullptr;
     QLabel* targetLbl = nullptr;
     QPushButton* bypass = nullptr, *pinBtn = nullptr;
@@ -499,10 +508,7 @@ struct ColorGradingPanel::Impl {
         const FxSlot* s = gradeSlot(app.chainOf(app.project(), t));
         g = s ? ColorGrade::fromJson(s->state) : ColorGrade();
         updating = true;
-        if (pinLock && !(pinTarget.kind != FxTarget::None && app.chainOf(app.project(), pinTarget))) {
-            pinLock = false;
-            pinBtn->setChecked(false);
-        }
+        unpinIfGone();
         targetLbl->setText(t.kind == FxTarget::None ? QString("(select a video event)") : qs(app.targetName(t)) + (s ? QString() : QString("  (not graded yet)")) + (pinLock ? QString("  (pinned)") : QString()));
         bypass->setChecked(s && s->bypass);
         bypass->setEnabled(s != nullptr);
@@ -516,6 +522,16 @@ struct ColorGradingPanel::Impl {
         for (QWidget* wd : {(QWidget*)wheels[0], (QWidget*)wheels[1], (QWidget*)wheels[2], (QWidget*)wheels[3], (QWidget*)curves})
             wd->setEnabled(t.kind != FxTarget::None);
         updating = false;
+    }
+
+    // The pinned target is gone (its event deleted): the pin is let go.
+    void unpinIfGone()
+    {
+        const AppState& app = AppState::get();
+        if (pinLock && !(pinTarget.kind != FxTarget::None && app.chainOf(app.project(), pinTarget))) {
+            pinLock = false;
+            pinBtn->setChecked(false);
+        }
     }
 
     void write(Project& p, const FxTarget& t, const Json& state) const
@@ -1274,7 +1290,14 @@ ColorGradingPanel::ColorGradingPanel(QWidget* parent) : QWidget(parent), d(new I
         });
         d->listener.reset(new Listener([impl](int changes) {
             if (changes & kSelection) impl->pinned = FxTarget();
-            if (changes & (kProject | kSelection)) impl->load();
+            if (!(changes & (kProject | kSelection)) || impl->dragging) return;
+            if (impl->q->isVisible()) {
+                impl->load();
+            } else {
+                // (the pin is checked now, as a load would: the event may come back before the panel is shown)
+                impl->unpinIfGone();
+                impl->stale = true;
+            }
         }));
         d->apply = (Apply)std::min(2, std::max(0, QSettings().value("colorGrading/applyTo", 0).toInt()));
         d->applyBox->setCurrentIndex((int)d->apply);

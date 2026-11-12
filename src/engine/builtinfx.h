@@ -102,6 +102,14 @@ private:
     std::shared_ptr<const Lut3D> camera_, look_;
     bool prepared_ = false;
     bool hasHsl_ = false, hasRl_ = false;
+    // The parts of apply() that are the same for every pixel (worked out by prepare(), or by apply() itself if it was not called).
+    struct PixelConstants {
+        float exposureWb[3];                        // exposure times white balance
+        double lift[3], gain[3], invGamma[3], offset[3];
+        double rangeWheels[4][3];                   // shadows, midtones, highlights, offset: the push of each per channel
+    };
+    PixelConstants pixelConstants() const;
+    PixelConstants constants_{};
 };
 
 // Red Eye Reduction (MediaItem::redEye): inside each area (an ellipse filling it, its edge softened) the red of

@@ -506,9 +506,16 @@ std::map<int, std::function<void()>>& packageListeners()
 }
 void packagesChanged()
 {
-    const auto copy = packageListeners();
-    for (const auto& kv : copy)
-        if (kv.second) kv.second();
+    // by id, each looked up again when its turn comes: a listener can remove another (close its window) while this runs,
+    // and that one must not be called any more
+    std::vector<int> ids;
+    for (const auto& kv : packageListeners()) ids.push_back(kv.first);
+    for (int id : ids) {
+        auto it = packageListeners().find(id);
+        if (it == packageListeners().end() || !it->second) continue;
+        const std::function<void()> fn = it->second;     // (a copy: it may remove itself)
+        fn();
+    }
 }
 }  // namespace
 

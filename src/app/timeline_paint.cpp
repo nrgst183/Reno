@@ -673,7 +673,9 @@ int64_t TimelineWidget::Impl::rulerStepNow(double pps) const
     const int64_t step = rulerStep(pps, f, rulerLabelWidth());
     const int64_t nominal = std::max<int64_t>(1, std::llround(f));
     if (app.project().settings.rulerFormat != "timecode" || step < nominal) return step;
-    const int64_t shorter = rulerStep(pps, f, QFontMetrics(rulerFont).horizontalAdvance(QString("00:00:00")) + 20.0);
+    // measured once per ruler font (text measuring is slow, and this is asked at every paint and grid snap)
+    if (rulerShortLabelW <= 0) rulerShortLabelW = QFontMetrics(rulerFont).horizontalAdvance(QString("00:00:00")) + 20.0;
+    const int64_t shorter = rulerStep(pps, f, rulerShortLabelW);
     return shorter >= nominal ? shorter : step;
 }
 

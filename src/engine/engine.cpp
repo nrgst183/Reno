@@ -1111,9 +1111,8 @@ struct NestedShared {
     std::chrono::steady_clock::time_point proxyChecked;
     int64_t proxyVegTime = 0, proxyFileTime = 0;
 
-    ImagePtr cachedFrame(int64_t frame, int w, int h, uint64_t generation)
+    ImagePtr findLocked(int64_t frame, int w, int h, uint64_t generation)
     {
-        std::lock_guard<std::mutex> lk(mutex);
         for (auto it = frames.begin(); it != frames.end(); ++it)
             if (it->frame == frame && it->img->w == w && it->img->h == h && it->generation == generation) {
                 frames.splice(frames.begin(), frames, it);
@@ -1121,6 +1120,49 @@ struct NestedShared {
             }
         return nullptr;
     }
+    // Frames being made right now, by one reader each. Two tracks (or two layers made at once) showing the same nested
+    // project at the same moment ask for the same frame together: the second waits for the first rather than making it
+    // again, which doubled the work of a project like that.
+    struct Making {
+        int64_t frame;
+        int w, h;
+        uint64_t generation;
+        bool operator<(const Making& o) const { return std::tie(frame, w, h, generation) < std::tie(o.frame, o.w, o.h, o.generation); }
+    };
+    std::set<Making> making;                    // under mutex
+    std::condition_variable madeCv;             // told when one of them is finished
+
+    // The frame from the kept ones, waiting first if another reader is making it. Null with 'mine' true: not kept and
+    // nobody making it, so the caller makes it and must call doneMaking(). Null with 'mine' false: given up (cancelled).
+    ImagePtr cachedOrClaim(int64_t frame, int w, int h, uint64_t generation, bool& mine)
+    {
+        const Making key{frame, w, h, generation};
+        mine = false;
+        std::unique_lock<std::mutex> lk(mutex);
+        for (;;) {
+            if (ImagePtr have = findLocked(frame, w, h, generation)) return have;
+            if (!making.count(key)) break;
+            if (mediaReadHints().cancelled()) return nullptr;
+            // While waiting, this thread does the pool's work - very likely bands of the frame being made, which would
+            // otherwise have one processor fewer (on two cores, none to help it at all).
+            lk.unlock();
+            const bool helped = helpWithPoolWork();
+            lk.lock();
+            if (!helped && making.count(key)) madeCv.wait_for(lk, std::chrono::milliseconds(1));
+        }
+        making.insert(key);
+        mine = true;
+        return nullptr;
+    }
+    void doneMaking(int64_t frame, int w, int h, uint64_t generation)
+    {
+        {
+            std::lock_guard<std::mutex> lk(mutex);
+            making.erase(Making{frame, w, h, generation});
+        }
+        madeCv.notify_all();
+    }
+
     void keepFrame(int64_t frame, uint64_t generation, const ImagePtr& img)
     {
         std::lock_guard<std::mutex> lk(mutex);
@@ -1810,7 +1852,16 @@ public:
         fo.transparent = true;
         const bool ready = nestedFxReady(sh_->videoFx, gFinalDepth > 0);
         const uint64_t gen = gNestedGeneration.load();
-        if (ImagePtr have = sh_->cachedFrame(frame, ow, oh, gen)) return have;
+        bool mine = false;
+        if (ImagePtr have = sh_->cachedOrClaim(frame, ow, oh, gen, mine)) return have;
+        if (!mine) return nullptr;
+        struct Claim {
+            NestedShared& sh;
+            int64_t frame;
+            int w, h;
+            uint64_t gen;
+            ~Claim() { sh.doneMaking(frame, w, h, gen); }
+        } claim{*sh_, frame, ow, oh, gen};
         fo.skipEffects = !ready;
         if (fo.skipEffects) ++gLeftOut;
         const bool approxBefore = mediaReadHints().approximated;

@@ -20,6 +20,7 @@ public:
     Json(double v) : type_(Number), num_(v) {}
     Json(const char* s) : type_(String), str_(s ? s : "") {}
     Json(const std::string& s) : type_(String), str_(s) {}
+    Json(std::string&& s) : type_(String), str_(std::move(s)) {}
 
     static Json array() { Json j; j.type_ = Array; return j; }
     static Json object() { Json j; j.type_ = Object; return j; }
@@ -44,6 +45,7 @@ public:
     size_t size() const;
     const Json& at(size_t i) const;
     void push(const Json& v);
+    void push(Json&& v);
     const std::vector<Json>& items() const;
 
     // objects

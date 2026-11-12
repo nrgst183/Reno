@@ -6,6 +6,7 @@
 // are greyed, saying why.
 #include "audioproxyui.h"
 #include "mainwindow.h"
+#include "mainwindow_internal.h"
 #include "pluginchooser.h"
 #include "smalldialogs.h"
 #include "subtitles.h"
@@ -220,8 +221,13 @@ std::string rulerFormatAction(const std::string& id)
 
 QAction* MainWindow::vegasAction(const char* name) const
 {
-    for (QAction* a : findChildren<QAction*>(QString::fromUtf8(name), Qt::FindDirectChildrenOnly)) return a;
-    return nullptr;
+    // Asked for several commands on every cursor move while playing (refresh() greys them), and the window has hundreds
+    // of children: the action found last time is used while it is still this window's and still has that name.
+    if (!a_) return findChild<QAction*>(QString::fromUtf8(name), Qt::FindDirectChildrenOnly);
+    QPointer<QAction>& kept = a_->byObjectName[name];
+    if (kept && kept->parent() == this && kept->objectName() == QLatin1String(name)) return kept;
+    kept = findChild<QAction*>(QString::fromUtf8(name), Qt::FindDirectChildrenOnly);
+    return kept;
 }
 
 void MainWindow::buildVegasMenus()

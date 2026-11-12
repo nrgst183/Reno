@@ -1942,7 +1942,8 @@ struct VideoEngine::Pass {
             // one of Reno's own effects (the Color Grading panel's): worked on a copy of its input
             ImagePtr in = source(frame);
             if (!in || slot.bypass || opt.skipEffects) return in;
-            ImagePtr out = inDepth(in)->clone();
+            // (converted() already makes a copy; clone only a frame that is in the pass's depth)
+            ImagePtr out = in->depth != pd ? in->converted(pd) : in->clone();
             if (out) applyBuiltin(slot, *out);
             return out;
         }

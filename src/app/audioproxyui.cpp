@@ -163,7 +163,9 @@ void installAudioProxyUi(QMainWindow* w)
         });
     });
     // Nested projects get proxies as soon as they are in the project; the builder builds missing or stale ones.
-    AppState::get().addListener([](int changes) {
+    // (removed with the window: every main window made - the tests make many - added one more for good, each
+    // looking through the media on every change)
+    const int listener = AppState::get().addListener([](int changes) {
         if (!(changes & (kProject | kFile | kPrefs))) return;
         AppState& app = AppState::get();
         if (changes & kFile) gAsked.clear();
@@ -171,6 +173,7 @@ void installAudioProxyUi(QMainWindow* w)
         for (const std::string& path : nestedOfProject())
             if (gAsked.insert(path).second) buildAudioProxy(path, false);
     });
+    QObject::connect(w, &QObject::destroyed, [listener] { AppState::get().removeListener(listener); });
 }
 
 void rebuildOfflineNestedAudio()

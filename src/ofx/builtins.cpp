@@ -8,6 +8,7 @@
 #include "../core/pixrows.h"
 #include "../core/cpufeat.h"
 #include "vkeffects.h"
+#include "vfxgauss.h"
 #include "ofxProperty.h"
 #include <algorithm>
 #include <atomic>
@@ -645,8 +646,22 @@ std::vector<OfxPlugin>& plugins()
 // Float results of the effects VEGAS draws in float (OpenCL), going into an 8-bit frame: the kernels' 12-bit store (more::oclStore12; exact halves go down). (The name is older.)
 void vegasTiesDown(Buf& b)
 {
-    for (float& f : b.px)
-        if (std::isfinite(f) && f > 0.f && f < 1.f) f = more::oclStore12(f);      // (the 12-bit step: levels already on a level stay)
+    // more::oclStore12 of every 12-bit step, so that each value costs a lookup rather than a division. For v in (0, 1)
+    // oclStore12 is level[(int)(v * 4096)] exactly: the clamp does nothing and floor() of a positive value is the cast.
+    static const std::vector<float> level = [] {
+        std::vector<float> t(4096);
+        for (int n = 0; n < 4096; ++n) t[(size_t)n] = more::oclStore12(((float)n + 0.5f) / 4096.f);
+        return t;
+    }();
+    // (every value stands alone, so the rows are shared out between the processors: on one this was a large part of a frame)
+    const size_t rowFloats = (size_t)b.w * 4;
+    forRows(b.h, b.w, [&](int y) {
+        float* row = b.px.data() + (size_t)y * rowFloats;
+        for (size_t i = 0; i < rowFloats; ++i) {
+            float& f = row[i];
+            if (f > 0.f && f < 1.f) f = level[(size_t)(f * 4096.f)];      // (the 12-bit step: levels already on a level stay; NaN and infinities fail the test)
+        }
+    });
 }
 
 // VEGAS's GPU acceleration (Preferences > Video, "GPU acceleration of video processing"; ofx::HostConfig::gpu). On, VEGAS renders every one of its own effects that has an OpenCL
@@ -944,6 +959,13 @@ void runRows(Ctx& c, bool (*prepare)(Ctx&, RowFn&))
     RowFn fn;
     if (prepare(c, fn)) runRowFn(c, fn);
 }
+
+// The recursive Gaussians of the effects drawn as VEGAS's OpenCL kernels draw them (vfxgauss.h) share their lines out
+// between the processors too. (Set when this file's code is linked in: every built-in effect runs through it.)
+static const bool gGaussLinesShared = [] {
+    vfxgauss::lineRunner() = &reno::parallelRows;
+    return true;
+}();
 
 void forRows(int h, int w, const std::function<void(int y)>& fn)
 {

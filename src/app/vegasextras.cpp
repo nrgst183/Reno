@@ -1620,8 +1620,8 @@ static void addPlaybackOptions(MainWindow* w, QMenu* options)
         updateMetronome(w);
     });
     updateMetronome(w);
-    const int l = AppState::get().addListener([w](int changes) { if (changes & kPrefs) updateMetronome(w); });
-    QObject::connect(w, &QObject::destroyed, [l] { AppState::get().removeListener(l); });
+    // (removed as ~MainWindow begins: on 'destroyed' the window's playback was already gone)
+    w->ownListener(AppState::get().addListener([w](int changes) { if (changes & kPrefs) updateMetronome(w); }));
     w->addAction(metronome);
     insertAfter(options, metronome, "loop");
     QMenu* loud = options->findChild<QMenu*>("loudnessMetersMenu");

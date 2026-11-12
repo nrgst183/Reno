@@ -273,8 +273,11 @@ bool readPeakFile(const std::string& path, PeakFile& out, std::string* error)
     pf.utcStamp = get32(p + 36);
     const int64_t nb = peakBlocksFor(frames, (int)spp);
     const size_t each = bits / 8;
-    const size_t need = (size_t)nb * channels * 2 * each;
-    if (d.size() - header < need) return fail("cut short");
+    // (the block count is checked against what the file holds before it is multiplied: a damaged frame count could
+    // otherwise wrap the byte count round to a small number that passes, and leave fewer blocks than the frames need)
+    const size_t blockBytes = (size_t)channels * 2 * each;
+    if ((uint64_t)nb > (d.size() - header) / blockBytes) return fail("cut short");
+    const size_t need = (size_t)nb * blockBytes;
     pf.minmax.resize((size_t)nb * channels * 2);
     const uint8_t* v = p + header;
     if (bits == 16) std::memcpy(pf.minmax.data(), v, need);

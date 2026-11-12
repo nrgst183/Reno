@@ -1,6 +1,8 @@
 // reno_cli fxbench: how long each built-in effect takes per frame, on the CPU and on the card, and what a chain of effects costs.
 //
-//   reno_cli fxbench [--cpu | --gpu | --both] [--size WxH] [--repeat N] [--only TEXT] [--chain a,b,c] [--device N] [--software] [--float]
+//   reno_cli fxbench [--cpu | --gpu | --both] [--size WxH] [--repeat N] [--only TEXT] [--chain a,b,c] [--device N] [--software] [--float] [--hash]
+//
+// --hash also prints a hash of each effect's CPU picture, to check that a change to the effects leaves what they draw as it was.
 //
 // For every built-in effect (default settings, a test picture, 8-bit BGRA unless --float): the CPU time (the effect's own code, threads and all), and for those
 // with Vulkan kernels the GPU time of the kernels alone (timestamps), and the GPU time as the host sees it - frame up, kernels, frame down. Then a chain
@@ -27,6 +29,14 @@ namespace {
 
 typedef std::chrono::steady_clock Clock;
 double msSince(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
+
+// FNV-1a over the bytes (a picture's hash for --hash).
+uint64_t hashBytes(const std::vector<uint8_t>& v)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (uint8_t b : v) h = (h ^ b) * 1099511628211ull;
+    return h;
+}
 
 double median(std::vector<double> v)
 {
@@ -63,7 +73,7 @@ std::vector<std::string> splitList(const std::string& s)
 int runFxBench(const std::vector<std::string>& args)
 {
     int W = 1920, H = 1080, repeat = 5, device = -1;
-    bool doCpu = true, doGpu = true, isFloat = false, software = false;
+    bool doCpu = true, doGpu = true, isFloat = false, software = false, hash = false;
     std::string only, chainText = "brightnessandcontrast,hsladjust,gaussianblur,sharpen";
     for (size_t k = 0; k < args.size(); ++k) {
         const std::string& a = args[k];
@@ -78,6 +88,7 @@ int runFxBench(const std::vector<std::string>& args)
         else if (a == "--both") { doCpu = doGpu = true; }
         else if (a == "--float") isFloat = true;
         else if (a == "--software") software = true;
+        else if (a == "--hash") hash = true;
         else if (a == "--only") { if (!need(&only)) return 2; }
         else if (a == "--chain") { if (!need(&chainText)) return 2; }
         else if (a == "--size") {
@@ -87,7 +98,7 @@ int runFxBench(const std::vector<std::string>& args)
         else if (a == "--repeat") { if (!need(&v)) return 2; repeat = std::max(1, std::min(100, std::atoi(v.c_str()))); }
         else if (a == "--device") { if (!need(&v)) return 2; device = std::atoi(v.c_str()); }
         else {
-            std::fprintf(stderr, "reno_cli fxbench: unknown option %s\nusage: reno_cli fxbench [--cpu | --gpu | --both] [--size WxH] [--repeat N] [--only TEXT] [--chain a,b,c] [--device N] [--software] [--float]\n", a.c_str());
+            std::fprintf(stderr, "reno_cli fxbench: unknown option %s\nusage: reno_cli fxbench [--cpu | --gpu | --both] [--size WxH] [--repeat N] [--only TEXT] [--chain a,b,c] [--device N] [--software] [--float] [--hash]\n", a.c_str());
             return 2;
         }
     }
@@ -137,6 +148,7 @@ int runFxBench(const std::vector<std::string>& args)
                 t.push_back(msSince(t0));
             }
             if (ok) cpuMs = median(t);
+            if (ok && hash) std::snprintf(parts, sizeof parts, "  hash %016llx", (unsigned long long)hashBytes(a));
         }
         if (gpuOk && d->gpu) {
             Ctx c;

@@ -96,6 +96,10 @@ void parallelTasks(int n, const std::function<void(int index)>& fn);
 // What parallelTasks has done since the program began (for measurements and tests): the calls that handed work out, the
 // tasks they held, and how many of those ran on the pool's helper threads rather than on the thread that asked.
 void parallelTaskStats(uint64_t& jobs, uint64_t& tasks, uint64_t& tasksOnHelpers);
+// For a thread that has to wait for another one: runs some of the work waiting in that pool (parallelRows bands,
+// parallelTasks tasks), so that the processor it would leave idle helps instead - the thread it waits for may be
+// counting on the pool's threads, and this may be one of them. False if there was none to run.
+bool helpWithPoolWork();
 
 // Puts the calling thread a step below normal priority (Windows: below normal; elsewhere: a little nicer).
 void lowerThreadPriority();

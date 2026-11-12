@@ -360,7 +360,35 @@ void ColorGrade::prepare()
     };
     camera_ = resolve(cameraLut);
     look_ = resolve(lookLut);
+    constants_ = pixelConstants();
     prepared_ = true;
+}
+
+ColorGrade::PixelConstants ColorGrade::pixelConstants() const
+{
+    PixelConstants pc;
+    const float ex = (float)std::pow(2.0, exposure);
+    const float wb[3] = {(float)(1.0 + 0.25 * temperature / 100.0), (float)(1.0 - 0.25 * tint / 100.0), (float)(1.0 - 0.25 * temperature / 100.0)};
+    for (int k = 0; k < 3; ++k) pc.exposureWb[k] = ex * wb[k];
+    double pl[3], pg[3], pn[3], po[3];
+    wheelPush(lift, pl);
+    wheelPush(gamma, pg);
+    wheelPush(gain, pn);
+    wheelPush(offset, po);
+    for (int k = 0; k < 3; ++k) {
+        pc.lift[k] = lift.master + 0.25 * pl[k];
+        const double Gm = std::max(0.05, gamma.master * std::pow(2.0, 0.5 * pg[k]));
+        pc.invGamma[k] = 1.0 / Gm;
+        pc.gain[k] = std::max(0.0, gain.master * (1.0 + 0.5 * pn[k]));
+        pc.offset[k] = offset.master + 0.2 * po[k];
+    }
+    const Wheel* ws[4] = {&shadows, &midtones, &highlights, &rlOffset};
+    for (int w = 0; w < 4; ++w) {
+        double pu[3];
+        wheelPush(*ws[w], pu);
+        for (int k = 0; k < 3; ++k) pc.rangeWheels[w][k] = 0.3 * pu[k] + 0.5 * ws[w]->master;
+    }
+    return pc;
 }
 
 static inline float lutAt(const std::vector<float>& lut, float x)
@@ -394,10 +422,10 @@ void ColorGrade::apply(float c[3]) const
         const float s = (float)cameraLut.strength;
         for (int k = 0; k < 3; ++k) c[k] = in[k] + (out[k] - in[k]) * s;
     }
+    PixelConstants unprepared;
+    const PixelConstants& pc = prepared_ ? constants_ : (unprepared = pixelConstants());
     // exposure and white balance
-    const float ex = (float)std::pow(2.0, exposure);
-    const float wb[3] = {(float)(1.0 + 0.25 * temperature / 100.0), (float)(1.0 - 0.25 * tint / 100.0), (float)(1.0 - 0.25 * temperature / 100.0)};
-    for (int k = 0; k < 3; ++k) c[k] *= ex * wb[k];
+    for (int k = 0; k < 3; ++k) c[k] *= pc.exposureWb[k];
     // utilities: log exposure (a stop on a 14 stop log signal), levels in, brightness
     if (std::fabs(logExposure) > 1e-9)
         for (int k = 0; k < 3; ++k) c[k] += (float)(logExposure / 14.0);
@@ -408,19 +436,10 @@ void ColorGrade::apply(float c[3]) const
     if (std::fabs(brightness) > 1e-9)
         for (int k = 0; k < 3; ++k) c[k] += (float)brightness;
     // the wheels
-    double pl[3], pg[3], pn[3], po[3];
-    wheelPush(lift, pl);
-    wheelPush(gamma, pg);
-    wheelPush(gain, pn);
-    wheelPush(offset, po);
     for (int k = 0; k < 3; ++k) {
-        const double L = lift.master + 0.25 * pl[k];
-        const double Gm = std::max(0.05, gamma.master * std::pow(2.0, 0.5 * pg[k]));
-        const double G = std::max(0.0, gain.master * (1.0 + 0.5 * pn[k]));
-        const double O = offset.master + 0.2 * po[k];
-        double v = G * (c[k] + L * (1.0 - c[k]));
-        v = v > 0 ? std::pow(v, 1.0 / Gm) : v;
-        c[k] = (float)(v + O);
+        double v = pc.gain[k] * (c[k] + pc.lift[k] * (1.0 - c[k]));
+        v = v > 0 ? std::pow(v, pc.invGamma[k]) : v;
+        c[k] = (float)(v + pc.offset[k]);
     }
     // the range-limited wheels: each weighted by where the colour's luma is against the two thresholds
     if (hasRl_) {
@@ -429,13 +448,10 @@ void ColorGrade::apply(float c[3]) const
         const double sLo = step(y, rlLow), sHi = step(y, rlHigh);
         const double wS = 1.0 - sLo, wM = std::max(0.0, sLo - sHi), wH = sHi;
         const double wO = step(y, 0.0) * (1.0 - step(y, 1.1));
-        const Wheel* ws[4] = {&shadows, &midtones, &highlights, &rlOffset};
         const double ww[4] = {wS, wM, wH, wO};
         for (int w = 0; w < 4; ++w) {
             if (ww[w] <= 0) continue;
-            double pu[3];
-            wheelPush(*ws[w], pu);
-            for (int k = 0; k < 3; ++k) c[k] += (float)(ww[w] * (0.3 * pu[k] + 0.5 * ws[w]->master));
+            for (int k = 0; k < 3; ++k) c[k] += (float)(ww[w] * pc.rangeWheels[w][k]);
         }
     }
     // contrast about its pivot, then saturation about the luma
@@ -560,7 +576,9 @@ bool applyBuiltin(const FxSlot& s, Image& img)
     if (g.isIdentity()) return true;
     g.prepare();
     const bool fl = img.depth == PixelDepth::Float;
-    for (int y = 0; y < img.h; ++y) {
+    // (every pixel stands alone, so the rows are shared out between the processors)
+    parallelRows(img.h, (size_t)img.w * 64, [&](int y0, int y1) {
+    for (int y = y0; y < y1; ++y) {
         if (fl) {
             float* p = (float*)img.row(y);
             for (int x = 0; x < img.w; ++x, p += 4) {
@@ -585,6 +603,7 @@ bool applyBuiltin(const FxSlot& s, Image& img)
             }
         }
     }
+    });
     return true;
 }
 
