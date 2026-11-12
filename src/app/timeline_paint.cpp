@@ -1887,19 +1887,27 @@ void TimelineWidget::Impl::drawCrossFade(QPainter& p, const Row& row, const Even
     {
         // the cross-fade's length in a small white box in the middle ("3.09" = 3 s 9 frames; Vegas 8 tutorial 23:44)
         const QString len = secondsFramesLabel(a.end() - b.start, fps());
+        // Thousands of a stutter edit's cross-fades end far off to the right, their labels with them. Without a transition's
+        // name to draw after it (with the painter as the label leaves it), a label whose box would be out of this paint
+        // even at its widest (no character wider than the widest the font has) is not measured at all.
+        const double h = smallFm.height() + 1.0, widest = len.size() * smallFm.maxWidth() + 6.0 + 8.0;
+        const bool outside = (x0 + x1 + widest) * 0.5 + 4.0 < c.left() || (x0 + x1 - widest) * 0.5 - 4.0 > c.right();
+        if (!transition && outside) {
+            p.restore();
+            return;
+        }
         if (fadeLabels.size() > 1000) fadeLabels.clear();
         FadeLabel& label = fadeLabels[len];
         if (label.advance < 0) label.advance = smallFm.horizontalAdvance(len);
-        const double w = label.advance + 6.0, h = smallFm.height() + 1.0;
+        const double w = label.advance + 6.0;
         if (x1 - x0 > w + 6.0 && rb.height() > h + 6.0) {
             const QRectF box((x0 + x1 - w) * 0.5, rb.bottom() - h - 3.0, w, h);
             p.setRenderHint(QPainter::Antialiasing, false);
             p.setPen(QColor(20, 20, 20));
             p.setBrush(QColor(255, 255, 255));
             p.setFont(smallFont);
-            // Drawn only if it is in this paint (a stutter edit's thousands of cross-fades mostly end far off to the
-            // right; the text stays inside the box), and the text laid out once for all the cross-fades of that length
-            // (the painter is set up as before either way: what comes next draws with it).
+            // Drawn only if it is in this paint (the text stays inside the box), the text laid out once for all the
+            // cross-fades of that length (the painter is set up as before either way: what comes next draws with it).
             if (box.adjusted(-4.0, -4.0, 4.0, 4.0).intersects(QRectF(c))) {
                 p.drawRect(box.adjusted(0.5, 0.5, -0.5, -0.5));
                 drawKeptText(p, box, len, label.text, true);
