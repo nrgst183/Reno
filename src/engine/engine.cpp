@@ -496,11 +496,12 @@ ImagePtr MediaPool::videoFrame(uint64_t user, const MediaItem& m0, double second
         if (f > 1.0005) bw = std::max(1, (int)std::lround(bw / f));
         else if (f < 0.9995) bh = std::max(1, (int)std::lround(bh * f));
     }
-    const bool deep = depth == PixelDepth::Float && m.info.bitDepth > 8;
-    std::shared_ptr<FrameShare> share = deep ? nullptr : share_;
-    // What the read is for, also without the shared frames: a thread wanting a frame a busy reader of the same shape
-    // is about to make waits for that reader (get). A deep read makes a different picture, so it is another shape.
-    const uint64_t shape = shapeOf(m, bw, bh, deinterlace) ^ (deep ? 0x8F1BBCDCBFA53E0Bull : 0);
+    std::shared_ptr<FrameShare> share = (depth == PixelDepth::Float && m.info.bitDepth > 8) ? nullptr : share_;
+    const uint64_t shape = share ? shapeOf(m, bw, bh, deinterlace) : 0;
+    // What a reader decodes for this read, whatever size the frame is made at: a thread wanting a frame that a busy
+    // reader decoding the same way is about to reach waits for that reader (get), which then makes it at this size
+    // from what it decoded. (Two layers showing one file at different sizes otherwise each decoded every frame.)
+    const uint64_t decodeKey = shapeOf(m, 0, 0, deinterlace);
     const uint64_t generation = share ? share->generation() : 0;
     auto finish = [&](const ImagePtr& got) {
         if (f == 1.0 && !rot) return withAlphaMode(got, m0.alphaMode);
@@ -515,7 +516,7 @@ ImagePtr MediaPool::videoFrame(uint64_t user, const MediaItem& m0, double second
     std::unique_lock<std::mutex> lk;
     EntryPtr e = get(video_, maxVideo_ ? maxVideo_ : kMaxVideoReaders, maxVideo_ ? std::min(maxVideo_, kVideoReadersPerMedia) : kVideoReadersPerMedia, user, m,
                      [&](Entry& x) { return x.deinterlace != deinterlace ? 2 : x.reader->videoCost(seconds, w, h); }, lk, reserveSeconds,
-                     reserveSeconds <= 0 ? seconds : std::numeric_limits<double>::quiet_NaN(), shape);
+                     reserveSeconds <= 0 ? seconds : std::numeric_limits<double>::quiet_NaN(), decodeKey);
     if (!e) return nullptr;
     struct Idle {
         Entry& e;
