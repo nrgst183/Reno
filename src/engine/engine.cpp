@@ -211,6 +211,10 @@ MediaPool::EntryPtr MediaPool::get(std::vector<EntryPtr>& list, size_t limit, si
     const double clock = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const uint64_t lane = user & 0xC000000000000000ull;
     EntryPtr e, waitFor;
+    double waitAt = 0;                                  // the time waitFor's reader is reading
+    // Only the reader of a media file is waited for, not that of a nested project or a generator (see the note on
+    // waiting below).
+    const bool mayWait = !m.generated && !isProjectFile(m.path);
     Opener opener;
     {
         std::lock_guard<std::mutex> lk(mutex_);
@@ -220,6 +224,7 @@ MediaPool::EntryPtr MediaPool::get(std::vector<EntryPtr>& list, size_t limit, si
         // last, between equals).
         EntryPtr best, own, oldestFree, oldest, idle;
         int bestCost = 3;
+        double bestLastWant = std::numeric_limits<double>::quiet_NaN();
         size_t count = 0;
         for (const EntryPtr& x : list) {
             if (x->media != m.id || x->lane != lane) continue;
@@ -228,12 +233,14 @@ MediaPool::EntryPtr MediaPool::get(std::vector<EntryPtr>& list, size_t limit, si
             if ((!oldest || x->lastUse < oldest->lastUse) && !(x->reservedUntil > clock && x->lastUser != user)) oldest = x;
             std::unique_lock<std::mutex> xl(x->mutex, std::try_to_lock);
             if (!xl.owns_lock()) {                          // busy for another thread (or still being opened)
-                // Busy reading a time just before the one wanted.
-                if (std::isfinite(want) && x->busyShape.load() == shape) {
+                // Busy reading a time just before the one wanted (or just after it: the frame wanted is among those
+                // it decodes on the way). Only a media file's reader is waited for: see the note on waiting below.
+                if (mayWait && std::isfinite(want) && x->busyShape.load() == shape) {
                     const double at = x->busyWant.load();
                     if (std::isfinite(at) && want >= at - kWaitBehindSeconds && want - at < waitGap) {
                         waitGap = std::max(0.0, want - at);
                         waitFor = x;
+                        waitAt = at;
                     }
                 }
                 continue;
@@ -254,11 +261,19 @@ MediaPool::EntryPtr MediaPool::get(std::vector<EntryPtr>& list, size_t limit, si
             if (better) {
                 best = x;
                 bestCost = c;
+                bestLastWant = x->lastWant;                 // (read while its lock is held here)
             }
         }
+        // A free reader that decodes on to the frame (cost 1) is taken over a busy one on its way there only if it is
+        // already at least as far along as the busy one. Otherwise it would decode again the frames the busy reader is
+        // decoding now: two layers playing the same stretch of a file then kept two readers decoding every frame, one
+        // a step behind the other (half the frames of a nested project like that were decoded twice). Waiting, the
+        // busy reader has the frame at hand when it is done, or decodes on from it.
+        const bool freeIsAhead = best && bestCost == 1 && std::isfinite(bestLastWant) && bestLastWant >= std::min(waitAt, want);
         if (!e) {
-            if (best && bestCost <= 1) e = best;            // has it at hand, or decodes on to it
-            else if (waitFor) e = waitFor;                  // another thread's reader is on its way there
+            if (best && bestCost == 0) e = best;            // has it at hand
+            else if (waitFor && !freeIsAhead) e = waitFor;  // another thread's reader is on its way there
+            else if (best && bestCost <= 1) e = best;       // decodes on to it
             else if (own) e = own;                          // the event's own reader seeks (as it always did)
             else if (idle) e = idle;                        // one no event is using now seeks
             else if (count >= perMedia && (oldestFree || oldest)) e = oldestFree ? oldestFree : oldest;
@@ -292,6 +307,17 @@ MediaPool::EntryPtr MediaPool::get(std::vector<EntryPtr>& list, size_t limit, si
     }
     if (e == waitFor) {
         // not holding the pool's lock: the reader's thread is decoding.
+        //
+        // Why this wait always ends: the thread holding the reader's lock is inside a media file's reader (mayWait:
+        // openMedia's readers, src/media, which never call back into the engine or any MediaPool), opening the file or
+        // decoding a frame and turning it into a picture, then (videoFrame) putting it in the shared frames and fitting
+        // it. None of that waits for another thread: the readers' own decoding threads are FFmpeg's, and parallelRows
+        // bands that other threads take are plain pixel loops that finish on their own. So that thread lets go of the
+        // reader in a bounded time whatever this one does. Nor can this thread be the one holding it: a thread holding a
+        // media file's reader is in that reader's code, which never comes back here, so a thread that is here holds none.
+        // (A nested project's reader is never waited for: its thread renders the nested project, whose waits for
+        // frames being made and pool work could come round to this thread. NestedShared makes those frames once anyway.)
+        // This thread sleeps while it waits rather than taking pool work, so it takes on nothing that could need it.
         std::unique_lock<std::mutex> xl(e->mutex, std::try_to_lock);
         for (int spin = 0; !xl.owns_lock(); ++spin) {
             if (mediaReadHints().cancelled()) return nullptr;
@@ -305,6 +331,7 @@ MediaPool::EntryPtr MediaPool::get(std::vector<EntryPtr>& list, size_t limit, si
     }
     e->busyShape = shape;
     e->busyWant = want;
+    if (std::isfinite(want)) e->lastWant = want;
     // The media's file is another one now.
     if (e->reader && !e->reader->info().path.empty() &&
         (m.sequenceFps > 0 ? e->reader->info().path != m.readPath() : e->reader->info().path != m.path)) {
@@ -469,8 +496,11 @@ ImagePtr MediaPool::videoFrame(uint64_t user, const MediaItem& m0, double second
         if (f > 1.0005) bw = std::max(1, (int)std::lround(bw / f));
         else if (f < 0.9995) bh = std::max(1, (int)std::lround(bh * f));
     }
-    std::shared_ptr<FrameShare> share = (depth == PixelDepth::Float && m.info.bitDepth > 8) ? nullptr : share_;
-    const uint64_t shape = share ? shapeOf(m, bw, bh, deinterlace) : 0;
+    const bool deep = depth == PixelDepth::Float && m.info.bitDepth > 8;
+    std::shared_ptr<FrameShare> share = deep ? nullptr : share_;
+    // What the read is for, also without the shared frames: a thread wanting a frame a busy reader of the same shape
+    // is about to make waits for that reader (get). A deep read makes a different picture, so it is another shape.
+    const uint64_t shape = shapeOf(m, bw, bh, deinterlace) ^ (deep ? 0x8F1BBCDCBFA53E0Bull : 0);
     const uint64_t generation = share ? share->generation() : 0;
     auto finish = [&](const ImagePtr& got) {
         if (f == 1.0 && !rot) return withAlphaMode(got, m0.alphaMode);
@@ -485,7 +515,7 @@ ImagePtr MediaPool::videoFrame(uint64_t user, const MediaItem& m0, double second
     std::unique_lock<std::mutex> lk;
     EntryPtr e = get(video_, maxVideo_ ? maxVideo_ : kMaxVideoReaders, maxVideo_ ? std::min(maxVideo_, kVideoReadersPerMedia) : kVideoReadersPerMedia, user, m,
                      [&](Entry& x) { return x.deinterlace != deinterlace ? 2 : x.reader->videoCost(seconds, w, h); }, lk, reserveSeconds,
-                     share && reserveSeconds <= 0 ? seconds : std::numeric_limits<double>::quiet_NaN(), shape);
+                     reserveSeconds <= 0 ? seconds : std::numeric_limits<double>::quiet_NaN(), shape);
     if (!e) return nullptr;
     struct Idle {
         Entry& e;

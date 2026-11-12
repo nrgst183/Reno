@@ -145,6 +145,7 @@ private:
         int first = -1, count = 0;          // audio: the channels the last read picked
         std::atomic<double> busyWant{std::numeric_limits<double>::quiet_NaN()};   // video: the time being read now (NaN: idle or not known yet)
         std::atomic<uint64_t> busyShape{0};                                         // ... and the size and settings it is read at (shapeOf)
+        double lastWant = std::numeric_limits<double>::quiet_NaN();               // video: the time read last (under 'mutex'; NaN: none yet)
         int deinterlace = 0;                // video: what the reader was last told to do with interlaced frames
         std::string field;                  // video: the Field order override it was last told (MediaItem::fieldOrderOverride)
     };
