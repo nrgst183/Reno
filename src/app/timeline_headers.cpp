@@ -638,6 +638,7 @@ void TimelineWidget::Impl::paintCorners(QPainter& p, const QRect& clip)
         p.setFont(f);
         p.setPen(timeText.isValid() ? timeText : kTimeText);
         p.drawText(QRect(inner.left(), 15, inner.width() - 2, kTopH - 17), Qt::AlignRight | Qt::AlignVCenter, text);
+        paintedTimeText = text;
         p.restore();
     }
     const int w = q->width(), h = q->height();

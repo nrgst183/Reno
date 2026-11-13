@@ -260,7 +260,8 @@ void MainWindow::setUpSurroundPanner(Tools* t)
         };
 }
 
-// Preview on External Monitor (Alt+Shift+4) and the display it uses (View menu).
+// Preview on External Monitor (Alt+Shift+4; the Video Preview's button). The display it uses is chosen as in VEGAS,
+// in Preferences > Preview Device (Display adapter).
 void MainWindow::setUpExternalMonitor(Tools* t)
 {
     Playback* pb = playback_.get();
@@ -269,23 +270,6 @@ void MainWindow::setUpExternalMonitor(Tools* t)
     if (QMenu* view = menuNamed(this, "View")) {
         view->addSeparator();
         view->addAction(monitor);
-        QMenu* displays = view->addMenu("External Monitor &Display");
-        displays->setObjectName("externalMonitorDisplays");
-        QObject::connect(displays, &QMenu::aboutToShow, this, [t, displays] {
-            displays->clear();
-            QAction* any = displays->addAction("Another display than Reno's");
-            any->setCheckable(true);
-            any->setChecked(t->monitor->screenName().isEmpty());
-            QObject::connect(any, &QAction::triggered, displays, [t] { t->monitor->setScreenName(QString()); });
-            displays->addSeparator();
-            for (QScreen* sc : QGuiApplication::screens()) {
-                const QString name = sc->name();
-                QAction* a = displays->addAction(QString("%1 (%2 x %3)").arg(name).arg(sc->geometry().width()).arg(sc->geometry().height()));
-                a->setCheckable(true);
-                a->setChecked(t->monitor->screenName() == name);
-                QObject::connect(a, &QAction::triggered, displays, [t, name] { t->monitor->setScreenName(name); });
-            }
-        });
     }
 }
 

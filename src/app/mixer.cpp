@@ -21,6 +21,7 @@
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QLocale>
 #include <QMenu>
 #include <QPointer>
 #include <QSettings>
@@ -56,6 +57,7 @@ namespace {
 const QColor kConsoleBg(34, 34, 37);
 const QColor kStripBg(50, 50, 54);
 const QColor kStripEdge(24, 24, 26);
+const QColor kStripSelected(38, 66, 96);
 const QColor kText(222, 222, 222);
 const QColor kDimText(150, 150, 155);
 const QColor kGroove(16, 16, 18);
@@ -78,11 +80,12 @@ QColor trackColor(const Track& t, int index)
 }
 
 // ------------------------------------------------------------------------------------------ fader law
-// Where a gain sits along a fader (0 bottom .. 1 top): spread out in dB around 0 dB, squeezed towards the bottom,
-// straight down to silence below -60 dB. +12 dB at the top.
+// Where a gain sits along a fader (0 bottom .. 1 top), as VEGAS's console faders: +12 dB at the top, 0 dB two thirds of
+// the way up, evenly in dB down to -12 dB (a third of the way up), then squeezed (a sixth as much per dB) down to
+// -60 dB, and straight down to silence below that.
 struct TaperPoint { double db, pos; };
-const TaperPoint kTaper[] = {{12, 1.0}, {6, 0.885}, {0, 0.76}, {-6, 0.64}, {-12, 0.525}, {-18, 0.42},
-                             {-24, 0.325}, {-36, 0.19}, {-48, 0.095}, {-60, 0.035}};
+const TaperPoint kTaper[] = {{12, 1.0}, {6, 0.83}, {0, 0.66}, {-6, 0.49}, {-12, 0.32}, {-18, 0.286},
+                             {-24, 0.252}, {-36, 0.184}, {-48, 0.116}, {-60, 0.048}};
 const int kTaperN = (int)(sizeof(kTaper) / sizeof(kTaper[0]));
 const double kMaxGain = 3.9810717055349722;
 
@@ -128,9 +131,10 @@ QString panText(double pan)
 }
 
 // ------------------------------------------------------------------------------------------ meter law
-// Meters show -60 dB (or the range chosen with a right-click on a meter, for all of them) .. +6 dB, evenly in dB.
+// Meters show -60 dB (or the range chosen with a right-click on a meter, for all of them) .. 0 dB, evenly in dB, as
+// VEGAS's console (going over is shown by the peak readout turning red).
 double kMeterLo = -60.0;
-const double kMeterHi = 6.0;
+const double kMeterHi = 0.0;
 double meterFrac(double db) { return std::clamp((db - kMeterLo) / (kMeterHi - kMeterLo), 0.0, 1.0); }
 double levelDb(float v) { return v > 1e-6f ? 20.0 * std::log10((double)v) : -200.0; }
 
@@ -238,8 +242,9 @@ struct DragValue {
 };
 
 // ------------------------------------------------------------------------------------------ fader and meter
-// A tall fader in dB (when 'value' is set) with a stereo peak meter beside it, their scales, the meter's held peak (red
-// once over 0 dB; a click clears it) and the fader's value underneath.
+// As VEGAS's console: a fader in dB (when 'value' is set) with its ticks, a stereo peak meter at the right with its dB
+// scale drawn over it (3, 6, 9 ... dB down), the held peak above the meter (red once over 0 dB; a click clears it) and
+// the fader's value (or Muted) underneath. The master shows two faders, linked unless split.
 class FaderMeter : public QWidget {
 public:
     FaderMeter(bool big, QWidget* parent) : QWidget(parent), big_(big)
@@ -251,15 +256,20 @@ public:
 
     std::function<double()> value;
     std::function<void(Project&, double)> apply;
-    // A second fader beside the first (the master's right channel, VEGAS's split master faders); shown while splitOn.
+    // A second fader beside the first (the master's right channel, VEGAS's split master faders); moves on its own while
+    // splitOn.
     std::function<double()> value2;
     std::function<void(Project&, double)> apply2;
     bool splitOn = false;
+    // Two faders drawn even when linked (the master's left and right, which then move together).
+    bool twin = false;
+    // The channel is muted: the value underneath reads Muted.
+    bool muted = false;
     // A fader that is not part of the project (the Preview bus's): moves go here and make no undo step.
     std::function<void(double)> direct;
     std::string undoName = "Volume";
     MeterState meter;
-    // What is shown (control regions and options): fader, meter, fader dB scale (Show Fader Ticks), meter scale (left
+    // What is shown (control regions and options): fader, meter, fader ticks (Show Fader Ticks), meter scale (left
     // out in narrow strips), held peaks.
     bool showFader = true, showMeter = true, ticks = true, meterScale = true, holdPeaks = true;
     std::function<void(const QPoint& global)> onMeterMenu;
@@ -293,11 +303,11 @@ public:
     {
         if (shownKey() != painted_) update();
     }
-    QRect capRect(int which = 0) const { return which ? capAt(value2 ? gainToPos(value2()) : 0.0, geo().grooveX2) : capAt(value ? gainToPos(value()) : 0.0, geo().grooveX); }
+    QRect capRect(int which = 0) const { return which ? capAt(gainToPos(value2nd()), geo().grooveX2) : capAt(value ? gainToPos(value()) : 0.0, geo().grooveX); }
     int faderY(double gain) const { return yAt(gainToPos(gain)); }
 
 protected:
-    QSize sizeHint() const override { return QSize(big_ ? 130 : 90, 300); }
+    QSize sizeHint() const override { return QSize(big_ ? 80 : 50, 300); }
 
     void paintEvent(QPaintEvent*) override
     {
@@ -308,128 +318,116 @@ protected:
         setProperty("cap", capRect());
         setProperty("readout", readoutRect());
         setProperty("split", split());
-        if (split()) setProperty("cap2", capRect(1));
+        if (faders() > 1) setProperty("cap2", capRect(1));
         setProperty("faderTop", g.top);
         setProperty("faderBottom", g.bottom);
         QFont small = font();
-        small.setPointSizeF(big_ ? 7.5 : 6.8);
+        small.setPointSizeF(7.2);
         p.setFont(small);
         const QFontMetrics fm(small);
 
         if (value && showFader) {
-            for (int i = 0; ticks && i < kTaperN; ++i) {
+            // the ticks: left of a single fader, between the master's two
+            const int tx = faders() > 1 ? (g.grooveX + g.grooveX2) / 2 - 2 : g.grooveX - 11;
+            for (int i = 0; ticks && i < kTaperN && tx >= 0; ++i) {
                 const int y = yAt(kTaper[i].pos);
-                p.setPen(kTick);
-                p.drawLine(g.grooveX - 9, y, g.grooveX - 5, y);
-                p.drawLine(g.grooveX + 5, y, g.grooveX + 9, y);
-                if (!meterScale) continue;
-                const bool label = i == 0 || std::fabs(kTaper[i].db) < 0.01 || std::fabs(yAt(kTaper[i].pos) - yAt(kTaper[i - 1].pos)) >= fm.height() - 1;
-                if (!label) continue;
-                const double db = kTaper[i].db;
-                p.setPen(std::fabs(db) < 0.01 ? kText : kDimText);
-                p.drawText(QRect(g.x0, y - fm.height() / 2, g.grooveX - 10 - g.x0, fm.height()), Qt::AlignRight | Qt::AlignVCenter,
-                           db > 0 ? QString("+%1").arg(db) : QString::number(db));
+                p.fillRect(QRect(tx, y, 4, 1), kTick);
             }
-          for (int f = 0; f < (split() ? 2 : 1); ++f) {
-            const int gx = f ? g.grooveX2 : g.grooveX;
-            const QRect groove(gx - 2, g.top - 3, 4, g.bottom - g.top + 6);
-            p.fillRect(groove, kGroove);
-            p.setPen(QColor(70, 70, 74));
-            p.drawLine(groove.right() + 1, groove.top(), groove.right() + 1, groove.bottom());
-            const QRect cap = capRect(f);
-            QLinearGradient cg(cap.topLeft(), cap.bottomLeft());
-            const bool hot = (drag_.active && dragging_ == f) || hoverCap_ == f;
-            cg.setColorAt(0.0, hot ? QColor(236, 236, 240) : QColor(214, 214, 218));
-            cg.setColorAt(0.45, hot ? QColor(190, 190, 196) : QColor(168, 168, 174));
-            cg.setColorAt(0.55, hot ? QColor(150, 150, 156) : QColor(132, 132, 138));
-            cg.setColorAt(1.0, hot ? QColor(178, 178, 184) : QColor(156, 156, 162));
-            p.setRenderHint(QPainter::Antialiasing, true);
-            QPainterPath path;
-            path.addRoundedRect(QRectF(cap).adjusted(0.5, 0.5, -0.5, -0.5), 2, 2);
-            p.fillPath(path, cg);
-            p.setPen(QColor(20, 20, 22));
-            p.drawPath(path);
-            p.setRenderHint(QPainter::Antialiasing, false);
-            p.setPen(QColor(30, 30, 32));
-            p.drawLine(cap.left() + 3, cap.center().y(), cap.right() - 3, cap.center().y());
-            p.setPen(QColor(235, 235, 240, 150));
-            p.drawLine(cap.left() + 3, cap.center().y() + 1, cap.right() - 3, cap.center().y() + 1);
-            p.setPen(kText);
-            QFont vf = small;
-            vf.setPointSizeF(big_ ? 8.0 : 7.2);
-            p.setFont(vf);
-            if (split()) p.drawText(QRect(gx - 20, g.bottom + 6, 40, height() - g.bottom - 6), Qt::AlignHCenter | Qt::AlignVCenter, dbText(f ? value2() : value()));
-            else p.drawText(QRect(0, g.bottom + 6, g.meterX - 2, height() - g.bottom - 6), Qt::AlignHCenter | Qt::AlignVCenter, dbText(value()));
-            p.setFont(small);
-          }
+            for (int f = 0; f < faders(); ++f) {
+                const int gx = f ? g.grooveX2 : g.grooveX;
+                p.fillRect(QRect(gx - 1, g.top - 2, 2, g.bottom - g.top + 4), kGroove);
+                p.fillRect(QRect(gx + 1, g.top - 2, 1, g.bottom - g.top + 4), QColor(78, 78, 82));
+                const QRect cap = capRect(f);
+                const bool hot = (drag_.active && dragging_ == f) || hoverCap_ == f;
+                p.fillRect(cap, QColor(16, 16, 18));
+                p.fillRect(cap.adjusted(1, 1, -1, -1), hot ? QColor(255, 255, 255) : QColor(226, 226, 230));
+                const int bar = std::max(2, cap.width() - 6);
+                p.fillRect(QRect(cap.left() + (cap.width() - bar) / 2, cap.top() + 3, bar, 2), QColor(30, 30, 32));
+                p.fillRect(QRect(cap.left() + (cap.width() - bar) / 2, cap.bottom() - 4, bar, 2), QColor(30, 30, 32));
+                QFont vf = small;
+                vf.setPointSizeF(7.6);
+                p.setFont(vf);
+                // the value underneath (the master's two as a pair, "0.0 0.0")
+                p.setPen(muted ? QColor(240, 180, 40) : kText);
+                if (faders() == 1) {
+                    p.drawText(QRect(gx - 30, g.bottom + 5, 60, height() - g.bottom - 5), Qt::AlignHCenter | Qt::AlignVCenter, muted ? QString("Muted") : dbText(value()));
+                } else if (f == 0) {
+                    const QString pair = muted ? QString("Muted") : dbText(value()) + "  " + dbText(value2nd());
+                    p.drawText(QRect(0, g.bottom + 5, std::max(g.meterX, g.grooveX2 + 20), height() - g.bottom - 5), Qt::AlignHCenter | Qt::AlignVCenter, pair);
+                }
+                p.setFont(small);
+            }
         }
         if (!showMeter) return;
 
-        for (double db = kMeterHi; meterScale && db >= kMeterLo - 0.01; db -= 6.0) {
-            const int y = meterY(db);
-            p.setPen(kTick);
-            p.drawLine(g.scaleX - 2, y, g.scaleX, y);
-            const double spacing = (double)(g.bottom - g.top) * 6.0 / (kMeterHi - kMeterLo);
-            const int every = spacing >= fm.height() ? 1 : (spacing * 2 >= fm.height() ? 2 : 3);
-            if ((int)std::lround((kMeterHi - db) / 6.0) % every != 0) continue;
-            p.setPen(std::fabs(db) < 0.01 ? kText : kDimText);
-            p.drawText(QRect(g.scaleX + 2, y - fm.height() / 2, width() - g.scaleX - 2, fm.height()), Qt::AlignLeft | Qt::AlignVCenter,
-                       db > 0 ? QString("+%1").arg(db) : QString::number(db));
-        }
-
-        const int zero = meterY(0.0), yellow = meterY(-12.0), base = g.bottom;
+        // the meter: dark, a bar per channel side by side, filled from the bottom
+        const QRect box(g.meterX, g.mTop, g.meterBox, g.bottom - g.mTop + 1);
+        p.fillRect(box, QColor(24, 24, 26));
+        const int base = g.bottom;
+        QRegion filled;
         for (int k = 0; k < meter.channels; ++k) {
-            const QRect bar(g.meterX + k * (g.meterW + g.meterGap), g.top, g.meterW, g.bottom - g.top + 1);
-            p.fillRect(bar.adjusted(-1, -1, 1, 1), QColor(8, 8, 9));
-            p.fillRect(bar, QColor(22, 24, 23));
-            for (double db = kMeterHi - 6.0; db > kMeterLo; db -= 6.0) p.fillRect(QRect(bar.left(), meterY(db), bar.width(), 1), QColor(34, 36, 35));
+            const QRect bar(g.meterX + k * (g.meterW + g.meterGap), g.mTop, g.meterW, g.bottom - g.mTop + 1);
             const double lv = levelDb(meter.level[k]);
             const int top = meterY(lv);
             if (meter.level[k] > 1e-6f && top < base) {
-                QLinearGradient grad(0, base, 0, g.top);
-                const double span = base - g.top;
-                grad.setColorAt(0.0, QColor(30, 150, 70));
-                grad.setColorAt((base - yellow) / span * 0.92, QColor(80, 200, 70));
-                grad.setColorAt((base - yellow) / span, QColor(200, 210, 60));
-                grad.setColorAt((base - zero) / span - 0.02, QColor(240, 170, 40));
-                grad.setColorAt((base - zero) / span, QColor(230, 50, 40));
-                grad.setColorAt(1.0, QColor(240, 40, 40));
-                p.fillRect(QRect(bar.left(), top, bar.width(), base - top + 1), grad);
+                QLinearGradient grad(0, base, 0, g.mTop);
+                const double span = std::max(1, base - g.mTop);
+                auto at = [&](double db) { return std::clamp((base - meterY(db)) / span, 0.0, 1.0); };
+                grad.setColorAt(0.0, QColor(30, 236, 90));
+                grad.setColorAt(at(-15.0), QColor(40, 240, 80));
+                grad.setColorAt(at(-9.0), QColor(200, 240, 40));
+                grad.setColorAt(at(-4.0), QColor(250, 236, 30));
+                grad.setColorAt(at(-1.5), QColor(250, 140, 30));
+                grad.setColorAt(1.0, QColor(240, 40, 30));
+                const QRect fill(bar.left(), top, bar.width(), base - top + 1);
+                p.fillRect(fill, grad);
+                filled += fill;
             }
             if (meter.hold[k] > 1e-6f) {
                 const double hd = levelDb(meter.hold[k]);
                 const int y = meterY(hd);
-                const QColor hc = hd > 0 ? QColor(255, 70, 60) : (hd > -12 ? QColor(240, 220, 90) : QColor(140, 230, 140));
-                p.fillRect(QRect(bar.left(), y, bar.width(), 2), hc);
+                const QColor hc = hd > -3 ? QColor(250, 110, 30) : (hd > -12 ? QColor(230, 240, 60) : QColor(120, 255, 140));
+                p.fillRect(QRect(bar.left(), y, bar.width(), 1), hc);
             }
+        }
+        if (meterScale) {
+            // the scale over the meter, 3 dB apart (fewer when they would crowd): light on the dark, dark on the lit
+            const double per3 = (double)(g.bottom - g.mTop) * 3.0 / std::max(1.0, kMeterHi - kMeterLo);
+            const int every = per3 >= fm.height() - 1 ? 1 : (per3 * 2 >= fm.height() - 1 ? 2 : (per3 * 3 >= fm.height() - 1 ? 3 : 4));
+            QFont sf = small;
+            sf.setPointSizeF(7.0);
+            p.setFont(sf);
+            const QFontMetrics sm(sf);
+            auto scale = [&](const QColor& c) {
+                p.setPen(c);
+                int n = 0;
+                for (double db = kMeterHi - 3.0; db > kMeterLo + 1.0; db -= 3.0, ++n) {
+                    if (n % every) continue;
+                    const int y = meterY(db);
+                    p.fillRect(QRect(box.right() - 2, y, 2, 1), c);
+                    p.drawText(QRect(box.left(), y - sm.height() / 2, box.width() - 4, sm.height()), Qt::AlignRight | Qt::AlignVCenter, QString::number((int)std::lround(-db)));
+                }
+            };
+            scale(QColor(225, 225, 228));
+            if (!filled.isEmpty()) {
+                p.save();
+                p.setClipRegion(filled);
+                scale(QColor(16, 40, 20));
+                p.restore();
+            }
+            p.setFont(small);
         }
         const QRect ro = readoutRect();
         bool clipped = false;
         for (int k = 0; k < meter.channels; ++k) clipped = clipped || meter.clip[k];
-        p.fillRect(ro, clipped ? QColor(190, 30, 30) : QColor(20, 20, 22));
-        p.setPen(QColor(70, 70, 74));
-        p.drawRect(ro.adjusted(0, 0, -1, -1));
-        p.setPen(clipped ? QColor(255, 255, 255) : (meter.active ? kText : kDimText));
+        if (clipped) p.fillRect(ro, QColor(190, 30, 30));
+        float h = 0;
+        for (int k = 0; k < meter.channels; ++k) h = std::max(h, meter.hold[k]);
         QFont rf = small;
-        rf.setPointSizeF(big_ ? 7.5 : 6.6);
+        rf.setPointSizeF(7.6);
         p.setFont(rf);
-        if (big_ && meter.channels == 2) {
-            for (int k = 0; k < 2; ++k)
-                p.drawText(QRect(ro.left() + k * ro.width() / 2, ro.top(), ro.width() / 2, ro.height()), Qt::AlignCenter, peakText(meter.hold[k]));
-            p.setPen(QColor(70, 70, 74));
-            p.drawLine(ro.center().x(), ro.top() + 2, ro.center().x(), ro.bottom() - 2);
-        } else {
-            float h = 0;
-            for (int k = 0; k < meter.channels; ++k) h = std::max(h, meter.hold[k]);
-            p.drawText(ro, Qt::AlignCenter, peakText(h));
-        }
-        p.setFont(small);
-        p.setPen(kDimText);
-        static const char* kSix[6] = {"L", "R", "C", "E", "l", "r"};
-        static const char* kSixWide[6] = {"L", "R", "C", "LFE", "Ls", "Rs"};
-        for (int k = 0; k < meter.channels; ++k)
-            p.drawText(QRect(g.meterX + k * (g.meterW + g.meterGap) - 4, g.bottom + 3, g.meterW + 8, fm.height()), Qt::AlignCenter,
-                       meter.channels == 2 ? (k ? "R" : "L") : (g.meterW >= 14 ? kSixWide[k] : kSix[k]));
+        p.setPen(clipped ? QColor(255, 255, 255) : (meter.active ? kText : kDimText));
+        p.drawText(ro.adjusted(0, 0, -1, 0), Qt::AlignRight | Qt::AlignVCenter, peakText(h));
     }
 
     void mousePressEvent(QMouseEvent* e) override
@@ -450,17 +448,17 @@ protected:
         }
         if (!value || !apply || !showFader) return;
         const Geo g = geo();
-        for (int f = 0; f < (split() ? 2 : 1); ++f) {
+        for (int f = 0; f < faders(); ++f) {
             const QRect cap = capRect(f);
             if (cap.adjusted(-2, -2, 2, 2).contains(pos)) {
                 dragging_ = f;
-                drag_.press(gainToPos(f ? value2() : value()), -pos.y());
+                drag_.press(gainToPos(f ? value2nd() : value()), -pos.y());
                 update();
                 return;
             }
         }
         const int pf = pickAt(pos.x());
-        if (std::abs(pos.x() - (pf ? g.grooveX2 : g.grooveX)) <= 12 && pos.y() >= g.top - 8 && pos.y() <= g.bottom + 8) {
+        if (std::abs(pos.x() - (pf ? g.grooveX2 : g.grooveX)) <= 8 && pos.y() >= g.top - 8 && pos.y() <= g.bottom + 8) {
             const double v = std::clamp((double)(g.bottom - pos.y()) / std::max(1, g.bottom - g.top), 0.0, 1.0);
             dragging_ = pf;
             if (!direct) AppState::get().beginDrag();
@@ -474,7 +472,7 @@ protected:
     {
         const QPoint pos = e->position().toPoint();
         int h = -1;
-        for (int f = 0; f < (split() ? 2 : 1); ++f)
+        for (int f = 0; f < faders(); ++f)
             if (capRect(f).adjusted(-2, -2, 2, 2).contains(pos)) h = f;
         if (h != hoverCap_) {
             hoverCap_ = h;
@@ -484,7 +482,7 @@ protected:
         const Geo g = geo();
         const bool ctrl = (e->modifiers() & Qt::ControlModifier) != 0;
         double v;
-        if (drag_.move(-pos.y(), g.bottom - g.top, ctrl, gainToPos(dragging_ ? value2() : value()), v)) set(v, ctrl);
+        if (drag_.move(-pos.y(), g.bottom - g.top, ctrl, gainToPos(dragging_ ? value2nd() : value()), v)) set(v, ctrl);
     }
     void mouseReleaseEvent(QMouseEvent*) override
     {
@@ -498,13 +496,13 @@ protected:
         const Geo g = geo();
         const QPoint pos = e->position().toPoint();
         const int f = pickAt(pos.x());
-        if (std::abs(pos.x() - (f ? g.grooveX2 : g.grooveX)) > 12) return;
+        if (std::abs(pos.x() - (f ? g.grooveX2 : g.grooveX)) > 8) return;
         if (direct) {
             direct(1.0);
             update();
             return;
         }
-        std::function<void(Project&, double)> fn = f ? apply2 : apply;
+        std::function<void(Project&, double)> fn = f && split() ? apply2 : apply;
         AppState::get().edit(undoName, [&](Project& p) { fn(p, 1.0); });
     }
     void leaveEvent(QEvent*) override
@@ -514,6 +512,9 @@ protected:
     }
 
 private:
+    // How many faders are drawn (the master's two), and the second one's value (the first's while they are linked).
+    int faders() const { return split() || (twin && value) ? 2 : 1; }
+    double value2nd() const { return split() ? value2() : (value ? value() : 0.0); }
     // After the meter took in sound: the values the tests read, and a repaint if what the meter shows changed.
     void meterFed(const MeterState& before)
     {
@@ -537,28 +538,34 @@ private:
         k.v = value ? value() : 0.0;
         k.v2 = value2 ? value2() : 0.0;
         k.split = split();
-        k.options = (int)showFader | (int)showMeter << 1 | (int)ticks << 2 | (int)meterScale << 3 | (int)holdPeaks << 4;
+        k.options = (int)showFader | (int)showMeter << 1 | (int)ticks << 2 | (int)meterScale << 3 | (int)holdPeaks << 4 | (int)muted << 5;
         return k;
     }
     ShownKey painted_;
+    // Where things are: the fader groove(s) (top .. bottom is the fader's travel), the meter box at the right (its
+    // channels' bars meterW wide, meterGap apart) from mTop down to the same bottom.
     struct Geo {
-        int x0, grooveX, grooveX2, meterX, meterW, meterGap, scaleX, top, bottom;
+        int grooveX, grooveX2, meterX, meterBox, meterW, meterGap, top, mTop, bottom;
     };
     Geo geo() const
     {
         Geo g;
-        const int n = meter.channels;
-        g.meterW = n == 6 ? (big_ ? 9 : 3) : (big_ ? 20 : 7);
-        g.meterGap = n == 6 ? 1 : (big_ ? 4 : 2);
-        const int labels = ticks && meterScale ? (big_ ? 22 : 19) : 4, fader = 24, gap = big_ ? 10 : 5, scale = meterScale ? (big_ ? 24 : 21) : 0;
-        const int faderW = value && showFader ? labels + fader + gap + (split() ? 26 : 0) : 0;
-        const int total = faderW + (showMeter ? n * g.meterW + (n - 1) * g.meterGap + 3 + scale : 0);
-        g.x0 = std::max(0, (width() - total) / 2);
-        g.grooveX = g.x0 + labels + fader / 2;
-        g.grooveX2 = g.grooveX + 26;
-        g.meterX = g.x0 + faderW;
-        g.scaleX = g.meterX + n * g.meterW + (n - 1) * g.meterGap + 3;
-        g.top = big_ ? 30 : 26;
+        const int n = meter.channels, w = width();
+        const bool fader = value && showFader;
+        g.meterBox = !showMeter ? 0 : fader ? std::clamp(w - 27, 14, 30) : std::clamp(w - 8, 14, 30);
+        g.meterX = fader ? w - g.meterBox - 1 : (w - g.meterBox) / 2;
+        g.meterGap = n == 6 ? 1 : 0;
+        g.meterW = std::max(1, (g.meterBox - (n - 1) * g.meterGap) / n);
+        const int room = showMeter ? g.meterX : w;
+        if (faders() > 1) {
+            g.grooveX = room / 2 - 8;
+            g.grooveX2 = room / 2 + 9;
+        } else {
+            g.grooveX = room / 2;
+            g.grooveX2 = g.grooveX;
+        }
+        g.top = 6;
+        g.mTop = 20;
         g.bottom = height() - 20;
         return g;
     }
@@ -570,25 +577,23 @@ private:
     int meterY(double db) const
     {
         const Geo g = geo();
-        return g.bottom - (int)std::lround(meterFrac(db) * (g.bottom - g.top));
+        return g.bottom - (int)std::lround(meterFrac(db) * (g.bottom - g.mTop));
     }
     QRect capAt(double pos, int grooveX) const
     {
-        const int w = 22, h = big_ ? 13 : 12;
+        const int w = faders() > 1 ? 8 : 12, h = 12;
         return QRect(grooveX - w / 2, yAt(pos) - h / 2, w, h);
     }
     int pickAt(int x) const
     {
         const Geo g = geo();
-        return split() && std::abs(x - g.grooveX2) < std::abs(x - g.grooveX) ? 1 : 0;
+        return faders() > 1 && std::abs(x - g.grooveX2) < std::abs(x - g.grooveX) ? 1 : 0;
     }
     QRect readoutRect() const
     {
         const Geo g = geo();
-        const int span = meter.channels * g.meterW + (meter.channels - 1) * g.meterGap;
-        const int w = std::max(span + 16, big_ ? 64 : 34);
-        const int cx = g.meterX + span / 2;
-        return QRect(std::min(std::max(0, cx - w / 2), std::max(0, width() - w)), 4, w, big_ ? 18 : 15);
+        const int w = std::max(g.meterBox + 8, 34);
+        return QRect(std::max(0, g.meterX + g.meterBox - w), 4, w, 14);
     }
     void set(double v, bool ctrl)
     {
@@ -600,7 +605,7 @@ private:
             AppState::get().status(undoName + ": " + dbText(gain, true).toStdString());
             return;
         }
-        std::function<void(Project&, double)> fn = dragging_ ? apply2 : apply;
+        std::function<void(Project&, double)> fn = dragging_ && split() ? apply2 : apply;
         AppState::get().dragUpdate([&](Project& p) { fn(p, gain); });
         AppState::get().status(undoName + ": " + dbText(gain, true).toStdString());
     }
@@ -779,12 +784,13 @@ private:
 // A horizontal pan slider with a mark in the middle and the readout above it. Double-click centres it.
 class PanSlider : public QWidget {
 public:
-    explicit PanSlider(QWidget* parent) : QWidget(parent) { setFixedHeight(28); }
+    explicit PanSlider(QWidget* parent) : QWidget(parent) { setFixedHeight(34); }
     std::function<double()> value;
     std::function<void(Project&, double)> apply;
     std::string undoName = "Pan";
 
-    QRect groove() const { return QRect(8, 17, width() - 16, 5); }
+    // As VEGAS's console: a line across with a marker above it at the pan, and the pan written underneath.
+    QRect groove() const { return QRect(6, 11, width() - 12, 2); }
     int xOf(double pan) const { return groove().left() + (int)std::lround((pan + 1.0) * 0.5 * groove().width()); }
     // The project changed: repaints only if the pan shown moved.
     void projectChanged()
@@ -801,26 +807,21 @@ protected:
         paintedOnce_ = true;
         setProperty("knobX", xOf(pan));
         setProperty("groove", groove());
-        QFont f = font();
-        f.setPointSizeF(7.0);
-        p.setFont(f);
-        p.setPen(kDimText);
-        p.drawText(QRect(0, 0, width(), 14), Qt::AlignLeft | Qt::AlignVCenter, " Pan");
-        p.setPen(kText);
-        p.drawText(QRect(0, 0, width() - 3, 14), Qt::AlignRight | Qt::AlignVCenter, panText(pan));
         const QRect g = groove();
         p.fillRect(g, kGroove);
-        const int c = xOf(0), x = xOf(pan);
-        p.fillRect(QRect(std::min(c, x), g.top() + 1, std::abs(x - c) + 1, g.height() - 2), kAccent);
-        p.fillRect(QRect(c, g.top() - 3, 1, g.height() + 6), kTick);
+        p.fillRect(QRect(g.left(), g.bottom() + 1, g.width(), 1), QColor(78, 78, 82));
+        const int x = xOf(pan);
         p.setRenderHint(QPainter::Antialiasing, true);
-        const QRectF knob(x - 4.5, g.top() - 4.5, 9, g.height() + 9);
-        QLinearGradient kg(knob.topLeft(), knob.bottomLeft());
-        kg.setColorAt(0, drag_.active ? QColor(240, 240, 244) : QColor(210, 210, 214));
-        kg.setColorAt(1, QColor(140, 140, 146));
-        p.setBrush(kg);
-        p.setPen(QColor(20, 20, 22));
-        p.drawRoundedRect(knob, 2, 2);
+        const QPointF marker[3] = {QPointF(x - 6.5, g.top() - 8.5), QPointF(x + 6.5, g.top() - 8.5), QPointF(x, g.top() - 1.5)};
+        p.setPen(QPen(QColor(16, 16, 18), 1));
+        p.setBrush(drag_.active ? QColor(255, 255, 255) : QColor(232, 232, 236));
+        p.drawPolygon(marker, 3);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        QFont f = font();
+        f.setPointSizeF(7.6);
+        p.setFont(f);
+        p.setPen(kText);
+        p.drawText(QRect(0, 18, width(), 14), Qt::AlignHCenter | Qt::AlignVCenter, panText(pan));
     }
     void mousePressEvent(QMouseEvent* e) override
     {
@@ -999,7 +1000,11 @@ private:
 
 class StripHeader : public QWidget {
 public:
-    explicit StripHeader(QWidget* parent) : QWidget(parent) { setFixedHeight(36); }
+    explicit StripHeader(QWidget* parent) : QWidget(parent) { setFixedHeight(20); }
+    // How the name is shown, as VEGAS's console: a track's number in a box of its colour, a bus's letter large, the
+    // master's with its icon.
+    enum Style { NumberBox, BusLetter, MasterIcon };
+    Style style = NumberBox;
     QString number, name;
     QColor color;
     bool selected = false;
@@ -1020,35 +1025,51 @@ protected:
         paintedColor_ = color;
         paintedSelected_ = selected;
         paintedOnce_ = true;
-        const QRect r = rect().adjusted(0, 0, -1, -1);
-        QLinearGradient g(r.topLeft(), r.bottomLeft());
-        g.setColorAt(0, color.darker(115));
-        g.setColorAt(1, color.darker(175));
-        p.fillRect(r, g);
-        if (selected) {
-            p.setPen(QPen(QColor(240, 240, 240), 1));
-            p.drawRect(r);
-        }
-        QFont f = font();
-        f.setBold(true);
-        f.setPointSizeF(8.0);
-        p.setFont(f);
-        const QFontMetrics fm(f);
-        int x = 4;
-        if (!number.isEmpty()) {
-            const int w = std::max(16, fm.horizontalAdvance(number) + 6);
-            const QRect box(x, 4, w, 14);
-            p.fillRect(box, QColor(0, 0, 0, 90));
-            p.setPen(QColor(255, 255, 255));
-            p.drawText(box, Qt::AlignCenter, number);
-            x += w + 4;
-        }
-        p.setPen(QColor(255, 255, 255));
         QFont nf = font();
         nf.setPointSizeF(8.0);
-        p.setFont(nf);
         const QFontMetrics nfm(nf);
-        p.drawText(QRect(x, 4, width() - x - 3, 14), Qt::AlignLeft | Qt::AlignVCenter, nfm.elidedText(name, Qt::ElideRight, width() - x - 3));
+        QString label = name;
+        int x = 4;
+        if (style == NumberBox) {
+            QFont bf = nf;
+            const int w = std::max(26, QFontMetrics(bf).horizontalAdvance(number) + 12);
+            const QRect box(1, 1, w, height() - 2);
+            p.fillRect(box, color.isValid() ? color.darker(118) : QColor(80, 80, 86));
+            if (selected) p.fillRect(QRect(box.left() + 3, box.top() + 3, 4, 4), QColor(255, 255, 255));
+            p.setFont(bf);
+            p.setPen(QColor(255, 255, 255));
+            p.drawText(box.adjusted(0, 0, -5, 0), Qt::AlignRight | Qt::AlignVCenter, number);
+            x = box.right() + 6;
+        } else if (style == BusLetter) {
+            // "Bus A": the letter large, then "Bus"
+            QString big = number;
+            const int sp = name.lastIndexOf(' ');
+            if (sp > 0 && name.size() - sp - 1 <= 2) {
+                big = name.mid(sp + 1);
+                label = name.left(sp);
+            }
+            if (!big.isEmpty()) {
+                QFont lf = nf;
+                lf.setBold(true);
+                lf.setPointSizeF(11.0);
+                p.setFont(lf);
+                p.setPen(QColor(255, 255, 255));
+                const int w = QFontMetrics(lf).horizontalAdvance(big);
+                p.drawText(QRect(5, 0, w + 2, height()), Qt::AlignLeft | Qt::AlignVCenter, big);
+                x = 5 + w + 8;
+            }
+        } else {
+            // the master's icon: a square in a square
+            const QRect icon(5, 4, 12, 12);
+            p.setPen(QColor(235, 235, 238));
+            p.drawRect(icon.adjusted(0, 0, -1, -1));
+            p.drawRect(icon.adjusted(1, 1, -2, -2));
+            p.fillRect(icon.adjusted(4, 4, -4, -4), QColor(235, 235, 238));
+            x = icon.right() + 8;
+        }
+        p.setFont(nf);
+        p.setPen(kText);
+        p.drawText(QRect(x, 0, width() - x - 2, height()), Qt::AlignLeft | Qt::AlignVCenter, nfm.elidedText(label, Qt::ElideRight, width() - x - 2));
     }
     void mousePressEvent(QMouseEvent* e) override
     {
@@ -1133,7 +1154,7 @@ struct ConsoleView {
     bool fx = true, sends = true, io = true, meters = true, faders = true;
     bool vu = false;
     bool labels = false, ticks = true, holdPeaks = true;
-    int stripWidth() const { return width == Narrow ? 66 : width == Wide ? 136 : 100; }
+    int stripWidth() const { return width == Narrow ? 56 : width == Wide ? 110 : 76; }
 };
 
 // ------------------------------------------------------------------------------------------ insert FX slots
@@ -1331,6 +1352,245 @@ private:
     bool paintedOnce_ = false;
 };
 
+// ------------------------------------------------------------------------------------------ strip buttons
+// VEGAS's console draws a strip's switches as small round icons in a column beside the fader; a switch that is on gets
+// a blue square behind it. (The buttons keep their text, Pre / Post and the like, for menus and tests; it is not drawn.)
+class IconButton : public QToolButton {
+public:
+    enum Glyph { Mute, Solo, Fx, Phase, Arm, Monitor, PrePost, Lock };
+    IconButton(Glyph glyph, QWidget* parent) : QToolButton(parent), glyph_(glyph)
+    {
+        setFixedSize(18, 18);
+        setFocusPolicy(Qt::NoFocus);
+        setAttribute(Qt::WA_Hover, true);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        // (Pre / Post and the master's lock show their state by the drawing itself)
+        const bool on = isChecked() && glyph_ != PrePost && glyph_ != Lock;
+        if (on) {
+            p.setPen(QColor(18, 176, 255));
+            p.setBrush(QColor(18, 176, 255, 110));
+            p.drawRoundedRect(r, 3, 3);
+        } else if (underMouse() && isEnabled()) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(255, 255, 255, 34));
+            p.drawRoundedRect(r, 3, 3);
+        }
+        if (!isEnabled()) p.setOpacity(0.4);
+        const QRectF c(2.5, 2.5, 13, 13);
+        QFont f = font();
+        f.setBold(true);
+        f.setPointSizeF(6.8);
+        auto ring = [&](const QColor& fill) {
+            p.setPen(QPen(QColor(30, 22, 24), 1));
+            p.setBrush(fill);
+            p.drawEllipse(c);
+        };
+        auto letter = [&](const QString& t, const QColor& col) {
+            p.setFont(f);
+            p.setPen(col);
+            p.drawText(c.adjusted(-1, 0, 0, 0), Qt::AlignCenter, t);
+        };
+        switch (glyph_) {
+        case Mute: {
+            ring(isChecked() ? QColor(240, 96, 110) : QColor(222, 128, 138));
+            letter("M", QColor(70, 16, 26));
+            // the small no-entry sign at the top right
+            const QRectF s(10.5, 1.5, 6, 6);
+            p.setPen(QPen(QColor(40, 30, 32), 1));
+            p.setBrush(QColor(245, 245, 245));
+            p.drawEllipse(s);
+            p.drawLine(QPointF(s.left() + 1.2, s.bottom() - 1.2), QPointF(s.right() - 1.2, s.top() + 1.2));
+            break;
+        }
+        case Solo:
+            ring(isChecked() ? QColor(240, 200, 70) : QColor(196, 168, 92));
+            letter("S", QColor(50, 36, 6));
+            p.setPen(QPen(QColor(250, 250, 250), 1.6));
+            p.drawLine(QPointF(15.2, 2.0), QPointF(15.2, 6.0));
+            p.drawPoint(QPointF(15.2, 8.0));
+            break;
+        case Fx: {
+            QFont xf("DejaVu Serif");
+            xf.setItalic(true);
+            xf.setPointSizeF(8.5);
+            p.setFont(xf);
+            p.setPen(QColor(190, 216, 244));
+            p.drawText(QRectF(0, 0, 14, 17), Qt::AlignCenter, "fx");
+            if (property("active").toBool()) {
+                // effects in the chain: a small page at the bottom right
+                const QRectF pg(10.5, 8.5, 6, 7);
+                p.setPen(QPen(QColor(30, 30, 34), 1));
+                p.setBrush(QColor(240, 240, 244));
+                p.drawRect(pg);
+                p.drawLine(QPointF(pg.left() + 1.5, pg.top() + 2.5), QPointF(pg.right() - 1.5, pg.top() + 2.5));
+                p.drawLine(QPointF(pg.left() + 1.5, pg.top() + 4.5), QPointF(pg.right() - 1.5, pg.top() + 4.5));
+            }
+            break;
+        }
+        case Phase: {
+            const QRectF b(1.5, 4.5, 15, 9);
+            p.setPen(QPen(QColor(200, 226, 245), 1));
+            p.setBrush(isChecked() ? QColor(70, 150, 220) : QColor(60, 104, 140));
+            p.drawRoundedRect(b, 1.5, 1.5);
+            QPainterPath w;
+            w.moveTo(b.left() + 2, b.bottom() - 2);
+            w.cubicTo(b.center().x() - 1, b.bottom() - 2, b.center().x() + 1, b.top() + 2, b.right() - 2, b.top() + 2);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(245, 245, 250), 1.4));
+            p.drawPath(w);
+            break;
+        }
+        case Arm: {
+            const QColor body = isChecked() ? QColor(240, 60, 60) : QColor(226, 140, 150);
+            p.setPen(QPen(QColor(40, 26, 30), 1));
+            p.setBrush(body);
+            p.drawRoundedRect(QRectF(6, 1.5, 6, 9), 3, 3);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(220, 220, 224), 1.2));
+            p.drawArc(QRectF(4, 5, 10, 8), 180 * 16, 180 * 16);
+            p.drawLine(QPointF(9, 13), QPointF(9, 15.5));
+            p.drawLine(QPointF(6.5, 15.5), QPointF(11.5, 15.5));
+            break;
+        }
+        case Monitor:
+            p.setPen(QPen(QColor(180, 214, 240), 1.2));
+            p.setBrush(isChecked() ? QColor(110, 190, 245) : QColor(44, 70, 92));
+            p.drawRoundedRect(QRectF(2, 6, 14, 6), 3, 3);
+            break;
+        case PrePost: {
+            // "fx" and a small fader, in the order the sound meets them (Post: the fader first)
+            const bool post = isChecked();
+            QFont xf("DejaVu Serif");
+            xf.setItalic(true);
+            xf.setPointSizeF(6.5);
+            p.setFont(xf);
+            p.setPen(QColor(190, 216, 244));
+            const qreal fxX = post ? 6 : 0, faderX = post ? 3 : 14;
+            p.drawText(QRectF(fxX, 0, 11, 17), Qt::AlignCenter, "fx");
+            p.setPen(QPen(QColor(220, 220, 224), 1));
+            p.drawLine(QPointF(faderX, 3), QPointF(faderX, 15));
+            p.setBrush(QColor(240, 240, 244));
+            p.setPen(QPen(QColor(30, 30, 34), 1));
+            p.drawRect(QRectF(faderX - 2, 6.5, 4, 5));
+            break;
+        }
+        case Lock: {
+            // linked (closed) or split (open)
+            const bool open = isChecked();
+            p.setPen(QPen(QColor(225, 225, 230), 1.4));
+            p.setBrush(Qt::NoBrush);
+            p.drawArc(QRectF(open ? 8 : 5.5, 2.5, 7, 9), 0, 180 * 16);
+            if (!open) {
+                p.drawLine(QPointF(5.5, 7), QPointF(5.5, 9));
+                p.drawLine(QPointF(12.5, 7), QPointF(12.5, 9));
+            } else {
+                p.drawLine(QPointF(15, 7), QPointF(15, 9));
+            }
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(225, 225, 230));
+            p.drawRoundedRect(QRectF(4, 8.5, 10, 7), 1, 1);
+            break;
+        }
+        }
+    }
+
+private:
+    Glyph glyph_;
+};
+
+// The automation row under the I/O: VEGAS's Automation Settings button (a cog, lit while the controls follow their
+// envelopes) with the automation mode written beside it and a menu arrow.
+class AutomationButton : public QToolButton {
+public:
+    explicit AutomationButton(QWidget* parent) : QToolButton(parent)
+    {
+        setFixedHeight(20);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setFocusPolicy(Qt::NoFocus);
+        setAttribute(Qt::WA_Hover, true);
+    }
+    QString mode;
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        if (underMouse()) p.fillRect(rect(), QColor(255, 255, 255, 22));
+        // the cog: a ring of teeth around a disc, the mode's first letter in it
+        const QPointF c(10, height() / 2.0);
+        const QColor tooth = isChecked() ? QColor(236, 150, 160) : QColor(170, 170, 176);
+        p.setPen(Qt::NoPen);
+        p.setBrush(tooth);
+        for (int k = 0; k < 8; ++k) {
+            const double a = k * M_PI / 4.0;
+            p.drawEllipse(QPointF(c.x() + 6.2 * std::cos(a), c.y() + 6.2 * std::sin(a)), 1.6, 1.6);
+        }
+        p.setBrush(isChecked() ? QColor(250, 236, 238) : QColor(210, 210, 214));
+        p.setPen(QPen(QColor(40, 30, 34), 1));
+        p.drawEllipse(c, 5.2, 5.2);
+        QFont f = font();
+        f.setBold(true);
+        f.setPointSizeF(6.2);
+        p.setFont(f);
+        p.setPen(isChecked() ? QColor(170, 30, 50) : QColor(60, 60, 66));
+        p.drawText(QRectF(c.x() - 5, c.y() - 5, 10, 10), Qt::AlignCenter, mode.left(1));
+        p.setRenderHint(QPainter::Antialiasing, false);
+        QFont tf = font();
+        tf.setPointSizeF(8.0);
+        p.setFont(tf);
+        p.setPen(kText);
+        const QRect text(20, 0, width() - 34, height());
+        p.drawText(text, Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(tf).elidedText(mode, Qt::ElideRight, text.width()));
+        // the menu arrow
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(220, 220, 224));
+        const qreal ax = width() - 9, ay = height() / 2.0 - 1;
+        const QPointF arrow[3] = {QPointF(ax - 3.5, ay - 1.5), QPointF(ax + 3.5, ay - 1.5), QPointF(ax, ay + 2.5)};
+        p.drawPolygon(arrow, 3);
+    }
+};
+
+// A strip's output choice drawn as VEGAS's: just the name, centred (the list opens on a click).
+class OutputCombo : public QComboBox {
+public:
+    explicit OutputCombo(QWidget* parent) : QComboBox(parent) { setAttribute(Qt::WA_Hover, true); }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        if (underMouse()) p.fillRect(rect(), QColor(255, 255, 255, 22));
+        p.setPen(kText);
+        p.setFont(font());
+        p.drawText(rect().adjusted(2, 0, -2, 0), Qt::AlignCenter, QFontMetrics(font()).elidedText(currentText(), Qt::ElideRight, width() - 4));
+    }
+};
+
+// A line of text in a strip (an input device, the master's sound device): centred, no frame.
+class StripText : public QToolButton {
+public:
+    explicit StripText(QWidget* parent) : QToolButton(parent) { setAttribute(Qt::WA_Hover, true); }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        if (underMouse() && menu()) p.fillRect(rect(), QColor(255, 255, 255, 22));
+        p.setPen(kText);
+        p.setFont(font());
+        p.drawText(rect().adjusted(2, 0, -2, 0), Qt::AlignCenter, QFontMetrics(font()).elidedText(text(), Qt::ElideRight, width() - 4));
+    }
+};
+
 // ------------------------------------------------------------------------------------------ a strip
 class Strip : public QWidget {
 public:
@@ -1342,22 +1602,37 @@ public:
                       : kind == InputStrip ? QString("strip:input:%1").arg(id) : kind == PreviewStrip ? QString("strip:preview") : QString("strip:master"));
         setFixedWidth(ConsoleView().stripWidth());
         setAttribute(Qt::WA_StyledBackground, false);
+        // As VEGAS's console, from the top: the name, the regions shown (Insert FX, Sends, I/O, VU meters), the faders
+        // region (automation, pan, then the switches in a column beside the fader and meter) and the name again in a
+        // box at the bottom.
         auto* v = new QVBoxLayout(this);
-        v->setContentsMargins(4, 4, 5, 4);
-        v->setSpacing(3);
+        v->setContentsMargins(1, 0, 2, 2);
+        v->setSpacing(0);
         header = new StripHeader(this);
         header->setObjectName("header");
+        header->style = kind == BusStrip ? StripHeader::BusLetter : kind == MasterStrip || kind == PreviewStrip ? StripHeader::MasterIcon : StripHeader::NumberBox;
         v->addWidget(header);
+        auto line = [&] {
+            QWidget* l = new QWidget(this);
+            l->setFixedHeight(2);
+            l->setAutoFillBackground(true);
+            QPalette lp = l->palette();
+            lp.setColor(QPalette::Window, kStripEdge);
+            l->setPalette(lp);
+            v->addWidget(l);
+            return l;
+        };
+        line();
 
         QFont small = font();
-        small.setPointSizeF(7.5);
+        small.setPointSizeF(8.0);
         auto region = [&](const char* name, const QString& label) {
             QLabel* l = new QLabel(label, this);
             l->setObjectName(QString("label:%1").arg(name));
             QFont lf = font();
             lf.setPointSizeF(6.5);
             l->setFont(lf);
-            l->setStyleSheet("QLabel { color: #8a8a90; }");
+            l->setStyleSheet("QLabel { color: #8a8a90; padding-left: 3px; }");
             l->setFixedHeight(11);
             l->hide();
             v->addWidget(l);
@@ -1365,8 +1640,8 @@ public:
             QWidget* box = new QWidget(this);
             box->setObjectName(QString("region:%1").arg(name));
             auto* bl = new QVBoxLayout(box);
-            bl->setContentsMargins(0, 0, 0, 0);
-            bl->setSpacing(2);
+            bl->setContentsMargins(2, 1, 1, 1);
+            bl->setSpacing(1);
             v->addWidget(box);
             return box;
         };
@@ -1376,12 +1651,6 @@ public:
         fxSlots->target.kind = kind == TrackStrip ? FxTarget::Track : kind == BusStrip ? FxTarget::Bus : kind == InputStrip ? FxTarget::InputBus : FxTarget::AudioOut;
         fxSlots->target.id = kind == MasterStrip || kind == PreviewStrip ? 0 : id;
         fxBox->layout()->addWidget(fxSlots);
-        fx = new QToolButton(fxBox);
-        fx->setObjectName("fx");
-        fx->setFont(small);
-        fx->setFixedHeight(20);
-        fx->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        fxBox->layout()->addWidget(fx);
 
         sendBox = region("sends", "Sends");
         sends = new QWidget(sendBox);
@@ -1391,32 +1660,38 @@ public:
         sendLayout->setSpacing(2);
         sendBox->layout()->addWidget(sends);
 
+        // I/O: where the sound comes from (a track's Record Input, an input bus's input; blank for a bus or the master)
+        // and where it goes (the master: its sound device)
         ioBox = region("io", "I/O");
+        static_cast<QVBoxLayout*>(ioBox->layout())->setSpacing(0);
+        if (kind == InputStrip || kind == TrackStrip) {
+            source = new StripText(ioBox);
+            source->setObjectName("inputSource");
+            source->setFont(small);
+            source->setFixedHeight(20);
+            source->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            source->setPopupMode(QToolButton::InstantPopup);
+            source->setToolTip(kind == InputStrip ? "Input: the sound card input this input bus takes its sound from"
+                                                   : "Record Input: the sound card input this track records from");
+            source->setMenu(new QMenu(source));
+            ioBox->layout()->addWidget(source);
+        } else {
+            QWidget* blank = new QWidget(ioBox);
+            blank->setFixedHeight(20);
+            ioBox->layout()->addWidget(blank);
+        }
         if (kind == MasterStrip) {
             device = new QLabel(ioBox);
             device->setObjectName("device");
             device->setFont(small);
             device->setFixedHeight(20);
             device->setAlignment(Qt::AlignCenter);
-            device->setStyleSheet("QLabel { background: #2a2a2d; border: 1px solid #1c1c1e; border-radius: 2px; color: #9a9aa0; }");
+            device->setStyleSheet("QLabel { background: transparent; border: none; color: #dedede; }");
             const QString dev = pb ? qs(pb->audioDeviceName()) : QString();
             device->setToolTip(QString("The master goes to: %1").arg(dev.isEmpty() ? QString("the sound device") : dev));
             ioBox->layout()->addWidget(device);
         } else {
-            if (kind == InputStrip || kind == TrackStrip) {
-                // where the sound comes from: an input bus's sound card input, or what a track records (VEGAS's Record Input)
-                source = new QToolButton(ioBox);
-                source->setObjectName("inputSource");
-                source->setFont(small);
-                source->setFixedHeight(20);
-                source->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-                source->setPopupMode(QToolButton::InstantPopup);
-                source->setToolTip(kind == InputStrip ? "Input: the sound card input this input bus takes its sound from"
-                                                       : "Record Input: the sound card input this track records from");
-                source->setMenu(new QMenu(source));
-                ioBox->layout()->addWidget(source);
-            }
-            output = new QComboBox(ioBox);
+            output = new OutputCombo(ioBox);
             output->setObjectName("output");
             output->setFont(small);
             output->setFixedHeight(20);
@@ -1424,12 +1699,28 @@ public:
             output->setFocusPolicy(Qt::NoFocus);
             ioBox->layout()->addWidget(output);
         }
+        ioLine = line();
 
         vuBox = region("vu", "VU Meters");
         vu = new VuMeter(vuBox);
         vuBox->layout()->addWidget(vu);
 
         faderBox = region("faders", "Faders");
+        // the automation row: Automation Settings and the mode (Off, Read, Touch, Latch), as the track header's button;
+        // kept as a blank row where there is none (the master, input buses, the Preview bus) so the faders line up
+        if (kind == TrackStrip || kind == BusStrip) {
+            automation = new AutomationButton(faderBox);
+            automation->setObjectName("automation");
+            automation->setText("A");
+            automation->setCheckable(true);
+            automation->setPopupMode(QToolButton::InstantPopup);
+            automation->setToolTip("Automation Settings: fader, pan and mute follow and write their envelopes");
+            faderBox->layout()->addWidget(automation);
+        } else {
+            QWidget* blank = new QWidget(faderBox);
+            blank->setFixedHeight(20);
+            faderBox->layout()->addWidget(blank);
+        }
         pan = new PanSlider(faderBox);
         pan->setObjectName("pan");
         faderBox->layout()->addWidget(pan);
@@ -1438,94 +1729,106 @@ public:
         surround->setToolTip("Surround pan: drag the point; double-click for the Surround Panner window (Ctrl+Alt+3)");
         static_cast<QVBoxLayout*>(faderBox->layout())->addWidget(surround, 0, Qt::AlignHCenter);
         surround->hide();
-        auto* ms = new QHBoxLayout();
-        ms->setSpacing(3);
-        mute = new QToolButton(faderBox);
+        // (the Preview bus has no pan: its row stays, empty, so its fader lines up with the others)
+        panSpace = new QWidget(faderBox);
+        panSpace->setFixedHeight(34);
+        panSpace->hide();
+        faderBox->layout()->addWidget(panSpace);
+
+        // the switches, in a column beside the fader
+        switches = new QWidget(this);
+        switches->setObjectName("switches");
+        switches->setFixedWidth(19);
+        auto* sw = new QVBoxLayout(switches);
+        sw->setContentsMargins(0, 2, 1, 0);
+        sw->setSpacing(4);
+        mute = new IconButton(IconButton::Mute, switches);
         mute->setObjectName("mute");
         mute->setText("M");
         mute->setCheckable(true);
         mute->setToolTip("Mute");
-        solo = new QToolButton(faderBox);
+        sw->addWidget(mute);
+        solo = new IconButton(IconButton::Solo, switches);
         solo->setObjectName("solo");
         solo->setText("S");
         solo->setCheckable(true);
         solo->setToolTip("Solo");
-        std::vector<QToolButton*> row = {mute, solo};
-        if (kind == TrackStrip) {
-            arm = new QToolButton(faderBox);
-            arm->setObjectName("arm");
-            arm->setText(QString::fromUtf8("\xe2\x97\x8f"));
-            arm->setCheckable(true);
-            arm->setToolTip("Arm for Record");
-            row.insert(row.begin(), arm);
-            phase = new QToolButton(faderBox);
-            phase->setObjectName("invertPhase");
-            phase->setText(QString::fromUtf8("\xc3\x98"));
-            phase->setCheckable(true);
-            phase->setToolTip("Invert Track Phase (also applies to the selected channels)");
-            row.push_back(phase);
-        } else if (kind != InputStrip && kind != PreviewStrip) {
-            // VEGAS's Pre/Post Fader Insert FX: the bus's (master's) effects before or after its fader
-            postFx = new QToolButton(faderBox);
-            postFx->setObjectName("prePostFx");
-            postFx->setCheckable(true);
-            postFx->setToolTip("Pre/Post Fader Insert FX: effects before the fader (Pre) or after it (Post)");
-            row.push_back(postFx);
-        }
-        if (kind == MasterStrip) {
-            // the master's left and right faders: linked (one fader) or split
-            link = new QToolButton(faderBox);
-            link->setObjectName("masterSplit");
-            link->setCheckable(true);
-            link->setText("L/R");
-            link->setToolTip("Split the master fader into a left and a right fader");
-            row.push_back(link);
-        }
-        for (QToolButton* b : row) {
-            QFont bf = font();
-            bf.setBold(true);
-            bf.setPointSizeF(8.0);
-            b->setFont(bf);
-            b->setFixedHeight(20);
-            b->setMinimumWidth(10);
-            b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-            ms->addWidget(b);
-        }
+        sw->addWidget(solo);
         if (kind == MasterStrip || kind == PreviewStrip) {
-            // the master has no solo; the space is kept so the faders line up
+            // the master has no solo; the space is kept so the switches line up
             QSizePolicy sp = solo->sizePolicy();
             sp.setRetainSizeWhenHidden(true);
             solo->setSizePolicy(sp);
             solo->hide();
         }
-        static_cast<QVBoxLayout*>(faderBox->layout())->addLayout(ms);
-        if (kind != MasterStrip && kind != InputStrip && kind != PreviewStrip) {
-            // Automation Settings and the automation mode (Off, Read, Write (Touch), Write (Latch)), as the track header's button
-            auto* am = new QHBoxLayout();
-            am->setSpacing(3);
-            automation = new QToolButton(faderBox);
-            automation->setObjectName("automation");
-            automation->setText("A");
-            automation->setCheckable(true);
-            automation->setPopupMode(QToolButton::InstantPopup);
-            QFont af = font();
-            af.setBold(true);
-            af.setPointSizeF(8.0);
-            automation->setFont(af);
-            automation->setFixedHeight(18);
-            automation->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-            automation->setToolTip("Automation Settings: fader, pan and mute follow and write their envelopes");
-            am->addWidget(automation);
-            static_cast<QVBoxLayout*>(faderBox->layout())->addLayout(am);
+        // the effects chain (the page on it: there are effects); a click opens it (the Preview bus has none)
+        fx = new IconButton(IconButton::Fx, switches);
+        fx->setObjectName("fx");
+        sw->addWidget(fx);
+        if (kind == PreviewStrip) fx->hide();
+        if (kind == TrackStrip) {
+            phase = new IconButton(IconButton::Phase, switches);
+            phase->setObjectName("invertPhase");
+            phase->setText(QString::fromUtf8("\xc3\x98"));
+            phase->setCheckable(true);
+            phase->setToolTip("Invert Track Phase (also applies to the selected channels)");
+            sw->addWidget(phase);
+            arm = new IconButton(IconButton::Arm, switches);
+            arm->setObjectName("arm");
+            arm->setText(QString::fromUtf8("\xe2\x97\x8f"));
+            arm->setCheckable(true);
+            arm->setToolTip("Arm for Record");
+            sw->addWidget(arm);
+            monitor = new IconButton(IconButton::Monitor, switches);
+            monitor->setObjectName("inputMonitor");
+            monitor->setCheckable(true);
+            monitor->setPopupMode(QToolButton::InstantPopup);
+            monitor->setMenu(new QMenu(monitor));
+            monitor->setToolTip("Input Monitoring: hear the record input while armed (Off, On, Auto)");
+            sw->addWidget(monitor);
+        } else if (kind == BusStrip || kind == MasterStrip) {
+            // VEGAS's Pre/Post Fader Insert FX: the bus's (master's) effects before or after its fader
+            postFx = new IconButton(IconButton::PrePost, switches);
+            postFx->setObjectName("prePostFx");
+            postFx->setCheckable(true);
+            postFx->setToolTip("Pre/Post Fader Insert FX: effects before the fader (Pre) or after it (Post)");
+            sw->addWidget(postFx);
         }
+        sw->addStretch(1);
+        if (kind == MasterStrip) {
+            // the master's left and right faders: linked (the lock) or split
+            link = new IconButton(IconButton::Lock, switches);
+            link->setObjectName("masterSplit");
+            link->setCheckable(true);
+            link->setText("L/R");
+            link->setToolTip("Split the master fader into a left and a right fader (locked: they move together)");
+            sw->addWidget(link);
+            sw->addSpacing(22);
+        }
+        fx->setFont(small);
 
+        auto* lower = new QHBoxLayout();
+        lower->setContentsMargins(3, 0, 0, 0);
+        lower->setSpacing(1);
+        lower->addWidget(switches);
         fader = new FaderMeter(false, this);
         fader->setObjectName("fader");
-        v->addWidget(fader, 1);
+        fader->twin = kind == MasterStrip;
+        lower->addWidget(fader, 1);
+        v->addLayout(lower, 1);
         filler = new QWidget(this);
         filler->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
         filler->hide();
         v->addWidget(filler, 1);
+
+        // the name again, in a box at the bottom (a bus's or the master's; a track's own name, blank until it has one)
+        nameBox = new QLabel(this);
+        nameBox->setObjectName("nameBox");
+        nameBox->setFont(small);
+        nameBox->setFixedHeight(18);
+        nameBox->setStyleSheet("QLabel { background: #232326; border: 1px solid #141416; color: #dedede; padding-left: 3px; }");
+        v->addSpacing(2);
+        v->addWidget(nameBox);
 
         wire();
     }
@@ -1537,10 +1840,11 @@ public:
     StripHeader* header = nullptr;
     FxSlots* fxSlots = nullptr;
     QToolButton *fx = nullptr, *mute = nullptr, *solo = nullptr, *arm = nullptr, *automation = nullptr, *phase = nullptr, *postFx = nullptr;
-    QToolButton *source = nullptr, *link = nullptr;
+    QToolButton *source = nullptr, *link = nullptr, *monitor = nullptr;
     QComboBox* output = nullptr;
-    QLabel* device = nullptr;
+    QLabel *device = nullptr, *nameBox = nullptr;
     QWidget *fxBox = nullptr, *sendBox = nullptr, *ioBox = nullptr, *faderBox = nullptr, *filler = nullptr, *vuBox = nullptr;
+    QWidget *switches = nullptr, *panSpace = nullptr, *ioLine = nullptr;
     VuMeter* vu = nullptr;
     std::vector<QLabel*> labels;
     QWidget* sends = nullptr;
@@ -1570,8 +1874,10 @@ public:
         fxBox->setVisible(view.fx);
         sendBox->setVisible(view.sends);
         ioBox->setVisible(view.io);
+        ioLine->setVisible(view.io);
         vuBox->setVisible(view.vu);
         faderBox->setVisible(view.faders);
+        switches->setVisible(view.faders);
         const bool shown[5] = {view.fx, view.sends, view.io, view.vu, view.faders};
         for (size_t k = 0; k < labels.size() && k < 5; ++k) labels[k]->setVisible(view.labels && shown[k]);
         fader->showFader = view.faders;
@@ -1587,11 +1893,14 @@ public:
             device->setText(QFontMetrics(device->font()).elidedText(dev.isEmpty() ? QString("Output") : dev, Qt::ElideRight, w - 14));
         }
         if (kind_ == PreviewStrip) {
-            // the Preview bus has no effects, sends or outputs: it is only a fader and meters
-            fxBox->hide();
-            sendBox->hide();
-            ioBox->hide();
-            for (QLabel* l : {labels[0], labels[1], labels[2]}) l->hide();
+            // the Preview bus has no effects, sends, output or pan: it is only a fader and meters (their rows stay,
+            // empty, so the fader lines up with the others)
+            for (QWidget* w : {(QWidget*)fxSlots, (QWidget*)output}) {
+                QSizePolicy sp = w->sizePolicy();
+                sp.setRetainSizeWhenHidden(true);
+                w->setSizePolicy(sp);
+                w->hide();
+            }
         }
         fader->update();
     }
@@ -1650,6 +1959,11 @@ public:
             if (phase) {
                 const QSignalBlocker pb(phase);
                 phase->setChecked(t->invertPhase);
+            }
+            if (monitor) {
+                const QSignalBlocker mb(monitor);
+                monitor->setChecked(t->recordInput.monitor != "off");
+                setToolTipIfChanged(monitor, QString("Input Monitoring: %1").arg(t->recordInput.monitor == "on" ? "On" : t->recordInput.monitor == "auto" ? "Auto" : "Off"));
             }
         } else if (kind_ == PreviewStrip) {
             static const FxChain none;
@@ -1718,11 +2032,26 @@ public:
             const bool sur = p.settings.surround();
             surround->setVisible(sur && kind_ != MasterStrip && kind_ != PreviewStrip && out == 0);
             pan->setVisible(kind_ != PreviewStrip && (!sur || (kind_ != MasterStrip && out != 0)));
+            panSpace->setVisible(pan->isHidden() && surround->isHidden());
             surround->update();
         }
         header->name = name(p);
         setToolTipIfChanged(header, header->name);
         header->fieldsSet();
+        if (header->selected != paintedSelected_) update();
+        {
+            // the box at the bottom: the channel's own name (a track's is blank until it is given one)
+            QString own = header->name;
+            if (kind_ == TrackStrip)
+                for (const auto& t : p.tracks)
+                    if (t.id == id_) own = qs(t.name);
+            const QString shown = QFontMetrics(nameBox->font()).elidedText(own, Qt::ElideRight, width() - 12);
+            if (nameBox->text() != shown) nameBox->setText(shown);
+        }
+        if (fader->muted != muted) {
+            fader->muted = muted;
+            fader->update();
+        }
         fx->setText(QFontMetrics(fx->font()).elidedText(chainText(*chain), Qt::ElideRight, width() - 18));
         setToolTipIfChanged(fx, chainTip(*chain, kind_ == MasterStrip ? QString("Master Bus FX") : kind_ == BusStrip ? QString(assignable(p) ? "Assignable FX" : "Bus FX") : kind_ == InputStrip ? QString("Input Bus FX") : QString("Track FX")) +
                        "\n(right-click: Enable All, Bypass All, Delete All" + (kind_ == TrackStrip || kind_ == InputStrip ? QString(")") : QString(", Post Volume)")));
@@ -1741,6 +2070,15 @@ public:
             const EnvelopeOwner o{kind_ == TrackStrip ? EnvelopeOwner::Track : EnvelopeOwner::Bus, id_};
             const QSignalBlocker b4(automation);
             automation->setChecked(automationControlsOn(p, o));
+            // (VEGAS writes the mode short: Write (Touch) is Touch)
+            QString mode = automationModeName(automationModeOf(p, o));
+            const int open = mode.indexOf('('), close = mode.lastIndexOf(')');
+            if (open >= 0 && close > open) mode = mode.mid(open + 1, close - open - 1);
+            auto* ab = static_cast<AutomationButton*>(automation);
+            if (ab->mode != mode) {
+                ab->mode = mode;
+                ab->update();
+            }
             setToolTipIfChanged(automation, QString("Automation Settings (%1)").arg(automationModeName(automationModeOf(p, o))));
         }
         pan->projectChanged();
@@ -1752,9 +2090,11 @@ protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
-        p.fillRect(rect(), kStripBg);
+        // a selected channel: the whole strip blue, as VEGAS
+        paintedSelected_ = header->selected;
+        p.fillRect(rect(), header->selected ? kStripSelected : kStripBg);
         p.fillRect(QRect(width() - 1, 0, 1, height()), kStripEdge);
-        p.fillRect(QRect(0, 0, 1, height()), QColor(64, 64, 69));
+        p.fillRect(QRect(0, 0, 1, height()), header->selected ? kStripSelected.lighter(115) : QColor(64, 64, 69));
     }
 
 private:
@@ -1915,6 +2255,28 @@ private:
                 AppState::get().edit("Pan Type", [&](Project& p) { setSurroundPanType(p, id, type); });
             };
         }
+        if (monitor)
+            QObject::connect(monitor->menu(), &QMenu::aboutToShow, [this, id] {
+                QMenu* m = monitor->menu();
+                m->clear();
+                const Track* t = nullptr;
+                for (const auto& x : AppState::get().project().tracks)
+                    if (x.id == id) t = &x;
+                if (!t) return;
+                static const char* kModes[3][2] = {{"off", "Off"}, {"on", "On"}, {"auto", "Auto"}};
+                for (const auto& mode : kModes) {
+                    QAction* a = m->addAction(mode[1]);
+                    a->setObjectName(QString("monitor:%1").arg(mode[0]));
+                    a->setCheckable(true);
+                    a->setChecked(t->recordInput.monitor == mode[0]);
+                    const std::string key = mode[0];
+                    QObject::connect(a, &QAction::triggered, m, [id, key] {
+                        AppState::get().edit("Input Monitoring", [&](Project& p) {
+                            if (Track* x = p.findTrack(id)) x->recordInput.monitor = key;
+                        });
+                    });
+                }
+            });
         if (kind == TrackStrip) {
             QObject::connect(source->menu(), &QMenu::aboutToShow, [this, id] {
                 QMenu* m = source->menu();
@@ -2028,6 +2390,7 @@ private:
     Kind kind_;
     uint64_t id_;
     Playback* pb_;
+    bool paintedSelected_ = false;
 };
 
 // Feeds the meters of strips (by id) from what Playback publishes, ~30 times a second; clears them when stopped.
@@ -2083,7 +2446,8 @@ struct MixerWindow::Impl {
     QElapsedTimer vuClock, previewClock;
     double previewLast = 0;
     QSlider* widthSlider = nullptr;
-    QWidget *side = nullptr, *channelPane = nullptr, *viewPane = nullptr;
+    QWidget *side = nullptr, *channelPane = nullptr, *viewPane = nullptr, *sideSpace = nullptr;
+    QLabel* formatLabel = nullptr;
     QListWidget* channelList = nullptr;
     QScrollArea* scroll = nullptr;
     QWidget* row = nullptr;
@@ -2312,6 +2676,8 @@ struct MixerWindow::Impl {
         }
         empty->setVisible(shown == 0);
         empty->setText(strips.empty() ? QString("No audio tracks or buses.\nAdd an audio track, or Insert Bus.") : QString("All strips are hidden."));
+        rowLayout->activate();
+        scroll->setMaximumWidth(row->sizeHint().width() + 2);
         {
             const QSignalBlocker b1(regionFx), b2(regionSends), b3(regionIO), b4(regionMeters), b5(regionFaders), b6(widthSlider), b7(regionVu);
             regionFx->setChecked(view.fx);
@@ -2346,6 +2712,11 @@ struct MixerWindow::Impl {
     void refresh()
     {
         const Project& p = AppState::get().project();
+        if (formatLabel) {
+            // the project's audio format, as VEGAS writes it: 48,000 Hz, 16 Bit
+            const QString f = QString("%1 Hz, %2 Bit").arg(QLocale(QLocale::English, QLocale::UnitedStates).toString(p.settings.sampleRate)).arg(p.settings.audioBits);
+            if (formatLabel->text() != f) formatLabel->setText(f);
+        }
         if (shapeOf(p) != shape) {
             // Rebuilt once control is back in the event loop: the change may have come from one of the strips' own
             // widgets (an output menu), which must not be deleted under its own feet.
@@ -2463,9 +2834,10 @@ struct MixerWindow::Impl {
         view.holdPeaks = s.value("mixer/holdPeaks", true).toBool();
         const double range = s.value("mixer/meterRange", -60.0).toDouble();
         if (range <= -12 && range >= -120) kMeterLo = range;
-        channelPane->setVisible(s.value("mixer/channelList", true).toBool());
+        channelPane->setVisible(s.value("mixer/channelList", false).toBool());
         viewPane->setVisible(s.value("mixer/viewControls", true).toBool());
         side->setVisible(!channelPane->isHidden() || !viewPane->isHidden());
+        sideSpace->setVisible(channelPane->isHidden());
         const QString sh = s.value("mixer/show", "1111").toString();
         if (sh.size() >= 3) {
             const QSignalBlocker b1(showTracks), b2(showBuses), b3(showMaster), b4(showAssign), b5(showInputs), b6(showPreview);
@@ -2487,6 +2859,7 @@ struct MixerWindow::Impl {
     {
         pane->setVisible(on);
         side->setVisible(!channelPane->isHidden() || !viewPane->isHidden());
+        sideSpace->setVisible(channelPane->isHidden());
         owner->setProperty("channelListShown", !channelPane->isHidden());
         owner->setProperty("viewControlsShown", !viewPane->isHidden());
         save();
@@ -2699,49 +3072,164 @@ static QToolButton* makeTool(QWidget* in, QBoxLayout* lay, const char* name, con
     return b;
 }
 
-// The console's tool bar: Views, Properties, Dim, Downmix and the Insert / Delete buttons.
+// The tool bar's small pictures (drawn here, VEGAS's own are not used): the layout and settings menus, Downmix, Dim,
+// and the Insert buttons'.
+enum ToolPicture { LayoutPic, CogPic, DownmixPic, DimPic, TrackPic, AssignablePic, BusPic, InputBusPic, ZoomOutPic, ZoomInPic };
+static QIcon toolPicture(ToolPicture which)
+{
+    const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+    QPixmap pm(QSize(16, 16) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QColor ink(232, 232, 236);
+    p.setPen(QPen(ink, 1.2));
+    p.setBrush(Qt::NoBrush);
+    switch (which) {
+    case LayoutPic:
+        p.drawRect(QRectF(1.5, 2.5, 13, 11));
+        p.drawLine(QPointF(1.5, 6), QPointF(14.5, 6));
+        p.drawLine(QPointF(6, 6), QPointF(6, 13.5));
+        p.drawLine(QPointF(10, 6), QPointF(10, 13.5));
+        break;
+    case CogPic:
+        p.setBrush(ink);
+        p.setPen(Qt::NoPen);
+        for (int k = 0; k < 8; ++k) {
+            const double a = k * M_PI / 4.0;
+            p.drawEllipse(QPointF(8 + 5.6 * std::cos(a), 8 + 5.6 * std::sin(a)), 1.7, 1.7);
+        }
+        p.drawEllipse(QPointF(8, 8), 5, 5);
+        p.setBrush(QColor(45, 45, 48));
+        p.drawEllipse(QPointF(8, 8), 2, 2);
+        break;
+    case DownmixPic:
+        // two arrows meeting at a bar
+        p.drawLine(QPointF(8, 2), QPointF(8, 14));
+        p.setBrush(ink);
+        {
+            const QPointF l[3] = {QPointF(1.5, 4), QPointF(1.5, 12), QPointF(6.5, 8)};
+            const QPointF r[3] = {QPointF(14.5, 4), QPointF(14.5, 12), QPointF(9.5, 8)};
+            p.drawPolygon(l, 3);
+            p.drawPolygon(r, 3);
+        }
+        break;
+    case DimPic: {
+        // a speaker and an arrow down
+        p.setBrush(ink);
+        const QPointF spk[6] = {QPointF(1.5, 6), QPointF(4, 6), QPointF(7.5, 2.5), QPointF(7.5, 13.5), QPointF(4, 10), QPointF(1.5, 10)};
+        p.drawPolygon(spk, 6);
+        p.drawLine(QPointF(12, 3), QPointF(12, 12));
+        const QPointF ar[3] = {QPointF(9.5, 10), QPointF(14.5, 10), QPointF(12, 14)};
+        p.drawPolygon(ar, 3);
+        break;
+    }
+    case TrackPic:
+        p.setPen(QPen(QColor(120, 200, 255), 1.2));
+        p.drawRect(QRectF(1.5, 3.5, 13, 9));
+        p.drawLine(QPointF(4, 8), QPointF(5.5, 5.5));
+        p.drawLine(QPointF(5.5, 5.5), QPointF(7, 10.5));
+        p.drawLine(QPointF(7, 10.5), QPointF(8.5, 6));
+        p.drawLine(QPointF(8.5, 6), QPointF(10, 9));
+        p.drawLine(QPointF(10, 9), QPointF(12, 8));
+        break;
+    case AssignablePic: {
+        QFont f("DejaVu Serif");
+        f.setItalic(true);
+        f.setPointSizeF(9);
+        p.setFont(f);
+        p.drawText(QRectF(0, 0, 16, 16), Qt::AlignCenter, "fx");
+        break;
+    }
+    case BusPic:
+    case InputBusPic:
+        p.setPen(QPen(which == BusPic ? QColor(150, 210, 140) : QColor(240, 190, 120), 1.2));
+        p.drawLine(QPointF(2, 4), QPointF(14, 4));
+        p.drawLine(QPointF(2, 12), QPointF(14, 12));
+        p.drawLine(QPointF(5, 4), QPointF(5, 12));
+        p.drawLine(QPointF(11, 4), QPointF(11, 12));
+        p.drawLine(QPointF(5, 8), QPointF(11, 8));
+        break;
+    case ZoomOutPic:
+    case ZoomInPic:
+        p.drawEllipse(QPointF(6.5, 6.5), 4.5, 4.5);
+        p.setPen(QPen(ink, 2.0));
+        p.drawLine(QPointF(10, 10), QPointF(14.5, 14.5));
+        p.setPen(QPen(ink, 1.2));
+        p.drawLine(QPointF(4.5, 6.5), QPointF(8.5, 6.5));
+        if (which == ZoomInPic) p.drawLine(QPointF(6.5, 4.5), QPointF(6.5, 8.5));
+        break;
+    }
+    return QIcon(pm);
+}
+
+// The console's tool bar, as VEGAS's: the project's audio format at the left; at the right the layout (Views) and
+// settings (Properties) menus, Downmix and Dim Output, and the Insert buttons.
 QWidget* MixerWindow::Impl::buildToolBar()
 {
     auto* bar = new QWidget(owner);
     bar->setObjectName("mixerToolbar");
     bar->setAutoFillBackground(true);
     QPalette bp = bar->palette();
-    bp.setColor(QPalette::Window, QColor(45, 45, 48));
+    bp.setColor(QPalette::Window, kConsoleBg);
     bar->setPalette(bp);
+    bar->setStyleSheet(
+        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 2px; color: #e0e0e0; padding: 1px 3px; }"
+        "QToolButton:hover { background: rgba(255, 255, 255, 30); }"
+        "QToolButton:checked { background: #12b0ff; border-color: #12b0ff; color: white; }"
+        "QToolButton::menu-indicator { image: none; width: 0px; }");
     auto* tb = new QHBoxLayout(bar);
-    tb->setContentsMargins(6, 4, 6, 4);
-    tb->setSpacing(4);
-    auto sep = [&] {
-        auto* s = new QFrame(bar);
-        s->setFrameShape(QFrame::VLine);
-        s->setStyleSheet("color: #5a5a60;");
-        tb->addWidget(s);
+    tb->setContentsMargins(8, 3, 6, 3);
+    tb->setSpacing(2);
+    formatLabel = new QLabel(bar);
+    formatLabel->setObjectName("audioFormat");
+    formatLabel->setStyleSheet("QLabel { color: #e0e0e0; }");
+    tb->addWidget(formatLabel);
+    tb->addStretch(1);
+    // a menu button with its small arrow beside the picture
+    auto menuTool = [&](const char* name, const QString& text, const QString& tip, ToolPicture pic) {
+        QToolButton* b = makeTool(bar, tb, name, text, tip, false);
+        b->setIcon(toolPicture(pic));
+        b->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        b->setPopupMode(QToolButton::InstantPopup);
+        b->setMenu(new QMenu(b));
+        QLabel* arrow = new QLabel(QString::fromUtf8("\xe2\x96\xbe"), bar);
+        arrow->setStyleSheet("QLabel { color: #e0e0e0; }");
+        tb->addWidget(arrow);
+        tb->addSpacing(4);
+        return b;
     };
-    QToolButton* views = makeTool(bar, tb, "views", "Views", "Show or hide the Channel List (Shift+C) and the View Controls (Shift+R)", false);
-    views->setPopupMode(QToolButton::InstantPopup);
-    QMenu* viewsMenu = new QMenu(views);
-    views->setMenu(viewsMenu);
-    QToolButton* layoutBtn = makeTool(bar, tb, "properties", "Properties", "Channels and control regions shown, channel width, meters", false);
-    layoutBtn->setPopupMode(QToolButton::InstantPopup);
-    QMenu* layoutMenu = new QMenu(layoutBtn);
-    layoutBtn->setMenu(layoutMenu);
+    QToolButton* views = menuTool("views", "Views", "Show or hide the Channel List (Shift+C) and the View Controls (Shift+R)", LayoutPic);
+    QMenu* viewsMenu = views->menu();
+    QToolButton* layoutBtn = menuTool("properties", "Properties", "Channels and control regions shown, channel width, meters", CogPic);
+    QMenu* layoutMenu = layoutBtn->menu();
     QObject::connect(layoutMenu, &QMenu::aboutToShow, owner, [this, layoutMenu] { fillLayoutMenu(layoutMenu); });
-    sep();
-    dimBtn = makeTool(bar, tb, "dimOutput", "Dim", "Dim Output: what is heard 20 dB quieter (Ctrl+Shift+F12)", true);
-    dimBtn->setChecked(pb && pb->dimmed());
-    sep();
     downmixBtn = makeTool(bar, tb, "downmixOutput", "Downmix", "Downmix Output: hear the mix in stereo (a 5.1 project) or in mono", false);
+    downmixBtn->setIcon(toolPicture(DownmixPic));
+    downmixBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
     downmixBtn->setPopupMode(QToolButton::InstantPopup);
     QMenu* downmixMenu = new QMenu(downmixBtn);
     downmixBtn->setMenu(downmixMenu);
     QObject::connect(downmixMenu, &QMenu::aboutToShow, owner, [this, downmixMenu] { reno::app::fillDownmixMenu(downmixMenu, pb); });
-    sep();
-    insertTrack = makeTool(bar, tb, "insertAudioTrack", "Insert Audio Track", "Add an audio track (Ctrl+Q)", false);
-    insertAssignable = makeTool(bar, tb, "insertAssignableFx", "Insert Assignable FX", "Add an assignable effects chain for tracks to send to (Insert > Audio Assignable FX)", false);
-    insertBus = makeTool(bar, tb, "insertBus", "Insert Bus", "Add a bus (Bus A, Bus B ...)", false);
-    insertInput = makeTool(bar, tb, "insertInputBus", "Insert Input Bus", "Add an input bus: sound from a sound card input, mixed with the project (VEGAS Pro 23)", false);
-    deleteBus = makeTool(bar, tb, "deleteBus", "Delete Bus", "Delete Bus", false);
-    tb->addStretch(1);
+    dimBtn = makeTool(bar, tb, "dimOutput", "Dim", "Dim Output: what is heard 20 dB quieter (Ctrl+Shift+F12)", true);
+    dimBtn->setChecked(pb && pb->dimmed());
+    dimBtn->setIcon(toolPicture(DimPic));
+    dimBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    tb->addSpacing(8);
+    auto insertTool = [&](const char* name, const QString& text, const QString& tip, ToolPicture pic) {
+        QToolButton* b = makeTool(bar, tb, name, text, tip, false);
+        b->setIcon(toolPicture(pic));
+        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        return b;
+    };
+    insertTrack = insertTool("insertAudioTrack", "Insert Audio Track", "Add an audio track (Ctrl+Q)", TrackPic);
+    insertAssignable = insertTool("insertAssignableFx", "Insert Assignable FX...", "Add an assignable effects chain for tracks to send to (Insert > Audio Assignable FX)", AssignablePic);
+    insertBus = insertTool("insertBus", "Insert Bus", "Add a bus (Bus A, Bus B ...)", BusPic);
+    insertInput = insertTool("insertInputBus", "Insert Input Bus", "Add an input bus: sound from a sound card input, mixed with the project (VEGAS Pro 23)", InputBusPic);
+    // (VEGAS has no Delete Bus button: a bus is deleted from its strip's menu or with Delete; the button stays for that)
+    deleteBus = makeTool(bar, nullptr, "deleteBus", "Delete Bus", "Delete Bus", false);
+    deleteBus->hide();
     QObject::connect(viewsMenu, &QMenu::aboutToShow, owner, [this, viewsMenu] { fillViewsMenu(viewsMenu); });
     QObject::connect(insertTrack, &QToolButton::clicked, owner, [this] { insertAudioTrack(); });
     QObject::connect(dimBtn, &QToolButton::toggled, owner, [this](bool on) {
@@ -2756,16 +3244,21 @@ QWidget* MixerWindow::Impl::buildToolBar()
     return bar;
 }
 
-// The side pane: the Channel List and the View Controls (which channels and regions show, the channel width).
+// The side pane, as VEGAS's: the Channel List (hidden at first) over the View Controls, a column of switches (which
+// kinds of channels, then which control regions are shown) and the channel width as a zoom slider at the bottom.
 QWidget* MixerWindow::Impl::buildSidePane()
 {
     side = new QWidget(owner);
     side->setObjectName("consoleSide");
-    side->setFixedWidth(150);
+    side->setFixedWidth(96);
     side->setAutoFillBackground(true);
     QPalette sp = side->palette();
-    sp.setColor(QPalette::Window, QColor(40, 40, 43));
+    sp.setColor(QPalette::Window, kConsoleBg);
     side->setPalette(sp);
+    side->setStyleSheet(
+        "QToolButton { background: transparent; border: none; color: #e0e0e0; padding: 1px 2px; }"
+        "QToolButton:hover:!checked { background: rgba(255, 255, 255, 30); }"
+        "QToolButton:checked { background: #12b0ff; color: white; }");
     auto* sideLay = new QVBoxLayout(side);
     sideLay->setContentsMargins(4, 4, 4, 4);
     sideLay->setSpacing(4);
@@ -2775,7 +3268,7 @@ QWidget* MixerWindow::Impl::buildSidePane()
     cl->setContentsMargins(0, 0, 0, 0);
     cl->setSpacing(2);
     QLabel* clTitle = new QLabel("Channel List", channelPane);
-    clTitle->setStyleSheet("color: #a0a0a6; font-weight: bold;");
+    clTitle->setStyleSheet("color: #a0a0a6;");
     cl->addWidget(clTitle);
     channelList = new QListWidget(channelPane);
     channelList->setObjectName("channelList");
@@ -2783,56 +3276,67 @@ QWidget* MixerWindow::Impl::buildSidePane()
     channelList->setFocusPolicy(Qt::NoFocus);
     cl->addWidget(channelList, 1);
     sideLay->addWidget(channelPane, 1);
+    // (with the Channel List hidden, the switches sit low, above the zoom slider, as VEGAS's)
+    sideSpace = new QWidget(side);
+    sideSpace->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    sideLay->addWidget(sideSpace, 1);
 
     viewPane = new QWidget(side);
     viewPane->setObjectName("viewControls");
-    auto* vg = new QGridLayout(viewPane);
+    auto* vg = new QVBoxLayout(viewPane);
     vg->setContentsMargins(0, 0, 0, 0);
-    vg->setHorizontalSpacing(3);
-    vg->setVerticalSpacing(3);
-    QLabel* vcTitle = new QLabel("View Controls", viewPane);
-    vcTitle->setStyleSheet("color: #a0a0a6; font-weight: bold;");
-    vg->addWidget(vcTitle, 0, 0, 1, 2);
-    auto viewTool = [&](const char* name, const QString& text, const QString& tip, int r, int c, bool region) {
+    vg->setSpacing(1);
+    auto viewTool = [&](const char* name, const QString& text, const QString& tip, bool region) {
         QToolButton* b = makeTool(viewPane, nullptr, name, text, tip, true);
         b->setProperty("tool", QVariant());
         b->setProperty("region", region);
+        b->setFixedHeight(20);
         b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        b->setStyleSheet("QToolButton:checked { background: #2d4f6e; border-color: #3d84c6; color: white; }");
-        vg->addWidget(b, r, c);
+        vg->addWidget(b);
         return b;
     };
-    showAll = viewTool("showAll", "Show All", "Show every channel (Q)", 1, 0, false);
+    showAll = viewTool("showAll", "Show All", "Show every channel (Q)", false);
     showAll->setCheckable(false);
-    showTracks = viewTool("showTracks", "Tracks", "Show the audio tracks' strips (A)", 1, 1, false);
-    showBuses = viewTool("showBuses", "Buses", "Show the buses' strips (U)", 2, 0, false);
-    showMaster = viewTool("showMaster", "Master", "Show the master strip (T)", 2, 1, false);
-    showInputs = viewTool("showInputBuses", "Inputs", "Show the input buses' strips", 3, 0, false);
+    showTracks = viewTool("showTracks", "Audio Tracks", "Show the audio tracks' strips (A)", false);
+    showBuses = viewTool("showBuses", "Audio Busses", "Show the buses' strips (U)", false);
+    showInputs = viewTool("showInputBuses", "Input Busses", "Show the input buses' strips", false);
     showInputs->setChecked(true);
-    showAssign = viewTool("showAssignable", "Assign. FX", "Show the assignable FX chains' strips (E)", 3, 1, false);
-    showPreview = viewTool("showPreview", "Preview", "Show the Preview bus (P): what the Trimmer and Start Preview play goes through it", 4, 0, false);
+    showAssign = viewTool("showAssignable", "Assignable FX", "Show the assignable FX chains' strips (E)", false);
+    showMaster = viewTool("showMaster", "Master Bus", "Show the master strip (T)", false);
+    showPreview = viewTool("showPreview", "Preview Bus", "Show the Preview bus (P): what the Trimmer and Start Preview play goes through it", false);
     showPreview->setChecked(false);
-    QFrame* line = new QFrame(viewPane);
-    line->setFrameShape(QFrame::HLine);
-    line->setStyleSheet("color: #5a5a60;");
-    vg->addWidget(line, 5, 0, 1, 2);
-    regionFx = viewTool("regionFx", "Insert FX", "The Insert FX region (I)", 6, 0, true);
-    regionSends = viewTool("regionSends", "Sends", "The Sends region (S)", 6, 1, true);
-    regionIO = viewTool("regionIO", "I/O", "The I/O region (H)", 7, 0, true);
-    regionMeters = viewTool("regionMeters", "Meters", "The peak meters (M)", 7, 1, true);
-    regionFaders = viewTool("regionFaders", "Faders", "Pan, mute, solo, arm and the faders (F)", 8, 0, true);
-    regionVu = viewTool("regionVu", "VU Meters", "The VU / PPM meters region (right-click a meter for its kind)", 8, 1, true);
-    QLabel* wl = new QLabel("Channel Width", viewPane);
-    wl->setStyleSheet("color: #a0a0a6;");
-    vg->addWidget(wl, 9, 0, 1, 2);
+    vg->addSpacing(16);
+    regionFx = viewTool("regionFx", "Insert FX", "The Insert FX region (I)", true);
+    regionSends = viewTool("regionSends", "Sends", "The Sends region (S)", true);
+    regionIO = viewTool("regionIO", "I/O", "The I/O region (H)", true);
+    regionVu = viewTool("regionVu", "VU Meters", "The VU / PPM meters region (right-click a meter for its kind)", true);
+    regionMeters = viewTool("regionMeters", "Meters", "The peak meters (M)", true);
+    regionFaders = viewTool("regionFaders", "Faders", "Pan, mute, solo, arm and the faders (F)", true);
+    vg->addSpacing(6);
+    // the channel width (narrow, default, wide) as VEGAS's zoom slider
+    auto* zoom = new QHBoxLayout();
+    zoom->setSpacing(2);
+    QToolButton* zoomOut = makeTool(viewPane, nullptr, "channelNarrower", QString(), "Narrower channels (N)", false);
+    zoomOut->setProperty("tool", QVariant());
+    zoomOut->setIcon(toolPicture(ZoomOutPic));
+    zoomOut->setFixedSize(18, 18);
     widthSlider = new QSlider(Qt::Horizontal, viewPane);
     widthSlider->setObjectName("channelWidth");
     widthSlider->setRange(0, 2);
     widthSlider->setPageStep(1);
     widthSlider->setFocusPolicy(Qt::NoFocus);
     widthSlider->setToolTip("Narrow (N), default (D) or wide (W) channels");
-    vg->addWidget(widthSlider, 10, 0, 1, 2);
+    QToolButton* zoomIn = makeTool(viewPane, nullptr, "channelWider", QString(), "Wider channels (W)", false);
+    zoomIn->setProperty("tool", QVariant());
+    zoomIn->setIcon(toolPicture(ZoomInPic));
+    zoomIn->setFixedSize(18, 18);
+    zoom->addWidget(zoomOut);
+    zoom->addWidget(widthSlider, 1);
+    zoom->addWidget(zoomIn);
+    vg->addLayout(zoom);
     sideLay->addWidget(viewPane, 0);
+    QObject::connect(zoomOut, &QToolButton::clicked, owner, [this] { widthSlider->setValue(widthSlider->value() - 1); });
+    QObject::connect(zoomIn, &QToolButton::clicked, owner, [this] { widthSlider->setValue(widthSlider->value() + 1); });
     for (QToolButton* b : {showTracks, showBuses, showMaster, showAssign, showInputs, showPreview})
         QObject::connect(b, &QToolButton::toggled, [this](bool) { viewChanged(); });
     QObject::connect(showAll, &QToolButton::clicked, owner, [this] { showAllChannels(); });
@@ -2877,15 +3381,17 @@ void MixerWindow::Impl::buildStrips(QHBoxLayout* body)
     row->setAutoFillBackground(true);
     row->setPalette(owner->palette());
     rowLayout = new QHBoxLayout(row);
-    rowLayout->setContentsMargins(2, 2, 2, 2);
-    rowLayout->setSpacing(1);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(2);
     empty = new QLabel(row);
     empty->setAlignment(Qt::AlignCenter);
     empty->setStyleSheet("color: #8a8a90;");
     rowLayout->addWidget(empty, 1);
     rowLayout->addStretch(0);
     scroll->setWidget(row);
-    body->addWidget(scroll, 1);
+    // (as VEGAS's console the master follows the other channels, the space left over is at the right; the strips'
+    // scroll area is only as wide as its strips: applyView sets that)
+    body->addWidget(scroll, 1000);
 
     masterBox = new QWidget(owner);
     masterBox->setObjectName("masterBox");
@@ -2893,7 +3399,7 @@ void MixerWindow::Impl::buildStrips(QHBoxLayout* body)
     mb->setContentsMargins(0, 2, 2, 2);
     mb->setSpacing(0);
     auto* divider = new QFrame(masterBox);
-    divider->setFixedWidth(4);
+    divider->setFixedWidth(2);
     divider->setStyleSheet("background: #18181a;");
     mb->addWidget(divider);
     master = new Strip(Strip::MasterStrip, 0, pb, masterBox);
@@ -2906,6 +3412,7 @@ void MixerWindow::Impl::buildStrips(QHBoxLayout* body)
     mb->addWidget(preview);
     mb->addWidget(master);
     body->addWidget(masterBox);
+    body->addStretch(1);
     // when the strips need a scroll bar, the master's strip ends where theirs do, so the faders stay in line
     QObject::connect(scroll->horizontalScrollBar(), &QScrollBar::rangeChanged, [this, mb](int, int max) {
         mb->setContentsMargins(0, 2, 2, 2 + (max > 0 ? scroll->horizontalScrollBar()->sizeHint().height() : 0));

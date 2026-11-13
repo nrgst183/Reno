@@ -26,6 +26,7 @@ extern "C" {
 }
 
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -1898,7 +1899,12 @@ int renderJob(AppState& app, const Job& job)
     const RenderSpec spec = job.spec;
     const double from = job.from, to = job.to;
     const auto started = std::chrono::steady_clock::now();
-    std::thread worker([sh, copy, spec, from, to, &app]() {
+    // This thread waits in its event loop: the render thread's requests (the making of nested projects' plug-in
+    // instances, each piece posting the next) wake it at once, the progress line is looked at 20 times a second, and the
+    // render thread ends the loop when it is done. (It used to look every millisecond: a thousand wake-ups a second and
+    // a few percent of a processor taken from the render.)
+    QEventLoop loop;
+    std::thread worker([sh, copy, spec, from, to, &app, &loop]() {
         std::string e, desc;
         bool ok = false;
         try {
@@ -1926,14 +1932,12 @@ int renderJob(AppState& app, const Job& job)
             sh->description = desc;
         }
         sh->done.store(true);
+        QMetaObject::invokeMethod(&loop, "quit", Qt::QueuedConnection);
     });
     auto lastLine = std::chrono::steady_clock::now() - std::chrono::seconds(10);
     int lastPercent = -1;
-    while (!sh->done.load()) {
-        // The render thread hands the making of nested projects' plug-in instances to this thread piece by piece (each
-        // piece posts the next), so every pause here is time the render waits: look again after a millisecond.
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    QTimer progressTimer;
+    QObject::connect(&progressTimer, &QTimer::timeout, [&] {
         ExportProgress pr;
         bool have;
         {
@@ -1941,21 +1945,24 @@ int renderJob(AppState& app, const Job& job)
             pr = sh->pr;
             have = sh->have;
         }
-        if (!have) continue;
+        if (!have) return;
         const auto now = std::chrono::steady_clock::now();
         const double el = std::chrono::duration<double>(now - started).count();
         const int percent = (int)std::floor(pr.fraction * 100.0);
         // terminal: redraw a few times a second; file or pipe: a line every 5% or 10 s
         const bool due = gTty ? now - lastLine > std::chrono::milliseconds(200)
                               : (percent / 5 != lastPercent / 5 || now - lastLine > std::chrono::seconds(10));
-        if (!due) continue;
+        if (!due) return;
         lastLine = now;
         lastPercent = percent;
         const double fps = el > 0 ? pr.frame / el : 0;
         std::string line = strfmt("  %3d%%  frame %lld of %lld  %.1f fps  elapsed %s", percent, (long long)pr.frame, (long long)pr.frames, fps, clockText(el).c_str());
         if (pr.fraction > 0.01) line += "  left " + clockText(el * (1.0 - pr.fraction) / pr.fraction);
         progressLine(line);
-    }
+    });
+    progressTimer.start(50);
+    if (!sh->done.load()) loop.exec();
+    progressTimer.stop();
     worker.join();
     const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 

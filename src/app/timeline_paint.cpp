@@ -107,7 +107,7 @@ bool TimelineWidget::Impl::projectChangeRegion(QRegion& out)
             x.info.duration != y.info.duration || x.info.markers.size() != y.info.markers.size() || x.markers.size() != y.markers.size())
             return false;
     }
-    if (opt.showBusTracks) {
+    if (opt.showBusTracks || opt.showVideoBus) {
         if (a.buses.size() != b.buses.size() || a.masterVolume != b.masterVolume) return false;
         for (const BusRow& br : busRows) {
             const Envelopes* x = AppState::envelopesOf(a, br.owner);
@@ -442,9 +442,15 @@ void TimelineWidget::Impl::changed(int changes)
         if (!all) {
             const int h = q->height();
             cursorOnly = part.isEmpty();
-            part |= QRect((int)std::floor(xAtF(paintedCursor)) - 8, 0, 17, h);
-            part |= QRect((int)std::floor(xAtF(app.cursor())) - 8, 0, 17, h);
-            part |= QRect(0, 0, headerW, kTopH);
+            // Only what looks different: the cursor's strips when it is on another pixel, the time display when its
+            // text is another (playing moves the cursor about twice a frame, and zoomed out it crosses a pixel far
+            // less often than that).
+            const int was = (int)std::floor(xAtF(paintedCursor)), now = (int)std::floor(xAtF(app.cursor()));
+            if (was != now) {
+                part |= QRect(was - 8, 0, 17, h);
+                part |= QRect(now - 8, 0, 17, h);
+            }
+            if (timeDisplaySource() != TimeDisplaySource::Cursor || timeDisplayText() != paintedTimeText) part |= QRect(0, 0, headerW, kTopH);
         }
     }
     if (all) q->update();

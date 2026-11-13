@@ -142,6 +142,9 @@ struct Ctx {
     // VEGAS renders this effect with its OpenCL kernels (vegasUsesOpenCl): effects whose kernels are ported draw as those do (float, intermediate pictures of 8 bits where the kernels
     // write them); off, they draw like VEGAS's CPU code (GPU acceleration off in VEGAS).
     bool openCl = false;
+    // Set by an effect that stored every value of 'out' as an 8-bit level with more::oclStore12: the tie-down of an effect VEGAS draws in float (vegasTiesDown)
+    // then changes nothing and is left out.
+    bool outOnLevels = false;
     double px(double v) const { return v * scale; }
     // For effects that take pixel INDICES (not centres) as positions: the index in this frame of the point that is full-size pixel index x (0 at scale 1);
     // add it to the index of a pixel here.

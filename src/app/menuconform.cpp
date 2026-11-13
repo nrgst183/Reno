@@ -7,6 +7,7 @@
 #include <QAction>
 #include <QMenu>
 #include <QMenuBar>
+#include <QWidget>
 #include <deque>
 #include <map>
 #include <memory>
@@ -92,13 +93,25 @@ QAction* placeholder(QMenu* parent, const Node& n)
     } else {
         a = new QAction(n.shortcut.isEmpty() ? n.text : n.text + "\t" + n.shortcut, parent);
     }
-    a->setEnabled(false);
+    // (a submenu opens, as VEGAS's, to its own disabled lines)
+    a->setEnabled(n.submenu);
     const QString why = "VEGAS has this; Reno has no such feature";
     a->setToolTip(plainMenuText(n.text) + ": " + why);
     a->setStatusTip(why);
     a->setProperty("vegasUnavailable", true);
     return a;
 }
+
+// The main window, which keeps the Reno-only View items that are left out of the menu (so their keys still work).
+QWidget*& mainWindow()
+{
+    static QWidget* w = nullptr;
+    return w;
+}
+
+// Menus that show only VEGAS's items (Reno's own extras there are commands with keys: they stay on the window, out of
+// the menu), the Touch Interface switch excepted.
+bool vegasItemsOnly(const QString& path) { return path == "View"; }
 
 // Actions moved from a menu to one of its submenus (VEGAS has them one level deeper than Reno), so the menu they left does
 // not take them back.
@@ -170,7 +183,13 @@ void conform(QMenu* m, const std::vector<Node>& spec, const QString& path, QMenu
     // Reno's own items: after a separator, in the order they had
     std::vector<QAction*> extras;
     for (QAction* a : old)
-        if (!a->isSeparator() && !used.count(a) && !moved().count(a)) extras.push_back(a);
+        if (!a->isSeparator() && !used.count(a) && !moved().count(a)) {
+            if (vegasItemsOnly(path) && a->objectName() != "touchInterface" && !a->menu()) {
+                if (mainWindow()) mainWindow()->addAction(a);
+                continue;
+            }
+            extras.push_back(a);
+        }
     // separators stay after the item they followed (the File menu's list of recent projects is put in at its marker)
     std::map<QAction*, std::vector<QAction*>> sepAfter;
     QAction* prev = nullptr;
@@ -203,6 +222,7 @@ void conform(QMenu* m, const std::vector<Node>& spec, const QString& path, QMenu
 void conformMenusToVegas(QMenuBar* bar)
 {
     static const std::vector<Node> spec = specTree();
+    mainWindow() = bar->window();
     for (QAction* a : bar->actions()) {
         if (!a->menu()) continue;
         for (const Node& n : spec)

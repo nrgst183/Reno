@@ -43,7 +43,8 @@ struct TimelineOptions {
     bool eventHeaders = false;
     bool showEnvelopes = true;      // View > Show Envelopes (Ctrl+Shift+E): envelopes drawn and editable
     bool lockEnvelopes = true;
-    bool showBusTracks = false;     // View > Show Bus Tracks (B): the video output, master and bus tracks under the tracks
+    bool showBusTracks = false;     // View > Audio Bus Tracks (B): the master and bus tracks under the tracks
+    bool showVideoBus = false;      // View > Video Bus Track (Ctrl+Shift+B): the video output's track, above those
     bool showFadeLengths = false;
     bool snapToAllEvents = true;    // Options > Snap to All Events (Ctrl+Shift+F8); off: only to events on the same tracks
     bool showTakeInfo = false;

@@ -80,7 +80,8 @@ ExternalMonitor::ExternalMonitor(Playback* playback, QWidget* mainWindow) : QWid
     setCursor(Qt::BlankCursor);
     d->pb = playback;
     d->main = mainWindow;
-    d->wanted = QSettings().value("externalMonitor/screen").toString();
+    // (the display is Preferences' Display adapter; a choice from Reno's old View > External Monitor Display, which
+    // there is no longer a way to change, is not taken)
     d->timer = new QTimer(this);
     d->timer->setInterval(10);
     Impl* impl = d.get();

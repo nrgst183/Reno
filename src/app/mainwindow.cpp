@@ -626,7 +626,8 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"View", "Color Grading", "Alt+G", S::Window, "wheels, sliders and curves for the selected event, track or the video output (a built-in effect: no plug-in needed)"},
         {"View", "Motion Tracking", "Alt+M", S::Window, "draw a box round something in the selected video event, track it forward or back, and apply it as Track Motion or the event's Pan/Crop (follow or stabilize)"},
         {"View", "Text to Speech", "Ctrl+Shift+P", S::Window, "Windows' own voices speak the text into a WAV put on the timeline at the cursor (Windows only)"},
-        {"View", "Show Bus Tracks", "B or Ctrl+Shift+B", S::Window, "the video output, master and bus tracks, with their envelopes"},
+        {"View", "Audio Bus Tracks", "B", S::Window, "the master and bus tracks, with their envelopes"},
+        {"View", "Video Bus Track", "Ctrl+Shift+B", S::Window, "the video output's track, with its envelopes"},
         {"Insert", "Audio Track", "Ctrl+Q", S::Window, ""},
         {"Insert", "Video Track", "Ctrl+Shift+Q", S::Window, ""},
         {"Insert", "Marker", "M", S::Window, ""},
@@ -1825,7 +1826,8 @@ void MainWindow::addEnvelopeActions(ActionBuilder& b)
     TimelineWidget* tl = timeline_;
     b.timelineOption("lockEnvelopes", "Lock &Envelopes to Events", QList<QKeySequence>(), &TimelineOptions::lockEnvelopes);
     b.timelineOption("showEnvelopes", "Show &Envelopes", keys({"Ctrl+Shift+E"}), &TimelineOptions::showEnvelopes);
-    b.timelineOption("showBusTracks", "Show &Bus Tracks", keys({"B", "Ctrl+Shift+B"}), &TimelineOptions::showBusTracks);
+    b.timelineOption("showBusTracks", "Show &Bus Tracks", keys({"B"}), &TimelineOptions::showBusTracks);
+    b.timelineOption("showVideoBus", "Show &Video Bus Track", keys({"Ctrl+Shift+B"}), &TimelineOptions::showVideoBus);
     b.timelineOption("showFadeLengths", "Show Event &Fade Lengths", keys({"Ctrl+Shift+T"}), &TimelineOptions::showFadeLengths);
     b.add("envVolume", "&Volume Envelope", keys({"V"}), [tl] { tl->toggleTrackEnvelope("volume"); });
     b.add("envVolumeRemove", "Remove Volume Envelope", keys({"Shift+V"}), [tl] { tl->removeTrackEnvelope("volume"); });
@@ -2150,11 +2152,12 @@ void MainWindow::buildViewMenu()
     view->addSeparator();
     view->addActions({g("tracksTaller"), g("tracksShorter"), g("tracksDefault"), g("minimizeTrack"), g("maximizeTimeline"), g("dockingArea"), g("dockTop"), g("dockBottom"), g("dockRight"), g("dockLeft"), g("trackList")});
     view->addSeparator();
-    view->addActions({g("showWaveforms"), g("showEventButtons"), g("eventHeaders"), g("showEnvelopes"), g("showBusTracks"), g("showFadeLengths")});
+    view->addActions({g("showWaveforms"), g("showEventButtons"), g("eventHeaders"), g("showEnvelopes"), g("showBusTracks"), g("showVideoBus"), g("showFadeLengths")});
     view->addActions({g("showMediaMarkers"), g("showTakeInfo"), g("edgeFrames")});
     view->addSeparator();
     view->addAction(g("rebuildPeaks"));
-    a_->toolbars = view->addMenu("&Toolbars");
+    // (VEGAS's View has no Toolbars list: its Toolbar and Status Bar items are the same switches)
+    a_->toolbars = new QMenu("&Toolbars", this);
 }
 
 // Insert: tracks, generated media, markers and regions, CD tracks, and the envelopes of the selected track.
@@ -3329,7 +3332,7 @@ void MainWindow::syncOptions()
         auto flag = [&sig](bool v) { sig.push_back(v ? '1' : '0'); };
         sig.push_back((char)('a' + (int)o.tool));
         sig.push_back((char)('a' + (int)o.ripple));
-        for (bool v : {o.lockEnvelopes, o.showEnvelopes, o.showBusTracks, o.showFadeLengths, o.quantize, o.showUnquantized, app.snapping, o.snapToGrid,
+        for (bool v : {o.lockEnvelopes, o.showEnvelopes, o.showBusTracks, o.showVideoBus, o.showFadeLengths, o.quantize, o.showUnquantized, app.snapping, o.snapToGrid,
                        o.snapToMarkers, o.autoRipple, o.ignoreGrouping, o.showWaveforms, o.showEventButtons, o.eventHeaders, app.loopOn, app.bypassAllFx,
                        o.snapToAllEvents, o.showTakeInfo, o.showMediaMarkers, o.edgeFrames, o.slipAllTakes, o.multicam, app.autoCrossfades(),
                        app.prefs.quickFadeEdits})
@@ -3367,6 +3370,7 @@ void MainWindow::syncOptions()
     set("lockEnvelopes", o.lockEnvelopes);
     set("showEnvelopes", o.showEnvelopes);
     set("showBusTracks", o.showBusTracks);
+    set("showVideoBus", o.showVideoBus);
     set("showFadeLengths", o.showFadeLengths);
     set("quantize", o.quantize);
     set("showUnquantized", o.showUnquantized);

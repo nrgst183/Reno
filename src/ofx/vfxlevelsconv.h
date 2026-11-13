@@ -5,6 +5,10 @@
 #include "../core/rmath.h"
 #include <algorithm>
 #include <cmath>
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+#include <emmintrin.h>
+#define RENO_VFXLC_SSE2 1
+#endif
 
 #if defined(__clang__)
 #pragma STDC FP_CONTRACT OFF
@@ -147,21 +151,27 @@ inline ConvSetup convSetup(const double* wd, double rotation, double scaleIn, do
 // Rows y0 .. y1 of the picture (W x H premultiplied RGBA floats, Reno's rows: the first row is the top) through the kernel; the taps read with the edges repeated.
 inline void convRows(const ConvSetup& s, const float* src, int W, int H, float* dst, int y0, int y1)
 {
-    static const int dxs[9] = {-1, 0, 1, -1, 0, 1, -1, 0, 1};
-    static const int dys[9] = {-1, -1, -1, 0, 0, 0, 1, 1, 1};
     for (int y = y0; y < y1; ++y) {
+        // the tap rows: taps 0..2 one row down the picture (OpenCL's y runs up), 3..5 this row, 6..8 one row up
+        const float* rows[3] = {src + (size_t)std::min(H - 1, y + 1) * W * 4, src + (size_t)y * W * 4, src + (size_t)std::max(0, y - 1) * W * 4};
         for (int x = 0; x < W; ++x) {
-            float v[4] = {0.f, 0.f, 0.f, 0.f};
+            const int xs[3] = {std::max(0, x - 1), x, std::min(W - 1, x + 1)};
+            float v[4];
+#ifdef RENO_VFXLC_SSE2
+            // the four channels side by side: each channel's products and sums are the plain loop's, in its order
+            __m128 acc = _mm_mul_ps(_mm_set1_ps(s.A[0]), _mm_loadu_ps(rows[0] + (size_t)xs[0] * 4));
+            for (int i = 1; i < 9; ++i) acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(s.A[i]), _mm_loadu_ps(rows[i / 3] + (size_t)xs[i % 3] * 4)));
+            _mm_storeu_ps(v, acc);
+#else
             for (int i = 0; i < 9; ++i) {
-                const int xx = std::min(W - 1, std::max(0, x + dxs[i]));
-                const int yy = std::min(H - 1, std::max(0, y - dys[i]));      // (OpenCL's y runs up)
-                const float* q = src + ((size_t)yy * W + xx) * 4;
+                const float* q = rows[i / 3] + (size_t)xs[i % 3] * 4;
                 for (int k = 0; k < 4; ++k) {
                     const float term = s.A[i] * q[k];
                     v[k] = i == 0 ? term : v[k] + term;
                 }
             }
-            const float* c = src + ((size_t)y * W + x) * 4;
+#endif
+            const float* c = rows[1] + (size_t)x * 4;
             if (s.alphaPlain) v[3] = c[3];
             for (int k = 0; k < 3; ++k) v[k] = v[k] + s.offset;
             v[3] = std::fmin(std::fmax(v[3], 0.f), 1.f);

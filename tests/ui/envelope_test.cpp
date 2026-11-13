@@ -466,13 +466,17 @@ int main(int argc, char** argv)
     // ---------------------------------------------------------------- bus tracks
     {
         check(w.busTrackRect(EnvelopeOwner{EnvelopeOwner::Master, 0}).isEmpty(), "no bus tracks until they are asked for");
+        EnvelopeOwner master{EnvelopeOwner::Master, 0}, video{EnvelopeOwner::VideoOut, 0}, busA{EnvelopeOwner::Bus, p.buses[0].id};
         w.options().showBusTracks = true;
         w.optionsChanged();
         uitest::settle(50);
-        EnvelopeOwner master{EnvelopeOwner::Master, 0}, video{EnvelopeOwner::VideoOut, 0}, busA{EnvelopeOwner::Bus, p.buses[0].id};
+        check(!w.busTrackRect(master).isEmpty() && w.busTrackRect(video).isEmpty(), "Audio Bus Tracks (B): the master and the buses, not the video output");
+        w.options().showVideoBus = true;
+        w.optionsChanged();
+        uitest::settle(50);
         const QRect mr = w.busTrackRect(master), vr = w.busTrackRect(video), br = w.busTrackRect(busA);
         check(!mr.isEmpty() && !vr.isEmpty() && !br.isEmpty() && vr.top() > w.trackRect(ids.a2).bottom() && mr.top() > vr.top() && br.top() > mr.top(),
-              "Show Bus Tracks: the video output, the master and Bus A under the tracks");
+              "and Video Bus Track (Ctrl+Shift+B): the video output, the master and Bus A under the tracks");
         QStringList items;
         check(menuPick(&w, mr.center(), "Volume", "Insert/Remove Envelope", &items) && findEnvelope(p.masterEnvelopes, "volume"), "the master's menu puts a volume envelope on");
         check(items.contains("Mute") && !items.contains("Pan"), "the master offers Volume and Mute", items.join(", ").toStdString());
@@ -502,6 +506,7 @@ int main(int argc, char** argv)
         check(coloured(off, QRect(w.xAt(8.0), mr.top() + 2, 100, mr.height() - 4), false) < 10 && w.envelopePointPos(mv, 0).x() < 0, "Show Envelopes off hides them all");
         w.options().showEnvelopes = true;
         w.options().showBusTracks = false;
+        w.options().showVideoBus = false;
         w.optionsChanged();
     }
 

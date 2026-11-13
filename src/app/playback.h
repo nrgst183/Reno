@@ -271,6 +271,7 @@ private:
     int listener_ = 0;
     class QTimer* timer_ = nullptr;
     class QTimer* presentTimer_ = nullptr;
+    class QTimer* trimTimer_ = nullptr;     // hands memory freed with a closed project back to the system (Linux)
     bool timerPeriodSet_ = false;
     bool playing_ = false;
     double playStart_ = 0;

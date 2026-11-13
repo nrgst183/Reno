@@ -518,6 +518,7 @@ const std::vector<TimelineWidget::Impl::OptionKey>& TimelineWidget::Impl::option
         {"showWaveforms", &TimelineOptions::showWaveforms}, {"showEventButtons", &TimelineOptions::showEventButtons},
         {"eventHeaders", &TimelineOptions::eventHeaders}, {"showEnvelopes", &TimelineOptions::showEnvelopes},
         {"lockEnvelopes", &TimelineOptions::lockEnvelopes}, {"showBusTracks", &TimelineOptions::showBusTracks},
+        {"showVideoBus", &TimelineOptions::showVideoBus},
         {"showFadeLengths", &TimelineOptions::showFadeLengths}, {"snapToAllEvents", &TimelineOptions::snapToAllEvents},
         {"showTakeInfo", &TimelineOptions::showTakeInfo}, {"showMediaMarkers", &TimelineOptions::showMediaMarkers},
         {"edgeFrames", &TimelineOptions::edgeFrames}, {"slipAllTakes", &TimelineOptions::slipAllTakes},

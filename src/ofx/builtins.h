@@ -41,7 +41,8 @@ struct BuiltinInfo {
     std::string id, label, group;
     bool generator = false, filter = false, transition = false;
 };
-std::vector<BuiltinInfo> builtinInfos();
+// (made once: the built-ins never change while Reno runs)
+const std::vector<BuiltinInfo>& builtinInfos();
 
 // The presets the built-ins come with, as an OfxPresetPackage (the format VEGAS's bundles keep theirs in).
 const std::string& builtinPresetPackage();

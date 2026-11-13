@@ -634,9 +634,10 @@ bool RenderAsJob::renderPipelined(MediaPool& pool, FrameOptions& fo, int workers
     const bool withAudio = pe_.audio;
     std::vector<std::unique_ptr<FxRuntime>> extra = extraFxRuntimes(workers);
     workers = 1 + (int)extra.size();
-    // how many frames may wait to be written at most, and how many a worker takes at a go
+    // how many frames may wait to be written at most, and how many a worker takes at a go. Four per worker keep the
+    // workers as busy as sixteen did (the encoder takes frames at an even pace), and at 1080p hold about 200 MB less.
     const int64_t frameBytes = std::max<int64_t>(1, (int64_t)es_.inWidth * es_.inHeight * 4);
-    const int64_t window = std::max<int64_t>(2 * workers, std::min<int64_t>(16 * workers, (512ll << 20) / frameBytes));
+    const int64_t window = std::max<int64_t>(2 * workers, std::min<int64_t>(4 * workers, (512ll << 20) / frameBytes));
     const int64_t run = std::max<int64_t>(1, std::min<int64_t>(8, window / (2 * workers)));
     const int64_t audioAhead = 64 + window;
 

@@ -13,6 +13,10 @@
 #include <cmath>
 #include <cstdio>
 #include <set>
+#include <thread>
+#if defined(__GLIBC__)
+#  include <malloc.h>
+#endif
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -135,6 +139,16 @@ Playback::Playback() : app_(AppState::get()), video_(pool_, app_.fx), audio_(poo
     presentTimer_ = new QTimer(QCoreApplication::instance());
     presentTimer_->setTimerType(Qt::PreciseTimer);
     presentTimer_->setSingleShot(true);
+#if defined(__GLIBC__)
+    // When another project opens (or File > New, Close) the frames, readers and caches of the one before are freed, but
+    // glibc keeps the freed memory in its heaps: after a project that played, a GB or more stayed resident for nothing.
+    // A moment later (the frame threads let go of their last frames) it is handed back to the system, on a thread of
+    // its own (it takes tens of ms).
+    trimTimer_ = new QTimer(QCoreApplication::instance());
+    trimTimer_->setSingleShot(true);
+    trimTimer_->setInterval(2000);
+    QObject::connect(trimTimer_, &QTimer::timeout, [] { std::thread([] { malloc_trim(0); }).detach(); });
+#endif
     QObject::connect(presentTimer_, &QTimer::timeout, [this] { present(); });
     videoThreads_.emplace_back([this] {
         lowerThreadPriority();
@@ -156,6 +170,7 @@ Playback::Playback() : app_(AppState::get()), video_(pool_, app_.fx), audio_(poo
             std::lock_guard<std::mutex> lk(videoMutex_);
             cache_.clear();
             if (!playing_) ready_.clear();
+            if (trimTimer_) trimTimer_->start();
         }
         if (changes & kProject) {
             // Project Media's Refresh: a file that couldn't be read and is there now, or one that changed (another
@@ -234,6 +249,7 @@ Playback::~Playback()
     clearPrerendered(true);
     delete timer_;
     delete presentTimer_;
+    delete trimTimer_;
 }
 
 void Playback::play()
@@ -447,6 +463,11 @@ void Playback::startAt(double from)
     playBegan_ = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     playing_ = true;
     playingNow_ = true;
+    {
+        // (taken so a decoding-ahead thread that just found playingNow_ false is already waiting when woken)
+        std::lock_guard<std::mutex> lk(prewarmMutex_);
+    }
+    prewarmCv_.notify_all();
     setPreviewPlaying(true);
     lastTickPos_ = from;
     {
@@ -2084,7 +2105,8 @@ void Playback::prewarmLoop()
             std::unique_lock<std::mutex> lk(prewarmMutex_);
             if (prewarmQuit_) return;
             if (!playingNow_.load()) {
-                prewarmCv_.wait_for(lk, std::chrono::milliseconds(100));
+                // stopped: sleeps until playing starts (startAt wakes it) instead of looking ten times a second
+                prewarmCv_.wait(lk, [this] { return prewarmQuit_ || playingNow_.load(); });
                 continue;
             }
         }

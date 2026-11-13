@@ -119,6 +119,7 @@ static void oclPixels(Ctx& c, F fn)
             for (int k = 0; k < 4; ++k) d[k] = q ? oclStore12(o[k]) : o[k];
         }
     });
+    c.outOnLevels = q;
 }
 static bool oclUsable(const Ctx& c) { return c.openCl && c.out.w > 0 && c.out.h > 0 && c.src.w == c.out.w && c.src.h == c.out.h; }
 

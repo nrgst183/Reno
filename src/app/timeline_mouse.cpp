@@ -1434,10 +1434,11 @@ void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers 
     double line = -1;
     if (snapOn(mods)) {
         double best = 1e300;
+        const double reach = snapReach();
         for (const Mover& m : movers)
             for (double edge : {m.start + moverSnapOffset(m) + delta, m.end() + delta}) {
                 double t = 0;
-                if (nearest(drag.snaps, edge, &t) && std::fabs(t - edge) < std::fabs(best)) {
+                if (nearest(drag.snaps, edge, &t, reach) && std::fabs(t - edge) < std::fabs(best)) {
                     best = t - edge;
                     line = t;
                 }

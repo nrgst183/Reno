@@ -1199,11 +1199,13 @@ struct NestedShared {
     {
         std::lock_guard<std::mutex> lk(mutex);
         frames.push_front({frame, generation, img});
-        // a dozen frames, but no more than 64 MB of them (a dozen full-size deep frames are hundreds of megabytes, in
-        // every nested project used)
+        // four frames, and no more than 64 MB of them (a dozen full-size deep frames are hundreds of megabytes, in
+        // every nested project used). Frames asked for again are nearly always one of the last three made (another
+        // layer or a stutter going back a frame or two); keeping a dozen held ~150 MB more in a project with five
+        // nested projects and saved no time.
         size_t bytes = 0;
         for (const CachedFrame& f : frames) bytes += f.img ? f.img->byteSize() : 0;
-        while (frames.size() > 1 && (frames.size() > 12 || bytes > (64u << 20))) {
+        while (frames.size() > 1 && (frames.size() > 4 || bytes > (64u << 20))) {
             bytes -= frames.back().img ? frames.back().img->byteSize() : 0;
             frames.pop_back();
         }

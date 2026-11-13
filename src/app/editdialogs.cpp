@@ -23,6 +23,7 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGridLayout>
+#include <QTransform>
 #include <QGroupBox>
 #include <QInputDialog>
 #include <QMessageBox>
@@ -236,6 +237,8 @@ public:
     // Event Pan/Crop's mask editing: drawn over everything, and given the mouse first (true: taken)
     std::function<void(QPainter&)> paintOver;
     std::function<bool(QMouseEvent*)> pressHook, moveHook, releaseHook, doubleClickHook;
+    // VEGAS's Zoom Edit Tool: a click zooms the workspace in, a right-click out (the box is not touched)
+    bool zoomTool = false;
 
     explicit BoxView(QWidget* parent) : QWidget(parent)
     {
@@ -277,11 +280,22 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         p.fillRect(rect(), QColor(24, 24, 26));
-        p.setPen(QPen(QColor(40, 40, 43), 1));
-        for (int x = 0; x < width(); x += 24) p.drawLine(x, 0, x, height());
-        for (int y = 0; y < height(); y += 24) p.drawLine(0, y, width(), y);
-
         const QRectF a = area();
+        if (cropStyle) {
+            // VEGAS's Pan/Crop workspace: a field of dots, and the picture's edges carried across it as thin lines
+            p.setRenderHint(QPainter::Antialiasing, false);
+            const QColor dot(78, 78, 84);
+            for (int y = 8; y < height(); y += 16)
+                for (int x = 8; x < width(); x += 16) p.fillRect(QRect(x, y, 1, 1), dot);
+            p.setPen(QPen(QColor(64, 64, 70), 1));
+            for (double y : {a.top(), a.bottom()}) p.drawLine(QPointF(0, y), QPointF(width(), y));
+            for (double x : {a.left(), a.right()}) p.drawLine(QPointF(x, 0), QPointF(x, height()));
+            p.setRenderHint(QPainter::Antialiasing, true);
+        } else {
+            p.setPen(QPen(QColor(40, 40, 43), 1));
+            for (int x = 0; x < width(); x += 24) p.drawLine(x, 0, x, height());
+            for (int y = 0; y < height(); y += 24) p.drawLine(0, y, width(), y);
+        }
         if (cropStyle) {
             if (!picture.isNull()) p.drawImage(a, picture);
             else {
@@ -319,12 +333,13 @@ protected:
         QPolygonF poly;
         poly << corner(b, -1, -1) << corner(b, 1, -1) << corner(b, 1, 1) << corner(b, -1, 1);
         if (cropStyle) {
+            // (as VEGAS, the picture shows whole; what is outside the box is only dimmed a little)
             QPainterPath outside;
             outside.addRect(QRectF(rect()));
             QPainterPath in;
             in.addPolygon(poly);
             in.closeSubpath();
-            p.fillPath(outside.subtracted(in), QColor(0, 0, 0, 120));
+            p.fillPath(outside.subtracted(in), QColor(0, 0, 0, 60));
         } else {
             QPainterPath in;
             in.addPolygon(poly);
@@ -342,19 +357,27 @@ protected:
         p.save();
         p.translate(c);
         p.rotate(b.rot);
-        p.setPen(QPen(QColor(255, 255, 255, 110), 1, Qt::DotLine));
-        p.drawEllipse(QPointF(0, 0), hx, hy);
+        // VEGAS's dashed circle round the box (dragging near it turns the box) and its "F" in outline, dashed, showing
+        // which way up and round the picture is
+        const double ring = std::hypot(hx, hy) * 1.1;
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(0, 0, 0, 140), 2.2));
+        p.drawEllipse(QPointF(0, 0), ring, ring);
+        p.setPen(QPen(QColor(235, 235, 240, 200), 1, Qt::DashLine));
+        p.drawEllipse(QPointF(0, 0), ring, ring);
         p.scale(b.w < 0 ? -1 : 1, b.h < 0 ? -1 : 1);
-        const double fh = std::max(10.0, std::min(hx, hy) * 0.9);
+        // (four fifths of the box's height, at most three fifths of its width)
         QFont f = font();
-        f.setPixelSize((int)fh);
-        f.setBold(true);
+        f.setPixelSize(100);
         QPainterPath letter;
         letter.addText(0, 0, f, "F");
         const QRectF lb = letter.boundingRect();
         letter.translate(-lb.center());
-        p.setPen(QPen(QColor(0, 0, 0, 150), 2));
-        p.setBrush(QColor(255, 255, 255, 120));
+        const double fs = std::max(0.08, std::min(1.6 * hy / std::max(1.0, lb.height()), 1.2 * hx / std::max(1.0, lb.width())));
+        letter = QTransform::fromScale(fs, fs).map(letter);
+        p.setPen(QPen(QColor(0, 0, 0, 170), 2.2));
+        p.drawPath(letter);
+        p.setPen(QPen(QColor(255, 255, 255), 1, Qt::DashLine));
         p.drawPath(letter);
         p.restore();
         p.setPen(QPen(Qt::black, 1));
@@ -382,13 +405,13 @@ protected:
         }
         if (pivots) {
             const QPointF pv = toView(b.cx + b.px, b.cy + b.py);
-            p.setBrush(Qt::NoBrush);
-            p.setPen(QPen(QColor(0, 0, 0, 200), 3));
+            // VEGAS's centre handle: a small ring with a dot
+            p.setBrush(QColor(255, 255, 255));
+            p.setPen(QPen(QColor(0, 0, 0), 1.2));
             p.drawEllipse(pv, 5, 5);
-            p.setPen(QPen(QColor(255, 255, 255), 1.4));
-            p.drawEllipse(pv, 5, 5);
-            p.drawLine(QPointF(pv.x() - 8, pv.y()), QPointF(pv.x() + 8, pv.y()));
-            p.drawLine(QPointF(pv.x(), pv.y() - 8), QPointF(pv.x(), pv.y() + 8));
+            p.setBrush(QColor(0, 0, 0));
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(pv, 2, 2);
         }
         if (paintOver) paintOver(p);
     }
@@ -428,6 +451,13 @@ protected:
 
     void mousePressEvent(QMouseEvent* e) override
     {
+        if (zoomTool && (e->button() == Qt::LeftButton || e->button() == Qt::RightButton)) {
+            zoom = std::min(8.0, std::max(0.2, zoom * (e->button() == Qt::LeftButton ? 1.25 : 1.0 / 1.25)));
+            publishArea();
+            update();
+            if (onZoom) onZoom();
+            return;
+        }
         if (pressHook && pressHook(e)) return;
         if (e->button() == Qt::RightButton) {
             if (onMenu) onMenu(e->globalPosition().toPoint());
@@ -670,6 +700,19 @@ public:
     std::function<void(double)> onAddAt;
     std::function<void()> onDeleteKeys;
     std::function<void()> onEmptyClick;
+    // VEGAS's keyframe rows (Pan/Crop's Position and Mask): one row per kind under the ruler; the keys above are the
+    // active row's, the others' are shown dimmed (their times from otherRowKeys), and a click on another row picks it.
+    int rows = 1, activeRow = 0;
+    std::function<std::vector<double>(int row)> otherRowKeys;
+    std::function<void(int row)> onRowClick;
+    static const int kRowH = 20, kRulerH = 18;
+    void setRows(int n)
+    {
+        rows = std::max(1, n);
+        if (rows > 1) setFixedHeight(kRulerH + rows * kRowH + 2);
+        setProperty("keyY", keyY());
+        update();
+    }
 
     explicit KeyStrip(QWidget* parent) : QWidget(parent)
     {
@@ -680,7 +723,8 @@ public:
     }
     int xOf(double t) const { return kMargin + (int)std::lround(t / std::max(1e-9, span) * (width() - 2 * kMargin)); }
     double timeAt(int x) const { return std::min(span, std::max(0.0, (double)(x - kMargin) / std::max(1, width() - 2 * kMargin) * span)); }
-    int keyY() const { return 18 + (height() - 18) / 2; }
+    int keyY() const { return rows > 1 ? rowY(activeRow) : 18 + (height() - 18) / 2; }
+    int rowY(int r) const { return kRulerH + r * kRowH + kRowH / 2; }
     static QColor curveColor(int curve)
     {
         switch (curve) {
@@ -699,6 +743,7 @@ protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
+        setProperty("keyY", keyY());
         p.setRenderHint(QPainter::Antialiasing);
         p.fillRect(rect(), QColor(32, 32, 35));
         p.fillRect(QRect(0, 0, width(), 17), QColor(44, 44, 48));
@@ -715,6 +760,22 @@ protected:
             const int x = xOf(t);
             p.drawLine(x, 11, x, 17);
             p.drawText(QRect(x + 3, 0, 120, 13), Qt::AlignLeft | Qt::AlignVCenter, qs(timecode(origin + t, fps)));
+        }
+        if (rows > 1) {
+            // the rows: the active one lit, the others' keyframes small and grey
+            for (int r = 0; r < rows; ++r) {
+                const QRect band(0, kRulerH + r * kRowH, width(), kRowH);
+                p.fillRect(band, r == activeRow ? QColor(44, 44, 49) : QColor(32, 32, 35));
+                p.fillRect(QRect(0, band.bottom(), width(), 1), QColor(24, 24, 26));
+                if (r == activeRow || !otherRowKeys) continue;
+                p.setPen(QPen(QColor(20, 20, 20), 1));
+                p.setBrush(QColor(120, 120, 126));
+                for (double t : otherRowKeys(r)) {
+                    const QPointF c(xOf(t), rowY(r));
+                    const QPointF d[4] = {QPointF(c.x(), c.y() - 4.5), QPointF(c.x() + 4.5, c.y()), QPointF(c.x(), c.y() + 4.5), QPointF(c.x() - 4.5, c.y())};
+                    p.drawPolygon(d, 4);
+                }
+            }
         }
         p.setPen(QColor(62, 62, 66));
         p.drawLine(kMargin, keyY(), width() - kMargin, keyY());
@@ -748,6 +809,14 @@ protected:
     void mousePressEvent(QMouseEvent* e) override
     {
         const QPoint at = e->position().toPoint();
+        if (rows > 1 && at.y() >= kRulerH && onRowClick) {
+            const int r = std::min(rows - 1, (at.y() - kRulerH) / kRowH);
+            if (r != activeRow) {
+                onRowClick(r);
+                if (onSeek && e->button() == Qt::LeftButton) onSeek(snap(timeAt(at.x())));
+                return;
+            }
+        }
         const int k = keyAt(at);
         if (e->button() == Qt::RightButton) {
             if (k >= 0 && onKeyMenu) onKeyMenu(k, e->globalPosition().toPoint());
@@ -805,7 +874,64 @@ private:
     int pressX_ = 0;
 };
 
-// A grid of named values in groups, like VEGAS's property list beside its Pan/Crop and Track Motion workspaces.
+// A group's header in the list, as VEGAS's: a band with a box to fold the group away (minus: open, plus: folded) and
+// the group's name. A click folds or opens it.
+class PropGroupLabel : public QLabel {
+public:
+    PropGroupLabel(const QString& title, QWidget* parent) : QLabel(title, parent) { setFixedHeight(18); }
+    bool open = true;
+    std::function<void()> onToggle;
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.fillRect(rect(), QColor(58, 58, 63));
+        p.fillRect(QRect(0, height() - 1, width(), 1), QColor(36, 36, 40));
+        const QRect box(4, height() / 2 - 4, 9, 9);
+        p.setPen(QColor(200, 200, 205));
+        p.setBrush(QColor(40, 40, 44));
+        p.drawRect(box.adjusted(0, 0, -1, -1));
+        p.drawLine(box.left() + 2, box.center().y(), box.right() - 2, box.center().y());
+        if (!open) p.drawLine(box.center().x(), box.top() + 2, box.center().x(), box.bottom() - 2);
+        QFont f = font();
+        f.setBold(true);
+        p.setFont(f);
+        p.setPen(QColor(232, 232, 236));
+        p.drawText(rect().adjusted(18, 0, -2, 0), Qt::AlignLeft | Qt::AlignVCenter, text());
+    }
+    void mousePressEvent(QMouseEvent* e) override
+    {
+        if (e->button() == Qt::LeftButton && onToggle) onToggle();
+    }
+};
+
+// A value's name in the list, with VEGAS's small dot before it (cut short with "..." when it does not fit, as VEGAS's
+// "Maintain aspect ...").
+class PropName : public QLabel {
+public:
+    PropName(const QString& text, QWidget* parent) : QLabel(text, parent)
+    {
+        setContentsMargins(16, 0, 0, 0);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        setToolTip(text);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.fillRect(QRect(9, height() / 2, 2, 2), QColor(150, 150, 156));
+        p.setPen(palette().color(isEnabled() ? QPalette::Active : QPalette::Disabled, QPalette::WindowText));
+        p.setFont(font());
+        const QRect r = rect().adjusted(16, 0, -2, 0);
+        p.drawText(r, Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(font()).elidedText(text(), Qt::ElideRight, r.width()));
+    }
+};
+
+// A grid of named values in groups, like VEGAS's property list beside its Pan/Crop and Track Motion workspaces: a
+// band per group (a click folds it away), then a row per value, its name and the value written plainly (a frame shows
+// only while the mouse is over it or it is being typed in).
 class PropPanel : public QWidget {
 public:
     explicit PropPanel(QWidget* parent) : QWidget(parent)
@@ -813,32 +939,39 @@ public:
         setObjectName("propPanel");
         grid_ = new QGridLayout(this);
         grid_->setContentsMargins(0, 0, 0, 0);
-        grid_->setHorizontalSpacing(8);
-        grid_->setVerticalSpacing(3);
+        grid_->setHorizontalSpacing(4);
+        grid_->setVerticalSpacing(0);
         grid_->setColumnStretch(1, 1);
-        setFixedWidth(230);
+        grid_->setColumnMinimumWidth(0, 112);
+        setFixedWidth(200);
+        setStyleSheet(
+            "QDoubleSpinBox, QSpinBox, QComboBox { border: 1px solid transparent; background: transparent; padding: 0px 2px; min-height: 16px; }"
+            "QDoubleSpinBox:hover, QSpinBox:hover, QComboBox:hover { border-color: #55555c; }"
+            "QDoubleSpinBox:focus, QSpinBox:focus { border-color: #12b0ff; background: #1c1c1f; }"
+            "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button, QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }"
+            "QComboBox::drop-down { width: 0px; border: none; }"
+            "QComboBox::down-arrow { image: none; width: 0px; }");
     }
     QLabel* group(const QString& title)
     {
-        QLabel* l = new QLabel(title, this);
+        auto* l = new PropGroupLabel(title, this);
         l->setObjectName("propGroup");
-        QFont f = l->font();
-        f.setBold(true);
-        l->setFont(f);
-        l->setAutoFillBackground(true);
-        QPalette p = l->palette();
-        p.setColor(QPalette::Window, QColor(58, 58, 63));
-        l->setPalette(p);
-        l->setContentsMargins(6, 3, 6, 3);
         grid_->addWidget(l, row_++, 0, 1, 2);
+        groups_.push_back(Group{l, {}, {}});
+        const size_t g = groups_.size() - 1;
+        l->onToggle = [this, g] { fold(g, groups_[g].header->open); };
         return l;
     }
     QLabel* add(const QString& label, QWidget* w)
     {
-        QLabel* l = new QLabel(label, this);
-        l->setContentsMargins(12, 0, 0, 0);
+        QLabel* l = new PropName(label, this);
+        l->setFixedHeight(19);
         grid_->addWidget(l, row_, 0);
         grid_->addWidget(w, row_++, 1);
+        if (!groups_.empty()) {
+            groups_.back().items.push_back(l);
+            groups_.back().items.push_back(w);
+        }
         return l;
     }
     void addWide(QWidget* w)
@@ -846,10 +979,44 @@ public:
         grid_->addWidget(w, row_++, 0, 1, 2);
     }
     void finish() { grid_->setRowStretch(row_, 1); }
+    // A whole group shown or not (its band and rows), as VEGAS shows the Mask groups only for the Mask row.
+    void showGroup(QLabel* header, bool on)
+    {
+        for (Group& g : groups_) {
+            if (g.header != header) continue;
+            if (g.header->isHidden() == !on) return;
+            g.header->setVisible(on);
+            if (g.header->open)
+                for (QWidget* w : g.items) w->setVisible(on);
+        }
+    }
 
 private:
+    struct Group {
+        PropGroupLabel* header;
+        std::vector<QWidget*> items;
+        std::vector<QWidget*> folded;       // the rows that were shown when it was folded (to show again)
+    };
+    void fold(size_t k, bool close)
+    {
+        Group& g = groups_[k];
+        g.header->open = !close;
+        if (close) {
+            g.folded.clear();
+            for (QWidget* w : g.items)
+                if (!w->isHidden()) {
+                    g.folded.push_back(w);
+                    w->hide();
+                }
+        } else {
+            for (QWidget* w : g.folded) w->show();
+            g.folded.clear();
+        }
+        g.header->update();
+    }
     QGridLayout* grid_;
     int row_ = 0;
+    std::vector<Group> groups_;
 };
 
 QToolButton* toolButton(QWidget* parent, const QString& text, const QString& tip, const char* name, bool checkable = false)
@@ -862,6 +1029,234 @@ QToolButton* toolButton(QWidget* parent, const QString& text, const QString& tip
     b->setAutoRaise(false);
     return b;
 }
+
+// ---------------------------------------------------------------------------------- the window's small pictures
+// The Pan/Crop window's tool and keyframe icons, drawn here in VEGAS's manner (VEGAS's own pictures are not used).
+enum BoxIcon {
+    IconProps, IconArrow, IconZoom, IconSnap, IconLock, IconCenter, IconMove, IconAnchor, IconAnchorDel, IconTangent, IconRect, IconOval,
+    IconSync, IconFirst, IconPrev, IconNext, IconLast, IconAddKey, IconDelKey, IconCursorMark, IconSave, IconDelete
+};
+QIcon boxIcon(int which)
+{
+    const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+    QPixmap pm(QSize(16, 16) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QColor ink(236, 236, 240), blue(120, 196, 255);
+    p.setPen(QPen(ink, 1.2));
+    p.setBrush(Qt::NoBrush);
+    auto diamond = [&](const QPointF& c, double r, const QColor& fill) {
+        const QPointF d[4] = {QPointF(c.x(), c.y() - r), QPointF(c.x() + r, c.y()), QPointF(c.x(), c.y() + r), QPointF(c.x() - r, c.y())};
+        p.setBrush(fill);
+        p.drawPolygon(d, 4);
+        p.setBrush(Qt::NoBrush);
+    };
+    auto tri = [&](double x, double dir) {
+        const QPointF t[3] = {QPointF(x, 4), QPointF(x, 12), QPointF(x + dir * 5, 8)};
+        p.setBrush(ink);
+        p.drawPolygon(t, 3);
+        p.setBrush(Qt::NoBrush);
+    };
+    switch (which) {
+    case IconProps:
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        for (int k = 0; k < 8; ++k) {
+            const double a = k * M_PI / 4.0;
+            p.drawEllipse(QPointF(8 + 5.6 * std::cos(a), 8 + 5.6 * std::sin(a)), 1.7, 1.7);
+        }
+        p.drawEllipse(QPointF(8, 8), 5, 5);
+        p.setBrush(QColor(40, 40, 44));
+        p.drawEllipse(QPointF(8, 8), 2, 2);
+        break;
+    case IconArrow: {
+        const QPointF a[7] = {QPointF(4, 1.5), QPointF(4, 13), QPointF(6.8, 10.4), QPointF(8.8, 14.5), QPointF(10.6, 13.6), QPointF(8.7, 9.6), QPointF(12.3, 9.6)};
+        p.setBrush(ink);
+        p.setPen(QPen(QColor(20, 20, 22), 1));
+        p.drawPolygon(a, 7);
+        break;
+    }
+    case IconZoom:
+        p.drawEllipse(QPointF(6.5, 6.5), 4.5, 4.5);
+        p.setPen(QPen(ink, 2.2));
+        p.drawLine(QPointF(10, 10), QPointF(14.5, 14.5));
+        break;
+    case IconSnap:
+        // a magnet
+        p.setPen(QPen(QColor(230, 90, 90), 3.0));
+        p.drawArc(QRectF(3, 2, 10, 10), 180 * 16, 180 * 16);
+        p.drawLine(QPointF(3, 7), QPointF(3, 11));
+        p.drawLine(QPointF(13, 7), QPointF(13, 11));
+        p.setPen(QPen(ink, 3.0));
+        p.drawLine(QPointF(3, 11.5), QPointF(3, 14));
+        p.drawLine(QPointF(13, 11.5), QPointF(13, 14));
+        break;
+    case IconLock:
+        // Lock Aspect Ratio: a box and a lock
+        p.drawRect(QRectF(1.5, 3.5, 9, 7));
+        p.setPen(QPen(ink, 1.1));
+        p.drawArc(QRectF(9, 6, 5, 5), 0, 180 * 16);
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawRect(QRectF(8.5, 8.5, 6, 5.5));
+        break;
+    case IconCenter:
+        // Scale About Center: a box with arrows out from its centre
+        p.drawRect(QRectF(2.5, 2.5, 11, 11));
+        p.setBrush(ink);
+        p.drawEllipse(QPointF(8, 8), 1.6, 1.6);
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(8, 8), QPointF(4.5, 4.5));
+        p.drawLine(QPointF(8, 8), QPointF(11.5, 11.5));
+        break;
+    case IconMove:
+        p.drawLine(QPointF(8, 1.5), QPointF(8, 14.5));
+        p.drawLine(QPointF(1.5, 8), QPointF(14.5, 8));
+        p.setBrush(ink);
+        {
+            const QPointF u[3] = {QPointF(5.5, 4), QPointF(10.5, 4), QPointF(8, 1)};
+            const QPointF d[3] = {QPointF(5.5, 12), QPointF(10.5, 12), QPointF(8, 15)};
+            const QPointF l[3] = {QPointF(4, 5.5), QPointF(4, 10.5), QPointF(1, 8)};
+            const QPointF r[3] = {QPointF(12, 5.5), QPointF(12, 10.5), QPointF(15, 8)};
+            p.drawPolygon(u, 3);
+            p.drawPolygon(d, 3);
+            p.drawPolygon(l, 3);
+            p.drawPolygon(r, 3);
+        }
+        break;
+    case IconAnchor:
+    case IconAnchorDel:
+        // a pen nib, with a plus or a minus
+        p.drawLine(QPointF(3, 13), QPointF(10, 3));
+        p.drawLine(QPointF(3, 13), QPointF(6, 13.5));
+        p.drawLine(QPointF(10, 3), QPointF(12.5, 5));
+        p.drawLine(QPointF(12.5, 5), QPointF(6, 13.5));
+        p.setPen(QPen(blue, 1.6));
+        p.drawLine(QPointF(10, 12.5), QPointF(15, 12.5));
+        if (which == IconAnchor) p.drawLine(QPointF(12.5, 10), QPointF(12.5, 15));
+        break;
+    case IconTangent:
+        p.drawLine(QPointF(2, 13), QPointF(8, 8));
+        p.drawLine(QPointF(8, 8), QPointF(14, 4));
+        p.setBrush(ink);
+        p.drawRect(QRectF(6.5, 6.5, 3, 3));
+        p.drawEllipse(QPointF(2.5, 12.5), 1.5, 1.5);
+        p.drawEllipse(QPointF(13.5, 4.5), 1.5, 1.5);
+        break;
+    case IconRect:
+        p.setPen(QPen(blue, 1.4));
+        p.drawRect(QRectF(2.5, 4.5, 11, 8));
+        break;
+    case IconOval:
+        p.setPen(QPen(blue, 1.4));
+        p.drawEllipse(QRectF(2, 4, 12, 9));
+        break;
+    case IconSync:
+        // the cursor: a line with a flag at the top
+        p.drawLine(QPointF(8, 2), QPointF(8, 15));
+        p.setBrush(ink);
+        {
+            const QPointF f[3] = {QPointF(4.5, 2), QPointF(11.5, 2), QPointF(8, 6)};
+            p.drawPolygon(f, 3);
+        }
+        break;
+    case IconFirst:
+        p.drawLine(QPointF(4, 4), QPointF(4, 12));
+        tri(11, -1);
+        break;
+    case IconPrev:
+        diamond(QPointF(11, 8), 3.5, QColor(160, 160, 166));
+        tri(7, -1);
+        break;
+    case IconNext:
+        diamond(QPointF(5, 8), 3.5, QColor(160, 160, 166));
+        tri(9, 1);
+        break;
+    case IconLast:
+        p.drawLine(QPointF(12, 4), QPointF(12, 12));
+        tri(5, 1);
+        break;
+    case IconAddKey:
+        diamond(QPointF(7, 9), 5, QColor(200, 200, 204));
+        p.setPen(QPen(QColor(90, 220, 110), 1.8));
+        p.drawLine(QPointF(10.5, 3.5), QPointF(15, 3.5));
+        p.drawLine(QPointF(12.75, 1.2), QPointF(12.75, 5.8));
+        break;
+    case IconDelKey:
+        diamond(QPointF(7, 9), 5, QColor(200, 200, 204));
+        p.setPen(QPen(QColor(240, 80, 80), 1.8));
+        p.drawLine(QPointF(10.5, 1.5), QPointF(14.5, 5.5));
+        p.drawLine(QPointF(14.5, 1.5), QPointF(10.5, 5.5));
+        break;
+    case IconCursorMark:
+        p.setBrush(ink);
+        {
+            const QPointF m[5] = {QPointF(4, 2), QPointF(12, 2), QPointF(12, 8), QPointF(8, 12), QPointF(4, 8)};
+            p.drawPolygon(m, 5);
+        }
+        p.drawLine(QPointF(8, 12), QPointF(8, 15));
+        break;
+    case IconSave:
+        p.setPen(QPen(blue, 1.2));
+        p.drawRect(QRectF(2.5, 2.5, 11, 11));
+        p.setBrush(blue);
+        p.drawRect(QRectF(5, 2.5, 6, 4));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(QRectF(4.5, 9, 7, 4.5));
+        break;
+    case IconDelete:
+        p.setPen(QPen(QColor(200, 200, 204), 1.8));
+        p.drawLine(QPointF(3.5, 3.5), QPointF(12.5, 12.5));
+        p.drawLine(QPointF(12.5, 3.5), QPointF(3.5, 12.5));
+        break;
+    }
+    return QIcon(pm);
+}
+
+// A button shown as one of those icons (it keeps its text for tests and menus).
+void iconize(QToolButton* b, int pic)
+{
+    b->setIcon(boxIcon(pic));
+    b->setIconSize(QSize(16, 16));
+    b->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    b->setFixedSize(22, 22);
+    b->setProperty("boxIcon", true);
+}
+
+// VEGAS's plug-in chain row as Pan/Crop shows it: a line from a small circle at the left, through the one button, to
+// a circle at the right.
+class ChainRow : public QWidget {
+public:
+    ChainRow(const QString& name, QWidget* parent) : QWidget(parent), name_(name) { setFixedHeight(24); }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QFont f = font();
+        const int w = QFontMetrics(f).horizontalAdvance(name_) + 16;
+        const QRectF chip(18, 3, w, height() - 6);
+        const double y = height() / 2.0;
+        p.setPen(QPen(QColor(200, 200, 205), 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QPointF(7, y), 3, 3);
+        p.drawLine(QPointF(10, y), QPointF(chip.left(), y));
+        p.drawLine(QPointF(chip.right(), y), QPointF(chip.right() + 10, y));
+        p.drawEllipse(QPointF(chip.right() + 13, y), 3, 3);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(18, 176, 255));
+        p.drawRoundedRect(chip, 2, 2);
+        p.setPen(QColor(255, 255, 255));
+        p.setFont(f);
+        p.drawText(chip, Qt::AlignCenter, name_);
+    }
+
+private:
+    QString name_;
+};
 
 // ---------------------------------------------------------------------------------- the 3D workspace
 // VEGAS's 3D Track Motion workspace (Track Motion of a track in 3D Source Alpha): one to four panes (the Layout, keys 1
@@ -1504,6 +1899,11 @@ protected:
     virtual bool smoothable() const { return true; }
     virtual bool hasPivot() const { return false; }
     virtual bool hasEditGroup() const { return false; }
+    // Laid out as VEGAS's Video Event FX window shows Pan/Crop: a header naming the event, the chain with its one
+    // Pan/Crop button, the presets on a row of their own, the tools in a column of icons at the left, and named
+    // keyframe rows under the workspace with icon buttons below them. (Track Motion keeps its tool bar across the top.)
+    virtual bool vegasFrame() const { return false; }
+    virtual QString frameChip() const { return QString(); }
 
     AppState& app_ = AppState::get();
     Playback* playback_;
@@ -1528,6 +1928,13 @@ protected:
     double ctrlToggle_ = -1;
     double dragDelta_ = 0;
     QLabel *timeLabel_ = nullptr, *hint_ = nullptr;
+    QVBoxLayout* toolColumn_ = nullptr;
+    QToolButton *propsBtn_ = nullptr, *zoomToolBtn_ = nullptr, *moveBtn_ = nullptr;
+    QScrollArea* panelScroll_ = nullptr;
+    QLabel* frameTitle_ = nullptr;
+    QWidget* rowNames_ = nullptr;
+    QVBoxLayout* rowNamesLayout_ = nullptr;
+    QToolButton *playBtn_ = nullptr, *stopBtn_ = nullptr;
     QToolButton *addKey_ = nullptr, *delKey_ = nullptr, *firstKey_ = nullptr, *prevKey_ = nullptr, *nextKey_ = nullptr, *lastKey_ = nullptr;
     double now_ = 0;
     bool dragging_ = false;
@@ -1550,11 +1957,24 @@ protected:
         QVBoxLayout* v = new QVBoxLayout(this);
         v->setContentsMargins(8, 8, 8, 8);
         v->setSpacing(6);
+        if (vegasFrame()) {
+            v->setContentsMargins(0, 0, 0, 4);
+            v->setSpacing(0);
+            buildFrameHeader(v);
+        }
         toolbar_ = new QHBoxLayout();
         toolbar_->setSpacing(6);
+        if (vegasFrame()) toolbar_->setContentsMargins(8, 4, 6, 4);
         v->addLayout(toolbar_);
         QHBoxLayout* middle = new QHBoxLayout();
         middle->setSpacing(8);
+        if (vegasFrame()) {
+            middle->setContentsMargins(6, 0, 6, 0);
+            middle->setSpacing(2);
+            toolColumn_ = new QVBoxLayout();
+            toolColumn_->setSpacing(2);
+            middle->addLayout(toolColumn_);
+        }
         panel_ = new PropPanel(this);
         // in a scroll area: Track Motion's 3D settings make a long list
         QScrollArea* panelScroll = new QScrollArea(this);
@@ -1564,6 +1984,7 @@ protected:
         panelScroll->setWidgetResizable(true);
         panelScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         panelScroll->setFixedWidth(panel_->width() + 14);
+        panelScroll_ = panelScroll;
         middle->addWidget(panelScroll);
         middle_ = middle;
         view_ = new BoxView(this);
@@ -1585,8 +2006,9 @@ protected:
         scaleYBtn_ = toolButton(this, "Fix Height", "Prevent Scaling (Shift+Y): the box's height stays", "preventScaleY", true);
         for (QToolButton* b : {rotateBtn_, snapBtn_, objectBtn_, moveXBtn_, moveYBtn_, lockBtn_, centreBtn_, scaleXBtn_, scaleYBtn_}) {
             b->setFocusPolicy(Qt::NoFocus);
-            toolbar_->addWidget(b);
+            if (!vegasFrame()) toolbar_->addWidget(b);
         }
+        if (vegasFrame()) buildToolColumn();
         auto flag = [this](QToolButton* b, bool BoxView::*field) {
             QObject::connect(b, &QToolButton::toggled, this, [this, field](bool on) {
                 view_->*field = on;
@@ -1615,7 +2037,7 @@ protected:
         panel_->add("Y Center", yBox_);
         panel_->group("Rotation");
         rotBox_ = new Spin(panel_, -36000, 36000, 1, 1, "boxAngle");
-        rotBox_->setSuffix(QString::fromUtf8("\xc2\xb0"));
+        if (!vegasFrame()) rotBox_->setSuffix(QString::fromUtf8("\xc2\xb0"));
         panel_->add("Angle", rotBox_);
         if (hasPivot()) {
             pivotXBox_ = new Spin(panel_, -1.0e6, 1.0e6, 1, 1, "pivotX");
@@ -1628,13 +2050,18 @@ protected:
             QObject::connect(pivotYBox_, &QDoubleSpinBox::valueChanged, this, [this](double v) { numberEdited(6, v); });
             view_->pivots = true;
         }
-        panel_->group("Keyframe Interpolation");
+        panel_->group("Keyframe interpolation");
         smoothBox_ = new Spin(panel_, 0, 100, 1, 1, "keySmoothness");
         smoothBox_->setToolTip("Smoothness: 0 moves the centre in a straight line to the next keyframe, higher values curve through the surrounding keyframes");
         panel_->add("Smoothness", smoothBox_);
         curveBox_ = combo(panel_, "keyCurve", curveItems());
         curveBox_->setToolTip("How values change from the keyframe at the cursor to the next one");
-        panel_->add("Type", curveBox_);
+        QLabel* typeName = panel_->add("Type", curveBox_);
+        if (vegasFrame()) {
+            // (VEGAS sets the type from the keyframe's right-click menu: the row is not in its list)
+            typeName->hide();
+            curveBox_->hide();
+        }
 
         QObject::connect(wBox_, &QDoubleSpinBox::valueChanged, this, [this](double v) { numberEdited(0, v); });
         QObject::connect(hBox_, &QDoubleSpinBox::valueChanged, this, [this](double v) { numberEdited(1, v); });
@@ -1681,13 +2108,180 @@ protected:
         };
     }
 
+    // VEGAS's header over the window: the event's name (frameTitle_, set by refresh) and, for Pan/Crop, the chain row.
+    void buildFrameHeader(QVBoxLayout* v)
+    {
+        QWidget* head = new QWidget(this);
+        head->setObjectName("frameHeader");
+        head->setAutoFillBackground(true);
+        QPalette hp = head->palette();
+        hp.setColor(QPalette::Window, QColor(52, 52, 56));
+        head->setPalette(hp);
+        head->setFixedHeight(28);
+        auto* hl = new QHBoxLayout(head);
+        hl->setContentsMargins(8, 2, 8, 2);
+        hl->setSpacing(8);
+        // the event's small picture: a blue frame of film
+        const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+        QPixmap pm(QSize(20, 16) * dpr);
+        pm.setDevicePixelRatio(dpr);
+        pm.fill(Qt::transparent);
+        {
+            QPainter p(&pm);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(84, 120, 196));
+            p.drawRoundedRect(QRectF(0.5, 1.5, 19, 13), 2, 2);
+            p.setBrush(QColor(236, 236, 240));
+            p.drawRect(QRectF(5, 4.5, 10, 7));
+        }
+        QLabel* icon = new QLabel(head);
+        icon->setPixmap(pm);
+        hl->addWidget(icon);
+        frameTitle_ = new QLabel(head);
+        frameTitle_->setObjectName("frameTitle");
+        frameTitle_->setTextFormat(Qt::RichText);
+        hl->addWidget(frameTitle_, 1);
+        v->addWidget(head);
+        if (!frameChip().isEmpty()) {
+            auto* cl = new QHBoxLayout();
+            cl->setContentsMargins(4, 2, 4, 2);
+            ChainRow* chain = new ChainRow(frameChip(), this);
+            chain->setObjectName("chainRow");
+            cl->addWidget(chain, 1);
+            v->addLayout(cl);
+        }
+        setStyleSheet(
+            "QToolButton[boxIcon=\"true\"] { background: transparent; border: 1px solid transparent; border-radius: 2px; padding: 0px; }"
+            "QToolButton[boxIcon=\"true\"]:hover { background: rgba(255, 255, 255, 30); }"
+            "QToolButton[boxIcon=\"true\"]:checked { background: #12b0ff; border-color: #12b0ff; }"
+            "QToolButton[boxIcon=\"true\"]::menu-indicator { image: none; width: 0px; }");
+    }
+
+    // VEGAS's tool icons down the left of the list: Show Properties, (Pan/Crop's mask tools go in after it), Zoom Edit
+    // Tool, Enable Snapping, Lock Aspect Ratio, Scale About Center, and Move Freely with the other switches in its menu.
+    void buildToolColumn()
+    {
+        propsBtn_ = toolButton(this, "Properties", "Show Properties: the list of values beside the workspace", "showProperties", true);
+        propsBtn_->setChecked(true);
+        zoomToolBtn_ = toolButton(this, "Zoom", "Zoom Edit Tool: click the workspace to zoom in, right-click to zoom out", "zoomEditTool", true);
+        moveBtn_ = toolButton(this, "Move", "Move Freely or Prevent Movement X / Y; also Enable Rotation, Edit in Object Space, Prevent Scaling X / Y", "moveMenu");
+        iconize(propsBtn_, IconProps);
+        iconize(zoomToolBtn_, IconZoom);
+        iconize(snapBtn_, IconSnap);
+        iconize(lockBtn_, IconLock);
+        iconize(centreBtn_, IconCenter);
+        iconize(moveBtn_, IconMove);
+        for (QToolButton* b : {propsBtn_, zoomToolBtn_, moveBtn_}) b->setFocusPolicy(Qt::NoFocus);
+        toolColumn_->addWidget(propsBtn_);
+        toolColumn_->addSpacing(6);
+        toolColumn_->addWidget(zoomToolBtn_);
+        toolColumn_->addWidget(snapBtn_);
+        toolColumn_->addWidget(lockBtn_);
+        toolColumn_->addWidget(centreBtn_);
+        toolColumn_->addWidget(moveBtn_);
+        toolColumn_->addStretch(1);
+        for (QToolButton* b : {rotateBtn_, objectBtn_, moveXBtn_, moveYBtn_, scaleXBtn_, scaleYBtn_}) b->hide();
+        moveBtn_->setPopupMode(QToolButton::InstantPopup);
+        QMenu* m = new QMenu(moveBtn_);
+        m->setObjectName("moveMenu");
+        moveBtn_->setMenu(m);
+        QObject::connect(m, &QMenu::aboutToShow, this, [this, m] {
+            m->clear();
+            QAction* free = m->addAction("Move Freely");
+            free->setCheckable(true);
+            free->setChecked(!moveXBtn_->isChecked() && !moveYBtn_->isChecked());
+            QObject::connect(free, &QAction::triggered, this, [this] {
+                moveXBtn_->setChecked(false);
+                moveYBtn_->setChecked(false);
+            });
+            auto item = [&](const QString& text, QToolButton* b) {
+                QAction* a = m->addAction(text);
+                a->setCheckable(true);
+                a->setChecked(b->isChecked());
+                QObject::connect(a, &QAction::triggered, b, [b](bool on) { b->setChecked(on); });
+            };
+            item("Prevent Movement X", moveXBtn_);
+            item("Prevent Movement Y", moveYBtn_);
+            m->addSeparator();
+            item("Enable Rotation", rotateBtn_);
+            item("Edit in Object Space", objectBtn_);
+            m->addSeparator();
+            item("Prevent Scaling X", scaleXBtn_);
+            item("Prevent Scaling Y", scaleYBtn_);
+        });
+        QObject::connect(propsBtn_, &QToolButton::toggled, this, [this](bool on) { panelScroll_->setVisible(on); });
+        QObject::connect(zoomToolBtn_, &QToolButton::toggled, this, [this](bool on) {
+            view_->zoomTool = on;
+            view_->setCursor(on ? Qt::PointingHandCursor : Qt::ArrowCursor);
+            zoomToolChanged(on);
+        });
+    }
+    virtual void zoomToolChanged(bool) {}
+
+    // A keyframe row's name at the left of the strip (VEGAS's Position, Mask): lit while it is the row being edited,
+    // a click picks it; 'check' (Mask's on/off) goes before the name.
+    class RowName : public QWidget {
+    public:
+        RowName(const QString& name, QCheckBox* check, QWidget* parent) : QWidget(parent)
+        {
+            setFixedHeight(KeyStrip::kRowH);
+            auto* h = new QHBoxLayout(this);
+            h->setContentsMargins(check ? 4 : 8, 0, 4, 0);
+            h->setSpacing(4);
+            if (check) {
+                check->setText(QString());
+                check->setParent(this);
+                h->addWidget(check);
+            }
+            QLabel* l = new QLabel(name, this);
+            h->addWidget(l, 1);
+        }
+        bool active = false;
+        std::function<void()> onPick;
+
+    protected:
+        void paintEvent(QPaintEvent*) override
+        {
+            QPainter p(this);
+            p.fillRect(rect(), active ? QColor(84, 84, 90) : QColor(40, 40, 44));
+            p.fillRect(QRect(0, height() - 1, width(), 1), QColor(24, 24, 26));
+        }
+        void mousePressEvent(QMouseEvent* e) override
+        {
+            if (e->button() == Qt::LeftButton && onPick) onPick();
+        }
+    };
+    std::vector<RowName*> rowNameWidgets_;
+    RowName* addKeyRowName(const QString& name, QCheckBox* check)
+    {
+        if (!rowNamesLayout_) return nullptr;
+        RowName* r = new RowName(name, check, rowNames_);
+        r->setObjectName(QString("keyRowName:%1").arg(name));
+        rowNamesLayout_->insertWidget(rowNamesLayout_->count() - 1, r);
+        rowNameWidgets_.push_back(r);
+        r->active = rowNameWidgets_.size() == 1;
+        strip_->setRows((int)rowNameWidgets_.size());
+        return r;
+    }
+    void showActiveKeyRow(int row)
+    {
+        for (size_t i = 0; i < rowNameWidgets_.size(); ++i) {
+            rowNameWidgets_[i]->active = (int)i == row;
+            rowNameWidgets_[i]->update();
+        }
+        strip_->activeRow = row;
+        strip_->setProperty("keyY", strip_->keyY());
+        strip_->update();
+    }
+
     void buildRest()
     {
         panel_->group("Workspace");
         zoomBox_ = new Spin(panel_, 20, 800, 0, 10, "workspaceZoom");
-        zoomBox_->setSuffix(" %");
+        if (!vegasFrame()) zoomBox_->setSuffix(" %");
         zoomBox_->setValue(100);
-        panel_->add("Zoom", zoomBox_);
+        panel_->add(vegasFrame() ? "Zoom (%)" : "Zoom", zoomBox_);
         QObject::connect(zoomBox_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
             view_->zoom = v / 100.0;
             view_->publishArea();
@@ -1699,8 +2293,8 @@ protected:
         offYBox_ = new Spin(panel_, -1.0e6, 1.0e6, 0, 10, "workspaceOffsetY");
         offXBox_->setToolTip("Moves the workspace view left (negative) or right (positive); you can also drag the empty workspace");
         offYBox_->setToolTip("Moves the workspace's view up (negative) or down (positive)");
-        panel_->add("X offset", offXBox_);
-        panel_->add("Y offset", offYBox_);
+        panel_->add(vegasFrame() ? "X Offset" : "X offset", offXBox_);
+        panel_->add(vegasFrame() ? "Y Offset" : "Y offset", offYBox_);
         gridBox_ = new Spin(panel_, 1, 256, 0, 1, "gridSpacing");
         gridBox_->setValue(view_->gridDivisions);
         gridBox_->setToolTip("Number of grid divisions across and down (used by Enable Snapping)");
@@ -1724,13 +2318,34 @@ protected:
         hint_->setObjectName("boxHint");
         hint_->setContentsMargins(6, 10, 6, 0);
         panel_->addWide(hint_);
+        // (VEGAS's list has no such note; it stays, hidden, for what reads it)
+        if (vegasFrame()) hint_->setMaximumHeight(0);
         panel_->finish();
 
         QVBoxLayout* v = static_cast<QVBoxLayout*>(layout());
         strip_ = new KeyStrip(this);
-        v->addWidget(strip_);
+        if (vegasFrame()) {
+            // VEGAS: the keyframe rows' names at the left of the strip (Position; Pan/Crop adds Mask)
+            v->addSpacing(4);
+            auto* keysArea = new QHBoxLayout();
+            keysArea->setContentsMargins(6, 0, 6, 0);
+            keysArea->setSpacing(0);
+            rowNames_ = new QWidget(this);
+            rowNames_->setObjectName("keyRowNames");
+            rowNames_->setFixedWidth(144);
+            rowNamesLayout_ = new QVBoxLayout(rowNames_);
+            rowNamesLayout_->setContentsMargins(0, KeyStrip::kRulerH, 2, 0);
+            rowNamesLayout_->setSpacing(0);
+            rowNamesLayout_->addStretch(1);
+            keysArea->addWidget(rowNames_);
+            keysArea->addWidget(strip_, 1);
+            v->addLayout(keysArea);
+        } else {
+            v->addWidget(strip_);
+        }
         QHBoxLayout* keysRow = new QHBoxLayout();
         keysRow->setSpacing(4);
+        if (vegasFrame()) keysRow->setContentsMargins(6, 4, 6, 0);
         firstKey_ = toolButton(this, "|<", "First keyframe", "firstKey");
         prevKey_ = toolButton(this, "<", "Previous keyframe", "prevKey");
         nextKey_ = toolButton(this, ">", "Next keyframe", "nextKey");
@@ -1749,9 +2364,13 @@ protected:
         // follows the timeline's), to see the motion as set now
         QToolButton* playBtn = toolButton(this, "Play", "Play from the cursor, to see the motion as it is set now", "boxPlay");
         QToolButton* stopBtn = toolButton(this, "Stop", "Stop playing (back to where play began)", "boxStop");
+        playBtn_ = playBtn;
+        stopBtn_ = stopBtn;
         for (QToolButton* b : {playBtn, stopBtn}) {
             b->setFocusPolicy(Qt::NoFocus);
             keysRow->addWidget(b);
+            // (not shown in VEGAS's Pan/Crop window; the buttons stay for the keys and menus that use them)
+            if (vegasFrame()) b->hide();
         }
         QObject::connect(playBtn, &QToolButton::clicked, this, [this] {
             if (!playback_ || playback_->playing()) return;
@@ -1768,6 +2387,21 @@ protected:
         timeLabel_->setFont(mono);
         keysRow->addWidget(timeLabel_);
         v->addLayout(keysRow);
+        if (vegasFrame()) {
+            // VEGAS's keyframe buttons are icons, in its order: Sync Cursor, First, Previous, Next, Last, Add, Delete
+            keysRow->removeWidget(syncBtn_);
+            keysRow->insertWidget(0, syncBtn_);
+            keysRow->insertSpacing(1, 4);
+            const struct { QToolButton* b; int pic; } icons[] = {{syncBtn_, IconSync}, {firstKey_, IconFirst}, {prevKey_, IconPrev}, {nextKey_, IconNext},
+                                                                 {lastKey_, IconLast}, {addKey_, IconAddKey}, {delKey_, IconDelKey}};
+            for (const auto& it : icons) iconize(it.b, it.pic);
+            QLabel* mark = new QLabel(this);
+            mark->setPixmap(boxIcon(IconCursorMark).pixmap(16, 16));
+            keysRow->insertWidget(keysRow->indexOf(timeLabel_), mark);
+            timeLabel_->setStyleSheet("QLabel { background: #1c1c1f; border: 1px solid #3a3a40; padding: 1px 4px; }");
+            addKeyRowName("Position", nullptr);
+            strip_->setFixedHeight(KeyStrip::kRulerH + 2 * KeyStrip::kRowH + 2);
+        }
 
         strip_->keys = [this] { return keys(); };
         strip_->onSeek = [this](double t) { seek(t); };
@@ -1972,6 +2606,12 @@ protected:
         toolbar_->insertWidget(2, savePreset_);
         toolbar_->insertWidget(3, delPreset_);
         toolbar_->insertSpacing(4, 12);
+        if (vegasFrame()) {
+            // VEGAS: the preset list across the window, Save and Delete as icons at its end
+            toolbar_->setStretchFactor(presetBox_, 100);
+            iconize(savePreset_, IconSave);
+            iconize(delPreset_, IconDelete);
+        }
         fillPresets();
         QObject::connect(presetBox_, &QComboBox::activated, this, [this](int i) {
             const QString id = presetBox_->itemData(i).toString();
@@ -2031,7 +2671,7 @@ protected:
     // drop-downs, the same switches as the tool bar's, kept in step.
     void buildEditGroup()
     {
-        panel_->group("Edit");
+        QLabel* editGroup = panel_->group("Edit");
         snapEdit_ = combo(panel_, "editSnap", {{"No", "0"}, {"Yes", "1"}});
         lockEdit_ = combo(panel_, "editLockAspect", {{"Yes", "1"}, {"No", "0"}});
         centreEdit_ = combo(panel_, "editScaleCenter", {{"Yes", "1"}, {"No", "0"}});
@@ -2059,6 +2699,8 @@ protected:
         QObject::connect(moveXBtn_, &QToolButton::toggled, this, [this] { syncEditGroup(); });
         QObject::connect(moveYBtn_, &QToolButton::toggled, this, [this] { syncEditGroup(); });
         syncEditGroup();
+        // (not in VEGAS's list: its tool icons do these)
+        if (vegasFrame()) panel_->showGroup(editGroup, false);
     }
     void syncEditGroup()
     {
@@ -2493,6 +3135,13 @@ protected:
     {
         if (!exists()) return;
         setWindowTitle(windowName());
+        if (frameTitle_) {
+            // "Event Pan/Crop: name", the part before the colon in bold, as VEGAS's header
+            const QString n = windowName();
+            const int c = n.indexOf(':');
+            const QString t = c < 0 ? "<b>" + n.toHtmlEscaped() + "</b>" : "<b>" + n.left(c + 1).toHtmlEscaped() + "</b>&nbsp;&nbsp;" + n.mid(c + 1).trimmed().toHtmlEscaped();
+            if (frameTitle_->text() != t) frameTitle_->setText(t);
+        }
         strip_->span = std::max(1e-3, span());
         strip_->origin = startOnTimeline();
         strip_->fps = fps();
@@ -2556,7 +3205,7 @@ public:
         panel_->group("Source");
         keepAspect_ = combo(panel_, "maintainAspect", {{"Yes", "1"}, {"No", "0"}});
         keepAspect_->setToolTip("Yes: keep the picture's shape, with bars where shapes differ.\nNo: stretch it to fill the frame.");
-        panel_->add("Maintain aspect", keepAspect_);
+        panel_->add("Maintain aspect ratio", keepAspect_);
         QObject::connect(keepAspect_, &QComboBox::currentIndexChanged, this, [this](int i) {
             const bool on = i == 0;
             const Event* e = app_.project().findEvent(eventId_);
@@ -2765,10 +3414,23 @@ private:
     bool smoothable() const override { return row_ == PositionRow; }
     bool hasPivot() const override { return true; }
     bool hasEditGroup() const override { return true; }
+    bool vegasFrame() const override { return true; }
+    QString frameChip() const override { return "Pan/Crop"; }
     QString windowName() const override
     {
         const Event* e = theEvent();
         return QString("Event Pan/Crop: %1").arg(e ? qs(e->name) : QString());
+    }
+    // the Zoom Edit Tool and the mask tools are one choice: picking one lets go of the other
+    void zoomToolChanged(bool on) override
+    {
+        if (on) {
+            for (QToolButton* b : toolBtns_)
+                if (b) b->setChecked(false);
+        } else {
+            for (int i = 0; i < 6; ++i)
+                if (toolBtns_[i]) toolBtns_[i]->setChecked(i == (int)tool_);
+        }
     }
 
     void refreshExtra() override
@@ -2790,7 +3452,7 @@ private:
 
     void buildMaskPanel()
     {
-        panel_->group("Mask");
+        maskGroup_ = panel_->group("Mask");
         applyFx_ = combo(panel_, "maskApplyToFx", {{"No", "0"}, {"Yes", "1"}});
         applyFx_->setToolTip("No: the mask cuts the event's picture (transparent outside it).\n"
                              "Yes: the event's effects apply only inside the mask.");
@@ -2835,17 +3497,28 @@ private:
         };
         QVBoxLayout* column = new QVBoxLayout();
         column->setSpacing(3);
+        static const int pics[6] = {IconArrow, IconAnchor, IconAnchorDel, IconTangent, IconRect, IconOval};
         for (int i = 0; i < 6; ++i) {
             QToolButton* b = toolButton(this, tools[i].text, tools[i].tip, tools[i].name, true);
             b->setFocusPolicy(Qt::NoFocus);
             b->setChecked(i == 0);
             b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
             toolBtns_[i] = b;
-            column->addWidget(b);
-            QObject::connect(b, &QToolButton::clicked, this, [this, i] { setTool((Tool)i); });
+            if (toolColumn_) {
+                // VEGAS: in the icon column after Show Properties; the mask tools only while the Mask row is edited
+                iconize(b, pics[i]);
+                toolColumn_->insertWidget(2 + i, b);
+            } else {
+                column->addWidget(b);
+            }
+            QObject::connect(b, &QToolButton::clicked, this, [this, i] {
+                if (zoomToolBtn_) zoomToolBtn_->setChecked(false);
+                setTool((Tool)i);
+            });
         }
         column->addStretch(1);
-        if (middle_) middle_->insertLayout(1, column);
+        if (middle_ && !toolColumn_) middle_->insertLayout(1, column);
+        else delete column;
         QVBoxLayout* v = static_cast<QVBoxLayout*>(layout());
         QHBoxLayout* keysRow = v && v->count() > 0 ? qobject_cast<QHBoxLayout*>(v->itemAt(v->count() - 1)->layout()) : nullptr;
         rowBox_ = combo(this, "keyRow", {{"Position", "0"}, {"Mask", "1"}});
@@ -2855,7 +3528,25 @@ private:
         maskCheck_->setObjectName("maskSwitch");
         maskCheck_->setToolTip("Mask on: the event's picture (or its effects, with Apply to FX) is cut to the mask shapes");
         maskCheck_->setFocusPolicy(Qt::NoFocus);
-        if (keysRow) {
+        if (rowNamesLayout_) {
+            // VEGAS: the Mask row under Position, its check box beside the name (the row list replaces the drop-down)
+            rowBox_->hide();
+            RowName* maskRow = addKeyRowName("Mask", maskCheck_);
+            maskCheck_->setText(QString());
+            maskCheck_->setStyleSheet("QCheckBox::indicator { width: 10px; height: 10px; border: 1px solid #b4b4ba; background: #1c1c1f; }"
+                                      "QCheckBox::indicator:checked { background: #12b0ff; border-color: #e8e8ec; }");
+            if (!rowNameWidgets_.empty()) rowNameWidgets_[0]->onPick = [this] { setRow(PositionRow); };
+            if (maskRow) maskRow->onPick = [this] { setRow(MaskRow); };
+            strip_->onRowClick = [this](int r) { setRow(r == 1 ? MaskRow : PositionRow); };
+            strip_->otherRowKeys = [this](int r) {
+                std::vector<double> t;
+                if (const Event* e = theEvent()) {
+                    if (r == 1) for (const MaskKey& k : e->mask) t.push_back(k.time);
+                    else for (const PanCropKey& k : e->panCrop) t.push_back(k.time);
+                }
+                return t;
+            };
+        } else if (keysRow) {
             keysRow->insertWidget(0, rowBox_);
             keysRow->insertWidget(1, maskCheck_);
             keysRow->insertSpacing(2, 12);
@@ -2876,6 +3567,7 @@ private:
             else maskPress(e);
             return true;
         };
+        if (rowNamesLayout_) setRow(row_);
         refresh();
     }
 
@@ -2886,6 +3578,14 @@ public:
         row_ = r;
         if (r == PositionRow && tool_ != ToolNormal) setTool(ToolNormal);
         if (rowBox_) pickData(rowBox_, QString::number((int)r));
+        if (rowNamesLayout_) {
+            // VEGAS shows the mask tools and the Mask / Path groups only while the Mask row is edited
+            showActiveKeyRow((int)r);
+            for (int i = 1; i < 6; ++i)
+                if (toolBtns_[i]) toolBtns_[i]->setVisible(r == MaskRow);
+            if (maskGroup_) panel_->showGroup(maskGroup_, r == MaskRow);
+            if (pathGroup_) panel_->showGroup(pathGroup_, r == MaskRow);
+        }
         refresh();
     }
     void setTool(Tool t)
@@ -3536,6 +4236,7 @@ private:
     QComboBox *rowBox_ = nullptr, *applyFx_ = nullptr, *modeBox_ = nullptr, *aaBox_ = nullptr, *featherTypeBox_ = nullptr;
     QCheckBox* maskCheck_ = nullptr;
     QLabel* pathGroup_ = nullptr;
+    QLabel* maskGroup_ = nullptr;
     Spin *opacityBox_ = nullptr, *featherBox_ = nullptr;
 };
 

@@ -309,7 +309,172 @@ private:
     uint64_t clock_ = 0;
 };
 static WarpMemo& warpMemo() { static WarpMemo m; return m; }
-void clearComposeMemo() { warpMemo().clear(); }
+
+// Finished pictures of Reno's own effects whose picture depends on nothing but their input frame, their settings and
+// the size they work at, kept for the next frames. A held, slowed or stuttered event, or a project running at a higher
+// rate than its media, gives one effect the same frame many times over (a 140 fps project showing 7 fps media ran
+// its effect 20 times per picture). Only the effects listed are kept: their code was checked to read neither the time
+// nor random numbers nor any state of their own. Their settings at the time are compared value by value, and the
+// input by its pixels when it is not the very same frame, so a kept picture is always the one the effect would make.
+class FxMemo {
+public:
+    struct Key {
+        const ofx::Plugin* plugin = nullptr;    // (instances of one effect with the same settings make the same picture: the render workers' own share them)
+        int w = 0, h = 0, depth = 0;
+        int flags = 0;                          // RenderOptions' interactive, draft, previewSizeForAll, mediaSize
+        int setupW = 0, setupH = 0;
+        double setupFps = 0;
+        std::vector<double> nums;               // every setting's value at the time
+        std::vector<std::string> strs;
+        bool operator==(const Key& o) const
+        {
+            return plugin == o.plugin && w == o.w && h == o.h && depth == o.depth && flags == o.flags && setupW == o.setupW && setupH == o.setupH &&
+                   setupFps == o.setupFps && nums == o.nums && strs == o.strs;
+        }
+    };
+    static bool pure(const ofx::Instance* inst)
+    {
+        static const char* const ids[] = {"brightnessandcontrast", "invert", "blackandwhite", "sepia", "sharpen", "mirror", "gaussianblur", "pixelate",
+                                          "chromakeyer", "border", "glow", "convolutionkernel", "newsprint", "colorcurves", "colorcorrectorsecondary",
+                                          "colorcorrector", "hsladjust", "levels", "spherize", "saturationadjust", "minandmax"};
+        if (!inst || !inst->plugin || !inst->plugin->binary || !inst->plugin->binary->builtin) return false;
+        const std::string& id = inst->plugin->info.id;
+        static const std::string prefix = "com.vegascreativesoftware:";
+        if (id.compare(0, prefix.size(), prefix) != 0) return false;
+        for (const char* k : ids)
+            if (id.compare(prefix.size(), std::string::npos, k) == 0) return true;
+        return false;
+    }
+    // The key of rendering 'inst' at 'time' (frames) with 'ro'.
+    static void keyOf(ofx::Instance* inst, double time, const ofx::RenderOptions& ro, Key& k)
+    {
+        k.plugin = inst->plugin;
+        k.w = ro.width;
+        k.h = ro.height;
+        k.depth = (int)ro.depth;
+        k.flags = (ro.interactive ? 1 : 0) | (ro.draft ? 2 : 0) | (ro.previewSizeForAll ? 4 : 0) | (ro.mediaSize ? 8 : 0);
+        k.setupW = inst->setup.width;
+        k.setupH = inst->setup.height;
+        k.setupFps = inst->setup.fps;
+        std::lock_guard<std::recursive_mutex> lk(inst->mutex);        // (the interface changes settings under it)
+        for (const auto& p : inst->params.params) {
+            if (!p) continue;
+            if (p->isText()) k.strs.push_back(p->strAt(time));
+            else if (p->dim > 0) {
+                const std::vector<double> v = p->valueAt(time);
+                k.nums.push_back((double)v.size());
+                k.nums.insert(k.nums.end(), v.begin(), v.end());
+            }
+        }
+    }
+    ImagePtr find(const Key& k, const ImagePtr& in)
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (Entry& e : list_) {
+            if (!(e.key == k) || !sameFrame(*e.in, in)) continue;
+            e.used = ++clock_;
+            e.hit = true;
+            unused_ = 0;
+            return e.out;
+        }
+        return ImagePtr();
+    }
+    void put(const Key& k, const ImagePtr& in, const ImagePtr& out)
+    {
+        if (!in || !out || out == in) return;
+        const size_t cost = in->byteSize() + out->byteSize();
+        if (cost > kMaxBytes / 2) return;
+        std::lock_guard<std::mutex> lk(mu_);
+        if (unused_ >= kMaxEntries) {
+            // At first, and after many pictures were let go without ever being used again (frames that do not come again),
+            // only one whose input has been seen before (going by a sample of its pixels) is kept, so the memo does not
+            // hold ~100 MB for nothing.
+            const uint64_t fp = fingerprint(*in);
+            bool seen = false;
+            for (const auto& r : seen_) seen = seen || (r.second == fp && r.first == k);
+            if (!seen) {
+                if (seen_.size() >= kMaxEntries) seen_.erase(seen_.begin());
+                seen_.emplace_back(k, fp);
+                // and the oldest kept picture goes if it was never used: the ones kept before stop holding memory too
+                size_t oldest = 0;
+                for (size_t i = 1; i < list_.size(); ++i) if (list_[i].used < list_[oldest].used) oldest = i;
+                if (!list_.empty() && !list_[oldest].hit) {
+                    bytes_ -= list_[oldest].cost;
+                    list_.erase(list_.begin() + (std::ptrdiff_t)oldest);
+                }
+                return;
+            }
+        }
+        while (!list_.empty() && (bytes_ + cost > kMaxBytes || list_.size() >= kMaxEntries)) {
+            size_t oldest = 0;
+            for (size_t i = 1; i < list_.size(); ++i) if (list_[i].used < list_[oldest].used) oldest = i;
+            if (!list_[oldest].hit) ++unused_;
+            bytes_ -= list_[oldest].cost;
+            list_.erase(list_.begin() + (std::ptrdiff_t)oldest);
+        }
+        Entry e;
+        e.key = k;
+        e.in = in;
+        e.out = out;
+        e.cost = cost;
+        e.used = ++clock_;
+        bytes_ += cost;
+        list_.push_back(std::move(e));
+    }
+    void clear()
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        list_.clear();
+        seen_.clear();
+        bytes_ = 0;
+        unused_ = kMaxEntries;
+    }
+private:
+    static bool sameFrame(const Image& a, const ImagePtr& b)
+    {
+        if (&a == b.get()) return true;
+        return a.w == b->w && a.h == b->h && a.depth == b->depth && a.rowBytes == b->rowBytes && !a.gpuHold && !b->gpuHold &&
+               std::memcmp(a.data.get(), b->data.get(), a.byteSize()) == 0;
+    }
+    // A hash of a few thousand of the frame's bytes, spread over it (only a guess that two frames are the same).
+    static uint64_t fingerprint(const Image& img)
+    {
+        const size_t n = img.byteSize() / 8;
+        const size_t step = std::max<size_t>(1, n / 4096) | 1;
+        uint64_t h = (uint64_t)img.w * 0x9E3779B97F4A7C15ull ^ (uint64_t)img.h;
+        const uint8_t* d = img.data.get();
+        for (size_t i = 0; i < n; i += step) {
+            uint64_t v;
+            std::memcpy(&v, d + i * 8, 8);
+            h = (h ^ v) * 0x100000001B3ull;
+        }
+        return h;
+    }
+    struct Entry {
+        Key key;
+        ImagePtr in, out;
+        size_t cost = 0;
+        uint64_t used = 0;
+        bool hit = false;
+    };
+    static constexpr size_t kMaxBytes = 96u << 20;
+    static constexpr size_t kMaxEntries = 32;
+    std::mutex mu_;
+    std::vector<Entry> list_;
+    size_t bytes_ = 0;
+    uint64_t clock_ = 0;
+    // pictures let go unused since the last one used; it starts as if many had been, so nothing is kept until a frame
+    // has come twice (a project whose frames never repeat never holds any)
+    size_t unused_ = kMaxEntries;
+    std::vector<std::pair<Key, uint64_t>> seen_;      // (while that is many) the inputs seen last, by fingerprint
+};
+static FxMemo& fxMemo() { static FxMemo m; return m; }
+
+void clearComposeMemo()
+{
+    warpMemo().clear();
+    fxMemo().clear();
+}
 
 // ---------------------------------------------------------------------- resampling
 // How carefully frames are resampled (Project Properties' render quality, or a draft preview).
@@ -1955,17 +2120,28 @@ struct VideoEngine::Pass {
             return atFrameSize ? toFrameSize(img ? img : blank()) : toProjectSize(img ? img : blank());
         };
         // The input at this time is made before the effect is locked for its render.
-        source(frame);
+        const ImagePtr input = source(frame);
         // One use of an instance at a time.
         ofx::RenderGate::Hold own(eng.fx_.renderLock(inst));
         if (!own.ok()) return synced(source(frame));
         const std::vector<std::string> inputs = inst->inputClipNames();
         std::string main = inputs.empty() ? std::string() : inputs[0];
         for (const auto& n : inputs) if (n == kOfxImageEffectSimpleSourceClipName) main = n;
-        if (!main.empty()) inst->setClipSource(main, src);
         std::string err;
         ofx::RenderOptions ro = fxOptions(inst);
         ro.deferGpuOutput = deferToNext;
+        // the same input and settings as a picture this effect made before (FxMemo)
+        const bool remember = composeMemoOn() && !deferToNext && input && inputs.size() == 1 && main == kOfxImageEffectSimpleSourceClipName && FxMemo::pure(inst);
+        FxMemo::Key memoKey;
+        if (remember) {
+            input->sync();
+            FxMemo::keyOf(inst, frame, ro, memoKey);
+            if (ImagePtr hit = fxMemo().find(memoKey, input)) {
+                gMemoHits.fetch_add(1, std::memory_order_relaxed);
+                return hit;
+            }
+        }
+        if (!main.empty()) inst->setClipSource(main, src);
         ImagePtr out = inst->render(frame, ro, &err);
         if (!main.empty()) inst->setClipSource(main, [](double) { return ImagePtr(); });
         if (!out) {
@@ -1973,7 +2149,9 @@ struct VideoEngine::Pass {
             return synced(source(frame));
         }
         if (!eng.fx_.error(slot.id).empty()) eng.fx_.setError(slot.id, std::string());     // it has recovered
-        return inDepth(toFrameSize(out));
+        ImagePtr made = inDepth(toFrameSize(out));
+        if (remember && made && !made->gpuHold && !cancelled()) fxMemo().put(memoKey, input, made);
+        return made;
     }
 
     // One effect on a frame of its own size (a pre-pan/crop effect's: the media as it is). The effect is told the project is

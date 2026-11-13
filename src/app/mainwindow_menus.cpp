@@ -39,6 +39,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
+#include <QToolButton>
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <cmath>
@@ -447,7 +448,8 @@ void MainWindow::addVegasViewCommands(VegasCommandBuilder& cmd)
     AppState& app = AppState::get();
     TimelineWidget* tl = timeline_;
     cmd.rename("focusTimeline", "&Focus to Timeline");
-    cmd.rename("showBusTracks", "Bus Tra&cks");
+    cmd.rename("showBusTracks", "Audio Bus Tra&cks");
+    cmd.rename("showVideoBus", "Vide&o Bus Track");
     cmd.rename("showMediaMarkers", "&Show Markers");
     cmd.rename("showTakeInfo", "Active Take &Information");
     cmd.rename("showWaveforms", "Audio Event &Waveforms");
@@ -466,7 +468,21 @@ void MainWindow::addVegasViewCommands(VegasCommandBuilder& cmd)
         tl->optionsChanged();
     });
     eventLength->setCheckable(true);
-    cmd.add("minimizeAllTracks", "Minimi&ze All Tracks", QList<QKeySequence>() << QKeySequence(QString("`")), [tl] { tl->minimizeAllTracks(); });
+    // VEGAS's Mixer Preview Fader: the Preview bus's strip in the Mixing Console (its Preview Bus switch)
+    QAction* previewFader = cmd.add("mixerPreviewFader", "Mixer Previe&w Fader", QList<QKeySequence>(), [this] {
+        QSettings s;
+        if (QToolButton* b = findChild<QToolButton*>("showPreview")) {
+            b->click();
+        } else {
+            // (the console not made yet: its setting, which it reads when it is)
+            QString sh = s.value("mixer/show", "111110").toString().leftJustified(6, '1');
+            sh[5] = sh[5] == QLatin1Char('1') ? QLatin1Char('0') : QLatin1Char('1');
+            s.setValue("mixer/show", sh);
+        }
+    });
+    previewFader->setCheckable(true);
+    // (the ` key works, but VEGAS's menu shows no key for it: an empty key text after the tab)
+    cmd.add("minimizeAllTracks", "Minimi&ze All Tracks\t", QList<QKeySequence>() << QKeySequence(QString("`")), [tl] { tl->minimizeAllTracks(); });
     // View > Audio / Video Envelopes: whether envelopes of that kind are shown, on every track (or event, or the video
     // bus track) that has one. Ticked: all shown.
     struct EnvKind { const char* name; const char* text; const char* kind; int where; };
@@ -1020,7 +1036,7 @@ void MainWindow::arrangeVegasViewMenu(QMenu* view)
     view->addMenu(mediaMarkers);
     view->addMenu(audioEnv);
     view->addMenu(videoEnv);
-    view->addActions({vegasAction("showEventLength"), vegasAction("minimizeAllTracks")});
+    view->addActions({vegasAction("showEventLength"), vegasAction("minimizeAllTracks"), vegasAction("mixerPreviewFader")});
     view->removeAction(vegasAction("showMediaMarkers"));
     view->removeAction(vegasAction("externalMonitor"));
     if (QMenu* win = subMenu(view, "Window")) {
@@ -1036,7 +1052,18 @@ void MainWindow::arrangeVegasViewMenu(QMenu* view)
         for (QAction* a : acts) win->removeAction(a);
         win->addActions(sorted);
     }
-    arrange(view, {"showToolbar", "showStatusBar", "-", ">Window Layouts", "-", "focusTimeline", ">Window", "-", "showBusTracks", "-",
+    // VEGAS's Extensions: the extensions installed (Reno takes none, so its one line says so)
+    QMenu* extensions = new QMenu("E&xtensions", view);
+    extensions->setObjectName("extensionsMenu");
+    extensions->addAction("No Extensions")->setEnabled(false);
+    view->addMenu(extensions);
+    if (QAction* fader = vegasAction("mixerPreviewFader"))
+        QObject::connect(view, &QMenu::aboutToShow, fader, [this, fader] {
+            const QToolButton* b = findChild<QToolButton*>("showPreview");
+            fader->setChecked(b ? b->isChecked() : QSettings().value("mixer/show", "1111").toString().mid(5, 1) == "1");
+        });
+    arrange(view, {"showToolbar", "showStatusBar", "-", ">Window Layouts", "-", "focusTimeline", ">Window", "-", ">Extensions", "-", "mixerPreviewFader", "-",
+                   "showBusTracks", "showVideoBus", "-",
                    ">Event Media Markers", "showTakeInfo", "showWaveforms", "showEventButtons", "showFadeLengths", "edgeFrames", "eventHeaders",
                    "showEventLength", "-", ">Audio Envelopes", ">Video Envelopes", "showEnvelopes", "-", "minimizeAllTracks", "rebuildPeaks"});
 }

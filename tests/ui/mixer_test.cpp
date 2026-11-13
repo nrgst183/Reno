@@ -426,7 +426,7 @@ int main(int argc, char** argv)
         key(Qt::Key_W);
         const int ww = s1w->width();
         key(Qt::Key_D);
-        check(w0 == 100 && wn < 80 && ww > 120 && s1w->width() == 100, "N, W and D make the channels narrow, wide and default", strfmt("%d %d %d %d", w0, wn, ww, s1w->width()));
+        check(w0 == 76 && wn < 70 && ww > 100 && s1w->width() == 76, "N, W and D make the channels narrow, wide and default", strfmt("%d %d %d %d", w0, wn, ww, s1w->width()));
         check(mixer.findChild<QSlider*>("channelWidth")->value() == 1, "and the Channel Width slider shows it");
         key(Qt::Key_N);
         uitest::shot(&mixer, gOut + "/mixer_narrow_channels.png");
@@ -508,12 +508,13 @@ int main(int argc, char** argv)
         if (item2) item2->setCheckState(Qt::Checked);
         uitest::settle(30);
         check(trackStrip(&mixer, t2)->isVisibleTo(&mixer), "ticking one shows it again");
+        key(Qt::Key_C, Qt::ShiftModifier);
+        check(mixer.findChild<QWidget*>("channelListPane")->isVisibleTo(&mixer), "Shift+C shows the Channel List (hidden at first, as VEGAS's)");
         uitest::shot(&mixer, gOut + "/mixer_channel_list.png");
         key(Qt::Key_C, Qt::ShiftModifier);
-        check(!mixer.findChild<QWidget*>("channelListPane")->isVisibleTo(&mixer), "Shift+C hides the Channel List");
+        check(!mixer.findChild<QWidget*>("channelListPane")->isVisibleTo(&mixer), "and hides it again");
         key(Qt::Key_R, Qt::ShiftModifier);
         check(!mixer.findChild<QWidget*>("consoleSide")->isVisibleTo(&mixer), "Shift+R the View Controls (and the side goes)");
-        key(Qt::Key_C, Qt::ShiftModifier);
         key(Qt::Key_R, Qt::ShiftModifier);
         key(Qt::Key_Q);
         // rename: F2 on the selected channel, a double-click on a bus's name

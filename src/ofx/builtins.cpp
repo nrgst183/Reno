@@ -543,7 +543,7 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
     } catch (...) {
         st = kOfxStatFailed;
     }
-    if (st == kOfxStatOK && tiesDown && !ov.isFloat) vegasTiesDown(c.out);
+    if (st == kOfxStatOK && tiesDown && !ov.isFloat && !c.outOnLevels) vegasTiesDown(c.out);
     if (st == kOfxStatOK) store(c.out, ov, fx1, fy1, d.colourAboveAlpha);
     gEff->clipReleaseImage(outImg);
     return st;
@@ -1449,20 +1449,25 @@ OfxStatus builtinSetHost(const OfxHost* host)
 
 const OfxHost* builtinHostPtr() { return builtin::gHost; }
 
-std::vector<BuiltinInfo> builtinInfos()
+const std::vector<BuiltinInfo>& builtinInfos()
 {
-    std::vector<BuiltinInfo> out;
-    for (const auto& d : builtin::defs()) {
-        BuiltinInfo i;
-        i.id = d.id;
-        i.label = d.label;
-        i.group = d.group;
-        i.generator = d.generator;
-        i.filter = !d.generator && !d.transition;
-        i.transition = d.transition;
-        out.push_back(i);
-    }
-    return out;
+    // (an effect's label is looked up for every effect of a project being read: making the list each time was a
+    // quarter of reading one)
+    static const std::vector<BuiltinInfo> all = [] {
+        std::vector<BuiltinInfo> out;
+        for (const auto& d : builtin::defs()) {
+            BuiltinInfo i;
+            i.id = d.id;
+            i.label = d.label;
+            i.group = d.group;
+            i.generator = d.generator;
+            i.filter = !d.generator && !d.transition;
+            i.transition = d.transition;
+            out.push_back(i);
+        }
+        return out;
+    }();
+    return all;
 }
 
 // ------------------------------------------------------------------ text

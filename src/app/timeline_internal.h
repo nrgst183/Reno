@@ -473,6 +473,7 @@ struct TimelineWidget::Impl {
     void buildLayer();
     void paintFromLayer(QPainter& p, const QRegion& region);
     double paintedCursor = -1;
+    QString paintedTimeText;    // the time display's text as last painted
     double paintedLoopA = 0, paintedLoopB = 0;
     bool paintedTimeSel = false;
     bool reverseBg = false;  // Preferences > Display "Reverse Event Background Color", as of this paint
@@ -783,7 +784,11 @@ struct TimelineWidget::Impl {
     double gridStep(double minPx = 6.0) const;
     double quantized(double t) const;
     bool dragIsAudioOnly() const;
-    bool nearest(const std::vector<double>& targets, double t, double* out) const;
+    // The snap target nearest 't' within 'reach' seconds (snapReach(): Preferences' snap distance; a caller trying many
+    // times reads it once).
+    double snapReach() const;
+    bool nearest(const std::vector<double>& targets, double t, double* out) const { return nearest(targets, t, out, snapReach()); }
+    bool nearest(const std::vector<double>& targets, double t, double* out, double reach) const;
     double snapped(const std::vector<double>& targets, double t, Qt::KeyboardModifiers mods, double* line) const;
 
     void showSnap(double line, double edge)

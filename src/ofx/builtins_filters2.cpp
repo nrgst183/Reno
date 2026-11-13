@@ -10,6 +10,7 @@
 #include "vegas8.h"
 #include "vfxlevelsconv.h"
 #include "vfxcolour.h"
+#include "levelmemo.h"
 #include "builtins_more_internal.h"
 #include "vfxpolar.h"
 #include "vkeffects.h"
@@ -784,17 +785,34 @@ static bool ccsOpenCl(Ctx& c)
     bool passThrough = false;
     ccsSettingsImpl(c, k, passThrough);
     const bool q = c.host8;
+    // (an 8-bit picture: the answers are kept by the pixel's levels, see LevelMemo)
+    const uint32_t stamp = LevelMemo::newStamp();
     forRows(H, W, [&](int y) {
+        LevelMemo& memo = LevelMemo::mine();
         for (int x = 0; x < W; ++x) {
             float in[4], o[4];
             const float* sp = c.src.at(x, y);
-            if (q) { vcol::readLevels(sp, in); sp = in; }
+            float* d = c.out.at(x, y);
+            uint32_t key = 0;
+            const bool keyed = q && !passThrough && LevelMemo::keyOf(sp, key);
+            if (keyed) {
+                if (const float* v = memo.find(key, stamp)) {
+                    std::memcpy(d, v, sizeof(float) * 4);
+                    continue;
+                }
+                LevelMemo::levelsOf(key, in);
+                sp = in;
+            } else if (q) {
+                vcol::readLevels(sp, in);
+                sp = in;
+            }
             if (passThrough) { for (int i = 0; i < 4; ++i) o[i] = sp[i]; }
             else vcol::ccsPx(k, sp, o);
-            float* d = c.out.at(x, y);
             for (int i = 0; i < 4; ++i) d[i] = q ? more::oclStore12(o[i]) : o[i];
+            if (keyed) memo.put(key, stamp, d);
         }
     });
+    c.outOnLevels = q;
     return true;
 }
 
@@ -1233,6 +1251,7 @@ void convolutionKernel(Ctx& c)
                 for (int i = 0; i < W * 4; ++i) o[i] = more::oclStore12(o[i]);
             }
         });
+        c.outOnLevels = q8;
         return;
     }
     if (c.levels) { convolutionKernel8(c); return; }

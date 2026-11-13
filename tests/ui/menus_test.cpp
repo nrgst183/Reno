@@ -230,6 +230,32 @@ int main(int argc, char** argv)
     w.show();
     uitest::settle(300);
     buildProject();
+    {
+        // View, as VEGAS 18's: Extensions, Mixer Preview Fader and the two bus tracks are there and can be used, and the
+        // menu ends with Rebuild Audio Peaks (Reno's other View commands are keys only)
+        QMenu* view = nullptr;
+        for (QAction* a : w.menuBar()->actions())
+            if (a->menu() && plain(a->text()) == "View") view = a->menu();
+        QStringList shown, greyed;
+        if (view) {
+            emit view->aboutToShow();
+            for (QAction* a : view->actions()) {
+                if (a->isSeparator()) continue;
+                shown << plain(a->text());
+                if (!a->isEnabled()) greyed << plain(a->text());
+            }
+            view->popup(w.mapToGlobal(QPoint(40, 30)));
+            uitest::settle(80);
+            uitest::shot(view, out + "/menu_view.png");
+            view->hide();
+        }
+        check(view && shown.contains("Extensions") && shown.contains("Mixer Preview Fader") && shown.contains("Audio Bus Tracks") && shown.contains("Video Bus Track") && greyed.isEmpty(),
+              "View: VEGAS's items, none greyed", greyed.join(", ").toStdString());
+        check(!shown.isEmpty() && shown.last() == "Rebuild Audio Peaks" && !shown.contains("Next Window") && !shown.contains("Zoom In"),
+              "View ends with Rebuild Audio Peaks, as VEGAS's", shown.isEmpty() ? std::string() : shown.last().toStdString());
+        QAction* next = w.findChild<QAction*>("nextWindow");
+        check(!next || w.actions().contains(next) || !next->associatedObjects().isEmpty(), "and the commands left out keep their keys");
+    }
     TimelineWidget* tl = w.timeline();
     uitest::settle(100);
     AppState& app = st();

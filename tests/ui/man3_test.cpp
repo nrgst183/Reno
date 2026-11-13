@@ -75,7 +75,12 @@ int keyX(QWidget* strip, double secs)
     const double span = strip->property("span").toDouble();
     return 10 + (int)std::lround(secs / span * (strip->width() - 20));
 }
-int keyY(QWidget* strip) { return 18 + (strip->height() - 18) / 2; }
+// (the strip says where its keyframes are: with VEGAS's Position and Mask rows, the row being edited)
+int keyY(QWidget* strip)
+{
+    const QVariant y = strip->property("keyY");
+    return y.isValid() ? y.toInt() : 18 + (strip->height() - 18) / 2;
+}
 
 QStringList texts(QMenu* m)
 {

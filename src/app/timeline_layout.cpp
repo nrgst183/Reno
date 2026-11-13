@@ -40,7 +40,7 @@ void TimelineWidget::Impl::layout()
         rows.push_back(r);
     }
     busRows.clear();
-    if (opt.showBusTracks) {
+    if (opt.showBusTracks || opt.showVideoBus) {
         auto add = [&](EnvelopeOwner::Kind kind, uint64_t id, const QString& name, bool video) {
             BusRow b;
             b.owner.kind = kind;
@@ -52,9 +52,11 @@ void TimelineWidget::Impl::layout()
             y += b.h;
             busRows.push_back(b);
         };
-        add(EnvelopeOwner::VideoOut, 0, "Video Output", true);
-        add(EnvelopeOwner::Master, 0, "Master", false);
-        for (const Bus& b : p.buses) add(EnvelopeOwner::Bus, b.id, QString::fromStdString(b.name.empty() ? std::string("Bus") : b.name), false);
+        if (opt.showVideoBus) add(EnvelopeOwner::VideoOut, 0, "Video Output", true);
+        if (opt.showBusTracks) {
+            add(EnvelopeOwner::Master, 0, "Master", false);
+            for (const Bus& b : p.buses) add(EnvelopeOwner::Bus, b.id, QString::fromStdString(b.name.empty() ? std::string("Bus") : b.name), false);
+        }
     }
     contentH = y + kBelow;
 }
@@ -1186,9 +1188,10 @@ bool TimelineWidget::Impl::dragIsAudioOnly() const
     return drag.audioOnly == 1;
 }
 
-bool TimelineWidget::Impl::nearest(const std::vector<double>& targets, double t, double* out) const
+double TimelineWidget::Impl::snapReach() const { return std::max(1, std::min(64, vprefs::number("prefs/snapDistance"))) / pps; }
+
+bool TimelineWidget::Impl::nearest(const std::vector<double>& targets, double t, double* out, double reach) const
 {
-    const double reach = std::max(1, std::min(64, vprefs::number("prefs/snapDistance"))) / pps;
     auto it = std::lower_bound(targets.begin(), targets.end(), t);
     bool found = false;
     double best = reach;

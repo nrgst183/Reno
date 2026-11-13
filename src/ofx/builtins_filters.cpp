@@ -13,6 +13,7 @@
 #include "vfxhslwb.h"
 #include "vfxblurs.h"
 #include "vfxcolour.h"
+#include "levelmemo.h"
 #include "vkfilters.h"
 #include <algorithm>
 #include <cstring>
@@ -58,8 +59,51 @@ void oclPixels(Ctx& c, F fn)
             for (int k = 0; k < 4; ++k) d[k] = q ? more::oclStore12(o[k]) : o[k];
         }
     });
+    c.outOnLevels = q;
 }
 inline bool oclUsable(const Ctx& c) { return c.openCl && c.out.w > 0 && c.out.h > 0 && c.src.w == c.out.w && c.src.h == c.out.h; }
+
+// oclPixels into an 8-bit frame for a pixel function whose colour channels each depend only on themselves and the alpha (and the alpha only
+// on itself): the 8-bit frame is read as levels, so there are only 256 x 256 answers, worked out once by the same arithmetic instead of once
+// per pixel (Brightness and Contrast at 1080p: most of its time). A value outside the levels' range takes the long way, as in oclPixels.
+template <class F>
+void oclPixelsByLevels(Ctx& c, F fn)
+{
+    std::vector<float> colour((size_t)256 * 256);
+    float alpha[256];
+    for (int a = 0; a < 256; ++a)
+        for (int v = 0; v < 256; ++v) {
+            const float in[4] = {vcol::kByteLevels.level[v], vcol::kByteLevels.level[v], vcol::kByteLevels.level[v], vcol::kByteLevels.level[a]};
+            float o[4];
+            fn(in, o);
+            colour[(size_t)a * 256 + (size_t)v] = more::oclStore12(o[0]);
+            if (v == 0) alpha[a] = more::oclStore12(o[3]);
+        }
+    const int W = c.out.w, H = c.out.h;
+    forRows(H, W, [&](int y) {
+        const float* sp = c.src.at(0, y);
+        float* d = c.out.at(0, y);
+        for (int x = 0; x < W; ++x, sp += 4, d += 4) {
+            // (vcol::readLevel's index of each value)
+            const float t0 = sp[0] * 255.0f + 0.5f, t1 = sp[1] * 255.0f + 0.5f, t2 = sp[2] * 255.0f + 0.5f, t3 = sp[3] * 255.0f + 0.5f;
+            const bool inRange = (t0 >= 0.0f) & (t0 < 256.0f) & (t1 >= 0.0f) & (t1 < 256.0f) & (t2 >= 0.0f) & (t2 < 256.0f) & (t3 >= 0.0f) & (t3 < 256.0f);
+            if (!inRange) {
+                float in[4], o[4];
+                vcol::readLevels(sp, in);
+                fn(in, o);
+                for (int k = 0; k < 4; ++k) d[k] = more::oclStore12(o[k]);
+                continue;
+            }
+            const int a = (int)t3;
+            const float* row = colour.data() + (size_t)a * 256;
+            d[0] = row[(int)t0];
+            d[1] = row[(int)t1];
+            d[2] = row[(int)t2];
+            d[3] = alpha[a];
+        }
+    });
+    c.outOnLevels = true;
+}
 
 // ------------------------------------------------------------------ colour
 // The colour effects below are row functions, four pixels at a time (see Def::rows); each channel does the same arithmetic as the plain version.
@@ -326,7 +370,10 @@ void brightnessContrast(Ctx& c)
     float bright, contrast, center;
     brightnessContrastSettings(c, bright, contrast, center);
     if (oclUsable(c)) {
-        oclPixels(c, [=](const float* p, float* o) { vcol::brightContrastPx(bright, contrast, center, p, o); });
+        // (each colour channel of the kernel works on itself and the alpha alone)
+        auto px = [=](const float* p, float* o) { vcol::brightContrastPx(bright, contrast, center, p, o); };
+        if (c.host8) oclPixelsByLevels(c, px);
+        else oclPixels(c, px);
         return;
     }
     runRowFn(c, brightnessContrastRow(bright, contrast, center));
@@ -1555,13 +1602,61 @@ static void chromaKeyerOpenCl(Ctx& c)
     const vcol::KeyerSettings& s = su.s;
     const float* kh = su.kh;
     const float inv = su.inv;
+    const uint32_t stamp = LevelMemo::newStamp();
+    if (c.host8 && !su.blur) {
+        // No blur in an 8-bit picture: the finished pixel depends on the pixel's levels alone, so it is made in one go
+        // and kept by them (LevelMemo), with no alpha plane in between.
+        forRows(H, W, [&](int y) {
+            LevelMemo& memo = LevelMemo::mine();
+            for (int x = 0; x < W; ++x) {
+                float in[4], o[4];
+                const float* sp = c.src.at(x, y);
+                float* d = c.out.at(x, y);
+                uint32_t key = 0;
+                const bool keyed = LevelMemo::keyOf(sp, key);
+                if (keyed) {
+                    if (const float* v = memo.find(key, stamp)) {
+                        std::memcpy(d, v, sizeof(float) * 4);
+                        continue;
+                    }
+                    LevelMemo::levelsOf(key, in);
+                } else {
+                    vcol::readLevels(sp, in);
+                }
+                vcol::keyerFinish(s, in, vcol::keyerAlpha(s, kh, inv, in), false, o);
+                for (int k = 0; k < 4; ++k) d[k] = more::oclStore12(o[k]);
+                if (keyed) memo.put(key, stamp, d);
+            }
+        });
+        c.outOnLevels = true;
+        return;
+    }
     std::vector<float> alpha((size_t)W * H);
+    // (an 8-bit picture: the keyed alphas are kept by the pixel's levels, see LevelMemo)
     forRows(H, W, [&](int y) {
+        LevelMemo& memo = LevelMemo::mine();
         for (int x = 0; x < W; ++x) {
             float in[4];
             const float* sp = c.src.at(x, y);
-            if (c.host8) { vcol::readLevels(sp, in); sp = in; }
-            alpha[(size_t)y * W + x] = vcol::keyerAlpha(s, kh, inv, sp);
+            uint32_t key = 0;
+            const bool keyed = c.host8 && LevelMemo::keyOf(sp, key);
+            if (keyed) {
+                if (const float* v = memo.find(key, stamp)) {
+                    alpha[(size_t)y * W + x] = v[0];
+                    continue;
+                }
+                LevelMemo::levelsOf(key, in);
+                sp = in;
+            } else if (c.host8) {
+                vcol::readLevels(sp, in);
+                sp = in;
+            }
+            const float a = vcol::keyerAlpha(s, kh, inv, sp);
+            alpha[(size_t)y * W + x] = a;
+            if (keyed) {
+                const float v[4] = {a, 0, 0, 0};
+                memo.put(key, stamp, v);
+            }
         }
     });
     const bool blur = su.blur;
@@ -1587,6 +1682,7 @@ static void chromaKeyerOpenCl(Ctx& c)
             for (int k = 0; k < 4; ++k) d[k] = q ? more::oclStore12(o[k]) : o[k];
         }
     });
+    c.outOnLevels = q;
 }
 
 void chromaKeyer(Ctx& c)

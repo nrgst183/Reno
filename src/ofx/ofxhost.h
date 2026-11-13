@@ -445,8 +445,17 @@ public:
     HostConfig config;
     PropertySet hostProps;
     OfxHost ofxHost;
+private:
+    std::mutex glMutex_;
+    bool glPending_ = false;                // hostProps' OpenGL answer is still to be found (settleOpenGl)
+    bool glAsked_ = false;                  // a plug-in from a file has been loaded: the answer is found at once from now on
+public:
 
     void applyConfig();
+    // Says in hostProps whether effects may render with OpenGL, finding out (which makes the first OpenGL context:
+    // tens of milliseconds and ~50 MB) only when a plug-in from a file is about to load: Reno's built-ins never use
+    // OpenGL, so a project with none of those makes no context. Plugin::load calls it.
+    void settleOpenGl();
     Binary* loadBinary(const std::string& path, std::string* err = nullptr);
     Plugin* findPlugin(const std::string& id) const;
     std::vector<Plugin*> allPlugins() const;

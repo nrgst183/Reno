@@ -105,7 +105,12 @@ void Host::applyConfig()
     s.setInt(kOfxParamHostPropPageRowColumnCount, 0, 0);
     s.setInt(kOfxParamHostPropPageRowColumnCount, 0, 1);
     s.setPointer(kOfxPropHostOSHandle, config.mainWindow);
-    s.setString(kOfxImageEffectPropOpenGLRenderSupported, (config.gpu && gl::available()) ? "true" : "false");
+    {
+        std::lock_guard<std::mutex> lk(glMutex_);
+        glPending_ = config.gpu && !glAsked_;
+        // ("false" until a plug-in from a file needs to know: see settleOpenGl)
+        s.setString(kOfxImageEffectPropOpenGLRenderSupported, (config.gpu && glAsked_ && gl::available()) ? "true" : "false");
+    }
     builtin::setVegasGpuAcceleration(config.vegasGpu);       // (the built-in copies of VEGAS's effects follow VEGAS's GPU acceleration setting)
     s.setInt(kOfxImageEffectPropRenderQualityDraft, 1);
     s.setString(kOfxImageEffectHostPropNativeOrigin, kOfxHostNativeOriginBottomLeft);
@@ -493,12 +498,22 @@ static void defaultDescriptorProps(PropertySet& s, const Plugin& pl)
     if (Host::get().config.vegasExtensions) s.ensure(kVegasPropUpliftGUID, PType::String);    // empty: effects append
 }
 
+void Host::settleOpenGl()
+{
+    std::lock_guard<std::mutex> lk(glMutex_);
+    glAsked_ = true;
+    if (!glPending_) return;
+    glPending_ = false;
+    hostProps.setString(kOfxImageEffectPropOpenGLRenderSupported, gl::available() ? "true" : "false");
+}
+
 bool Plugin::load(std::string* err)
 {
     std::lock_guard<std::recursive_mutex> once(loadMutex);
     if (loaded) return true;
     if (failed) { if (err) *err = error; return false; }
     Host& host = Host::get();
+    if (!binary || !binary->builtin) host.settleOpenGl();
     Plugin* prev = host.currentPlugin;
     host.currentPlugin = this;
     auto fail = [&](const std::string& m) {
