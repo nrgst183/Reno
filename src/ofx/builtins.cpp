@@ -98,7 +98,10 @@ void defineParam(OfxParamSetHandle set, const PDef& p)
     if (!p.parent.empty()) gProp->propSetString(props, kOfxParamPropParent, 0, p.parent.c_str());
     if (p.secret) gProp->propSetInt(props, kOfxParamPropSecret, 0, 1);
     switch (p.type) {
-    case PT::Group: case PT::Button: case PT::Image:
+    case PT::Group:
+        if (p.closed) gProp->propSetInt(props, kOfxParamPropGroupOpen, 0, 0);
+        break;
+    case PT::Button: case PT::Image:
         break;
     case PT::Custom:
         gProp->propSetString(props, kOfxParamPropDefault, 0, p.sdef.c_str());

@@ -238,17 +238,40 @@ void EfxPlugin::process(float* left, float* right, int frames, int64_t samplePos
     // a jump in time (seek, loop) restarts the effect so nothing from elsewhere carries over
     if (expected_ >= 0 && samplePos != expected_) reset();
     expected_ = samplePos + frames;
+    float pl = 0.f, pr = 0.f;
     for (int k = 0; k < frames; ++k) {
         if (!std::isfinite(left[k])) left[k] = 0.f;
         if (!std::isfinite(right[k])) right[k] = 0.f;
+        pl = std::max(pl, std::fabs(left[k]));
+        pr = std::max(pr, std::fabs(right[k]));
     }
-    if (!on(kActive)) { wasActive_ = false; return; }
+    biggest(meters_[MeterInL], pl);
+    biggest(meters_[MeterInR], pr);
+    if (!on(kActive)) {
+        wasActive_ = false;
+        biggest(meters_[MeterOutL], pl);
+        biggest(meters_[MeterOutR], pr);
+        return;
+    }
     if (!wasActive_) { reset(); wasActive_ = true; }
     run(left, right, frames);
+    pl = pr = 0.f;
     for (int k = 0; k < frames; ++k) {
         if (!std::isfinite(left[k])) left[k] = 0.f;
         if (!std::isfinite(right[k])) right[k] = 0.f;
+        pl = std::max(pl, std::fabs(left[k]));
+        pr = std::max(pr, std::fabs(right[k]));
     }
+    biggest(meters_[MeterOutL], pl);
+    biggest(meters_[MeterOutR], pr);
+}
+
+float EfxPlugin::meterTake(int i)
+{
+    if (i < 0 || i >= MeterCount) return 0.f;
+    if (i == MeterMod) return meters_[(size_t)i].load(std::memory_order_relaxed);
+    const float v = meters_[(size_t)i].exchange(0.f, std::memory_order_relaxed);
+    return i == MeterGain || i == MeterClip ? 1.f - v : v;
 }
 
 std::string EfxPlugin::paramName(int i) { return i >= 0 && i < kParams ? defs_[(size_t)i].name : std::string(); }

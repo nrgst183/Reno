@@ -15,6 +15,7 @@
 #include "uitestlib.h"
 #include <QAbstractButton>
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -209,6 +210,16 @@ int main(int argc, char** argv)
             ofx::BezCurve c[4];
             check(ofx::decodeColorCurves(t0, c) && c[0].size() == 2, "its text is the straight curves");
             const QImage p0 = frame(1.0);
+            QComboBox* chBox = in<QComboBox>("Property", "fxChannel");
+            check(chBox && chBox->currentText() == "RGB", "the channel list starts at RGB (SelectedChannel 0, as VEGAS)");
+            auto pickChannel = [&](int sel) {
+                if (!chBox) return;
+                chBox->setCurrentIndex(sel);
+                emit chBox->activated(sel);
+                settle();
+            };
+            pickChannel(1);
+            check(numberOf(S, "SelectedChannel") == 1, "Red picked: SelectedChannel is 1");
             // drag a new point on the red curve up
             uitest::mouseDrag(g, graphAt(g, 128, 128, 255), graphAt(g, 128, 200, 255), 6);
             settle();
@@ -267,26 +278,21 @@ int main(int argc, char** argv)
             check(ofx::decodeColorCurves(textOf(S, "Property"), c) && c[0].size() == 2, "Delete takes the picked point away");
 
             // the channel
-            if (QAbstractButton* green = in<QAbstractButton>("Property", "fxChannel1")) {
-                green->click();
-                settle();
-                check(numberOf(S, "SelectedChannel") == 1, "Green picked: the effect's SelectedChannel is 1");
+            if (chBox) {
+                pickChannel(2);
+                check(numberOf(S, "SelectedChannel") == 2, "Green picked: the effect's SelectedChannel is 2");
                 uitest::mouseDrag(g, graphAt(g, 128, 128, 255), graphAt(g, 128, 60, 255), 6);
                 settle();
                 check(ofx::decodeColorCurves(textOf(S, "Property"), c) && c[1].size() == 3 && c[0].size() == 2, "a point is added to the green curve");
                 const QImage p2 = frame(1.0);
                 check(sum(p2, 1) < sum(p1, 1) - 1000, "the picture loses green");
             } else {
-                check(false, "the channel buttons exist");
+                check(false, "the channel list exists");
             }
-            if (QAbstractButton* master = in<QAbstractButton>("Property", "fxChannel3")) {
-                master->click();
-                settle();
-                check(numberOf(S, "SelectedChannel") == 3, "Master picked: SelectedChannel is 3");
-            }
-            if (QAbstractButton* all = in<QAbstractButton>("Property", "fxChannel4")) {
-                all->click();
-                settle();
+            if (chBox) {
+                pickChannel(0);
+                check(numberOf(S, "SelectedChannel") == 0, "RGB picked: SelectedChannel is 0");
+                pickChannel(4);
                 check(numberOf(S, "SelectedChannel") == 4, "All picked: SelectedChannel is 4");
             }
             if (QAbstractButton* show = in<QAbstractButton>("Property", "fxShowAll")) {
@@ -298,7 +304,7 @@ int main(int argc, char** argv)
             }
             // the point's numbers
             if (QDoubleSpinBox* ob = in<QDoubleSpinBox>("Property", "fxCurveOut")) {
-                if (QAbstractButton* red = in<QAbstractButton>("Property", "fxChannel0")) red->click();
+                pickChannel(1);
                 uitest::mouseClick(g, graphAt(g, 200, 200, 255));
                 settle();
                 ob->setValue(150);
@@ -308,6 +314,16 @@ int main(int argc, char** argv)
                 if (ofx::decodeColorCurves(textOf(S, "Property"), d))
                     for (const auto& p : d[0]) found = found || (near(p.y, 150, 0.01) && near(p.x, 200, 4));
                 check(found, "the Output box moves the picked point");
+            }
+            // Auto Modes: the list and Calculate (what Color Levels does to a picture: vegasrest_test)
+            QComboBox* modes = in<QComboBox>("Property", "fxCurveAutoMode");
+            check(modes && modes->currentText() == "Color Levels" && modes->currentData().toInt() == 1, "the Auto Modes list shows Color Levels (AutoMode 1)");
+            if (QPushButton* calc = in<QPushButton>("Property", "fxCurveCalculate")) {
+                calc->click();
+                settle(300);
+                check(numberOf(S, "AutoMode") == 1 && numberOf(S, "DoAnalysis") == 0, "Calculate asks the effect for its analysis, which clears DoAnalysis again");
+            } else {
+                check(false, "Color Curves has a Calculate button");
             }
 
         }
@@ -342,8 +358,8 @@ int main(int argc, char** argv)
             check(p && p->strKeys.size() == 2, "a change at another time adds a second keyframe", p ? std::to_string(p->strKeys.size()) : "");
             ofx::BezCurve a[4], b[4];
             const double t1 = p && !p->strKeys.empty() ? p->strKeys.begin()->first : 0, t2 = p && !p->strKeys.empty() ? p->strKeys.rbegin()->first : 0;
-            check(p && ofx::decodeColorCurves(p->strAt(t1), a) && ofx::decodeColorCurves(p->strAt(t2), b) && a[0].size() == 2 && b[0].size() == 3,
-                  "the first key keeps the straight curves, the second has the new point");
+            check(p && ofx::decodeColorCurves(p->strAt(t1), a) && ofx::decodeColorCurves(p->strAt(t2), b) && a[3].size() == 2 && b[3].size() == 3,
+                  "the first key keeps the straight curves, the second has the new point (on the RGB curve, the one shown first)");
             app.setCursor(1.0);
             settle(200);
             QWidget* g2 = in<QWidget>("Property", "fxCurveGraph");

@@ -328,6 +328,57 @@ bool TimelineWidget::Impl::mediaReread()
     return again;
 }
 
+// Events that were not in the project before this change flash (noteNewEvents); the rim holds for a moment, then fades.
+namespace {
+const qint64 kFlashHoldMs = 250, kFlashFadeMs = 650;
+}
+
+void TimelineWidget::Impl::noteNewEvents()
+{
+    const Project& pj = app.project();
+    std::unordered_set<uint64_t> now;
+    for (const Track& t : pj.tracks)
+        for (const Event& e : t.events) now.insert(e.id);
+    // another project (opened, or a new one): its events are not new
+    const bool same = seenValid && seenPath == app.path() && !(now.size() > 0 && seenEvents.empty() && !app.canUndo());
+    const qint64 t0 = QDateTime::currentMSecsSinceEpoch();
+    size_t added = 0;
+    if (same)
+        for (uint64_t id : now)
+            if (!seenEvents.count(id)) ++added;
+    // (a change that brings in thousands at once - a big paste, Undo of a large deletion - is not lit up)
+    if (same && added > 0 && added <= 500)
+        for (uint64_t id : now)
+            if (!seenEvents.count(id)) flashing[id] = t0;
+    seenEvents.swap(now);
+    seenPath = app.path();
+    seenValid = true;
+    if (flashing.empty()) return;
+    if (!flashTimer) {
+        flashTimer = new QTimer(q);
+        flashTimer->setInterval(33);
+        QObject::connect(flashTimer, &QTimer::timeout, q, [this] {
+            const qint64 t = QDateTime::currentMSecsSinceEpoch();
+            for (auto it = flashing.begin(); it != flashing.end();)
+                it = (t - it->second > kFlashHoldMs + kFlashFadeMs || !seenEvents.count(it->first)) ? flashing.erase(it) : std::next(it);
+            q->update();
+            if (flashing.empty()) flashTimer->stop();
+        });
+    }
+    if (!flashTimer->isActive()) flashTimer->start();
+}
+
+double TimelineWidget::Impl::flashLevel(uint64_t id) const
+{
+    if (flashing.empty()) return 0;
+    const auto it = flashing.find(id);
+    if (it == flashing.end()) return 0;
+    const qint64 age = QDateTime::currentMSecsSinceEpoch() - it->second;
+    if (age < kFlashHoldMs) return 1;
+    if (age > kFlashHoldMs + kFlashFadeMs) return 0;
+    return 1.0 - (double)(age - kFlashHoldMs) / kFlashFadeMs;
+}
+
 void TimelineWidget::Impl::changed(int changes)
 {
     if (app.loopEnd > app.loopStart) {
@@ -337,6 +388,7 @@ void TimelineWidget::Impl::changed(int changes)
     if ((changes & kProject) && edgeSel.event && !edgeValid()) edgeSel = EdgeSel();
     if (changes & (kProject | kFile)) indexValid = false;
     if (changes & (kProject | kSelection | kFxParams | kCatalog | kPrefs | kFile)) ++headerGeneration;
+    if (changes & (kProject | kFile)) noteNewEvents();
     if (changes & kProject) {
         layout();
         validateEnvSelection();
@@ -1289,6 +1341,13 @@ void TimelineWidget::Impl::drawEvent(QPainter& p, const Row& row, const Event& e
         p.restore();
     }
     drawEventOutline(p, ev);
+    if (const double fl = flashLevel(e.id); fl > 0) {
+        // a new event's yellow rim, fading
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(236, 222, 24, (int)std::lround(255 * fl)), 2));
+        p.drawRect(QRectF(vd).adjusted(1, 1, -1, -1));
+    }
     drawFadeLengths(p, ev);
     drawFadeHandles(p, ev);
     drawEventButtons(p, ev);

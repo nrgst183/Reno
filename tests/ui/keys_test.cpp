@@ -371,7 +371,9 @@ int main(int argc, char** argv)
             check(pb->dimmed(), "Ctrl+Shift+F12 dims the master output");
             press("Ctrl+Shift+F12");
             check(!pb->dimmed(), "and again undims it");
-            // Shift+B: dynamic RAM preview of the time selection
+            // Shift+B: dynamic RAM preview of the time selection (VEGAS's 200 MB holds about 25 full-size 1080p frames: room for
+            // the second's 30 made first, as a user would in Preferences > Video)
+            st().prefs.ramPreviewMb = 512;
             st().setLoop(1.0, 2.0);
             press("Shift+B");
             uitest::settle(100);
@@ -758,6 +760,14 @@ int main(int argc, char** argv)
         press("=");
         press("Ctrl+Shift+=");
         check(near(ev(ids.e4)->pitch, 0.0), "Ctrl+Shift+= resets it");
+        // as a keyboard really sends them: Shift with + and with _
+        press(Qt::Key_Plus, Qt::ShiftModifier);
+        check(near(ev(ids.e4)->pitch, 12.0), "Shift and the + key (Shift+=) raise it an octave", num(ev(ids.e4)->pitch));
+        press(Qt::Key_Underscore, Qt::ShiftModifier);
+        press(Qt::Key_Underscore, Qt::ShiftModifier);
+        check(near(ev(ids.e4)->pitch, -12.0), "Shift and the _ key (Shift+-) lower it an octave", num(ev(ids.e4)->pitch));
+        press(Qt::Key_Plus, Qt::ControlModifier | Qt::ShiftModifier);
+        check(near(ev(ids.e4)->pitch, 0.0), "Ctrl+Shift and + resets it");
         // the keypad
         press("Alt+0");
         st().selectOnly(ids.e2);

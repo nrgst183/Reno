@@ -85,6 +85,8 @@ protected:
         // Fitted to VEGAS's render of a sample project, where the Limiters squash a signal 30 dB above threshold
         const double relBase = std::max(0.2, relMs) * 0.5 * 0.001 * sr_;
         const double kneeDb = 2.0;
+        double lowG = 1.0;
+        float clipPeak = 0.f;
 
         for (int k = 0; k < n; ++k) {
             const float gi = (float)gIn_.next();
@@ -126,6 +128,7 @@ protected:
                 for (int i = 0; i < n_; ++i) sum_ += ring_[(size_t)i];       // summed afresh now and then to avoid drift
             }
             const double g = sum_ / n_;
+            lowG = std::min(lowG, g);
             // the delayed sound
             float yl, yr;
             if (n_ > 1) {
@@ -136,6 +139,7 @@ protected:
             float zl = (float)(yl * g * makeup), zr = (float)(yr * g * makeup);
             // clipper: boosted by the clip gain, shaped, never beyond full scale
             if (clipG > 1.0001) {
+                clipPeak = std::max(clipPeak, std::max(std::fabs(zl), std::fabs(zr)) * (float)clipG);
                 zl = clipShape(zl * (float)clipG, hard);
                 zr = clipShape(zr * (float)clipG, hard);
             }
@@ -146,6 +150,8 @@ protected:
             r[k] = zr * go;
         }
         for (int c = 0; c < 2; ++c) { hpIn_[c].z1 = flushDenormal((float)hpIn_[c].z1); hpSc_[c].z1 = flushDenormal((float)hpSc_[c].z1); }
+        showGain(lowG);
+        showClip(clipPeak > 1.f ? 1.0 / clipPeak : 1.0);
     }
 
 private:
@@ -253,6 +259,7 @@ protected:
         const double attackCoef = std::exp(-1.0 / (attackS * sr_));
         const double kneeDb = 10.0;
         const double slope = 1.0 / ratio - 1.0;
+        double lowDb = 0;
 
         for (int k = 0; k < n; ++k) {
             const float gi = (float)gIn_.next();
@@ -272,6 +279,7 @@ protected:
                 coef = std::exp(-1.0 / (t * sr_));
             }
             grState_ = target + coef * (grState_ - target);
+            lowDb = std::min(lowDb, grState_);
             const double depth = std::min(1.0, -grState_ / 12.0);
             stress_ += (depth - stress_) * (depth > stress_ ? stressUp_ : stressDown_);
             const double gain = std::pow(10.0, (grState_ + makeupDb) / 20.0);
@@ -289,6 +297,7 @@ protected:
             l[k] = ol;
             r[k] = orr;
         }
+        showGain(dbToLin(lowDb));
     }
 
 private:

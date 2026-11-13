@@ -303,6 +303,31 @@ static void buttonTests()
         check(std::fabs(cc - (1.0 - 0.7)) < 0.08, "Current Clip: the contrast is worked out from the whole clip (0.1..0.8), not the frame", strfmt("contrast %.3f brightness %.3f", cc, bc));
     }
     {
+        // Color Curves' Calculate in Auto Mode Color Levels: each colour stretched to black..white by its own range
+        auto inst = instanceOf(V + "colorcurves", nullptr, W, H);
+        connect(*inst, W, H, [](int x, int, int w, int, double, float c[3]) {
+            const float f = (float)x / (w - 1);
+            c[0] = 0.2f + 0.4f * f;
+            c[1] = 0.3f + 0.4f * f;
+            c[2] = 0.1f + 0.8f * f;
+        });
+        float lo[3], hi[3];
+        for (int k = 0; k < 3; ++k) range(renderAt(*inst, 0), k, lo[k], hi[k]);
+        check(hi[0] - lo[0] < 0.45f && hi[1] - lo[1] < 0.45f, "Color Curves at its defaults leaves the colours as they are", strfmt("red %.2f..%.2f", lo[0], hi[0]));
+        setv(*inst, "AutoMode", {1});
+        setv(*inst, "DoAnalysis", {1});
+        check(val(*inst, "DoAnalysis") == 0, "Color Curves: Calculate (DoAnalysis) runs once and is cleared");
+        ImagePtr after = renderAt(*inst, 0);
+        bool stretched = true;
+        std::string got;
+        for (int k = 0; k < 3; ++k) {
+            range(after, k, lo[k], hi[k]);
+            stretched = stretched && lo[k] < 0.04f && hi[k] > 0.96f;
+            got += strfmt("%.2f..%.2f ", lo[k], hi[k]);
+        }
+        check(stretched, "  Color Levels stretches red, green and blue each to 0..1", got);
+    }
+    {
         auto inst = instanceOf(V + "border", nullptr, W, H);
         setv(*inst, "color_rgb", {1, 0.5, 0.25});
         check(std::fabs(val(*inst, "color", 0) - 1) < 1e-9 && std::fabs(val(*inst, "color", 1) - 0.5) < 1e-9 && std::fabs(val(*inst, "color", 2) - 0.25) < 1e-9 && val(*inst, "color", 3) == 1,

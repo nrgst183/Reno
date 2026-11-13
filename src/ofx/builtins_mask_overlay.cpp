@@ -228,17 +228,17 @@ struct DotState {
 std::mutex gDotMutex;
 std::map<const void*, DotState> gDots;
 
-// The dot works on a Double2D parameter (which = 0: DistCenter) or on the first two numbers of a Double3D one (which = 1: LocationAndZoom).
+// The dot works on a Double2D parameter (which = 0: DistCenter; 2: Spherize's Center) or on the first two numbers of a Double3D one (which = 1: LocationAndZoom).
 template <int which>
 OfxStatus pointEntry(const char* action, const void* handle, OfxPropertySetHandle in, OfxPropertySetHandle /*out*/)
 {
-    const char* const kName = which == 0 ? "DistCenter" : "LocationAndZoom";
+    const char* const kName = which == 0 ? "DistCenter" : which == 2 ? "Center" : "LocationAndZoom";
     auto read = [&](const View& v, double& x, double& y, double& z) {
         z = 0;
-        if (which == 0) v.point(kName, x, y); else v.point3(kName, x, y, z);
+        if (which != 1) v.point(kName, x, y); else v.point3(kName, x, y, z);
     };
     auto write = [&](const View& v, double x, double y) {
-        if (which == 0) { v.setPoint(kName, x, y); return; }
+        if (which != 1) { v.setPoint(kName, x, y); return; }
         double ox = 0, oy = 0, z = 0;
         v.point3(kName, ox, oy, z);
         v.setPoint3(kName, x, y, z);
@@ -648,10 +648,145 @@ OfxStatus bezierEntry(const char* action, const void* handle, OfxPropertySetHand
     return kOfxStatReplyDefault;
 }
 
+// ------------------------------------------------------------------ Mesh Warp's grid
+// The mesh drawn over the picture as VEGAS draws it: the grid's lines through its points, a yellow dot at each point. A dot is
+// dragged to move that point (the mesh is written to WarpData; a regular grid is written out the first time).
+struct MeshState {
+    int drag = -1;
+};
+std::mutex gMeshMutex;
+std::map<const void*, MeshState> gMesh;
+
+struct MeshNow {
+    int cols = 0, rows = 0;
+    std::vector<float> pts;
+    std::string text;
+};
+
+MeshNow meshNow(const View& v)
+{
+    MeshNow m;
+    m.text = v.str("WarpData");
+    const int cx = v.integer("GridCountX", 4) * std::max(1, v.integer("ScaleGridX", 1));
+    const int cy = v.integer("GridCountY", 4) * std::max(1, v.integer("ScaleGridY", 1));
+    meshWarpPoints(m.text, cx, cy, m.cols, m.rows, m.pts);
+    return m;
+}
+
+OfxStatus meshEntry(const char* action, const void* handle, OfxPropertySetHandle in, OfxPropertySetHandle /*out*/)
+{
+    if (!action) return kOfxStatReplyDefault;
+    try {
+        if (!std::strcmp(action, kOfxActionDescribe) || !std::strcmp(action, kOfxActionCreateInstance)) return kOfxStatOK;
+        if (!std::strcmp(action, kOfxActionDestroyInstance)) {
+            std::lock_guard<std::mutex> lk(gMeshMutex);
+            gMesh.erase(handle);
+            return kOfxStatOK;
+        }
+        View v;
+        if (!makeView(in, v)) return kOfxStatReplyDefault;
+        MeshNow m = meshNow(v);
+        if (m.cols < 2 || m.rows < 2 || m.pts.size() < (size_t)m.cols * m.rows * 2) return kOfxStatReplyDefault;
+        // a point in canonical coordinates (from the bottom left)
+        auto at = [&](int k, double& x, double& y) {
+            x = m.pts[(size_t)k * 2] * v.w;
+            y = (1.0 - m.pts[(size_t)k * 2 + 1]) * v.h;
+        };
+        if (!std::strcmp(action, kOfxInteractActionDraw)) {
+            GL& g = gl();
+            if (!g.ok) return kOfxStatReplyDefault;
+            g.Enable(kBlend);
+            g.BlendFunc(kSrcAlpha, kOneMinusSrcAlpha);
+            for (int pass = 0; pass < 2; ++pass) {
+                g.LineWidth(pass == 0 ? 2.5f : 1.f);
+                if (pass == 0) g.Color4f(0, 0, 0, 0.45f); else g.Color4f(0.62f, 0.62f, 0.62f, 1.f);
+                for (int j = 0; j < m.rows; ++j) {
+                    g.Begin(kLineStrip);
+                    for (int i = 0; i < m.cols; ++i) {
+                        double x, y;
+                        at(j * m.cols + i, x, y);
+                        g.Vertex2d(x, y);
+                    }
+                    g.End();
+                }
+                for (int i = 0; i < m.cols; ++i) {
+                    g.Begin(kLineStrip);
+                    for (int j = 0; j < m.rows; ++j) {
+                        double x, y;
+                        at(j * m.cols + i, x, y);
+                        g.Vertex2d(x, y);
+                    }
+                    g.End();
+                }
+            }
+            int drag = -1;
+            {
+                std::lock_guard<std::mutex> lk(gMeshMutex);
+                auto it = gMesh.find(handle);
+                if (it != gMesh.end()) drag = it->second.drag;
+            }
+            for (int k = 0; k < m.cols * m.rows; ++k) {
+                double x, y;
+                at(k, x, y);
+                const double r = k == drag ? 4.0 : 3.0;
+                g.Color4f(0, 0, 0, 0.6f);
+                square(g, x, y, (r + 1.2) * v.psx, (r + 1.2) * v.psy);
+                if (k == drag) g.Color4f(1.f, 1.f, 1.f, 1.f); else g.Color4f(1.f, 0.92f, 0.f, 1.f);
+                square(g, x, y, r * v.psx, r * v.psy);
+            }
+            return kOfxStatOK;
+        }
+        if (!std::strcmp(action, kOfxInteractActionPenDown)) {
+            double px, py;
+            penPosition(v, in, px, py);
+            int best = -1;
+            double bestD = 1e18;
+            for (int k = 0; k < m.cols * m.rows; ++k) {
+                double x, y;
+                at(k, x, y);
+                const double dx = (x - px) / v.psx, dy = (y - py) / v.psy, d = dx * dx + dy * dy;
+                if (d < bestD) { bestD = d; best = k; }
+            }
+            if (best < 0 || bestD > 9.0 * 9.0) return kOfxStatReplyDefault;
+            std::lock_guard<std::mutex> lk(gMeshMutex);
+            gMesh[handle].drag = best;
+            return kOfxStatOK;
+        }
+        if (!std::strcmp(action, kOfxInteractActionPenMotion)) {
+            int drag = -1;
+            {
+                std::lock_guard<std::mutex> lk(gMeshMutex);
+                auto it = gMesh.find(handle);
+                if (it != gMesh.end()) drag = it->second.drag;
+            }
+            if (drag < 0 || drag >= m.cols * m.rows) return kOfxStatReplyDefault;
+            double px, py;
+            penPosition(v, in, px, py);
+            m.pts[(size_t)drag * 2] = (float)clampd(px / v.w, -0.5, 1.5);
+            m.pts[(size_t)drag * 2 + 1] = (float)clampd(1.0 - py / v.h, -0.5, 1.5);
+            v.setStr("WarpData", meshWarpText(m.cols, m.rows, m.pts));
+            return kOfxStatOK;
+        }
+        if (!std::strcmp(action, kOfxInteractActionPenUp)) {
+            std::lock_guard<std::mutex> lk(gMeshMutex);
+            auto it = gMesh.find(handle);
+            if (it == gMesh.end() || it->second.drag < 0) return kOfxStatReplyDefault;
+            it->second.drag = -1;
+            return kOfxStatOK;
+        }
+    } catch (...) {
+        return kOfxStatFailed;
+    }
+    return kOfxStatReplyDefault;
+}
+
 }  // namespace
+
+OfxPluginEntryPoint* meshWarpOverlay() { return &meshEntry; }
 
 OfxPluginEntryPoint* maskOverlayPoint(const char* param)
 {
+    if (std::strcmp(param, "Center") == 0) return &pointEntry<2>;
     return std::strcmp(param, "LocationAndZoom") == 0 ? &pointEntry<1> : &pointEntry<0>;
 }
 

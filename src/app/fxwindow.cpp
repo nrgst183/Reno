@@ -1114,6 +1114,14 @@ void snapshot(const ofx::Instance* inst, double time, std::vector<Snap>& out)
         }
         out.push_back(std::move(s));
     }
+    // Mesh Warp, as VEGAS shows it: with the grid sizes locked together, the Y sizes follow X and are greyed out
+    if (pid == "de.magix:MeshWarp") {
+        bool locked = false;
+        for (const Snap& sn : out)
+            if (sn.name == "GridCountLink" && !sn.v.empty()) locked = sn.v[0] != 0;
+        for (Snap& sn : out)
+            if (locked && (sn.name == "GridCountY" || sn.name == "ScaleGridY")) sn.enabled = false;
+    }
     // An editor whose anchor setting is missing (no VEGAS extensions): its first present setting stands in.
     for (const EditorSpec* spec : editorSpecsFor(pid)) {
         bool has = false;
@@ -1363,6 +1371,8 @@ typedef std::map<std::pair<uint64_t, std::string>, bool> GroupMemory;
 
 class OfxPanel : public Panel {
 public:
+    // The keyframe strip is shown (Animate): changes set keyframes (autoKeys)
+    std::function<bool()> animating;
     OfxPanel(QWidget* parent, uint64_t slot, ofx::Instance* inst, std::function<double()> timeFn, std::function<void(double)> seekFn,
              GroupMemory* memory, Playback* playback)
         : Panel(parent), inst_(inst), time_(std::move(timeFn)), seek_(std::move(seekFn)), memory_(memory), playback_(playback)
@@ -1490,6 +1500,7 @@ private:
             while (QLayoutItem* it = top_->takeAt(0)) delete it;
         }
         built_ = true;
+        makeHeader(inst);
         makeOwnWindow();
         build(snaps);
         bool anyShown = false;
@@ -1528,6 +1539,58 @@ private:
         for (size_t k = 0; k < params_.size(); ++k)
             if (now->params.params[k].get() != params_[k]) return nullptr;
         return now;
+    }
+
+    // VEGAS's bar over an effect's settings: the effect's name (VEGAS's own effects as "VEGAS <name>"), About and help.
+    void makeHeader(ofx::Instance* inst)
+    {
+        if (!inst->plugin) return;
+        const ofx::PluginInfo& info = inst->plugin->info;
+        QString name = qs(info.label.empty() ? info.id : info.label);
+        if (ofx::isVegasOwnEffect(info.id) && !name.startsWith("VEGAS", Qt::CaseInsensitive)) name = "VEGAS " + name;
+        QWidget* bar = new QWidget(this);
+        bar->setObjectName("fxOfxHeader");
+        bar->setAttribute(Qt::WA_StyledBackground, true);
+        bar->setStyleSheet("QWidget#fxOfxHeader { background: palette(alternate-base); border-radius: 2px; }");
+        bar->setFixedHeight(28);
+        QHBoxLayout* h = new QHBoxLayout(bar);
+        h->setContentsMargins(8, 0, 6, 0);
+        h->setSpacing(6);
+        QLabel* title = new QLabel(name, bar);
+        title->setObjectName("fxOfxTitle");
+        title->setTextFormat(Qt::PlainText);
+        QFont f = title->font();
+        f.setBold(true);
+        f.setPointSizeF(f.pointSizeF() * 1.2);
+        title->setFont(f);
+        h->addWidget(title, 1);
+        const QString description = qs(info.description), vendor = qs(info.grouping);
+        for (int k = 0; k < 2; ++k) {
+            QToolButton* b = new QToolButton(bar);
+            b->setObjectName(k ? "fxOfxHelp" : "fxOfxAbout");
+            b->setText(k ? "?" : "About");
+            b->setAutoRaise(true);
+            b->setFocusPolicy(Qt::NoFocus);
+            b->setToolTip(k ? "How to change this effect's settings" : "About this effect");
+            h->addWidget(b);
+            if (k == 0)
+                QObject::connect(b, &QToolButton::clicked, b, [this, name, description, vendor, id = qs(info.id)] {
+                    QString text = QString("<b>%1</b>").arg(name.toHtmlEscaped());
+                    if (!description.isEmpty()) text += "<br>" + description.toHtmlEscaped();
+                    text += QString("<br><br>%1<br><span style='color:gray'>%2</span>").arg(vendor.toHtmlEscaped(), id.toHtmlEscaped());
+                    QMessageBox::about(window(), name, text);
+                });
+            else
+                QObject::connect(b, &QToolButton::clicked, b, [this, name] {
+                    QMessageBox::information(window(), name,
+                                             "Drag a slider or type in its box to change a setting; double-click a slider for its default. The "
+                                             "buttons at the end of a row set it back to its default, go to its previous or next keyframe and "
+                                             "set or remove a keyframe at the cursor (Animate shows the keyframes under the settings). Each "
+                                             "change can be undone.");
+                });
+        }
+        top_->addWidget(bar);
+        top_->addSpacing(4);
     }
 
     void makeOwnWindow()
@@ -2191,8 +2254,28 @@ private:
         ofx::Instance* inst = live();
         if (!inst) return;
         OfxRow& r = rows_[ri];
-        oneStep(ri, "Change", [&] { inst->userSetValue(r.param, v, time_(), r.key && r.key->isChecked()); });
+        const double t = time_();
+        oneStep(ri, "Change", [&] {
+            if (startKeys(inst, r.param, t)) inst->userSetValue(r.param, v, t, true);
+            else inst->userSetValue(r.param, v, t, r.key && r.key->isChecked());
+        });
         soon_->start(0);
+    }
+
+    // As VEGAS: with the keyframe strip shown (Animate), changing a setting that can change over time and has no
+    // keyframes yet makes it change over time - a keyframe at the effect's start keeps the value it had, and the change
+    // goes in as a keyframe at the cursor (the caller sets that one). True when the caller is to set a keyframe.
+    bool startKeys(ofx::Instance* inst, ofx::Param* p, double t)
+    {
+        if (!p || !animating || !animating()) return false;
+        std::lock_guard<std::recursive_mutex> lk(inst->mutex);
+        if (!p->props.getInt(kOfxParamPropAnimates)) return false;
+        if (p->isText() ? !p->strKeys.empty() : !p->keys.empty()) return true;
+        if (t > 1e-6) {
+            if (p->isText()) inst->userSetString(p, p->strAt(0.0), 0.0, true);
+            else inst->userSetValue(p, p->valueAt(0.0), 0.0, true);
+        }
+        return true;
     }
 
     void setString(size_t ri, const QString& t)
@@ -2373,6 +2456,15 @@ private:
         soon_->start(0);
     }
 
+    // one of the settings an editor's keyframes are on (Color Curves' curves, not its channel choice)
+    static bool editorKeyed(const OfxRow& r, const std::string& name)
+    {
+        if (!r.spec) return false;
+        for (const std::string& n : r.spec->keyed)
+            if (n == name) return true;
+        return false;
+    }
+
     bool keyedSetting(const OfxRow& r, const std::string& name) const
     {
         if (!r.key || !r.key->isChecked() || !r.spec) return false;
@@ -2389,7 +2481,8 @@ private:
         ofx::Param* q = inst->params.find(name);
         if (!q) return;
         const bool key = keyedSetting(r, name);
-        oneStep(ri, "Change", [&] { inst->userSetString(q, text, time_(), key); });
+        const double t = time_();
+        oneStep(ri, "Change", [&] { inst->userSetString(q, text, t, (editorKeyed(r, name) && startKeys(inst, q, t)) || key); });
         soon_->start(0);
     }
     void editorNumbers(size_t ri, const std::string& name, const std::vector<double>& v)
@@ -2401,7 +2494,8 @@ private:
         ofx::Param* q = inst->params.find(name);
         if (!q || q->dim == 0) return;
         const bool key = keyedSetting(r, name);
-        oneStep(ri, "Change", [&] { inst->userSetValue(q, v, time_(), key); });
+        const double t = time_();
+        oneStep(ri, "Change", [&] { inst->userSetValue(q, v, t, (editorKeyed(r, name) && startKeys(inst, q, t)) || key); });
         soon_->start(0);
     }
 
@@ -2481,12 +2575,26 @@ private:
 };
 
 // .......................................................................................... audio plug-ins
+// Reno's eFX effects have a page of their own (fxpages_efx.cpp): the effect's VST id, 0 for other plug-ins.
+uint32_t efxPageId(const AudioPlugin* plugin)
+{
+    if (!plugin || !efxIsReproduction(plugin->desc)) return 0;
+    char* end = nullptr;
+    const unsigned long v = std::strtoul(plugin->desc.uid.c_str(), &end, 10);
+    return end && !*end && hasEfxPage((uint32_t)v) ? (uint32_t)v : 0;
+}
+
 class AudioPanel : public Panel {
 public:
     std::function<void()> onEditorSize;
     QString title;
     std::function<bool()> isBypassed;
     std::function<void(bool)> setBypassed;
+    // the window's preset list, for the eFX page's own (EfxHost)
+    std::function<QStringList()> presetNames;
+    std::function<int()> presetCurrent;
+    std::function<void(int)> presetPick;
+    std::function<void()> presetSave;
 
     AudioPanel(QWidget* parent, uint64_t slot, AudioPlugin* plugin, bool wantEditor, bool wantPage = false)
         : Panel(parent), plugin_(plugin), wantEditor_(wantEditor), wantPage_(wantPage)
@@ -2758,6 +2866,9 @@ private:
         else if (!pack2VegasName(builtinPageUid(d)).empty())
             text += qs("Reno's version of " + pack2VegasName(builtinPageUid(d)) + ": the same settings and the same sound. It saves as " +
                        pack2VegasName(builtinPageUid(d)) + ", and projects with it use it where VEGAS's own is not installed.");
+        else if (efxIsReproduction(d))
+            text += "Reno's version of the MAGIX eFX effect VEGAS comes with: the same settings, saved as the MAGIX plug-in so the "
+                    "project opens in VEGAS as it is. The sound is Reno's own.";
         else if (d.format == "BUILTIN")
             text += "A Reno audio effect that stands in for VEGAS's DirectX effect of the same name, with similar settings. "
                     "Projects made with the VEGAS effect use it when VEGAS's own is not installed. Its sound is Reno's own.";
@@ -2768,8 +2879,75 @@ private:
         QMessageBox::about(window(), title, text);
     }
 
+    bool buildEfxPage(uint32_t id)
+    {
+        count_ = plugin_->paramCount();
+        makeFrame(true);
+        EfxHost host;
+        host.get = [this](int i) {
+            AudioPlugin* p = live();
+            return p ? p->paramGet(i) : 0.f;
+        };
+        host.set = [this](int i, float v) {
+            AudioPlugin* p = live();
+            if (closed_ || !p) return;
+            AppState& app = AppState::get();
+            if (app.fxEditOpen(slotId)) p->paramSet(i, v);
+            else app.fxEditStep(slotId, "Change \"" + p->paramName(i) + "\"", [&] { p->paramSet(i, v); });
+        };
+        host.begin = [this](int i) {
+            AudioPlugin* p = live();
+            if (closed_ || !p || AppState::get().fxEditOpen(slotId)) return;
+            editName_ = "Change \"" + p->paramName(i) + "\"";
+            AppState::get().beginFxEdit(slotId);
+        };
+        host.beginEdit = [this](const std::string& what) {
+            if (closed_ || !live() || AppState::get().fxEditOpen(slotId)) return;
+            editName_ = what;
+            AppState::get().beginFxEdit(slotId);
+        };
+        host.end = [this] {
+            if (AppState::get().fxEditOpen(slotId)) AppState::get().endFxEdit(slotId, editName_);
+        };
+        host.state = [this] {
+            AudioPlugin* p = live();
+            return p ? p->saveState() : std::string();
+        };
+        host.setState = [this](const std::string& st, const std::string& what) {
+            AudioPlugin* p = live();
+            if (closed_ || !p) return;
+            AppState& app = AppState::get();
+            if (app.fxEditOpen(slotId)) p->loadState(st);
+            else app.fxEditStep(slotId, what, [&] { p->loadState(st); });
+        };
+        host.meter = [this](int i) {
+            AudioPlugin* p = live();
+            return p && i >= 0 && i < p->meterCount() ? p->meterTake(i) : 0.f;
+        };
+        host.help = [this] { about_(); };
+        host.presetNames = presetNames;
+        host.presetCurrent = presetCurrent;
+        host.presetPick = presetPick;
+        host.presetSave = presetSave;
+        page_ = makeEfxPage(body_, id, host);
+        if (!page_) {
+            frame_->deleteLater();
+            frame_ = nullptr;
+            bypassBtn_ = nullptr;
+            nameLabel_ = nullptr;
+            return false;
+        }
+        bodyLayout_->addWidget(page_);
+        // (VEGAS shows the eFX windows with no title bar of its own: the page has its own on / off and help)
+        if (QWidget* bar = frame_->findChild<QWidget*>("fxTitleBar")) bar->hide();
+        frame_->setFixedSize(page_->width() + 2, page_->height() + 2);
+        top_->addStretch(1);
+        return true;
+    }
+
     bool buildPage()
     {
+        if (const uint32_t id = efxPageId(plugin_)) return buildEfxPage(id);
         if (!hasBuiltinPage(builtinPageUid(plugin_->desc))) return false;
         count_ = plugin_->paramCount();
         makeFrame(true);
@@ -4421,7 +4599,7 @@ public:
         AudioPlugin* plugin = app.fx.audio(s->id);
         if (!plugin) return "failed:" + id + ":" + app.fx.error(s->id);
         const bool editor = kHostPluginWindows && plugin->hasEditor() && !preferSliders && !editorFailed.count(s->id);
-        const bool page = !preferSliders && hasBuiltinPage(builtinPageUid(plugin->desc));
+        const bool page = !preferSliders && (hasBuiltinPage(builtinPageUid(plugin->desc)) || efxPageId(plugin));
         return (editor ? "audio-window:" : page ? "audio-page:" : "audio-sliders:") + id;
     }
 
@@ -4458,7 +4636,9 @@ public:
         bool audioWindow = false;
         if (want.compare(0, 4, "ofx:") == 0 && s) {
             ofx::Instance* inst = app.fx.video(s->id);
-            made = new OfxPanel(holder, s->id, inst, [this] { return fxTime(); }, [this](double frames) { seekFx(frames); }, &groupMemory, playback);
+            OfxPanel* op = new OfxPanel(holder, s->id, inst, [this] { return fxTime(); }, [this](double frames) { seekFx(frames); }, &groupMemory, playback);
+            op->animating = [this] { return animateBtn && animateBtn->isChecked(); };
+            made = op;
         } else if (want.compare(0, 6, "audio-") == 0 && s) {
             AudioPlugin* plugin = app.fx.audio(s->id);
             hookAudio(plugin);
@@ -4472,6 +4652,21 @@ public:
                 return sl && sl->bypass;
             };
             ap->setBypassed = [this, sid](bool on) { app.setFxBypass(target, sid, on); };
+            ap->presetNames = [this] {
+                QStringList names;
+                for (int k = 0; k < presetBox->count(); ++k) names << (presetBox->itemData(k).isValid() ? presetBox->itemText(k) : QString());
+                return names;
+            };
+            ap->presetCurrent = [this] { return presetBox->currentIndex(); };
+            ap->presetPick = [this](int k) {
+                if (k < 0) {
+                    presetBox->setCurrentIndex(-1);
+                    return;
+                }
+                presetBox->setCurrentIndex(k);
+                presetChosen(k);
+            };
+            ap->presetSave = [this] { savePresetNow(); };
             made = ap;
         } else if (want.compare(0, 8, "builtin:") == 0 && s) {
             MessagePanel* mp = new MessagePanel(holder, qs(fxSlotLabel(*s)),

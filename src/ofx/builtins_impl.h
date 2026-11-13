@@ -34,6 +34,7 @@ struct PDef {
     bool multiline = false;
     bool normalised = false;
     bool secret = false;
+    bool closed = false;                // Group: shown folded up at first (as VEGAS shows some of its effects' groups)
 };
 
 // Shorthands for the definitions.

@@ -7,6 +7,7 @@
 #include "../core/rmath.h"
 #include "builtins_vfxdata.h"
 #include "builtins_more_internal.h"
+#include "builtins_mask_internal.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -236,6 +237,7 @@ void addFiltersMore(std::vector<Def>& out)
         if (std::string(r.id) == "unsharpmask") { vfxTune(d, "Amount", 0, -7, 8); vfxTune(d, "Radius", 0, NAN, NAN); }
         if (std::string(r.id) == "vignette") {
             vfxTune(d, "Rotation", 0, 0, 180); vfxTune(d, "Outer", 1, 0, 3); vfxTune(d, "Aspect", 1, 0.25, 4); vfxTune(d, "Feather", 5, 0, 10);
+            d.overlay = maskOverlayPoint("Center");     // (a cross over the picture to drag the centre)
         }
         // VEGAS's Defocus really starts at the middle of each range (its pictures show that), not at the XML defaults
         if (std::string(r.id) == "defocusvelvetmatter") { vfxTune(d, "Radius", 5.6, 0, 11.2); vfxTune(d, "BloomThreshold", 94.97, 0, 189.94); vfxTune(d, "BloomStrength", 10.51, 0, 21.02); vfxTune(d, "Orientation", 0, 0, 360); vfxTune(d, "DiscCurvature", 0, -100, 100); }

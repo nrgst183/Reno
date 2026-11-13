@@ -963,6 +963,50 @@ private:
     QPoint pressAt_, grab_;
 };
 
+// The main window's own tab row, where windows share a place: a tab dragged away takes its window out, as a lone window's
+// tab does (DockPage). A click still picks the tab.
+class DockTabBarDrag : public QObject {
+public:
+    DockTabBarDrag(QTabBar* bar, MainWindow* mw, std::function<QDockWidget*(int)> dockAt)
+        : QObject(bar), bar_(bar), mw_(mw), dockAt_(std::move(dockAt))
+    {
+        bar->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject*, QEvent* e) override
+    {
+        if (e->type() == QEvent::MouseButtonPress) {
+            auto* me = static_cast<QMouseEvent*>(e);
+            index_ = me->button() == Qt::LeftButton ? bar_->tabAt(me->position().toPoint()) : -1;
+            pressAt_ = me->globalPosition().toPoint();
+        } else if (e->type() == QEvent::MouseMove && index_ >= 0 && (static_cast<QMouseEvent*>(e)->buttons() & Qt::LeftButton)) {
+            auto* me = static_cast<QMouseEvent*>(e);
+            const QPoint g = me->globalPosition().toPoint();
+            if ((g - pressAt_).manhattanLength() >= QApplication::startDragDistance()) {
+                QDockWidget* d = dockAt_(index_);
+                const QPoint grab = bar_->mapFromGlobal(pressAt_) - bar_->tabRect(index_).topLeft();
+                index_ = -1;
+                if (d) {
+                    mw_->dragDockFromTab(d, g, grab);
+                    return true;
+                }
+            }
+            return true;            // (no moving the tabs about along the row)
+        } else if (e->type() == QEvent::MouseButtonRelease) {
+            index_ = -1;
+        }
+        return false;
+    }
+
+private:
+    QTabBar* bar_;
+    MainWindow* mw_;
+    std::function<QDockWidget*(int)> dockAt_;
+    int index_ = -1;
+    QPoint pressAt_;
+};
+
 // Moving a docked window by its tab (MainWindow::dragDockFromTab): while the button is held the window floats under the
 // mouse, and a blue frame shows where it would go on letting go.
 class DockDrag : public QObject {
@@ -1854,10 +1898,12 @@ void MainWindow::addGroupToolAndPitchActions(ActionBuilder& b)
     b.add("pitchDown", "Lower a S&emitone", keys({"-"}), [this] { changePitch(-1.0, false); });
     b.add("pitchUpCent", "Raise a &Cent", keys({"Ctrl+="}), [this] { changePitch(0.01, false); });
     b.add("pitchDownCent", "Lower a Ce&nt", keys({"Ctrl+-"}), [this] { changePitch(-0.01, false); });
-    // Shift+= is + on most keyboards, Shift+- is _
-    b.add("pitchUpOctave", "Raise an &Octave", keys({"Shift+=", "+"}), [this] { changePitch(12.0, false); });
-    b.add("pitchDownOctave", "Lower an Oc&tave", keys({"Shift+-", "_"}), [this] { changePitch(-12.0, false); });
-    b.add("pitchReset", "&Reset Pitch", keys({"Ctrl+Shift+=", "Ctrl+Shift+-", "Ctrl++", "Ctrl+_"}), [this] { changePitch(0, true); });
+    // Shift+= is + on most keyboards, Shift+- is _: a real key press arrives as Shift++ / Shift+_ (Qt keeps the Shift with
+    // the shifted key), so those are bound as well as the unshifted spellings
+    b.add("pitchUpOctave", "Raise an &Octave", keys({"Shift+=", "Shift++", "+"}), [this] { changePitch(12.0, false); });
+    b.add("pitchDownOctave", "Lower an Oc&tave", keys({"Shift+-", "Shift+_", "_"}), [this] { changePitch(-12.0, false); });
+    b.add("pitchReset", "&Reset Pitch", keys({"Ctrl+Shift+=", "Ctrl+Shift+-", "Ctrl+Shift++", "Ctrl+Shift+_", "Ctrl++", "Ctrl+_"}),
+          [this] { changePitch(0, true); });
 }
 
 // View
@@ -2757,6 +2803,7 @@ void MainWindow::updateDockTabs()
                 if (d->windowTitle() == bar->tabText(index)) return d;
             return nullptr;
         };
+        new DockTabBarDrag(bar, this, dockAt);
         QObject::connect(bar, &QTabBar::tabCloseRequested, this, [this, dockAt](int index) {
             if (QDockWidget* d = dockAt(index)) d->close();
             QTimer::singleShot(0, this, [this] { updateDockTabs(); });

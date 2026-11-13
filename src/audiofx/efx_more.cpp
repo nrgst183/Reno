@@ -86,6 +86,7 @@ protected:
         }
         gIn_.set(dbToLin(real(3)));
         gOut_.set(dbToLin(real(4)));
+        double lowG = 1.0;
         for (int k = 0; k < n; ++k) {
             const float gi = (float)gIn_.next();
             const float xl = l[k] * gi, xr = r[k] * gi;
@@ -99,12 +100,14 @@ protected:
             if (whole < 1e-4) amount = 0;
             const double target = std::pow(10.0, -reduceDb * amount / 20.0);
             const double g = gain_.next(target);
+            lowG = std::min(lowG, g);
             const float go = (float)gOut_.next();
             if (listen) { l[k] = bl * go; r[k] = br * go; continue; }
             // band turned down by (1 - g): a notch that deepens with the sibilant
             l[k] = (xl - (1.f - (float)g) * bl) * go;
             r[k] = (xr - (1.f - (float)g) * br) * go;
         }
+        showGain(lowG);
     }
 
 private:
@@ -168,6 +171,7 @@ protected:
         const long holdSamples = (long)(holdMs * 0.001 * sr_);
         const double kneeDb = knee ? 12.0 : 0.0;
         if (look > 0 && hold_.n != (size_t)look) hold_.size((size_t)look);
+        double lowDb = 0;
         for (int k = 0; k < n; ++k) {
             const float gi = (float)gIn_.next();
             float xl = l[k] * gi, xr = r[k] * gi;
@@ -197,12 +201,14 @@ protected:
             if (gainDb_ < -150) gainDb_ = wantDb;
             gainDb_ += (wantDb - gainDb_) * (wantDb > gainDb_ ? attackCoef : releaseCoef);
             const float g = (float)std::pow(10.0, gainDb_ / 20.0);
+            lowDb = std::min(lowDb, gainDb_);
             const float go = (float)gOut_.next();
             if (listen) { l[k] = dl * go; r[k] = dr * go; continue; }
             if (look > 0) hold_.step(xl, xr);
             l[k] = xl * g * go;
             r[k] = xr * g * go;
         }
+        showGain(dbToLin(lowDb));
     }
 
 private:
@@ -389,6 +395,7 @@ protected:
             phase_ += inc;
             if (phase_ > 2.0 * kPi) phase_ -= 2.0 * kPi;
         }
+        showMod(0.5 + 0.5 * std::sin(phase_));
     }
 
 private:

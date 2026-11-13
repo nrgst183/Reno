@@ -14,6 +14,7 @@
 #include "builtins_more_internal.h"
 #include "vfxpolar.h"
 #include "vkeffects.h"
+#include "builtins_mask_internal.h"
 #include <cmath>
 #include "../core/base.h"
 #include <algorithm>
@@ -1446,6 +1447,7 @@ void addFilters2(std::vector<Def>& out)
             if (p.name == "RotateHue") { p.dmin = -360; p.dmax = 360; }
             if (p.name == "Saturation" || p.name == "Gamma" || p.name == "Gain") p.dmax = 4;
             if (p.name == "Gamma") p.min = 0;   // (VEGAS accepts 0: its curve then is the steepest)
+            if (p.type == PT::Group) p.closed = true;   // (VEGAS shows the three Limit groups folded up)
         }
         d.changed = secondaryChanged;
         d.rows = colorCorrectorSecondaryRows;
@@ -1486,6 +1488,7 @@ void addFilters2(std::vector<Def>& out)
                         boolean("ScalingProportional", "Proportional", true, "Scaling")},
                        spherize);
         for (auto& p : d.params) if (p.name == "ScalingHorizontal" || p.name == "ScalingVertical") p.dmax = 2;
+        d.overlay = maskOverlayPoint("Center");     // (VEGAS draws a cross at the centre to drag)
         out.push_back(d);
     }
     out.push_back(filter("newsprint", "Newsprint", "The picture as printed dots",

@@ -3,7 +3,9 @@
 // one of the effect's settings (src/audiofx/builtinaudio.cpp), read and written only through DxHost.
 #pragma once
 #include <QString>
+#include <QStringList>
 #include <QWidget>
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -35,6 +37,27 @@ bool hasBuiltinPage(const std::string& uid);
 // The page of effect 'uid' (null: none). Controls are named dxParam<index> (slider, check box, combo box),
 // dxParam<index>Edit (box beside a slider) and dxParam<index>_<choice> (radio buttons).
 DxPage* makeBuiltinPage(QWidget* parent, const std::string& uid, const DxHost& host);
+
+// The page of Reno's eFX effects (fxpages_efx.cpp), in the style of VEGAS's MAGIX eFX windows. Values are the plug-in's 0..1.
+struct EfxHost {
+    std::function<float(int)> get;
+    std::function<void(int, float)> set;                     // one undo step, unless a drag or beginEdit() is open
+    std::function<void(int)> begin;                          // a drag starts: one undo step until end()
+    std::function<void(const std::string&)> beginEdit;       // the same, with the undo step's name
+    std::function<void()> end;
+    std::function<std::string()> state;                      // A / B compare: the plug-in's saved form
+    std::function<void(const std::string&, const std::string&)> setState;
+    std::function<float(int)> meter;                         // efx::EfxPlugin::meterTake
+    std::function<void()> help;
+    // the effects window's preset list: names (empty: a separator), the chosen one (-1: none), pick one (-1: none), save
+    std::function<QStringList()> presetNames;
+    std::function<int()> presetCurrent;
+    std::function<void(int)> presetPick;
+    std::function<void()> presetSave;
+};
+bool hasEfxPage(uint32_t vstId);
+// The page (null: the effect has none). The control under the mouse is drawn by the page; it has no child widgets.
+DxPage* makeEfxPage(QWidget* parent, uint32_t vstId, const EfxHost& host);
 
 }  // namespace app
 }  // namespace reno

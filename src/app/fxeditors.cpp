@@ -378,6 +378,31 @@ private:
 
 const QColor kRed(235, 80, 80), kGreen(90, 205, 90), kBlue(95, 145, 245), kMaster(235, 235, 235);
 
+// The strip under Color Curves' graph, as VEGAS has it: from black to the picked channel's colour (white for RGB), lined up
+// with the graph's inside.
+class CurveRamp : public QWidget {
+public:
+    QColor colour = Qt::white;
+    explicit CurveRamp(QWidget* parent) : QWidget(parent)
+    {
+        setObjectName("fxCurveRamp");
+        setFixedSize(256, 12);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        const QRectF r(8, 0, width() - 16, height());
+        QLinearGradient g(r.topLeft(), r.topRight());
+        g.setColorAt(0, Qt::black);
+        g.setColorAt(1, colour);
+        p.fillRect(r, g);
+        p.setPen(QPen(QColor(110, 110, 116), 1));
+        p.drawRect(r.adjusted(0, 0, -1, -1));
+    }
+};
+
 // ------------------------------------------------------------------------------------------ curve editors
 // Color Curves (one "Property" text with the four curves, shown channel in "SelectedChannel") and Color Grading's Master
 // / Red / Green / Blue curves (a text each): the graph with channel pickers and the picked point's exact numbers.
@@ -401,27 +426,70 @@ public:
         }
         graph_->edit = 3;
         graph_->selChan = 3;
-        h->addWidget(graph_, 0, Qt::AlignTop);
 
         QVBoxLayout* v = new QVBoxLayout();
         v->setSpacing(3);
-        h->addLayout(v, 1);
-        const int order[5] = {0, 1, 2, 3, 4};
-        group_ = new QButtonGroup(this);
-        const int n = grading ? 4 : 5;
-        for (int k = 0; k < n; ++k) {
-            const int ch = grading ? (k == 0 ? 3 : k - 1) : order[k];
-            QRadioButton* r = new QRadioButton(ch == 4 ? QString("All") : QString::fromLatin1(names[ch]), this);
-            r->setObjectName(QString("fxChannel%1").arg(ch));
-            r->setProperty("channel", ch);
-            group_->addButton(r, ch);
-            v->addWidget(r);
-        }
-        if (!grading) {
+        if (grading) {
+            h->addWidget(graph_, 0, Qt::AlignTop);
+            h->addLayout(v, 1);
+            group_ = new QButtonGroup(this);
+            for (int k = 0; k < 4; ++k) {
+                const int ch = k == 0 ? 3 : k - 1;
+                QRadioButton* r = new QRadioButton(QString::fromLatin1(names[ch]), this);
+                r->setObjectName(QString("fxChannel%1").arg(ch));
+                r->setProperty("channel", ch);
+                group_->addButton(r, ch);
+                v->addWidget(r);
+            }
+        } else {
+            // VEGAS's layout: the channel list, Show all channels and the automatic modes on the left, the graph on the right
+            // with a ramp under it (Reno adds the picked point's numbers and Reset under the modes)
+            h->addLayout(v, 0);
+            QVBoxLayout* right = new QVBoxLayout();
+            right->setSpacing(4);
+            right->addWidget(graph_, 0, Qt::AlignTop);
+            ramp_ = new CurveRamp(this);
+            right->addWidget(ramp_, 0, Qt::AlignTop);
+            right->addStretch(1);
+            h->addLayout(right, 0);
+            h->addStretch(1);
+            QLabel* cl = new QLabel("Channel:", this);
+            channelBox_ = new QComboBox(this);
+            channelBox_->setObjectName("fxChannel");
+            // (in the order of the effect's SelectedChannel: 0 is the RGB, or master, curve)
+            for (const char* n : {"RGB", "Red", "Green", "Blue", "All"}) channelBox_->addItem(n);
+            channelBox_->setFixedWidth(96);
+            QHBoxLayout* chRow = new QHBoxLayout();
+            chRow->setSpacing(6);
+            chRow->addWidget(cl);
+            chRow->addWidget(channelBox_);
+            chRow->addStretch(1);
+            v->addLayout(chRow);
             showAll_ = new QCheckBox("Show all channels", this);
             showAll_->setObjectName("fxShowAll");
-            v->addSpacing(4);
+            v->addSpacing(2);
             v->addWidget(showAll_);
+            v->addSpacing(14);
+            v->addWidget(new QLabel("Auto Modes:", this));
+            autoBox_ = new QComboBox(this);
+            autoBox_->setObjectName("fxCurveAutoMode");
+            // AutoMode 1 is VEGAS's Color Levels (its default); the effect's other modes are not known to Reno
+            autoBox_->addItem("Color Levels", 1);
+            autoBox_->setToolTip("Color Levels: each of red, green and blue stretched so the darkest and brightest of the frame at the cursor reach black and white");
+            autoBox_->setFixedWidth(150);
+            v->addWidget(autoBox_);
+            v->addSpacing(8);
+            calc_ = new QPushButton("Calculate", this);
+            calc_->setObjectName("fxCurveCalculate");
+            calc_->setToolTip("Sets the curves from the frame at the cursor, as the Auto Mode says");
+            v->addWidget(calc_, 0, Qt::AlignLeft);
+            QObject::connect(calc_, &QPushButton::clicked, this, [this] {
+                if (!setNumbers) return;
+                if (begin) begin();
+                setNumbers("AutoMode", {autoBox_->currentData().toDouble()});
+                setNumbers("DoAnalysis", {1.0});
+                if (end) end();
+            });
         }
         v->addSpacing(6);
         QGridLayout* g = new QGridLayout();
@@ -444,7 +512,9 @@ public:
         graph_->onEnd = [this] { if (end) end(); };
         graph_->onChange = [this](int ch) { send(ch); };
         graph_->onSelect = [this] { showPoint(); };
-        QObject::connect(group_, &QButtonGroup::idClicked, this, [this](int ch) { channelPicked(ch); });
+        if (group_) QObject::connect(group_, &QButtonGroup::idClicked, this, [this](int ch) { channelPicked(ch); });
+        if (channelBox_)
+            QObject::connect(channelBox_, QOverload<int>::of(&QComboBox::activated), this, [this](int sel) { channelPicked(chanOfSel(sel)); });
         if (showAll_)
             QObject::connect(showAll_, &QCheckBox::toggled, this, [this](bool on) {
                 graph_->showOthers = on;
@@ -454,8 +524,7 @@ public:
         QObject::connect(in_, &QDoubleSpinBox::valueChanged, this, [this](double) { pointTyped(); });
         QObject::connect(out_, &QDoubleSpinBox::valueChanged, this, [this](double) { pointTyped(); });
         QObject::connect(reset_, &QPushButton::clicked, this, [this] { resetCurve(); });
-        if (!grading) channelPicked(0, false);
-        else channelPicked(3, false);
+        channelPicked(3, false);
         showPoint();
     }
 
@@ -480,7 +549,7 @@ public:
                 fix();
             }
             const int sel = (int)std::floor(numberOf(values, "SelectedChannel", 0) + 0.5);
-            if (sel >= 0 && sel <= 4 && sel != channel_) channelPicked(sel, false);
+            if (sel >= 0 && sel <= 4 && chanOfSel(sel) != channel_) channelPicked(chanOfSel(sel), false);
             const bool all = numberOf(values, "ShowAllChannels", 1) != 0;
             if (showAll_ && showAll_->isChecked() != all) {
                 QSignalBlocker b(showAll_);
@@ -512,18 +581,32 @@ private:
         if (graph_->selChan < 0 || graph_->selChan >= 4) graph_->selChan = graph_->edit;
         if (graph_->selPoint >= (int)graph_->chans[(size_t)graph_->selChan].pts.size()) graph_->selPoint = -1;
     }
+    // Color Curves' SelectedChannel (0 RGB, 1 red, 2 green, 3 blue, 4 all) and the graph's channels (0 red .. 3 master, 4 all)
+    static int chanOfSel(int sel) { return sel == 0 ? 3 : sel == 4 ? 4 : sel - 1; }
+    static int selOfChan(int ch) { return ch == 3 ? 0 : ch == 4 ? 4 : ch + 1; }
+
     void channelPicked(int ch, bool tell_ = true)
     {
         channel_ = ch;
-        QSignalBlocker b(group_);
-        if (QAbstractButton* r = group_->button(ch)) r->setChecked(true);
+        if (group_) {
+            QSignalBlocker b(group_);
+            if (QAbstractButton* r = group_->button(ch)) r->setChecked(true);
+        }
+        if (channelBox_) {
+            QSignalBlocker b(channelBox_);
+            channelBox_->setCurrentIndex(selOfChan(ch));
+        }
+        if (ramp_) {
+            ramp_->colour = ch >= 0 && ch < 3 ? graph_->chans[(size_t)ch].colour : QColor(Qt::white);
+            ramp_->update();
+        }
         graph_->anyChannel = ch == 4;
         graph_->edit = ch == 4 ? 3 : ch;
         graph_->selChan = graph_->edit;
         graph_->selPoint = -1;
         graph_->update();
         showPoint();
-        if (tell_ && !grading_ && !updating_ && setNumbers) setNumbers("SelectedChannel", {(double)ch});
+        if (tell_ && !grading_ && !updating_ && setNumbers) setNumbers("SelectedChannel", {(double)selOfChan(ch)});
     }
     void showPoint()
     {
@@ -575,6 +658,9 @@ private:
     bool grading_;
     CurveGraph* graph_ = nullptr;
     QButtonGroup* group_ = nullptr;
+    QComboBox *channelBox_ = nullptr, *autoBox_ = nullptr;
+    QPushButton* calc_ = nullptr;
+    CurveRamp* ramp_ = nullptr;
     QCheckBox* showAll_ = nullptr;
     QDoubleSpinBox *in_ = nullptr, *out_ = nullptr;
     QPushButton* reset_ = nullptr;
@@ -1233,7 +1319,7 @@ std::vector<EditorSpec> makeSpecs()
         s.anchor = "Property";
         s.kind = "colorcurves";
         s.label = "Curves";
-        s.uses = {"Property", "SelectedChannel", "ShowAllChannels"};
+        s.uses = {"Property", "SelectedChannel", "ShowAllChannels", "AutoMode", "DoAnalysis"};
         s.keyed = {"Property"};
         v.push_back(s);
     }

@@ -23,6 +23,13 @@ void warpFlowForTest(Ctx& c, int quality, double smoothness, double strength, bo
 // On-screen controls (builtins_mask_overlay.cpp): OpenFX overlay entry points for the built-ins that have them.
 OfxPluginEntryPoint* maskOverlayPoint(const char* param);
 OfxPluginEntryPoint* maskOverlayBezier();
+OfxPluginEntryPoint* meshWarpOverlay();
+
+// Mesh Warp's mesh (builtins_magix.cpp), for its on-screen grid: the points of a WarpData text (x, y per point as fractions of
+// the frame from the top left, row by row from the top), or a regular grid of cellsX x cellsY cells when the text holds none;
+// and the text of a mesh.
+void meshWarpPoints(const std::string& warpData, int cellsX, int cellsY, int& cols, int& rows, std::vector<float>& pts);
+std::string meshWarpText(int cols, int rows, const std::vector<float>& pts);
 
 #ifndef _WIN32
 // Tests: the OpenGL functions the on-screen controls draw with, replaced by these (null: the real ones again).

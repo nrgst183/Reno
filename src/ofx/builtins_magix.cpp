@@ -11,6 +11,8 @@
 // nearer to the planet), which way up Mesh Warp's y runs, and everything Smart Upscale does. All are correct at any render scale (Ctx::scale), thread safe and work row by row on all cores.
 #include "../core/rmath.h"
 #include "builtins_impl.h"
+#include "builtins_mask_internal.h"
+#include "vegascurves.h"
 #include "vkeffects.h"
 #include "builtins_magixdata.h"
 #include "../core/base.h"
@@ -298,6 +300,44 @@ bool colorCurvesRows(Ctx& c, RowFn& fn)
 
 void colorCurves(Ctx& c) { runRows(c, colorCurvesRows); }
 
+// Calculate (DoAnalysis) in Auto mode 1, Color Levels: red, green and blue each stretched so the darkest and brightest half percent of the
+// frame at the cursor reach black and white (a point at each end of the stretch on that channel's curve); the master curve is kept.
+void colorCurvesChanged(Change& ch)
+{
+    if (ch.param != "DoAnalysis" || !ch.b("DoAnalysis")) return;
+    ch.setI("DoAnalysis", 0);
+    Buf frame;
+    if (ch.i("AutoMode") != 1 || !ch.source(ch.time, frame)) return;
+    double bins[3][256] = {};
+    double total = 0;
+    for (size_t i = 0; i + 3 < frame.px.size(); i += 4) {
+        const float a = frame.px[i + 3];
+        if (!(a > 1e-4f)) continue;
+        for (int k = 0; k < 3; ++k) bins[k][(int)(clampd(frame.px[i + (size_t)k] / a, 0, 1) * 255.0 + 0.5)] += 1;
+        total += 1;
+    }
+    if (total < 1) return;
+    BezCurve curves[4];
+    if (!decodeColorCurves(ch.s("Property"), curves))
+        for (int k = 0; k < 4; ++k) curves[k] = bezStraight(255);
+    const double cut = 0.005 * total;
+    for (int k = 0; k < 3; ++k) {
+        double acc = 0;
+        int lo = 0, hi = 255;
+        for (; lo < 255; ++lo) { acc += bins[k][lo]; if (acc > cut) break; }
+        acc = 0;
+        for (; hi > 0; --hi) { acc += bins[k][hi]; if (acc > cut) break; }
+        BezCurve c = bezStraight(255);
+        if (hi - lo >= 8 && (lo > 0 || hi < 255)) {
+            if (lo > 0) bezInsert(c, lo, 0, 255);
+            if (hi < 255) bezInsert(c, hi, 255, 255);
+            bezNormalise(c);
+        }
+        curves[k] = c;
+    }
+    ch.setS("Property", encodeColorCurves(curves));
+}
+
 // ------------------------------------------------------------------ Tiny Planet (stereographic projection)
 // VEGAS's own, from its OpenCL kernel (vfxtinyplanet.h, float like the kernel): the source is a whole 360 x 180 degree equirectangular frame. Output pixel (x, y) (rows counted from the
 // bottom) is at angle 2 atan(r / (2 W / Z)) from the view's axis, tilted by Latitude - 90 degrees and turned by Longitude; that gives the source row (a fraction) and column (cut to a
@@ -583,6 +623,29 @@ void smartUpscale(Ctx& c)
 
 }  // namespace
 
+void meshWarpPoints(const std::string& warpData, int cellsX, int cellsY, int& cols, int& rows, std::vector<float>& pts)
+{
+    cols = std::max(1, std::min(200, cellsX)) + 1;
+    rows = std::max(1, std::min(200, cellsY)) + 1;
+    Mesh m;
+    if (readMesh(warpData, m)) {
+        cols = m.cols;
+        rows = m.rows;
+    } else {
+        m = gridOf(cols, rows, nullptr);
+    }
+    pts = m.pt;
+}
+
+std::string meshWarpText(int cols, int rows, const std::vector<float>& pts)
+{
+    Mesh m;
+    m.cols = cols;
+    m.rows = rows;
+    m.pt = pts;
+    return writeMesh(m);
+}
+
 // For the GPU (vkeffects.cpp): the red, green and blue tables of the effect's curves (the master curve folded in) one after the other, 1024
 // values each, the very tables colorCurvesRows looks up. False when the effect has no curves (it then leaves the frame as it is).
 bool colorCurvesGpuTables(Ctx& c, std::vector<float>& out)
@@ -628,6 +691,7 @@ void addFiltersMagix(std::vector<Def>& out)
         for (auto& p : ps) if (p.name != "Property") p.secret = true;
         Def d = make("com.vegascreativesoftware:colorcurves", "Color Curves", "Red, green, blue and master curves", ps, colorCurves);
         d.rows = colorCurvesRows;
+        d.changed = colorCurvesChanged;
         out.push_back(d);
     }
     {
@@ -664,6 +728,7 @@ void addFiltersMagix(std::vector<Def>& out)
         }
         Def d = make("de.magix:MeshWarp", "Mesh Warp", "The picture bent by a grid of points", ps, meshWarp);
         d.changed = meshChanged;
+        d.overlay = meshWarpOverlay();
         out.push_back(d);
     }
     {

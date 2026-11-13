@@ -385,6 +385,7 @@ protected:
             if (c == 1) { gIn_ = gi; gOut_ = go; mix_ = mx; }
         }
         phase_ = std::fmod(ph0 + inc * n, 2.0 * kPi);
+        showMod(0.5 + 0.5 * std::sin(phase_));
     }
 
 private:
@@ -468,6 +469,7 @@ protected:
         }
         phase_ = std::fmod(ph0 + inc * n, 2.0 * kPi);
         phaseB_ = std::fmod(phB0 + incB * n, 2.0 * kPi);
+        showMod(0.5 + 0.5 * std::sin(phase_));
     }
 
 private:

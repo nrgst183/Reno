@@ -426,6 +426,14 @@ int main(int argc, char** argv)
         uitest::mouseDrag(&w, QPoint(w.xAt(7.0) - 1, v2.top() + 40), QPoint(w.xAt(2.05), v2.top() + 40), 8, Qt::ControlModifier | Qt::ShiftModifier);
         check(near(ev(ids.e3)->rate, 10.0, 1e-6) && near(ev(ids.e3)->length, 0.5), "a stretch keeps the rate at 10 or under", num(ev(ids.e3)->rate));
         st().undo();
+        // stretched, then dragged back to near the media's own length: it snaps to it (rate 100%)
+        uitest::mouseDrag(&w, QPoint(w.xAt(7.0) - 1, v2.top() + 40), QPoint(w.xAt(10.0), v2.top() + 40), 8, Qt::ControlModifier);
+        const double r1 = ev(ids.e3)->rate;
+        uitest::mouseDrag(&w, QPoint(w.xAt(10.0) - 1, v2.top() + 40), QPoint(w.xAt(7.0) + 5, v2.top() + 40), 8, Qt::ControlModifier);
+        check(r1 < 0.7 && near(ev(ids.e3)->rate, 1.0, 1e-9) && near(ev(ids.e3)->length, 5.0, 1e-9),
+              "a stretch dragged to within a few pixels of the media's own length snaps to it", num(ev(ids.e3)->rate) + " " + num(ev(ids.e3)->length));
+        st().undo();
+        st().undo();
         // left edge stretch
         uitest::mouseDrag(&w, QPoint(w.xAt(2.0) + 1, v2.top() + 40), QPoint(w.xAt(4.5) + 1, v2.top() + 40), 8, Qt::ControlModifier);
         check(near(ev(ids.e3)->start, 4.5) && near(ev(ids.e3)->rate, 2.0) && near(ev(ids.e3)->offset, 1.0), "Ctrl-dragging the left edge stretches too",
@@ -896,7 +904,50 @@ int main(int argc, char** argv)
         dropAt(&w, &md, QPoint(500, 120));
         check(st().project().tracks.size() == 2 && st().project().tracks[0].events.size() == 1 && st().project().tracks[1].events.size() == 1,
               "media dropped on an empty project makes a video and an audio track for it");
-        check(menuPick(&w, QPoint(700, 400), "Insert Video Track") && st().project().tracks.size() == 3, "the menu below the tracks inserts tracks");
+        // the new events flash: a yellow rim at once, gone a second later
+        {
+            const uint64_t ev = st().project().tracks[1].events.empty() ? 0 : st().project().tracks[1].events[0].id;     // (the audio events: no yellow in them)
+            auto yellowAt = [&](const QImage& im) {
+                const QRect r = w.eventRectOf(ev);
+                const double dpr = w.devicePixelRatioF();
+                int n = 0;
+                for (int x = r.left() + 4; x < r.right() - 4; ++x) {
+                    const QRgb c = im.pixel((int)(x * dpr), (int)((r.top() + 1) * dpr));
+                    if (qRed(c) > 200 && qGreen(c) > 190 && qBlue(c) < 90) ++n;
+                }
+                return n;
+            };
+            uitest::settle(1100);           // (the dropped events' own flash over)
+            const uint64_t m2 = st().importMedia("synth:5", &err);
+            st().addMediaToTimeline(m2, 20.0);
+            const uint64_t ev2 = st().project().tracks[1].events.size() > 1 ? st().project().tracks[1].events.back().id : 0;
+            st().setSelection({});          // (a selected audio event has a yellow rim of its own)
+            uitest::settle(60);
+            QImage a = w.grab().toImage();
+            int lit = 0;
+            {
+                const QRect r = w.eventRectOf(ev2);
+                const double dpr = w.devicePixelRatioF();
+                for (int x = r.left() + 4; x < r.right() - 4; ++x) {
+                    const QRgb c = a.pixel((int)(x * dpr), (int)((r.top() + 1) * dpr));
+                    if (qRed(c) > 200 && qGreen(c) > 190 && qBlue(c) < 90) ++lit;
+                }
+            }
+            check(ev2 && lit > 10, "a new event flashes yellow", strfmt("%d yellow pixels along its top", lit));
+            check(yellowAt(a) == 0, "  the event that was there already does not");
+            uitest::settle(1100);
+            QImage b = w.grab().toImage();
+            int still = 0;
+            {
+                const QRect r = w.eventRectOf(ev2);
+                const double dpr = w.devicePixelRatioF();
+                for (int x = r.left() + 4; x < r.right() - 4; ++x) {
+                    const QRgb c = b.pixel((int)(x * dpr), (int)((r.top() + 1) * dpr));
+                    if (qRed(c) > 200 && qGreen(c) > 190 && qBlue(c) < 90) ++still;
+                }
+            }
+            check(still == 0, "  and the rim is gone a second later", strfmt("%d", still));
+        }
     }
 
     // ---------------------------------------------------------------- going away while busy

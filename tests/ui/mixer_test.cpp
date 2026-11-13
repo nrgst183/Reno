@@ -613,5 +613,7 @@ int main(int argc, char** argv)
 
     mixer.hide();
     masterBus.hide();
+    check(mixer.minimumSizeHint().width() < 400, "the console can be made narrow (its tool bar does not hold it wide)",
+          std::to_string(mixer.minimumSizeHint().width()));
     return uitest::summary();
 }

@@ -160,6 +160,14 @@ public:
     void process(float* left, float* right, int frames, int64_t samplePos, bool playing) override;
     int latencySamples() override { return latency_; }
 
+    // Meters for Reno's page of the effect (fxpages_efx.cpp), measured on the sound as it passes; they change nothing in it.
+    // 0..3: input L, R and output L, R (peaks, linear); 4: the smallest gain the effect applied (gain reduction; 1 = none);
+    // 5: the smallest gain of the Limiter's clipper; 6: where the modulation is now (0..1; the effects that move: Chorus,
+    // Phaser, Tremolo).
+    enum Meter { MeterInL, MeterInR, MeterOutL, MeterOutR, MeterGain, MeterClip, MeterMod, MeterCount };
+    int meterCount() override { return MeterCount; }
+    float meterTake(int i) override;
+
     int paramCount() override { return kParams; }
     std::string paramName(int i) override;
     std::string paramText(int i) override;
@@ -187,6 +195,10 @@ protected:
     bool on(int i) const;
     float raw(int i) const { return values_[(size_t)i].load(std::memory_order_relaxed); }
     int choice(int i) const { return (int)std::lround(real(i)); }
+    // what run() tells the meters: the smallest gain of the block (linear), the clipper's, the modulation's place (0..1)
+    void showGain(double g) { lowest(meters_[MeterGain], g); }
+    void showClip(double g) { lowest(meters_[MeterClip], g); }
+    void showMod(double at) { meters_[MeterMod].store((float)at, std::memory_order_relaxed); }
 
     double sr_ = 48000;
     int latency_ = 0;
@@ -196,6 +208,14 @@ private:
     uint32_t id_;
     std::vector<ParamDef> defs_;
     std::array<std::atomic<float>, kParams> values_;
+    // meters: peaks and modulation are kept as the biggest since taken (gains as 1 - gain, so also the biggest)
+    std::array<std::atomic<float>, MeterCount> meters_{};
+    static void biggest(std::atomic<float>& m, float v)
+    {
+        float was = m.load(std::memory_order_relaxed);
+        while (v > was && !m.compare_exchange_weak(was, v, std::memory_order_relaxed)) {}
+    }
+    static void lowest(std::atomic<float>& m, double g) { biggest(m, (float)(1.0 - std::max(0.0, std::min(1.0, g)))); }
     int64_t expected_ = -1;
     bool wasActive_ = true;
 };

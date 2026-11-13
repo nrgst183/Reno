@@ -3182,6 +3182,10 @@ QWidget* MixerWindow::Impl::buildToolBar()
     auto* tb = new QHBoxLayout(bar);
     tb->setContentsMargins(8, 3, 6, 3);
     tb->setSpacing(2);
+    // (its buttons are cut off in a narrow place, as VEGAS's are, rather than holding the place - and every window sharing
+    // it - at the bar's whole width)
+    bar->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    bar->setMinimumWidth(0);
     formatLabel = new QLabel(bar);
     formatLabel->setObjectName("audioFormat");
     formatLabel->setStyleSheet("QLabel { color: #e0e0e0; }");

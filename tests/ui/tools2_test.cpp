@@ -20,6 +20,7 @@
 #include "uitestlib.h"
 #include <QAction>
 #include <QApplication>
+#include <QDoubleSpinBox>
 #include <QDir>
 #include <QMenu>
 #include <QMenuBar>
@@ -453,6 +454,31 @@ void testKeyframes(MainWindow& w)
     fw->findChild<QToolButton*>("fxKeyNext")->click();
     uitest::settle(50);
     check(std::fabs(app.cursor() - 2.0) < 1e-6, "Next keyframe: the cursor goes to it (frame 30 of the event = 2 s)", strfmt("%.3f", app.cursor()));
+    // as VEGAS: with the strip shown, changing a setting that has no keyframes yet sets them - one at the start with the
+    // value it had, one at the cursor with the new value
+    {
+        app.setCursor(2.0);                         // frame 30
+        uitest::settle(100);
+        ofx::Param* ip = inst->params.find("p_int");
+        const double was = ip->valueAt(0.0)[0];
+        QDoubleSpinBox* box = nullptr;
+        for (QWidget* r : fw->findChildren<QWidget*>("fxRow"))
+            if (r->property("param").toString() == "p_int") box = r->findChild<QDoubleSpinBox*>("fxBox");
+        check(box != nullptr, "the Integer Value row has its number box");
+        if (box) {
+            box->setValue(was + 3);
+            uitest::settle(1000);                   // (typing ends after a moment)
+            ip = inst->params.find("p_int");
+            check(ip->keys.size() == 2 && ip->keys.count(0.0) && ip->keys.count(30.0) && std::fabs(ip->keys[0.0][0] - was) < 1e-9 &&
+                      std::fabs(ip->keys[30.0][0] - (was + 3)) < 1e-9,
+                  "with Animate on, a change sets a keyframe at the start (the old value) and one at the cursor (the new)",
+                  strfmt("%d keys", (int)ip->keys.size()));
+            app.undo();
+            uitest::settle(150);
+            ip = inst->params.find("p_int");
+            check(ip->keys.empty() && std::fabs(ip->valueAt(0.0)[0] - was) < 1e-9, "  one undo step takes both away");
+        }
+    }
     // the strip is remembered
     animate->click();
     uitest::settle(100);

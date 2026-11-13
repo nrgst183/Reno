@@ -12,6 +12,7 @@
 #include <QCoreApplication>
 #include <QAbstractButton>
 #include <QApplication>
+#include <QTabBar>
 #include <QComboBox>
 #include <QDir>
 #include <QMouseEvent>
@@ -715,6 +716,28 @@ void testDockDrag()
     check(!mixer->isFloating() && w.tabifiedDockWidgets(preview).contains(mixer) && !w.property("dockDragging").toBool(),
           "dock drag: let go there, the two share the place as tabs",
           QString("floating %1, tabbed %2, dragging %3").arg(mixer->isFloating()).arg(w.tabifiedDockWidgets(preview).contains(mixer)).arg(w.property("dockDragging").toBool()).toStdString());
+    // out of the shared place by its tab in the main window's tab row
+    {
+        w.updateDockTabs();
+        QTabBar* row = nullptr;
+        int at = -1;
+        for (QTabBar* b : w.findChildren<QTabBar*>(QString(), Qt::FindDirectChildrenOnly))
+            for (int k = 0; b->isVisible() && k < b->count(); ++k)
+                if (b->tabText(k) == mixer->windowTitle()) { row = b; at = k; }
+        check(row != nullptr, "dock drag: sharing a place, the Mixing Console has a tab in the tab row");
+        if (row) {
+            const QPoint s1 = row->mapToGlobal(row->tabRect(at).center());
+            mouse(row, QEvent::MouseButtonPress, s1, Qt::LeftButton);
+            mouse(row, QEvent::MouseMove, s1 + QPoint(0, -30), Qt::LeftButton);
+            uitest::settle(80);
+            check(mixer->isFloating() && w.property("dockDragging").toBool(), "dock drag: pulled by that tab, it comes out too");
+            QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(&w, &esc);
+            uitest::settle(150);
+            if (w.property("dockDragging").toBool()) mouse(&w, QEvent::MouseButtonRelease, s1, Qt::NoButton);
+            uitest::settle(100);
+        }
+    }
     // out again, to the Video Preview's left edge (it is now one of its tabs: take it out first with the tab row)
     w.removeDockWidget(mixer);
     w.addDockWidget(Qt::BottomDockWidgetArea, mixer);

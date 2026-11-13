@@ -1684,9 +1684,19 @@ void TimelineWidget::Impl::updateEdge(const QPointF& pos, Qt::KeyboardModifiers 
             hi = std::min(hi, m.rate / kMinRate);
             if (left) hi = std::min(hi, m.end() / m.length);
         }
+        // near the length that plays the media at its own speed (rate 100%), the edge snaps there (8 pixels either way)
+        const double natural = g.rate;
+        const double naturalEdge = left ? g.end() - g.length * natural : g.start + g.length * natural;
+        const double wantEdge = left ? g.end() - g.length * factor : g.start + g.length * factor;
+        bool atNatural = false;
+        if (natural >= lo && natural <= hi && std::fabs(naturalEdge - wantEdge) * pps <= 8.0) {
+            factor = natural;
+            line = naturalEdge;
+            atNatural = true;
+        }
         factor = std::min(std::max(factor, lo), hi);
         edge = left ? g.end() - g.length * factor : g.start + g.length * factor;
-        say = strfmt("Stretch: playback rate %.0f%%", g.rate / factor * 100.0);
+        say = strfmt("Stretch: playback rate %.0f%%", g.rate / factor * 100.0) + (atNatural ? std::string(" (the media's own length)") : std::string());
         break;
     }
     case Drag::FadeIn: {

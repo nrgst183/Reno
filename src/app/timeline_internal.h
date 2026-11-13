@@ -47,6 +47,8 @@
 #include <QSettings>
 #include <QTextLayout>
 #include <QTimer>
+#include <unordered_map>
+#include <unordered_set>
 #include <QToolTip>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -569,6 +571,15 @@ struct TimelineWidget::Impl {
     // good part of painting them and is hardly seen at that size. Set by paintLanes.
     bool dense = false;
     std::string loadedPath;
+    // New events flash yellow for a moment (VEGAS outlines events just added): the events of the project as last seen,
+    // and when each new one appeared (QDateTime ms). The project they belong to (a project opened or a new one: no flash).
+    std::unordered_set<uint64_t> seenEvents;
+    std::unordered_map<uint64_t, qint64> flashing;
+    std::string seenPath;
+    bool seenValid = false;
+    QTimer* flashTimer = nullptr;
+    void noteNewEvents();
+    double flashLevel(uint64_t id) const;           // 0 none .. 1 full
     uint64_t paintCount = 0;
     QFont smallFont;
     QFont labelFont;   // the label above the time display (VEGAS: 10 px)

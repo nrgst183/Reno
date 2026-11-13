@@ -333,5 +333,77 @@ int main(int argc, char** argv)
         check(count("levelDestroy") == count("levelCreate"), "closing the window lets the effect's control go",
               strfmt("%d made, %d destroyed", count("levelCreate"), count("levelDestroy")));
     }
+
+    // ---------------------------------------------------------------- Spherize's centre
+    {
+        const uint64_t ss = app.addVideoFx(target, "com.vegascreativesoftware:spherize", "Spherize");
+        w.openFx(target, ss);
+        uitest::settle(800);
+        pic->update();
+        uitest::settle(300);
+        auto centre = [&]() {
+            ofx::Instance* inst = st().fx.video(ss);
+            ofx::Param* p = inst ? inst->params.find("Center") : nullptr;
+            return p ? p->value : std::vector<double>();
+        };
+        check(pv->overlayActive(), "Spherize has on-screen controls");
+        const QPointF c0 = pv->canonicalToView(960, 540);
+        const QPoint from((int)std::lround(c0.x()), (int)std::lround(c0.y()));
+        const QPointF c1 = pv->canonicalToView(960 + 192, 540 + 108);
+        uitest::mouseDrag(pic, from, QPoint((int)std::lround(c1.x()), (int)std::lround(c1.y())));
+        uitest::settle(300);
+        const std::vector<double> c = centre();
+        check(c.size() == 2 && std::fabs(c[0] - 0.6) < 0.02 && std::fabs(c[1] - 0.6) < 0.02, "dragging its cross moves Center (up and right: 0.6, 0.6)", str(c));
+        w.fxWindow()->close();
+        uitest::settle(300);
+    }
+
+    // ---------------------------------------------------------------- the same cross on Swirl, Pinch/Punch and Vignette
+    for (const char* fx : {"swirl", "pinchpunch", "vignette"}) {
+        const uint64_t s2 = app.addVideoFx(target, std::string("com.vegascreativesoftware:") + fx, fx);
+        w.openFx(target, s2);
+        uitest::settle(600);
+        pic->update();
+        uitest::settle(200);
+        check(pv->overlayActive() && pv->overlayEffect() == s2, std::string(fx) + " has the centre cross over the picture");
+        w.fxWindow()->close();
+        uitest::settle(200);
+    }
+
+    // ---------------------------------------------------------------- Mesh Warp's grid
+    {
+        const uint64_t ms = app.addVideoFx(target, "de.magix:MeshWarp", "Mesh Warp");
+        w.openFx(target, ms);
+        uitest::settle(800);
+        pic->update();
+        uitest::settle(300);
+        const double dpr2 = pic->devicePixelRatioF();
+        auto px = [&](double cx, double cy) {
+            const QPointF v = pv->canonicalToView(cx, cy);
+            return QPoint((int)std::lround(v.x()), (int)std::lround(v.y()));
+        };
+        const QImage im = uitest::shot(pic, out + "/meshwarp_grid.png").convertToFormat(QImage::Format_RGB32);
+        // 4 x 4 cells: points every quarter of the frame; the one a quarter in from the left and the top
+        const QPoint p11 = px(480, 1080 - 270);
+        check(pv->overlayDrawn() && near(im, QPoint((int)std::lround(p11.x() * dpr2), (int)std::lround(p11.y() * dpr2)), qRgb(255, 235, 0), 1),
+              "Mesh Warp draws its grid's points over the picture (yellow, a quarter of the frame apart)");
+        auto warp = [&]() {
+            ofx::Instance* inst = st().fx.video(ms);
+            ofx::Param* p = inst ? inst->params.find("WarpData") : nullptr;
+            return p ? p->strAt(st().cursor() * 30.0) : std::string();
+        };
+        const std::string before = warp();
+        uitest::mouseDrag(pic, p11, p11 + QPoint(20, 12));
+        uitest::settle(300);
+        const std::string after = warp();
+        check(after != before && !after.empty(), "dragging a point changes the mesh");
+        check(app.undoName().find("WarpData") != std::string::npos || app.undoName().find("Mesh") != std::string::npos,
+              "as one undo step", app.undoName());
+        app.undo();
+        uitest::settle(200);
+        check(warp() == before, "undo puts it back");
+        w.fxWindow()->close();
+        uitest::settle(300);
+    }
     return uitest::summary();
 }

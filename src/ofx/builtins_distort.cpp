@@ -1,6 +1,7 @@
 // Built-in stand-ins for VEGAS Pro 18's distortion effects (see builtins.h): Swirl, Pinch/Punch and Wave, with VEGAS's identifiers, parameter names and presets (from Vfx1Presets.xml).
 // Swirl, Pinch/Punch and Wave are VEGAS's own code (vfxswirl.h, vfxwave.h)
 #include "builtins_impl.h"
+#include "builtins_mask_internal.h"
 #include "vegas8.h"
 #include "vfxswirl.h"
 #include "vkfilters.h"
@@ -140,6 +141,9 @@ void addFiltersDistort(std::vector<Def>& out)
 {
     out.push_back(filter("swirl", "Swirl", "The picture twisted round a centre", areaParams(1.0), swirl));
     out.push_back(filter("pinchpunch", "Pinch/Punch", "The middle of the picture punched out or pinched in", areaParams(1.0), pinchPunch));
+    // (a cross over the picture to drag the centre, as VEGAS has)
+    out[out.size() - 2].overlay = maskOverlayPoint("Center");
+    out.back().overlay = maskOverlayPoint("Center");
     {
         std::vector<PDef> ps = {dbl("VerticalWaves", "Vertical waves", 14, 0, 1000), dbl("HorizontalWaves", "Horizontal waves", 14, 0, 1000),
                                 dbl("VerticalAmplitude", "Vertical amplitude", 0, -1, 1), dbl("HorizontalAmplitude", "Horizontal amplitude", 0, -1, 1),
