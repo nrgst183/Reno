@@ -14,7 +14,7 @@ on:
 
 # Actions are pinned to commits, with the version they are in the comment beside them: a version tag can be moved by
 # whoever controls the action, a commit can't. The downloads the build makes are checked against their SHA-256 in
-# tools/ (get_ffmpeg, build_ffmpeg_android/ios, use_qt_win7).
+# tools/ (get_ffmpeg, use_qt_win7).
 env:
   QT_VERSION: '6.8.3'
 
@@ -224,122 +224,12 @@ jobs:
           name: reno-freebsd-x64
           path: reno-freebsd-x64.tar.gz
 
-  android:
-    # Android arm64 (8.0 and later with Vulkan or OpenGL ES): Qt for Android, FFmpeg built here with the NDK, an APK
-    # signed with a key made for this build (so a newer build installs only after the older one is removed).
-    runs-on: ubuntu-24.04
-    continue-on-error: true
-    env:
-      NDK_VERSION: '26.1.10909125'
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
-      - name: Install packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build nasm
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
-          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
-          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
-
-      # Qt 6.7 and later keep the Android packages under the "all_os" host (install-qt-action looks under "linux" and finds
-      # no 6.8.3), so aqt is run directly: Qt for Android, and the desktop Qt its build tools come from (QT_HOST_PATH).
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Qt
-        run: |
-          python -m pip install --quiet 'aqtinstall==3.3.*'
-          python -m aqt install-qt all_os android "$QT_VERSION" android_arm64_v8a -m qtmultimedia --outputdir "$RUNNER_WORKSPACE/Qt"
-          python -m aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 --outputdir "$RUNNER_WORKSPACE/Qt"
-          echo "QT_ROOT_DIR=$RUNNER_WORKSPACE/Qt/$QT_VERSION/android_arm64_v8a" >> "$GITHUB_ENV"
-
-      - name: Build FFmpeg for Android
-        run: bash tools/build_ffmpeg_android.sh
-
-      - name: Configure
-        run: |
-          "$QT_ROOT_DIR/bin/qt-cmake" -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DQT_HOST_PATH="$(dirname "$QT_ROOT_DIR")/gcc_64" -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
-            -DANDROID_NDK_ROOT="$ANDROID_NDK_ROOT" -DRENO_FFMPEG_DIR="$PWD/deps/ffmpeg-android"
-
-      - name: Build
-        run: |
-          set -o pipefail
-          cmake --build build --target apk 2>&1 | tee build.log || {
-            grep -E "error:|Error:|FAILED" build.log | head -20 | sed 's/^/::error::/'
-            exit 1
-          }
-
-      - name: Sign
-        run: |
-          apk=$(find build -name '*release-unsigned.apk' | head -1)
-          [ -n "$apk" ] || apk=$(find build -name '*.apk' | head -1)
-          bt=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)
-          keytool -genkeypair -keystore ci.keystore -storepass renoci -keypass renoci -alias reno -keyalg RSA -keysize 2048 \
-            -validity 3650 -dname "CN=Reno"
-          "$bt/zipalign" -f -p 4 "$apk" aligned.apk
-          "$bt/apksigner" sign --ks ci.keystore --ks-pass pass:renoci --key-pass pass:renoci --out reno-android-arm64.apk aligned.apk
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
-        with:
-          name: reno-android-arm64
-          path: reno-android-arm64.apk
-
-  ios:
-    # iOS / iPadOS arm64: Qt for iOS, FFmpeg built here as static libraries, an unsigned app (sign it with your own Apple
-    # ID, e.g. with Sideloadly or AltStore, to put it on a device).
-    runs-on: macos-15
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
-      - name: Install Qt
-        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06  # v4.5.0
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: mac
-          target: ios
-          arch: ios
-          modules: qtmultimedia
-          autodesktop: true
-          cache: true
-
-      - name: Build FFmpeg for iOS
-        run: bash tools/build_ffmpeg_ios.sh
-
-      - name: Configure
-        run: |
-          "$QT_ROOT_DIR/bin/qt-cmake" -S . -B build -G Xcode -DQT_HOST_PATH="$(dirname "$QT_ROOT_DIR")/macos" \
-            -DRENO_FFMPEG_DIR="$PWD/deps/ffmpeg-ios" -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
-
-      # the compiler's errors are also put in the run's Annotations, which show even when the log does not load
-      - name: Build
-        run: |
-          set -o pipefail
-          cmake --build build --config Release -- -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | tee build.log || {
-            grep -E "error:|Error:|\*\* BUILD FAILED" build.log | head -20 | sed 's/^/::error::/'
-            exit 1
-          }
-
-      - name: Package
-        run: |
-          # (Reno's own output folder puts it in build/bin/Release, not Xcode's Release-iphoneos)
-          app=$(find build -name Reno.app -type d -not -path '*.dSYM*' | head -1)
-          [ -n "$app" ] || { echo "::error::Reno.app was not found under build/"; exit 1; }
-          mkdir Payload && cp -R "$app" Payload/
-          zip -qry reno-ios-unsigned.ipa Payload
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
-        with:
-          name: reno-ios-unsigned
-          path: reno-ios-unsigned.ipa
-
   # v* tag pushed        -> release with that tag
   # Run workflow + version -> creates that tag on the built commit and releases it
   # push to main / Run workflow without version -> replaces the "nightly" prerelease
   release:
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.windows.result == 'success' && needs.linux.result == 'success' }}
-    needs: [windows, linux, macos, windows7, freebsd, android, ios]
+    needs: [windows, linux, macos, windows7, freebsd]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
