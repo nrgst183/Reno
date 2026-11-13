@@ -488,7 +488,8 @@ void TimelineWidget::Impl::changed(int changes)
                 if (had) span(paintedLoopA, paintedLoopB);
                 if (has) span(app.loopStart, app.loopEnd);
             }
-            if (app.loopOn != paintedLoopOn)
+            // (the edges' lines through the tracks, drawn while looping is on)
+            if (app.loopOn != paintedLoopOn || app.loopOn)
                 for (double t : {paintedLoopA, paintedLoopB, app.loopStart, app.loopEnd}) span(t, t);
         }
         if (!all) {
@@ -2103,8 +2104,10 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         paintTrackKeys(p, r, tr, c);
     }
     for (const EnvLane& L : envLanes()) drawEnvelope(p, L, c);
-    if (app.timeSel()) {
-        const QColor edge = app.loopOn ? QColor(kLoopOn.red(), kLoopOn.green(), kLoopOn.blue(), 150) : QColor(255, 255, 255, 90);
+    // the loop region's edges down through the tracks: navy while looping is on (as VEGAS 18, selected or not), faint
+    // white for a time selection with looping off
+    if ((app.loopOn && app.loopEnd > app.loopStart) || app.timeSel()) {
+        const QColor edge = app.loopOn ? kLoopBar : QColor(255, 255, 255, 90);
         p.fillRect(QRectF(std::floor(xAtF(app.loopStart)), kTopH, 1.0, tracksBottom - kTopH), edge);
         p.fillRect(QRectF(std::floor(xAtF(app.loopEnd)), kTopH, 1.0, tracksBottom - kTopH), edge);
     }

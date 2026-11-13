@@ -125,6 +125,7 @@ extern QColor kRulerBg;
 extern QColor kRulerText;
 extern QColor kLoopOn;
 extern QColor kLoopOff;
+extern QColor kLoopBar;
 extern QColor kSelectionWash;
 extern QColor kEventSelectionWash;
 extern QColor kMarkerColor;

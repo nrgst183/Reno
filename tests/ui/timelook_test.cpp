@@ -230,7 +230,7 @@ int main(int argc, char** argv)
         const double fr = 1.0 / st().project().settings.fps();
         const int x0 = w.xAt(2.0), x1 = w.xAt(8.0);
         const int by = bar.center().y() + 1;
-        check(near(img.pixelColor((x0 + x1) / 2 + 40, by), QColor(150, 140, 30), 30), "the selection is a yellow bar while looping is on", rgb(img.pixelColor((x0 + x1) / 2 + 40, by)));
+        check(near(img.pixelColor((x0 + x1) / 2 + 40, by), QColor(0, 0, 128), 30), "the selection is a navy bar while looping is on (VEGAS 18)", rgb(img.pixelColor((x0 + x1) / 2 + 40, by)));
         // a longer selection reads differently
         st().loopStart = 1.0;
         st().loopEnd = 1.0 + 70.0 + 4 * fr;

@@ -25,6 +25,7 @@ QColor kRulerBg(55, 55, 55);
 QColor kRulerText(214, 214, 214);
 QColor kLoopOn(240, 228, 20);
 QColor kLoopOff(214, 204, 64);
+QColor kLoopBar(0, 0, 128);         // VEGAS 18's loop region (looping on): the bar and its lines through the tracks
 // the time selection over the empty lanes (and, kEventSelectionWash, over the events): VEGAS 18's blue
 QColor kSelectionWash(28, 140, 248, 115);
 QColor kEventSelectionWash(34, 153, 255, 91);

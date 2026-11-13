@@ -20,7 +20,9 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
+#include <QLocale>
 #include <QGroupBox>
 #include <QInputDialog>
 #include <QMessageBox>
@@ -729,41 +731,86 @@ public:
     {
         setObjectName("projectPropertiesDialog");
         setWindowTitle("Project Properties");
-        setMinimumWidth(560);
-        resize(600, 700);
+        setMinimumWidth(470);
+        resize(480, 800);
         const ProjectSettings& s = AppState::get().project().settings;
         QVBoxLayout* root = new QVBoxLayout(this);
         tabs_ = new QTabWidget(this);
         tabs_->setObjectName("tabs");
         root->addWidget(tabs_);
 
+        // ------------------------------------------------------------------ Video, laid out as VEGAS 18's
         QWidget* vt = new QWidget(tabs_);
-        QFormLayout* vf = new QFormLayout(vt);
+        QVBoxLayout* vv = new QVBoxLayout(vt);
+        vv->setSpacing(6);
+        // a thin line across, as VEGAS parts its groups
+        auto rule = [](QWidget* parent) {
+            QFrame* f = new QFrame(parent);
+            f->setFrameShape(QFrame::HLine);
+            f->setFrameShadow(QFrame::Sunken);
+            return f;
+        };
+        // a small square button with a picture: VEGAS's Save Template (disk), Delete Template (red cross), Match Media
+        auto iconButton = [](QWidget* parent, const char* name, int kind, const QString& tip) {
+            QToolButton* b = new QToolButton(parent);
+            b->setObjectName(name);
+            b->setToolTip(tip);
+            b->setAutoRaise(true);
+            QPixmap pm(40, 40);
+            pm.setDevicePixelRatio(2.0);
+            pm.fill(Qt::transparent);
+            QPainter p(&pm);
+            p.setRenderHint(QPainter::Antialiasing);
+            const QColor ink = parent->palette().color(QPalette::ButtonText);
+            if (kind == 0) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(QColor(80, 150, 230));
+                p.drawRoundedRect(QRectF(3, 3, 14, 14), 1.5, 1.5);
+                p.setBrush(QColor(235, 240, 245));
+                p.drawRect(QRectF(6, 4, 8, 5));
+                p.setBrush(QColor(40, 60, 90));
+                p.drawRect(QRectF(6, 11, 8, 6));
+            } else if (kind == 1) {
+                p.setPen(QPen(QColor(220, 60, 60), 2.4, Qt::SolidLine, Qt::RoundCap));
+                p.drawLine(QPointF(5, 5), QPointF(15, 15));
+                p.drawLine(QPointF(15, 5), QPointF(5, 15));
+            } else {
+                // match media: a frame of film with a tick
+                p.setPen(QPen(ink, 1.3));
+                p.setBrush(Qt::NoBrush);
+                p.drawRect(QRectF(3.5, 4.5, 13, 11));
+                for (int k = 0; k < 3; ++k) {
+                    p.drawLine(QPointF(5.5 + k * 4.5, 4.5), QPointF(5.5 + k * 4.5, 6.5));
+                    p.drawLine(QPointF(5.5 + k * 4.5, 13.5), QPointF(5.5 + k * 4.5, 15.5));
+                }
+                p.setPen(QPen(QColor(80, 190, 90), 1.8));
+                p.drawLine(QPointF(7, 10), QPointF(9.5, 12.5));
+                p.drawLine(QPointF(9.5, 12.5), QPointF(14, 7.5));
+            }
+            p.end();
+            b->setIcon(QIcon(pm));
+            b->setIconSize(QSize(20, 20));
+            return b;
+        };
         template_ = new QComboBox(vt);
         template_->setObjectName("template");
         fillTemplates();
         {
-            // Save Template and Delete Template buttons beside the list, and Match Media Settings
-            QWidget* row = new QWidget(vt);
-            QHBoxLayout* h = new QHBoxLayout(row);
-            h->setContentsMargins(0, 0, 0, 0);
+            QHBoxLayout* h = new QHBoxLayout();
+            h->setSpacing(4);
+            h->addWidget(new QLabel("Template:", vt));
             h->addWidget(template_, 1);
-            QPushButton* saveT = new QPushButton("Save Template...", row);
-            saveT->setObjectName("saveTemplate");
-            saveT->setToolTip("Keeps these video settings as a template of your own, under a name");
-            deleteT_ = new QPushButton("Delete", row);
-            deleteT_->setObjectName("deleteTemplate");
-            deleteT_->setToolTip("Deletes the template of your own chosen in the list");
-            QPushButton* match = new QPushButton("Match Media Settings...", row);
-            match->setObjectName("matchMediaSettings");
-            match->setToolTip("Sets these video settings to match a media file you choose");
+            QToolButton* saveT = iconButton(vt, "saveTemplate", 0, "Save Template: keeps these video settings as a template of your own, under a name");
+            deleteT_ = iconButton(vt, "deleteTemplate", 1, "Delete Template: deletes the template of your own chosen in the list");
+            QToolButton* match = iconButton(vt, "matchMediaSettings", 2, "Match Media Video Settings: sets these video settings to match a media file you choose");
             h->addWidget(saveT);
             h->addWidget(deleteT_);
+            h->addSpacing(6);
             h->addWidget(match);
-            vf->addRow("Template:", row);
-            QObject::connect(saveT, &QPushButton::clicked, this, [this] { saveTemplate(); });
-            QObject::connect(deleteT_, &QPushButton::clicked, this, [this] { deleteTemplate(); });
-            QObject::connect(match, &QPushButton::clicked, this, [this] { matchMediaFile(); });
+            vv->addLayout(h);
+            QObject::connect(saveT, &QToolButton::clicked, this, [this] { saveTemplate(); });
+            QObject::connect(deleteT_, &QToolButton::clicked, this, [this] { deleteTemplate(); });
+            QObject::connect(match, &QToolButton::clicked, this, [this] { matchMediaFile(); });
         }
         width_ = new QSpinBox(vt);
         width_->setObjectName("width");
@@ -771,89 +818,118 @@ public:
         height_ = new QSpinBox(vt);
         height_->setObjectName("height");
         height_->setRange(16, 8192);
-        QHBoxLayout* size = new QHBoxLayout();
-        size->addWidget(width_);
-        size->addWidget(new QLabel("x", vt));
-        size->addWidget(height_);
-        size->addStretch(1);
-        vf->addRow("Width / height:", size);
+        for (QSpinBox* b : {width_, height_}) {
+            b->setButtonSymbols(QAbstractSpinBox::NoButtons);
+            b->setGroupSeparatorShown(true);
+            b->setFixedWidth(64);
+        }
         field_ = combo(vt, "fieldOrder", {{"None (progressive scan)", "none"}, {"Upper field first", "upper"}, {"Lower field first", "lower"}});
-        vf->addRow("Field order:", field_);
-        vf->addRow(QString(), note("Rendering an interlaced project draws each field at its own moment.", vt));
+        field_->setToolTip("Rendering an interlaced project draws each field at its own moment.");
         par_ = new QComboBox(vt);
         par_->setObjectName("pixelAspect");
         for (const Par& p : kPars) par_->addItem(p.label, p.v);
-        vf->addRow("Pixel aspect ratio:", par_);
         hdr_ = combo(vt, "hdrMode", {{"Off", "off"}, {"HDR10", "hdr10"}, {"HLG", "hlg"}});
         hdr_->setToolTip("HDR10 or HLG sets the pixel format to 32-bit floating point (full range) and the matching view transform; Off restores them. "
                          "Renders through an HDR view transform are tagged as HDR and carry the Master Display. Reno has no HDR preview.");
-        vf->addRow("HDR Mode:", hdr_);
+        rotation_ = combo(vt, "outputRotation", {{"0° (original)", "0"}, {"90° clockwise", "90"}, {"180°", "180"}, {"90° counterclockwise", "270"}});
+        rotation_->setToolTip("File > Render As turns the picture by it when \"Use project output rotation setting\" is ticked (a 1920x1080 project "
+                              "turned 90° renders 1080x1920). The preview and the editing are not turned.");
+        out360_ = new QCheckBox("360 Output", vt);
+        out360_->setObjectName("output360");
+        out360_->setToolTip("A 360° (equirectangular) video: enables the Video Preview 360° mode, and Render As marks files as 360°");
         rate_ = new QComboBox(vt);
         rate_->setObjectName("frameRate");
         for (const Rate& r : kRates) rate_->addItem(r.label);
         rate_->addItem("Custom...");
-        vf->addRow("Frame rate:", rate_);
+        {
+            // two columns: width, height, HDR mode, 360 on the left; field order, pixel aspect, rotation, frame rate on the right
+            QGridLayout* g = new QGridLayout();
+            g->setHorizontalSpacing(8);
+            g->setVerticalSpacing(6);
+            g->addWidget(new QLabel("Width:", vt), 0, 0);
+            g->addWidget(width_, 0, 1, Qt::AlignLeft);
+            g->addWidget(new QLabel("Height:", vt), 1, 0);
+            g->addWidget(height_, 1, 1, Qt::AlignLeft);
+            g->addWidget(new QLabel("HDR Mode:", vt), 2, 0);
+            g->addWidget(hdr_, 2, 1, Qt::AlignLeft);
+            g->addWidget(out360_, 3, 0, 1, 2);
+            g->addWidget(new QLabel("Field order:", vt), 0, 3);
+            g->addWidget(field_, 0, 4);
+            g->addWidget(new QLabel("Pixel aspect ratio:", vt), 1, 3);
+            g->addWidget(par_, 1, 4);
+            g->addWidget(new QLabel("Output rotation:", vt), 2, 3);
+            g->addWidget(rotation_, 2, 4);
+            g->addWidget(new QLabel("Frame rate:", vt), 3, 3);
+            g->addWidget(rate_, 3, 4);
+            g->setColumnMinimumWidth(2, 6);
+            g->setColumnStretch(4, 1);
+            vv->addLayout(g);
+        }
         num_ = new QSpinBox(vt);
         num_->setObjectName("fpsNum");
         num_->setRange(1, 10000000);
         den_ = new QSpinBox(vt);
         den_->setObjectName("fpsDen");
         den_->setRange(1, 1000000);
-        QHBoxLayout* frac = new QHBoxLayout();
-        frac->addWidget(num_);
-        frac->addWidget(new QLabel("/", vt));
-        frac->addWidget(den_);
-        rateText_ = new QLabel(vt);
-        frac->addWidget(rateText_);
-        frac->addStretch(1);
-        vf->addRow("Exact rate:", frac);
+        {
+            // the exact rate (Reno's): under the frame rate, shown for Custom... (a rate the list does not have)
+            QWidget* exact = new QWidget(vt);
+            exact->setObjectName("exactRate");
+            QHBoxLayout* frac = new QHBoxLayout(exact);
+            frac->setContentsMargins(0, 0, 0, 0);
+            frac->addStretch(1);
+            frac->addWidget(new QLabel("Exact rate:", vt));
+            frac->addWidget(num_);
+            frac->addWidget(new QLabel("/", vt));
+            frac->addWidget(den_);
+            rateText_ = new QLabel(vt);
+            frac->addWidget(rateText_);
+            vv->addWidget(exact);
+            exact->hide();
+            QObject::connect(rate_, &QComboBox::currentIndexChanged, exact, [this, exact](int i) { exact->setVisible(i == rate_->count() - 1); });
+        }
         stereo_ = combo(vt, "stereo3d", {{"Off", "off"}, {"Side by side (half)", "sbshalf"}, {"Side by side (full)", "sbsfull"}, {"Top/bottom (half)", "tbhalf"},
                                          {"Top/bottom (full)", "tbfull"}, {"Line alternate", "line"}, {"Checkerboard", "checker"},
                                          {"Anaglyphic (red/cyan)", "anaglyph-rc"}, {"Anaglyphic (amber/blue)", "anaglyph-ab"},
                                          {"Anaglyphic (green/magenta)", "anaglyph-gm"}, {"Left only", "left"}, {"Right only", "right"},
                                          {"Blend", "blend"}, {"Difference", "difference"}});
         stereo_->setToolTip("How the left- and right-eye pictures are put together in the output");
-        vf->addRow("Stereoscopic 3D mode:", stereo_);
+        stereoSwap_ = new QCheckBox("Swap Left/Right", vt);
+        stereoSwap_->setObjectName("stereoSwap");
+        crosstalk_ = new Spin(vt, 0, 1, 3, 0.01, "crosstalk");
         {
-            QWidget* row = new QWidget(vt);
-            QHBoxLayout* h = new QHBoxLayout(row);
-            h->setContentsMargins(0, 0, 0, 0);
-            stereoSwap_ = new QCheckBox("Swap Left/Right", row);
-            stereoSwap_->setObjectName("stereoSwap");
-            crosstalk_ = new Spin(row, 0, 1, 3, 0.01, "crosstalk");
+            QHBoxLayout* h = new QHBoxLayout();
+            h->addWidget(new QLabel("Stereoscopic 3D mode:", vt));
+            h->addWidget(stereo_, 1);
             h->addWidget(stereoSwap_);
-            h->addSpacing(12);
-            h->addWidget(new QLabel("Crosstalk cancellation:", row));
-            h->addWidget(crosstalk_);
-            h->addStretch(1);
-            vf->addRow(QString(), row);
+            vv->addLayout(h);
+            QHBoxLayout* h2 = new QHBoxLayout();
+            h2->addSpacing(110);
+            h2->addWidget(new QLabel("Crosstalk cancellation:", vt));
+            h2->addWidget(crosstalk_);
+            h2->addStretch(1);
+            vv->addLayout(h2);
             QObject::connect(stereo_, &QComboBox::currentIndexChanged, this, [this](int) {
                 const bool on = stereo_->currentData().toString() != "off";
                 stereoSwap_->setEnabled(on);
                 crosstalk_->setEnabled(on);
             });
         }
-        out360_ = new QCheckBox("360\u00B0 Output", vt);
-        out360_->setObjectName("output360");
-        out360_->setToolTip("A 360\u00B0 (equirectangular) video: enables the Video Preview 360\u00B0 mode, and Render As marks files as 360\u00B0");
-        vf->addRow(QString(), out360_);
+        vv->addWidget(rule(vt));
         // VEGAS 18's four pixel formats: depth and range (Reno decodes media to full range in all of them)
         format_ = combo(vt, "pixelFormat", {{"Legacy 8-bit (video levels)", "8bit|video"}, {"8-bit (full range)", "8bit|full"},
                                             {"32-bit floating point (video levels)", "32bit|video"}, {"32-bit floating point (full range)", "32bit|full"}});
-        vf->addRow("Pixel format:", format_);
-        vf->addRow(QString(), note("32-bit floating point keeps the whole picture's precision between effects and compositing "
-                                   "(nothing is clipped until the end); effects that take floating point pictures are given them. "
-                                   "Reno reads every file to full-range RGB, whichever range is chosen.", vt));
+        format_->setToolTip("32-bit floating point keeps the whole picture's precision between effects and compositing (nothing is clipped until the "
+                            "end); effects that take floating point pictures are given them. Reno reads every file to full-range RGB, whichever range is chosen.");
         gamma_ = combo(vt, "compositingGamma", {{"1.000 (Linear)", "1.000"}, {"2.222 (Video)", "2.222"}});
         gamma_->setToolTip("Available with 32-bit floating point (full range), as in VEGAS: 1.000 (Linear) composites in linear light, 2.222 (Video) as before");
-        vf->addRow("Compositing gamma:", gamma_);
         acesVersion_ = combo(vt, "acesVersion", {{"ACES 1.0", "1.0"}, {"ACES 1.1", "1.1"}, {"ACES 0.7", "0.7"}});
-        vf->addRow("ACES version:", acesVersion_);
         acesSpace_ = combo(vt, "acesColorSpace", {{"Default (ACES2065-1)", "aces2065-1"}, {"ACEScg", "acescg"}, {"ACEScc", "acescc"}, {"ACEScct", "acescct"}});
-        vf->addRow("ACES color space:", acesSpace_);
         // the View transforms the frame is shown and rendered through (colormgmt.h's, for the ACES version chosen)
         view_ = new QComboBox(vt);
         view_->setObjectName("viewTransform");
+        view_->setToolTip("With 32-bit floating point (full range) and compositing gamma 1.000 (Linear), or a View transform, pictures are composited in "
+                          "linear light; each media's Color space is set in its properties and the View transform shapes the picture shown and rendered.");
         fillViews_ = [this](const QString& keep) {
             const QSignalBlocker b(view_);
             view_->clear();
@@ -864,12 +940,7 @@ public:
         };
         fillViews_("off");
         QObject::connect(acesVersion_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { fillViews_(view_->currentData().toString()); });
-        vf->addRow("View transform:", view_);
         lmt_ = combo(vt, "lookTransform", {{"None", "none"}, {"Apply Blue Light Artifact Fix", "bluelight"}});
-        vf->addRow("Look modification transform:", lmt_);
-        vf->addRow(QString(), note("With 32-bit floating point (full range) and compositing gamma 1.000 (Linear), or a View transform, pictures are "
-                                   "composited in linear light; each media's Color space is set in its properties and the View transform shapes the "
-                                   "picture shown and rendered. The ACES color space and look transform are kept with the project.", vt));
         auto colourItems = [this] {
             const bool full32 = format_->currentData().toString() == "32bit|full";
             for (QWidget* w : std::initializer_list<QWidget*>{gamma_, acesVersion_, acesSpace_, view_}) w->setEnabled(full32);
@@ -884,29 +955,37 @@ public:
             else { pickData(format_, "32bit|full"); pickData(view_, h == "hlg" ? "rrt_hlg1000" : "rrt_pq1000"); }
             colourItems();
         });
-        // the Master Display is for HDR projects: greyed with HDR mode Off, as in VEGAS
-        colourItems_ = [this, colourItems] {
-            colourItems();
-            const bool hdr = hdr_->currentData().toString() != "off";
-            masterCombo_->setEnabled(hdr);
-            masterCustomize_->setEnabled(hdr);
-        };
-        QObject::connect(hdr_, &QComboBox::activated, this, [this](int) { colourItems_(); });
         quality_ = combo(vt, "renderQuality", {{"Draft", "draft"}, {"Preview", "preview"}, {"Good", "good"}, {"Best", "best"}});
         quality_->setToolTip("Quality of resizing and rotating (pan/crop, track motion): Draft uses the nearest pixel, Best takes several samples per pixel");
-        vf->addRow("Full-resolution rendering quality:", quality_);
         blur_ = combo(vt, "motionBlur", {{"Gaussian", "gaussian"}, {"Pyramid", "pyramid"}, {"Box", "box"}, {"Asymmetric Gaussian", "asymgaussian"},
                                          {"Asymmetric Pyramid", "asympyramid"}, {"Asymmetric Box", "asymbox"}});
-        vf->addRow("Motion blur type:", blur_);
+        blur_->setToolTip("Motion blur (the video output's motion blur envelope) is rendered, and shown in a Best preview");
         deint_ = combo(vt, "deinterlace", {{"None", "none"}, {"Blend fields", "blend"}, {"Interpolate fields", "interpolate"}, {"Smart adaptive (GPU only)", "smart"}});
-        vf->addRow("Deinterlace method:", deint_);
+        deint_->setToolTip("Applies to interlaced media in a progressive project (Smart adaptive interpolates in Reno)");
         resample_ = combo(vt, "resample", {{"Smart resample", "smart"}, {"Force resample", "force"}, {"Optical flow", "optical"}, {"Disable resample", "off"}});
-        vf->addRow("Resample mode:", resample_);
-        vf->addRow(QString(), note("Motion blur (the video output's motion blur envelope) and interlaced fields are rendered, and in "
-                                   "a Best preview; deinterlacing applies to interlaced media in a progressive project (Smart adaptive "
-                                   "interpolates in Reno).", vt));
+        {
+            // label on the left, list on the right half (as VEGAS)
+            QGridLayout* g = new QGridLayout();
+            g->setHorizontalSpacing(8);
+            g->setVerticalSpacing(6);
+            const std::pair<const char*, QWidget*> rows[] = {{"Pixel format:", format_}, {"Compositing gamma:", gamma_}, {"ACES version:", acesVersion_},
+                                                             {"ACES color space:", acesSpace_}, {"View transform:", view_},
+                                                             {"Look modification transform:", lmt_}, {"Full-resolution rendering quality:", quality_},
+                                                             {"Motion blur type:", blur_}, {"Deinterlace method:", deint_}, {"Resample mode:", resample_}};
+            int r = 0;
+            for (const auto& row : rows) {
+                g->addWidget(new QLabel(row.first, vt), r, 0);
+                g->addWidget(row.second, r, 1);
+                ++r;
+            }
+            g->setColumnStretch(0, 1);
+            g->setColumnStretch(1, 1);
+            vv->addLayout(g);
+        }
+        vv->addWidget(rule(vt));
         // VEGAS 18's Master Display: "Custom display" (or one from the list) and Customize, for HDR projects
         {
+            vv->addWidget(new QLabel("Master Display:", vt));
             auto* row = new QHBoxLayout();
             masterCombo_ = new QComboBox(vt);
             masterCombo_->setObjectName("masterDisplay");
@@ -917,7 +996,7 @@ public:
             row->addWidget(masterCustomize_);
             masterCombo_->setToolTip("The display the HDR picture is graded on: written into HDR renders as mastering display metadata. "
                                      "Available with an HDR mode.");
-            vf->addRow("Master Display:", row);
+            vv->addLayout(row);
             QObject::connect(masterCombo_, &QComboBox::activated, this, [this](int) {
                 masterDisplay_ = masterDisplayPreset(s8(masterCombo_->currentData().toString()), masterDisplay_);
                 masterDisplay_.preset = s8(masterCombo_->currentData().toString());
@@ -926,80 +1005,156 @@ public:
                 if (editMasterDisplay(this, masterDisplay_)) pickData(masterCombo_, "custom");
             });
         }
+        // the Master Display is for HDR projects: greyed with HDR mode Off, as in VEGAS
+        colourItems_ = [this, colourItems] {
+            colourItems();
+            const bool hdr = hdr_->currentData().toString() != "off";
+            masterCombo_->setEnabled(hdr);
+            masterCustomize_->setEnabled(hdr);
+        };
+        QObject::connect(hdr_, &QComboBox::activated, this, [this](int) { colourItems_(); });
+        vv->addWidget(rule(vt));
         adjustSource_ = new QCheckBox("Adjust source media to better match project or render settings", vt);
         adjustSource_->setObjectName("adjustSourceMedia");
         adjustSource_->setToolTip("Kept with the project: Reno scales media to the project either way");
-        vf->addRow(QString(), adjustSource_);
-        rotation_ = combo(vt, "outputRotation", {{"0\u00B0 (original)", "0"}, {"90\u00B0 clockwise", "90"}, {"180\u00B0", "180"}, {"90\u00B0 counterclockwise", "270"}});
-        vf->addRow("Output rotation:", rotation_);
-        vf->addRow(QString(), note("File > Render As turns the picture by it when \"Use project output rotation setting\" is ticked (a 1920x1080 project "
-                                   "turned 90\u00B0 renders 1080x1920). The preview and the editing are not turned.", vt));
-        vf->addRow("Prerendered files folder:", folderRow(vt, "prerenderFolder", qs(AppState::get().prefs.prerenderFolder),
-                                                           "(Reno's own folder for this user)", &prerenderFolder_));
+        vv->addWidget(adjustSource_);
+        vv->addWidget(new QLabel("Prerendered files folder:", vt));
+        vv->addWidget(folderRow(vt, "prerenderFolder", qs(AppState::get().prefs.prerenderFolder), "(Reno's own folder for this user)", &prerenderFolder_));
+        vv->addStretch(1);
+        // (the lists' longest entries do not hold the window wide: VEGAS's is narrow, and they cut off with an ellipsis)
+        for (QComboBox* c : vt->findChildren<QComboBox*>()) {
+            c->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            c->setMinimumContentsLength(c == hdr_ ? 4 : 8);
+        }
         {
             // more than fits on a small screen: the tab scrolls
             QScrollArea* scroll = new QScrollArea(tabs_);
             scroll->setObjectName("videoScroll");
             scroll->setWidgetResizable(true);
             scroll->setFrameShape(QFrame::NoFrame);
+            scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
             scroll->setWidget(vt);
             tabs_->addTab(scroll, "Video");
         }
 
+        // ------------------------------------------------------------------ Audio, as VEGAS 18's: names on the left, the
+        // settings in a column on the right
         QWidget* at = new QWidget(tabs_);
-        QFormLayout* af = new QFormLayout(at);
+        QVBoxLayout* av = new QVBoxLayout(at);
+        av->setSpacing(6);
+        QGridLayout* ag = new QGridLayout();
+        ag->setHorizontalSpacing(8);
+        ag->setVerticalSpacing(6);
+        ag->setColumnStretch(0, 1);
+        auto aRow = [&](int r, const char* text, QWidget* w, int indent = 0) {
+            QLabel* l = new QLabel(text, at);
+            l->setContentsMargins(indent, 0, 0, 0);
+            ag->addWidget(l, r, 0);
+            w->setMinimumWidth(124);
+            ag->addWidget(w, r, 1);
+            return l;
+        };
         // Master bus mode: Stereo or 5.1 Surround (then every track and bus has a surround panner, Ctrl+Alt+3, and the
         // master has six channels), and the LFE's low-pass filter for 5.1
         busMode_ = combo(at, "masterBusMode", {{"Stereo", "2"}, {"5.1 Surround", "6"}});
-        af->addRow("Master bus mode:", busMode_);
-        lfeLowpass_ = new QCheckBox("Enable low-pass filter on LFE", at);
-        lfeLowpass_->setObjectName("lfeLowpass");
-        lfeLowpass_->setToolTip("Surround projects only: filters the master LFE channel to low frequencies");
-        af->addRow(QString(), lfeLowpass_);
-        lfeCutoff_ = combo(at, "lfeCutoff", {{"80", "80"}, {"90", "90"}, {"100", "100"}, {"110", "110"}, {"120", "120"}, {"150", "150"}, {"200", "200"}});
-        af->addRow("Cutoff frequency for low-pass filter (Hz):", lfeCutoff_);
-        lfeQuality_ = combo(at, "lfeQuality", {{"Best", "best"}, {"Good", "good"}, {"Fast", "fast"}});
-        af->addRow("Low-pass filter quality:", lfeQuality_);
+        aRow(0, "Master bus mode:", busMode_);
         busCount_ = new QSpinBox(at);
         busCount_->setObjectName("busCount");
         busCount_->setRange(0, 26);
         busCount_->setValue((int)AppState::get().project().buses.size());
         busCount_->setToolTip("Buses are added (Bus A, Bus B...) or the last ones removed when OK is pressed; tracks sent to a removed bus go to the master");
-        af->addRow("Number of stereo busses:", busCount_);
+        aRow(1, "Number of stereo busses:", busCount_);
         rateHz_ = new QComboBox(at);
         rateHz_->setObjectName("sampleRate");
         rateHz_->setEditable(true);
-        for (int hz : {8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 192000}) rateHz_->addItem(QString("%1 Hz").arg(hz), hz);
-        af->addRow("Sample rate (Hz):", rateHz_);
+        for (int hz : {8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 192000}) rateHz_->addItem(QLocale(QLocale::English).toString(hz), hz);
+        aRow(2, "Sample rate (Hz):", rateHz_);
         bits_ = combo(at, "bitDepth", {{"16", "16"}, {"24", "24"}, {"32 (floating point)", "32"}});
-        af->addRow("Bit depth:", bits_);
-        af->addRow(QString(), note("The bit depth is saved with the project but not used: Reno mixes in 32-bit floating point, and render depth is set in Render As.", at));
+        bits_->setToolTip("Saved with the project but not used: Reno mixes in 32-bit floating point, and render depth is set in Render As");
+        aRow(3, "Bit depth:", bits_);
         resampleQ_ = combo(at, "resampleQuality", {{"Draft", "draft"}, {"Preview", "preview"}, {"Good", "good"}, {"Best", "best"}});
         resampleQ_->setToolTip("Kept with the project: Reno resamples and stretches sound one way");
-        af->addRow("Resample and stretch quality:", resampleQ_);
-        af->addRow("Recorded files folder:", folderRow(at, "recordFolder", qs(AppState::get().prefs.recordFolder), "(\"Recorded\" beside the project)", &recordFolder_));
+        aRow(4, "Resample and stretch quality:", resampleQ_);
+        av->addLayout(ag);
+        lfeLowpass_ = new QCheckBox("Enable low-pass filter on LFE (surround projects only)", at);
+        lfeLowpass_->setObjectName("lfeLowpass");
+        lfeLowpass_->setToolTip("Surround projects only: filters the master LFE channel to low frequencies");
+        av->addWidget(lfeLowpass_);
+        QGridLayout* lg = new QGridLayout();
+        lg->setHorizontalSpacing(8);
+        lg->setVerticalSpacing(6);
+        lg->setColumnStretch(0, 1);
+        lfeCutoff_ = combo(at, "lfeCutoff", {{"80", "80"}, {"90", "90"}, {"100", "100"}, {"110", "110"}, {"120", "120"}, {"150", "150"}, {"200", "200"}});
+        lfeQuality_ = combo(at, "lfeQuality", {{"Best", "best"}, {"Good", "good"}, {"Fast", "fast"}});
+        {
+            QLabel* l1 = new QLabel("Cutoff frequency for low-pass filter (Hz):", at);
+            QLabel* l2 = new QLabel("Low-pass filter quality:", at);
+            for (QLabel* l : {l1, l2}) l->setContentsMargins(18, 0, 0, 0);
+            lg->addWidget(l1, 0, 0);
+            lg->addWidget(lfeCutoff_, 0, 1);
+            lg->addWidget(l2, 1, 0);
+            lg->addWidget(lfeQuality_, 1, 1, Qt::AlignRight);
+            lfeCutoff_->setMinimumWidth(124);
+            lfeQuality_->setMinimumWidth(76);
+        }
+        av->addLayout(lg);
+        av->addWidget(new QLabel("Recorded files folder:", at));
+        av->addWidget(folderRow(at, "recordFolder", qs(AppState::get().prefs.recordFolder), "(\"Recorded\" beside the project)", &recordFolder_));
+        av->addStretch(1);
         tabs_->addTab(at, "Audio");
 
+        // ------------------------------------------------------------------ Ruler, as VEGAS 18's
         QWidget* rt = new QWidget(tabs_);
-        QFormLayout* rf = new QFormLayout(rt);
+        QVBoxLayout* rv = new QVBoxLayout(rt);
+        rv->setSpacing(6);
         std::vector<std::pair<QString, QString>> formats;
         for (const TimeFormatInfo& f : timeFormats())
             formats.push_back({QString::fromUtf8(f.menuText).replace("&&", QString(QChar(1))).remove('&').replace(QChar(1), '&'), f.id});
         ruler_ = combo(rt, "rulerFormat", formats);
-        rf->addRow("Ruler time format:", ruler_);
         rulerStart_ = new Spin(rt, -360000, 360000, 3, 1, "rulerStart");
         rulerStart_->setSuffix(" s");
-        rf->addRow("Ruler start time:", rulerStart_);
+        rulerStart_->setFixedWidth(120);
+        {
+            QGridLayout* g = new QGridLayout();
+            g->setHorizontalSpacing(8);
+            g->setVerticalSpacing(6);
+            g->addWidget(new QLabel("Ruler time format:", rt), 0, 0);
+            g->addWidget(ruler_, 0, 1);
+            g->addWidget(new QLabel("Ruler start time:", rt), 1, 0);
+            g->addWidget(rulerStart_, 1, 1, Qt::AlignLeft);
+            g->setColumnStretch(1, 1);
+            rv->addLayout(g);
+        }
+        {
+            QHBoxLayout* h = new QHBoxLayout();
+            h->addWidget(new QLabel("Measures & Beats", rt));
+            h->addWidget(rule(rt), 1);
+            rv->addSpacing(4);
+            rv->addLayout(h);
+        }
         tempo_ = new Spin(rt, 1, 999, 3, 1, "tempo");
-        tempo_->setSuffix(" beats per minute");
-        rf->addRow("Tempo:", tempo_);
+        tempo_->setToolTip("Used by Measures & Beats, the grid and the metronome");
         beats_ = new QSpinBox(rt);
         beats_->setObjectName("beatsPerMeasure");
         beats_->setRange(1, 32);
-        rf->addRow("Beats per measure:", beats_);
-        noteBeat_ = combo(rt, "noteGetsBeat", {{"1", "1"}, {"2", "2"}, {"4", "4"}, {"8", "8"}, {"16", "16"}, {"32", "32"}});
-        rf->addRow("Note that gets one beat:", noteBeat_);
-        rf->addRow(QString(), note("Tempo and beats are used by Measures & Beats, the grid and the metronome.", rt));
+        noteBeat_ = combo(rt, "noteGetsBeat", {{"Whole", "1"}, {"Half", "2"}, {"Quarter", "4"}, {"Eighth", "8"}, {"Sixteenth", "16"}, {"Thirty-second", "32"}});
+        {
+            QGridLayout* g = new QGridLayout();
+            g->setContentsMargins(18, 0, 0, 0);
+            g->setHorizontalSpacing(8);
+            g->setVerticalSpacing(6);
+            g->addWidget(new QLabel("Beats per minute", rt), 0, 0);
+            g->addWidget(tempo_, 0, 1, Qt::AlignLeft);
+            g->addWidget(new QLabel("Beats per measure:", rt), 1, 0);
+            g->addWidget(beats_, 1, 1, Qt::AlignLeft);
+            g->addWidget(new QLabel("Note that gets one beat:", rt), 2, 0);
+            g->addWidget(noteBeat_, 2, 1, Qt::AlignLeft);
+            tempo_->setFixedWidth(76);
+            beats_->setFixedWidth(76);
+            g->setColumnStretch(2, 1);
+            rv->addLayout(g);
+        }
+        rv->addStretch(1);
         tabs_->addTab(rt, "Ruler");
 
         QWidget* st = new QWidget(tabs_);
@@ -1042,15 +1197,21 @@ public:
         startAll_->setObjectName("startAllNewProjects");
         root->addWidget(startAll_);
         QHBoxLayout* buttons = new QHBoxLayout();
-        buttons->addWidget(note("Effects follow a change of size or frame rate; Undo puts everything back.", this), 1);
+        buttons->addStretch(1);
         QPushButton* ok = new QPushButton("OK", this);
         ok->setObjectName("ok");
         ok->setDefault(true);
+        ok->setToolTip("Effects follow a change of size or frame rate; Undo puts everything back.");
         QPushButton* cancel = new QPushButton("Cancel", this);
         cancel->setObjectName("cancel");
+        QPushButton* applyBtn = new QPushButton("Apply", this);
+        applyBtn->setObjectName("apply");
+        applyBtn->setToolTip("Use these settings now and keep the window open");
         buttons->addWidget(ok);
         buttons->addWidget(cancel);
+        buttons->addWidget(applyBtn);
         root->addLayout(buttons);
+        QObject::connect(applyBtn, &QPushButton::clicked, this, [this] { apply(); });
 
         width_->setValue(s.width);
         height_->setValue(s.height);
@@ -1092,7 +1253,7 @@ public:
         pickData(deint_, qs(s.deinterlace));
         pickData(resample_, qs(s.resample));
         int hi = rateHz_->findData(s.sampleRate);
-        if (hi < 0) { rateHz_->addItem(QString("%1 Hz").arg(s.sampleRate), s.sampleRate); hi = rateHz_->count() - 1; }
+        if (hi < 0) { rateHz_->addItem(QLocale(QLocale::English).toString(s.sampleRate), s.sampleRate); hi = rateHz_->count() - 1; }
         rateHz_->setCurrentIndex(hi);
         pickData(bits_, QString::number(s.audioBits));
         pickData(busMode_, QString::number(s.surround() ? 6 : 2));
@@ -1330,7 +1491,7 @@ private:
         s.resample = s8(resample_->currentData().toString());
         {
             bool okRate = false;
-            const int typed = QString(rateHz_->currentText()).remove("Hz").trimmed().toInt(&okRate);
+            const int typed = QString(rateHz_->currentText()).remove("Hz").remove(',').trimmed().toInt(&okRate);
             s.sampleRate = rateHz_->currentIndex() >= 0 && rateHz_->itemText(rateHz_->currentIndex()) == rateHz_->currentText() ? rateHz_->currentData().toInt()
                                                                                                                                : (okRate && typed >= 8000 && typed <= 384000 ? typed : s.sampleRate);
         }
@@ -1403,7 +1564,7 @@ private:
     Spin* crosstalk_ = nullptr;
     QLineEdit* upc_ = nullptr;
     QSpinBox* firstTrack_ = nullptr;
-    QPushButton* deleteT_ = nullptr;
+    QToolButton* deleteT_ = nullptr;
     std::function<void()> colourItems_;
     QComboBox* masterCombo_ = nullptr;
     QPushButton* masterCustomize_ = nullptr;

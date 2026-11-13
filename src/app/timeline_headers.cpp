@@ -509,7 +509,7 @@ void TimelineWidget::Impl::paintRuler(QPainter& p, const QRect& clip)
     p.fillRect(QRect(c.left(), kRulerTop - 2, c.width(), 1), kLine);
     p.fillRect(QRect(c.left(), kRulerTop - 1, c.width(), 1), kLightLine);
 
-    // the time selection: a bar between its two yellow flags (grey while looping is off); with none, VEGAS still shows
+    // the time selection: a bar between its two yellow flags (navy while looping is on); with none, VEGAS still shows
     // the flag where the last one began
     p.setRenderHint(QPainter::Antialiasing, false);
     const bool region = app.loopEnd > app.loopStart;
@@ -517,7 +517,8 @@ void TimelineWidget::Impl::paintRuler(QPainter& p, const QRect& clip)
     const double x1 = clampd(std::floor(xAtF(app.loopEnd)), -1e6, 1e6);
     const QColor flag = app.loopOn ? kLoopOn : kLoopOff;
     const double fy = kRulerTop - 2 - 7;
-    if (region) p.fillRect(QRectF(x0, fy + 1.0, std::max(1.0, x1 - x0), 5.0), app.loopOn ? QColor(150, 140, 30) : QColor(100, 100, 100));
+    // as VEGAS 18: looping on, a navy bar the flags' height between them; off, the strip only a shade darker there
+    if (region) p.fillRect(QRectF(x0, fy, std::max(1.0, x1 - x0 + 1.0), 7.0), app.loopOn ? kLoopBar : QColor(0, 0, 0, 46));
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setPen(Qt::NoPen);
     p.setBrush(flag);
