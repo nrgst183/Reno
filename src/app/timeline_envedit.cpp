@@ -837,6 +837,8 @@ void TimelineWidget::Impl::finishMove(const DragState& was)
         app.setSelection(sel);
     } else if (was.collapseOnRelease) {
         selectGroupOf(was.hit.event);
+    } else if (was.pickOneOnRelease) {
+        app.setSelection(std::set<uint64_t>{was.hit.event});
     }
 }
 

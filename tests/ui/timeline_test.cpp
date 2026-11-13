@@ -307,6 +307,19 @@ int main(int argc, char** argv)
               num(ev(ids.e1)->start) + " " + num(ev(ids.e1a)->start));
         st().undo();
 
+        // a grouped event: the first click selects the group, a second click on one of them picks it alone; a drag of it
+        // then moves just it
+        st().setSelection(std::set<uint64_t>());
+        uitest::mouseClick(&w, at(w, ids.v1, 3.0, 60));
+        check(st().selection() == std::set<uint64_t>{ids.e1, ids.e1a}, "clicking a grouped event selects the group (picture and sound)");
+        uitest::mouseClick(&w, at(w, ids.a1, 3.0, 30));
+        check(st().selection() == std::set<uint64_t>{ids.e1a}, "clicking its sound again picks the sound alone");
+        uitest::mouseClick(&w, at(w, ids.v1, 3.0, 60));
+        check(st().selection() == std::set<uint64_t>{ids.e1, ids.e1a}, "clicking the picture (not selected) selects the group again");
+        uitest::mouseClick(&w, at(w, ids.v1, 3.0, 60));
+        check(st().selection() == std::set<uint64_t>{ids.e1}, "and clicking it again picks the picture alone");
+        st().setSelection(std::set<uint64_t>());
+
         // several selected
         st().setSelection(std::set<uint64_t>{ids.e2, ids.e3});
         uitest::mouseDrag(&w, at(w, ids.v2, 4.0, 60), at(w, ids.v2, 4.5, 60));

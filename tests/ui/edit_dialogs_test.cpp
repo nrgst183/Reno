@@ -191,6 +191,31 @@ int main(int argc, char** argv)
         const PanCropKey k = ev(V)->panCrop[0];
         check(near(k.rotation, 45, 1.5) && near(k.w, 0.5, 0.01), "pan/crop: dragging outside a corner turns the box (clockwise is more)", num(k.rotation));
     }
+    // and from anywhere between the box and its dashed circle: beside the middle of the box's right side (the box is half
+    // the frame and turned 45 degrees now; straight out from its centre, past the side, inside the circle)
+    {
+        const QRectF a = view->property("area").toRectF();
+        const QPointF c = a.center();
+        const double hx = 0.25 * a.width(), hy = 0.25 * a.height();
+        const double r = hx + (std::hypot(hx, hy) * 1.1 - hx) * 0.5;      // half way from the side to the circle
+        const double rot = 45.0 * 3.14159265358979 / 180.0;
+        const QPoint from((int)std::lround(c.x() + r * std::cos(rot)), (int)std::lround(c.y() + r * std::sin(rot)));
+        uitest::mouseMove(view, from, Qt::NoButton);
+        uitest::settle(20);
+        check(view->cursor().shape() == Qt::BitmapCursor, "pan/crop: between the box and its circle the pointer turns into the rotate pointer");
+        uitest::mousePress(view, from);
+        for (int k = 1; k <= 10; ++k) {
+            const double ang = rot - (3.14159265358979 / 6) * k / 10;
+            uitest::mouseMove(view, QPoint((int)std::lround(c.x() + r * std::cos(ang)), (int)std::lround(c.y() + r * std::sin(ang))));
+        }
+        const double ang = rot - 3.14159265358979 / 6;
+        uitest::mouseRelease(view, QPoint((int)std::lround(c.x() + r * std::cos(ang)), (int)std::lround(c.y() + r * std::sin(ang))));
+        uitest::settle(30);
+        const PanCropKey k = ev(V)->panCrop[0];
+        check(near(k.rotation, 15, 1.5) && near(k.w, 0.5, 0.01), "pan/crop: dragging there turns it too (back 30 degrees)", num(k.rotation));
+        app.undo();
+        uitest::settle();
+    }
     // the numbers
     {
         QDoubleSpinBox* wBox = child<QDoubleSpinBox>(pc, "boxWidth");

@@ -1528,7 +1528,7 @@ void AppState::cutSelection()
     });
 }
 
-void AppState::pasteAtCursor()
+void AppState::pasteAtCursor(bool besideOthers)
 {
     if (clipboard_.empty()) return;
     const double at = project_.quantize(cursor_);
@@ -1544,14 +1544,36 @@ void AppState::pasteAtCursor()
         if (base < 0) return;
         std::map<uint64_t, uint64_t> groups;
         std::set<size_t> touchedTracks;
-        for (const auto& c : clipboard_) {
+        auto trackFor = [&](const ClipItem& c) {
             int idx = base + c.trackOffset;
             // the nearest track of the right kind at or after where it should go
-            while (idx < (int)p.tracks.size() && p.tracks[(size_t)idx].type != c.type) ++idx;
+            while (idx >= 0 && idx < (int)p.tracks.size() && p.tracks[(size_t)idx].type != c.type) ++idx;
+            return idx;
+        };
+        // A paste that would start inside an event already there (pasting where the copy came from, or the cursor over
+        // another event) goes on to that event's end, so the copy sits right after it instead of on top; again if that
+        // place is taken too. Every pasted event moves by the same amount (grouped video and audio stay together).
+        double shift = 0;
+        const double eps = 1e-6;
+        for (int round = 0; besideOthers && round < 1000; ++round) {
+            double need = shift;
+            for (const auto& c : clipboard_) {
+                const int idx = trackFor(c);
+                if (idx < 0 || idx >= (int)p.tracks.size()) continue;
+                const double st = at + shift + (c.event.start - clipboardStart_);
+                for (const Event& o : p.tracks[(size_t)idx].events)
+                    if (o.start <= st + eps && st < o.end() - eps) need = std::max(need, shift + (o.end() - st));
+            }
+            if (need <= shift + eps) break;
+            shift = project_.quantize(at + need) - at;
+            if (shift < need - eps) shift = need;
+        }
+        for (const auto& c : clipboard_) {
+            const int idx = trackFor(c);
             if (idx < 0 || idx >= (int)p.tracks.size()) continue;
             Event e = c.event;
             e.id = p.newId();
-            e.start = at + (c.event.start - clipboardStart_);
+            e.start = at + shift + (c.event.start - clipboardStart_);
             renewFx(p, e);
             if (e.group) {
                 auto it = groups.find(e.group);

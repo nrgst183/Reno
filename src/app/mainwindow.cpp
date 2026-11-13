@@ -850,6 +850,37 @@ protected:
     }
 };
 
+// The octave pitch keys, Shift+= and Shift+- (VEGAS's): each action has the one shortcut, because on Windows a single
+// press of Shift and = is matched both as Shift+= and as + - two shortcuts of one action match it and Qt, finding the
+// shortcut ambiguous, runs neither. Where the press arrives as the shifted character instead (+ or _ on keyboards with a key
+// of their own for it, and on some systems), no shortcut takes it and this catches it: + and _ (Ctrl with them: reset).
+// Not while typing, nor in another window (a dialog); not the keypad's + and -.
+class PitchKeys : public QObject {
+public:
+    explicit PitchKeys(QMainWindow* w) : QObject(w), w_(w) {}
+
+protected:
+    bool eventFilter(QObject* o, QEvent* e) override
+    {
+        if (e->type() != QEvent::KeyPress) return false;
+        const QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        if (k->key() != Qt::Key_Plus && k->key() != Qt::Key_Underscore) return false;
+        const Qt::KeyboardModifiers m = k->modifiers();
+        if (m & (Qt::KeypadModifier | Qt::AltModifier | Qt::MetaModifier)) return false;
+        QWidget* target = qobject_cast<QWidget*>(o);
+        if (!target || target->window() != w_ || QApplication::activeModalWidget()) return false;
+        if (qobject_cast<QLineEdit*>(o) || qobject_cast<QTextEdit*>(o) || qobject_cast<QPlainTextEdit*>(o) || qobject_cast<QAbstractSpinBox*>(o)) return false;
+        const char* name = (m & Qt::ControlModifier) ? "pitchReset" : k->key() == Qt::Key_Plus ? "pitchUpOctave" : "pitchDownOctave";
+        QAction* a = w_->findChild<QAction*>(name);
+        if (!a || !a->isEnabled()) return false;
+        a->trigger();
+        return true;
+    }
+
+private:
+    QMainWindow* w_;
+};
+
 QToolButton* flatButton(QWidget* parent, const char* name, Ico ico, const QString& tip)
 {
     QToolButton* b = new QToolButton(parent);
@@ -1470,6 +1501,7 @@ MainWindow::MainWindow() : a_(new Actions())
     }
     playback_.reset(new Playback());
     qApp->installEventFilter(new TypingGuard(this));
+    qApp->installEventFilter(new PitchKeys(this));
 
     QWidget* center = new QWidget(this);
     center->setObjectName("timelineArea");
@@ -1898,12 +1930,11 @@ void MainWindow::addGroupToolAndPitchActions(ActionBuilder& b)
     b.add("pitchDown", "Lower a S&emitone", keys({"-"}), [this] { changePitch(-1.0, false); });
     b.add("pitchUpCent", "Raise a &Cent", keys({"Ctrl+="}), [this] { changePitch(0.01, false); });
     b.add("pitchDownCent", "Lower a Ce&nt", keys({"Ctrl+-"}), [this] { changePitch(-0.01, false); });
-    // Shift+= is + on most keyboards, Shift+- is _: a real key press arrives as Shift++ / Shift+_ (Qt keeps the Shift with
-    // the shifted key), so those are bound as well as the unshifted spellings
-    b.add("pitchUpOctave", "Raise an &Octave", keys({"Shift+=", "Shift++", "+"}), [this] { changePitch(12.0, false); });
-    b.add("pitchDownOctave", "Lower an Oc&tave", keys({"Shift+-", "Shift+_", "_"}), [this] { changePitch(-12.0, false); });
-    b.add("pitchReset", "&Reset Pitch", keys({"Ctrl+Shift+=", "Ctrl+Shift+-", "Ctrl+Shift++", "Ctrl+Shift+_", "Ctrl++", "Ctrl+_"}),
-          [this] { changePitch(0, true); });
+    // Shift+= is + on most keyboards, Shift+- is _
+    // (one shortcut each: see PitchKeys, which takes + and _ when they arrive as characters of their own)
+    b.add("pitchUpOctave", "Raise an &Octave", keys({"Shift+="}), [this] { changePitch(12.0, false); });
+    b.add("pitchDownOctave", "Lower an Oc&tave", keys({"Shift+-"}), [this] { changePitch(-12.0, false); });
+    b.add("pitchReset", "&Reset Pitch", keys({"Ctrl+Shift+=", "Ctrl+Shift+-"}), [this] { changePitch(0, true); });
 }
 
 // View

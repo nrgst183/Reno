@@ -312,7 +312,9 @@ public:
     void deleteSelection();
     void copySelection();
     void cutSelection();
-    void pasteAtCursor();
+    // 'besideOthers': a paste that would start inside an event already on its track goes on to that event's end (Paste
+    // Insert, which pushes the later events along, pastes exactly at the cursor)
+    void pasteAtCursor(bool besideOthers = true);
     void groupSelection(bool group);
     bool hasClipboard() const { return !clipboard_.empty(); }
     // Edit > Switches > Lock: locked events cannot be moved, trimmed, split or deleted.

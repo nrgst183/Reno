@@ -107,7 +107,7 @@ void TimelineWidget::Impl::pasteInsert()
     if (!app.hasClipboard()) return;
     const double at = quantized(app.cursor());
     const std::set<uint64_t> before = app.selection();
-    app.pasteAtCursor();
+    app.pasteAtCursor(false);
     const std::set<uint64_t> made = app.selection();
     if (made.empty() || made == before) return;
     double first = 1e300, last = -1e300;

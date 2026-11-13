@@ -266,14 +266,19 @@ void TimelineWidget::paste()
     app.pasteAtCursor();
     if (app.revision() == rev) return;
     std::set<uint64_t> tracks;
-    double last = at;
+    // (where it went: at the cursor, or moved on past an event it would have landed in)
+    double first = 1e300, last = at;
     for (const Track& t : app.project().tracks)
         for (const Event& e : t.events)
             if (app.selection().count(e.id) && !before.count(e.id)) {
                 tracks.insert(t.id);
+                first = std::min(first, e.start);
                 last = std::max(last, e.end());
             }
-    if (!tracks.empty()) d->rememberEdit(tracks, at, last - at, app.selection());
+    if (first > 1e299) first = at;
+    if (!tracks.empty()) d->rememberEdit(tracks, first, last - first, app.selection());
+    // VEGAS: the cursor goes to the end of what was pasted, so pasting again puts the next copy after it
+    if (!tracks.empty()) app.setCursor(last);
 }
 
 bool TimelineWidget::copyEnvelopePoints() { return d->copyEnvelopePoints(); }

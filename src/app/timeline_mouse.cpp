@@ -707,6 +707,10 @@ void TimelineWidget::Impl::pressEvent(const Hit& h, Qt::KeyboardModifiers mods)
         selectGroupOf(h.event);
     } else {
         drag.collapseOnRelease = sel.size() > withGroup(h.event).size();
+        // VEGAS: the first click on a grouped event selects the group (video and audio); clicking one of them again picks
+        // it alone (a drag still moves the group)
+        const std::set<uint64_t> grp = withGroup(h.event);
+        if (!drag.collapseOnRelease && grp.size() > 1 && sel.size() == grp.size()) drag.pickOneOnRelease = true;
     }
     if (!shift) clickAnchor = h.event;
     double line = -1;

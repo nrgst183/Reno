@@ -20,6 +20,7 @@ enum class EditCursor {
     Slip,                           // Alt over an event: media slips inside it
     EnvLine, EnvPoint,              // envelope line (moved up and down), point (moved any way)
     Zoom, SelectTool, EnvelopeTool, // tools other than Normal, over the tracks
+    Rotate,                         // Pan/Crop and Track Motion: dragging turns the box (a curved arrow)
     Count
 };
 
@@ -230,6 +231,20 @@ inline QCursor make(EditCursor k)
             solid(p, d);
         }
         hot = QPoint(2, 2);
+        break;
+    }
+    case EditCursor::Rotate: {
+        // most of a circle with an arrowhead at its end, as VEGAS's turning pointer
+        QPainterPath arc;
+        const QRectF r(8.0, 8.0, 16.0, 16.0);
+        arc.arcMoveTo(r, 110.0);
+        arc.arcTo(r, 110.0, 280.0);
+        ink(p, arc, 1.6);
+        const double a = (110.0 + 280.0) * 3.14159265358979 / 180.0;
+        const QPointF tip(16.0 + 8.0 * std::cos(a), 16.0 - 8.0 * std::sin(a));
+        // pointing on round the circle (anticlockwise on screen)
+        solid(p, head(tip, -std::sin(a), -std::cos(a), 5.0));
+        hot = QPoint(16, 16);
         break;
     }
     case EditCursor::Count: break;

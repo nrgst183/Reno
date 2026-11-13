@@ -491,6 +491,7 @@ struct TimelineWidget::Impl {
         double pressTime = 0;
         Hit hit;
         bool collapseOnRelease = false;
+        bool pickOneOnRelease = false;     // a click (no drag) on a group already selected: just the event clicked
         // Ctrl+drag of events (VEGAS): copies are moved, the originals stay. copies: (original, copy) ids, the copies'
         // ids worked out when the drag starts (each update starts again from the project as it was then, so they come
         // out the same every time); copyGroups: a group of originals -> the copies' new group

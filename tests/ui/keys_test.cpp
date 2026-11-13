@@ -719,6 +719,37 @@ int main(int argc, char** argv)
               num(ev(ids.e5)->start) + " " + num(ev(ids.e6)->start));
         press("Ctrl+Z");
         press("Ctrl+Z");
+        // a plain paste where an event already is goes on to its end: copy an event, paste with the cursor at its start
+        {
+            st().selectOnly(ids.e5);
+            press("Ctrl+C");
+            const Event* src = ev(ids.e5);
+            const double s0 = src->start, e0 = src->end();
+            uint64_t trk = 0;
+            for (const Track& t : st().project().tracks)
+                for (const Event& e : t.events)
+                    if (e.id == ids.e5) trk = t.id;
+            st().currentTrack = trk;
+            st().setCursor(s0);
+            press("Ctrl+V");
+            bool beside = false, onTop = false;
+            for (const Track& t : st().project().tracks)
+                if (t.id == trk)
+                    for (const Event& e : t.events)
+                        if (st().selection().count(e.id)) {
+                            // (right at its end, or further on if that place is taken by the next event)
+                            if (e.start >= e0 - 1e-6) beside = true;
+                            if (near(e.start, s0)) onTop = true;
+                        }
+            check(beside && !onTop, "Ctrl+V onto an event puts the copy after it, not on top", num(s0) + " .. " + num(e0));
+            double pastedEnd = -1;
+            for (const Track& t : st().project().tracks)
+                for (const Event& e : t.events)
+                    if (st().selection().count(e.id)) pastedEnd = std::max(pastedEnd, e.end());
+            check(near(st().cursor(), pastedEnd), "  and the cursor goes to the end of the copy, to paste the next after it",
+                  num(st().cursor()) + " " + num(pastedEnd));
+            press("Ctrl+Z");
+        }
         st().selectOnly(ids.e2);
         press("Ctrl+C");
         st().currentTrack = ids.v1;

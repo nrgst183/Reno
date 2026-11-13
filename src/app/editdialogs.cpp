@@ -5,6 +5,7 @@
 // AppState: a drag is one beginDrag / dragUpdate / endDrag (one undo step, the preview follows), anything else one
 // edit().
 #include "editdialogs.h"
+#include "cursors.h"
 #include "editdialogs_internal.h"
 #include "vprefs.h"
 #include "playback.h"
@@ -446,6 +447,8 @@ protected:
         if (nearY && inX) { *sx = 0; return Edge; }
         if (std::fabs(l.x()) < hx && std::fabs(l.y()) < hy) return Inside;
         if (rotation && std::fabs(l.x()) < hx + 26 && std::fabs(l.y()) < hy + 26 && std::fabs(l.x()) > hx - tol && std::fabs(l.y()) > hy - tol) return Turn;
+        // as VEGAS: anywhere outside the box but inside its dashed circle (and just over it) turns it
+        if (rotation && std::hypot(l.x(), l.y()) <= std::hypot(hx, hy) * 1.1 + 8.0) return Turn;
         return Pan;
     }
 
@@ -495,7 +498,7 @@ protected:
             case Inside: setCursor(Qt::SizeAllCursor); break;
             case Edge: setCursor(sx ? Qt::SizeHorCursor : Qt::SizeVerCursor); break;
             case Corner: setCursor(sx * sy > 0 ? Qt::SizeFDiagCursor : Qt::SizeBDiagCursor); break;
-            case Turn: setCursor(Qt::OpenHandCursor); break;
+            case Turn: setCursor(editCursor(EditCursor::Rotate)); break;
             case Pivot: setCursor(Qt::CrossCursor); break;
             case Pan: setCursor(Qt::OpenHandCursor); break;
             default: unsetCursor(); break;
@@ -1641,7 +1644,7 @@ protected:
             switch (partAt(e->position(), &c)) {
             case Inside: setCursor(Qt::SizeAllCursor); break;
             case Corner: setCursor(Qt::SizeFDiagCursor); break;
-            case Turn: setCursor(Qt::OpenHandCursor); break;
+            case Turn: setCursor(editCursor(EditCursor::Rotate)); break;
             default: unsetCursor(); break;
             }
             return;
