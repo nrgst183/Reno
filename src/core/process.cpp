@@ -18,7 +18,6 @@
 #  include <chrono>
 #  include <thread>
 #  ifdef __APPLE__
-#    include <TargetConditionals.h>
 #    include <mach-o/dyld.h>
 #  endif
 #  ifdef __FreeBSD__
@@ -160,12 +159,6 @@ ProcessResult runProcess(const std::string& exe, const std::vector<std::string>&
     argv.push_back(const_cast<char*>(exe.c_str()));
     for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    // iOS starts no other programs (the plug-in checker and helpers run in the app itself or not at all)
-    (void)timeoutSeconds;
-    (void)stop;
-    return r;
-#endif
     pid_t pid = fork();
     if (pid < 0) return r;
     if (pid == 0) {

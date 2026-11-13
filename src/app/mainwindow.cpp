@@ -101,11 +101,9 @@
 // grouping), Num 5 works on both sides of an edit, Esc leaves; F3 / F9 jog. Keys for the windows and tools added in
 // mainwindow_tools.cpp are made
 // there and listed below. VEGAS defaults Reno does not have yet are listed as "not available", with the reason.
-#include "mobilefiles.h"
 #include "cachedscroll.h"
 #include "audioproxyui.h"
 #include "mainwindow.h"
-#include "touch_shell.h"
 #include "mainwindow_internal.h"
 #include "logo.h"
 #include "readoutlabel.h"
@@ -1442,7 +1440,6 @@ MainWindow::MainWindow() : a_(new Actions())
     installKeyboardMap(this);
     installTrackDefaults();
     addPreferenceFileItems(this);
-    addTouchAction();
     conformMenusToVegas(menuBar());
 
     buildStatusBar();
@@ -1462,13 +1459,11 @@ MainWindow::MainWindow() : a_(new Actions())
     timeline_->setFocus();
 
     watchLayoutChanges();
-    if (touchInterfaceWanted()) setTouchMode(true);
 }
 
 void MainWindow::saveWindowLayout()
 {
-    // (the touch interface hides the docked windows: that is not a layout to keep)
-    if (firstShow_ || touch_) return;
+    if (firstShow_) return;
     QSettings s;
     s.setValue("window/geometry", saveGeometry());
     s.setValue("window/state", timelineMaximized_ && !beforeMaximize_.isEmpty() ? beforeMaximize_ : saveState(kLayoutVersion));
@@ -1498,11 +1493,6 @@ void MainWindow::restyle()
 
 MainWindow::~MainWindow()
 {
-#if RENO_TOUCH_UI
-    // the touch interface goes first: it uses the playback engine and the preview, which go below
-    delete touch_;
-    touch_ = nullptr;
-#endif
     for (int id : ownedListeners_) AppState::get().removeListener(id);
     AutomationHooks::wake = nullptr;
     if (layoutSaver_) layoutSaver_->stop();
@@ -1616,9 +1606,9 @@ void MainWindow::addFileActions(ActionBuilder& b)
     b.add("open", "&Open...", keys({"Ctrl+O"}), [this] {
         QStringList media;
         for (const std::string& e : mediaExtensions(MediaKind::Any)) media << "*." + QString::fromStdString(e);
-        const QString f = localFileFor(QFileDialog::getOpenFileName(this, "Open", projectFolder(),
+        const QString f = QFileDialog::getOpenFileName(this, "Open", projectFolder(),
                                                        QString("All Projects and Media Files (*.veg *.reno %1);;VEGAS Pro projects (*.veg);;Reno projects (*.reno);;"
-                                                               "All projects (*.veg *.reno);;Media files (%1);;All files (*)").arg(media.join(' '))));
+                                                               "All projects (*.veg *.reno);;Media files (%1);;All files (*)").arg(media.join(' ')));
         if (f.isEmpty()) return;
         if (!isProjectFile(f.toStdString()) && hasMediaExtension(f.toStdString())) {
             openProject(f);
@@ -2136,7 +2126,7 @@ void MainWindow::addMoreEditingActions(ActionBuilder& b)
     b.add("takePrevious", "&Previous Take", keys({"Shift+T"}), [&app] { app.stepTakes(app.selection(), -1); });
     b.add("takeAdd", "&Add...", QList<QKeySequence>(), [this, tl, &app] {
         if (app.selection().empty()) { app.status("Select the event to add takes to first."); return; }
-        const QStringList files = localFilesFor(QFileDialog::getOpenFileNames(this, "Add Takes", QSettings().value("media/importFolder", projectFolder()).toString(), "Media files (*)"));
+        const QStringList files = QFileDialog::getOpenFileNames(this, "Add Takes", QSettings().value("media/importFolder", projectFolder()).toString(), "Media files (*)");
         if (!files.isEmpty()) QSettings().setValue("media/importFolder", QFileInfo(files.first()).absolutePath());
         std::vector<uint64_t> media;
         for (const QString& f : files) {
@@ -2862,12 +2852,11 @@ void MainWindow::showEvent(QShowEvent* e)
     QMainWindow::showEvent(e);
     if (firstShow_) {
         firstShow_ = false;
-        // with the touch interface the desktop layout is arranged when the window goes back to it
-        if (!startLayoutRestored_ && !touch_) {
+        if (!startLayoutRestored_) {
             applyLayout(DefaultLayout);
             const QSize was = size();
             QTimer::singleShot(300, this, [this, was] {
-                if (!touch_ && size() != was && currentLayout_ == builtinLayoutName(DefaultLayout)) applyLayout(DefaultLayout);
+                if (size() != was && currentLayout_ == builtinLayoutName(DefaultLayout)) applyLayout(DefaultLayout);
             });
         }
     }

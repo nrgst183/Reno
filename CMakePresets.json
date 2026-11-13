@@ -100,30 +100,6 @@
         "RENO_FFMPEG_DIR": "/usr/local"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "FreeBSD" }
-    },
-    {
-      "name": "android-arm64",
-      "displayName": "Android arm64 Release",
-      "description": "Needs RENO_QT_ANDROID (Qt for Android arm64-v8a), RENO_QT_HOST (the same Qt version for this computer), ANDROID_NDK_ROOT and ANDROID_SDK_ROOT, and RENO_FFMPEG_ANDROID (FFmpeg built for Android arm64)",
-      "inherits": "base",
-      "toolchainFile": "$env{RENO_QT_ANDROID}/lib/cmake/Qt6/qt.toolchain.cmake",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "QT_HOST_PATH": "$env{RENO_QT_HOST}",
-        "ANDROID_ABI": "arm64-v8a",
-        "ANDROID_PLATFORM": "android-28",
-        "RENO_FFMPEG_DIR": "$env{RENO_FFMPEG_ANDROID}"
-      }
-    },
-    {
-      "name": "ios",
-      "displayName": "iOS (Xcode project)",
-      "description": "On a Mac with Xcode: needs RENO_QT_IOS (Qt for iOS), RENO_QT_HOST (Qt for macOS of the same version) and RENO_FFMPEG_IOS (FFmpeg built for iOS as static libraries); for iOS 16 and later; sign and run from the Xcode project made in build/ios",
-      "inherits": "base",
-      "generator": "Xcode",
-      "toolchainFile": "$env{RENO_QT_IOS}/lib/cmake/Qt6/qt.toolchain.cmake",
-      "cacheVariables": { "QT_HOST_PATH": "$env{RENO_QT_HOST}", "RENO_FFMPEG_DIR": "$env{RENO_FFMPEG_IOS}", "CMAKE_OSX_DEPLOYMENT_TARGET": "16.0" },
-      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
     }
   ],
   "buildPresets": [
@@ -137,8 +113,6 @@
     { "name": "macos-release",           "configurePreset": "macos-release" },
     { "name": "windows-cross",           "configurePreset": "windows-cross" },
     { "name": "windows7-clangcl-release", "configurePreset": "windows7-clangcl-release" },
-    { "name": "freebsd-release",         "configurePreset": "freebsd-release" },
-    { "name": "android-arm64",           "configurePreset": "android-arm64" },
-    { "name": "ios",                     "configurePreset": "ios", "configuration": "Release" }
+    { "name": "freebsd-release",         "configurePreset": "freebsd-release" }
   ]
 }

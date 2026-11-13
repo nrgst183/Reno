@@ -1,5 +1,4 @@
-// The thread that reads media for the timelines' thumbnails and waveforms (the desktop timeline's and the touch one's),
-// and the waveform it fills in. Implemented in timeline_loader.cpp.
+// The thread that reads media for the timeline's thumbnails and waveforms, and the waveform it fills in. Implemented in timeline_loader.cpp.
 #pragma once
 #include "../engine/engine.h"
 #include "../media/vegasfiles.h"

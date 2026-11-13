@@ -277,9 +277,8 @@ Endpoint::~Endpoint() { close(); delete d_; }
 bool Endpoint::start(const std::string& exe, std::string* error)
 {
     close();
-#if defined(__APPLE__) || defined(__ANDROID__)
-    // macOS and iOS run no 32-bit programs at all (and have no process-shared unnamed semaphores), Android neither (and has
-    // no shm_open): there is no bridge to start
+#if defined(__APPLE__)
+    // macOS runs no 32-bit programs at all (and has no process-shared unnamed semaphores): there is no bridge to start
     (void)exe;
     if (error) *error = "32-bit plug-ins cannot run on this system";
     return false;

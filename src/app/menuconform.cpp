@@ -110,7 +110,7 @@ QWidget*& mainWindow()
 }
 
 // Menus that show only VEGAS's items (Reno's own extras there are commands with keys: they stay on the window, out of
-// the menu), the Touch Interface switch excepted.
+// the menu).
 bool vegasItemsOnly(const QString& path) { return path == "View"; }
 
 // Actions moved from a menu to one of its submenus (VEGAS has them one level deeper than Reno), so the menu they left does
@@ -184,7 +184,7 @@ void conform(QMenu* m, const std::vector<Node>& spec, const QString& path, QMenu
     std::vector<QAction*> extras;
     for (QAction* a : old)
         if (!a->isSeparator() && !used.count(a) && !moved().count(a)) {
-            if (vegasItemsOnly(path) && a->objectName() != "touchInterface" && !a->menu()) {
+            if (vegasItemsOnly(path) && !a->menu()) {
                 if (mainWindow()) mainWindow()->addAction(a);
                 continue;
             }

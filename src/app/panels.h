@@ -113,9 +113,6 @@ public:
     void setStatusBarVisible(bool on);
     bool statusBarVisible() const;
     QRect pictureRect() const;          // where the image is drawn in pictureWidget()
-    // The picture alone, without the tool bar, status bar and transport (the touch interface has its own); nothing
-    // remembered changes, and false brings back what was showing.
-    void setBare(bool bare);
     // Shows another image than the timeline's until the timeline's next one (the Trimmer's, with Show Video in Preview
     // Window); an empty image shows the timeline's last again.
     void showPicture(const QImage& img);

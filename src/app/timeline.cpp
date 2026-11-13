@@ -5,9 +5,6 @@
 // Layout and colors follow VEGAS Pro's dark track view. Thumbnails and waveforms are made on a thread of their own (Loader)
 // and cached; painting only uses what is there and requests the rest.
 #include "timeline_internal.h"
-#include <QGestureEvent>
-#include <QPanGesture>
-#include <QPinchGesture>
 #include <cstdlib>
 
 namespace reno {
@@ -107,33 +104,6 @@ TimelineWidget::Impl::Impl(TimelineWidget* w, Playback* pb) : q(w), playback(pb)
         return true;
     };
     q->installEventFilter(f);
-
-#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
-    // touch screens: one finger works as the mouse (Qt makes mouse events of it), two fingers pinch to zoom about where
-    // they are and drag to scroll across and up and down
-    q->grabGesture(Qt::PinchGesture);
-    q->grabGesture(Qt::PanGesture);
-    Filter* touch = new Filter(q);
-    touch->fn = [this](QEvent* e) {
-        if (e->type() != QEvent::Gesture) return false;
-        QGestureEvent* ge = static_cast<QGestureEvent*>(e);
-        if (QPinchGesture* pg = static_cast<QPinchGesture*>(ge->gesture(Qt::PinchGesture))) {
-            if (pg->changeFlags() & QPinchGesture::ScaleFactorChanged) {
-                const double x = q->mapFromGlobal(pg->centerPoint().toPoint()).x();
-                setZoom(pps * pg->scaleFactor(), timeAtF(x), x);
-            }
-            ge->accept(pg);
-        }
-        if (QPanGesture* pan = static_cast<QPanGesture*>(ge->gesture(Qt::PanGesture))) {
-            const QPointF d = pan->delta();
-            setViewStart(viewStart - d.x() / pps);
-            setScrollY(scrollY - (int)std::lround(d.y()));
-            ge->accept(pan);
-        }
-        return true;
-    };
-    q->installEventFilter(touch);
-#endif
 
     updateFonts();
     loader.reset(new Loader(app.mediaOpener, [this] { loaderReady(); }));

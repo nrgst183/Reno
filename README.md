@@ -4,7 +4,7 @@
 
 A video editor that works like VEGAS Pro 18. It opens and saves `.veg` projects, has the same menus and shortcuts, and
 runs the same plug-ins: OpenFX video effects and VST2, VST3 and DirectX audio effects. Written in C++17 with Qt 6,
-FFmpeg and Vulkan, for Windows, Linux and macOS, with newer builds for Windows 7, FreeBSD, Android and iOS.
+FFmpeg and Vulkan, for Windows, Linux and macOS, with newer builds for Windows 7 and FreeBSD.
 
 Reno is not affiliated with VEGAS, MAGIX or Sony, and contains no VEGAS code or files. It has its own versions of all
 of VEGAS Pro 18's video effects, transitions and generators, made to match VEGAS's output. It uses them even when VEGAS
@@ -44,8 +44,6 @@ version filled in.
 | `reno-macos-x64.zip` | macOS 11 and later, Intel | not yet tried on a Mac |
 | `reno-windows7-x64.zip` | Windows 7 SP1 and 8.1, 64-bit | not yet tried |
 | `reno-freebsd-x64.tar.gz` | FreeBSD 14, amd64 | not yet tried |
-| `reno-android-arm64.apk` | Android 9 and later, 64-bit ARM | not yet tried |
-| `reno-ios-unsigned.ipa` | iPhone and iPad, iOS 16 and later | not yet tried |
 
 Things to know for each system:
 
@@ -57,12 +55,8 @@ Things to know for each system:
   KB2999226), and GPU effects need a graphics driver with Vulkan for Windows 7.
 - **FreeBSD:** install Qt and FFmpeg from packages first:
   `pkg install qt6-base qt6-multimedia ffmpeg vulkan-loader`.
-- **Android:** each build is signed with a key of its own, so uninstall the older one before installing a newer one.
-- **iOS:** the app is not signed. Sign it with your own Apple ID (for example with Sideloadly or AltStore) to install it.
 
-32-bit plug-ins and VEGAS's DirectX audio plug-ins work on Windows only. On Android and iOS Reno has its own effects
-only (plug-ins are desktop programs and can't load there), no `reno_cli`, and FFmpeg's own encoders instead of x264 and
-x265.
+32-bit plug-ins and VEGAS's DirectX audio plug-ins work on Windows only.
 
 ## Formats and codecs
 
@@ -85,22 +79,6 @@ each one in its own process, so a plug-in that crashes can't take Reno down with
 
 Keep backups of your projects. Reno saves the previous file as `<name>.veg.bak`, but its `.veg` output isn't tested
 against every VEGAS version. Known gaps are listed in [docs/NOTES.md](docs/NOTES.md).
-
-### Phones and tablets
-
-On Android and iOS Reno starts with a touch interface. The playhead stays in the middle of the timeline and the
-tracks move under it:
-
-- Drag across the tracks to move through the project, and flick to keep going. Pinch with two fingers to zoom.
-- Tap a clip to select it, and tap an empty place to clear the selection. A selected clip has handles at its ends:
-  drag them to trim it. Drag a selected clip to move it, or hold a finger on any clip to pick it up. Edges snap to the
-  playhead, markers and other clips.
-- The tool bar at the bottom follows the selection: with nothing selected it adds media, sound, text, effects and
-  tracks; with clips selected it splits them, changes their speed, volume and fades, and adds effects and
-  transitions. Tap a track's name at the left for its settings.
-- Tap the picture to play or pause. Export renders MP4 video or the sound alone, with Render As for every other
-  format. The menu at the top left opens and saves projects, and lists every command of the desktop menus. It also
-  switches to the desktop interface.
 
 ### Command line
 
@@ -175,38 +153,6 @@ run:
     pkg install cmake ninja pkgconf qt6-base qt6-multimedia ffmpeg vulkan-loader
     cmake --preset freebsd-release
     cmake --build --preset freebsd-release
-
-### Android
-
-You need the Android SDK, NDK 26.1.10909125 and JDK 17, plus Qt 6.8.3 for Android and for your computer. Qt for
-Android 6.7 and later is listed under the `all_os` host:
-
-    aqt install-qt all_os android 6.8.3 android_arm64_v8a -m qtmultimedia -O ~/Qt
-    aqt install-qt linux desktop 6.8.3 linux_gcc_64 -O ~/Qt
-
-Build FFmpeg for Android, then Reno's APK:
-
-    export ANDROID_SDK_ROOT=~/Android/Sdk ANDROID_NDK_ROOT=~/Android/Sdk/ndk/26.1.10909125
-    tools/build_ffmpeg_android.sh
-    ~/Qt/6.8.3/android_arm64_v8a/bin/qt-cmake -S . -B build/android -G Ninja -DCMAKE_BUILD_TYPE=Release \
-        -DQT_HOST_PATH=~/Qt/6.8.3/gcc_64 -DANDROID_SDK_ROOT=$ANDROID_SDK_ROOT -DANDROID_NDK_ROOT=$ANDROID_NDK_ROOT \
-        -DRENO_FFMPEG_DIR=$PWD/deps/ffmpeg-android
-    cmake --build build/android --target apk
-
-The APK is under `build/android/android-build/build/outputs/apk/`. Sign it with `apksigner` (from the SDK's
-build-tools) to install it. Qt Creator can also open the project and run it on a connected device.
-
-### iOS
-
-On a Mac with Xcode:
-
-    aqt install-qt mac ios 6.8.3 ios -m qtmultimedia --autodesktop -O ~/Qt
-    tools/build_ffmpeg_ios.sh
-    ~/Qt/6.8.3/ios/bin/qt-cmake -S . -B build/ios -G Xcode -DQT_HOST_PATH=~/Qt/6.8.3/macos -DRENO_FFMPEG_DIR=$PWD/deps/ffmpeg-ios
-    open build/ios/Reno.xcodeproj
-
-The app is built for iOS 16 and later. In Xcode choose your team under Signing & Capabilities for the `reno` target,
-then run it on your iPhone or iPad.
 
 ## Tests
 
