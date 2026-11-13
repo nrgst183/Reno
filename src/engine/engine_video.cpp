@@ -367,19 +367,36 @@ public:
             }
         }
     }
-    ImagePtr find(const Key& k, const ImagePtr& in)
+    // 'fp': fingerprint(*in), worked out once by the caller for find and put both.
+    // Only kept pictures with the same settings and the same fingerprint are compared pixel by pixel, and that outside the
+    // lock: every render thread asks, and a whole frame compared under it (33 MB at 1080p float, up to kMaxEntries of
+    // them) held them all up.
+    ImagePtr find(const Key& k, const ImagePtr& in, uint64_t fp)
     {
-        std::lock_guard<std::mutex> lk(mu_);
-        for (Entry& e : list_) {
-            if (!(e.key == k) || !sameFrame(*e.in, in)) continue;
-            e.used = ++clock_;
-            e.hit = true;
+        if (!in) return ImagePtr();
+        struct Cand { ImagePtr in, out; };
+        std::vector<Cand> cands;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            for (const Entry& e : list_)
+                if (e.fp == fp && e.key == k) cands.push_back({e.in, e.out});
+        }
+        for (const Cand& c : cands) {
+            if (!sameFrame(*c.in, in)) continue;
+            std::lock_guard<std::mutex> lk(mu_);
+            for (Entry& e : list_)
+                if (e.out == c.out) {
+                    e.used = ++clock_;
+                    e.hit = true;
+                    break;
+                }
             unused_ = 0;
-            return e.out;
+            return c.out;
         }
         return ImagePtr();
     }
-    void put(const Key& k, const ImagePtr& in, const ImagePtr& out)
+    static uint64_t fingerprintOf(const ImagePtr& in) { return in ? fingerprint(*in) : 0; }
+    void put(const Key& k, const ImagePtr& in, const ImagePtr& out, uint64_t fp)
     {
         if (!in || !out || out == in) return;
         const size_t cost = in->byteSize() + out->byteSize();
@@ -389,7 +406,6 @@ public:
             // At first, and after many pictures were let go without ever being used again (frames that do not come again),
             // only one whose input has been seen before (going by a sample of its pixels) is kept, so the memo does not
             // hold ~100 MB for nothing.
-            const uint64_t fp = fingerprint(*in);
             bool seen = false;
             for (const auto& r : seen_) seen = seen || (r.second == fp && r.first == k);
             if (!seen) {
@@ -416,6 +432,7 @@ public:
         e.key = k;
         e.in = in;
         e.out = out;
+        e.fp = fp;
         e.cost = cost;
         e.used = ++clock_;
         bytes_ += cost;
@@ -453,6 +470,7 @@ private:
     struct Entry {
         Key key;
         ImagePtr in, out;
+        uint64_t fp = 0;                        // fingerprint(*in)
         size_t cost = 0;
         uint64_t used = 0;
         bool hit = false;
@@ -2133,10 +2151,12 @@ struct VideoEngine::Pass {
         // the same input and settings as a picture this effect made before (FxMemo)
         const bool remember = composeMemoOn() && !deferToNext && input && inputs.size() == 1 && main == kOfxImageEffectSimpleSourceClipName && FxMemo::pure(inst);
         FxMemo::Key memoKey;
+        uint64_t memoFp = 0;
         if (remember) {
             input->sync();
             FxMemo::keyOf(inst, frame, ro, memoKey);
-            if (ImagePtr hit = fxMemo().find(memoKey, input)) {
+            memoFp = FxMemo::fingerprintOf(input);
+            if (ImagePtr hit = fxMemo().find(memoKey, input, memoFp)) {
                 gMemoHits.fetch_add(1, std::memory_order_relaxed);
                 return hit;
             }
@@ -2150,7 +2170,7 @@ struct VideoEngine::Pass {
         }
         if (!eng.fx_.error(slot.id).empty()) eng.fx_.setError(slot.id, std::string());     // it has recovered
         ImagePtr made = inDepth(toFrameSize(out));
-        if (remember && made && !made->gpuHold && !cancelled()) fxMemo().put(memoKey, input, made);
+        if (remember && made && !made->gpuHold && !cancelled()) fxMemo().put(memoKey, input, made, memoFp);
         return made;
     }
 

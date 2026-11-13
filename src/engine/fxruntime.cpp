@@ -204,7 +204,10 @@ bool FxRuntime::makeLane(uint64_t id, int lane)
     const Json state = live->saveState();
     std::string err;
     std::unique_ptr<ofx::Instance> inst = pl->createInstance(context, setup, &err);
-    if (inst) inst->loadState(state);
+    if (inst) {
+        inst->countsInAnyRevision = false;
+        inst->loadState(state);
+    }
     std::lock_guard<std::mutex> lk(mutex_);
     auto it = video_.find(id);
     if (it == video_.end() || it->second.inst.get() != live) return true;

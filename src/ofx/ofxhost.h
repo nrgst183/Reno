@@ -253,10 +253,14 @@ public:
     // Called (on whatever thread made the change) when a parameter's value or one of its properties changed.
     std::function<void(Param* p, const std::string& what)> onParamChanged;
     std::atomic<uint64_t> revision{1};
+    // False for a copy that only follows another instance (FxRuntime's render lanes): its changes are the other's, so
+    // they leave anyInstanceRevision alone (each lane catching up after an edit made everything worked out from it
+    // be worked out again).
+    bool countsInAnyRevision = true;
     void bumpRevision()
     {
         ++revision;
-        anyInstanceRevision().fetch_add(1);
+        if (countsInAnyRevision) anyInstanceRevision().fetch_add(1);
     }
 
     // The effect's own window at the top of its panel, if it supplies one (VEGAS's "HWnd interact").

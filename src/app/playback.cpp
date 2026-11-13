@@ -81,6 +81,7 @@ private:
 std::unique_ptr<AudioOutput> createSilentOutput() { return std::unique_ptr<AudioOutput>(new SilentOutput()); }
 
 static const int kMixBlock = 1024;
+static const size_t kSpareBlocks = 128;     // (0.5 s ahead at 192 kHz is 94 blocks)
 static const int kChunk = 8192;             // varispeed: the timeline's sound is rendered in pieces this long
 static const size_t kChunks = 8;            // and this many are kept (reading backwards or round a loop reuses them)
 // seconds the first sound waits at most for the mixer to get kAhead ahead (a slow start leaves silence before the
@@ -884,8 +885,13 @@ void Playback::audioThread()
     for (auto& x : ext) x.assign((size_t)kMixBlock, 0.f);
     int64_t prefetchFrom = 0;
     bool prefetched = false;
+    {
+        std::lock_guard<std::mutex> lk(audioMutex_);
+        if (spare_.capacity() < kSpareBlocks) spare_.reserve(kSpareBlocks);
+    }
     while (audioRun_) {
         double at, rate;
+        Block b;
         {
             std::unique_lock<std::mutex> lk(audioMutex_);
             const size_t aheadFrames = (size_t)(ahead_.load() * rateHz_);
@@ -894,7 +900,14 @@ void Playback::audioThread()
             if (queued_ >= aheadFrames) continue;
             at = mixPos_;
             rate = rate_;
+            // a played block's memory, filled again below (assign keeps what the vectors have)
+            if (!spare_.empty()) {
+                b = std::move(spare_.back());
+                spare_.pop_back();
+            }
         }
+        b.used = 0;
+        b.peaks.clear();
         const double asked = at;
         const int chans = outChannels_.load();
         std::shared_ptr<const Project> p = app_.snapshot();
@@ -905,7 +918,6 @@ void Playback::audioThread()
         }
         int n = kMixBlock;
         const bool loop = loopsNow(this, app_);
-        Block b;
         b.rate = rate;
         double next;
         if (rate == 1.0) {
@@ -966,8 +978,10 @@ void Playback::audioThread()
         }
         b.l.assign(l.begin(), l.begin() + n);
         b.r.assign(r.begin(), r.begin() + n);
-        if (chans == 6)
-            for (int c = 0; c < 4; ++c) b.ext[c].assign(ext[c].begin(), ext[c].begin() + n);
+        for (int c = 0; c < 4; ++c) {
+            if (chans == 6) b.ext[c].assign(ext[c].begin(), ext[c].begin() + n);
+            else b.ext[c].clear();                  // (a reused block's: the device would play them as these channels)
+        }
         std::lock_guard<std::mutex> lk(audioMutex_);
         if (mixPos_ != asked || rate_ != rate) continue;
         queue_.push_back(std::move(b));
@@ -1085,7 +1099,11 @@ void Playback::pullChannels(float* const* out, int channels, int frames)
             done += (int)n;
             queued_ -= n;
             heardPos_ = b.timeline + (double)b.used * b.rate;
-            if (b.used == b.l.size()) queue_.pop_front();
+            if (b.used == b.l.size()) {
+                // kept for the mixer rather than freed here (spare_)
+                if (spare_.size() < spare_.capacity()) spare_.push_back(std::move(b));
+                queue_.pop_front();
+            }
         }
     }
     {

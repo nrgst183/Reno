@@ -283,6 +283,10 @@ private:
     std::mutex audioMutex_;
     std::condition_variable audioCv_;
     std::deque<Block> queue_;
+    // Blocks the device has played, kept for the mixer to fill again: the device's thread then never frees their memory
+    // (freeing on it, under audioMutex_, can be slow enough to be heard). Its capacity is set once by the mixer; past
+    // that, played blocks are let go as before.
+    std::vector<Block> spare_;
     size_t queued_ = 0;
     std::atomic<double> ahead_{0.12};
     std::atomic<bool> heardSound_{false};

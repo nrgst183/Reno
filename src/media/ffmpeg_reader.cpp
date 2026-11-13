@@ -590,6 +590,7 @@ private:
     int64_t resumeAfter_ = kNoPts;  // after the card failed
     SwsPtr sws_;
     int swsSrcW_ = 0, swsSrcH_ = 0, swsSrcFmt_ = -1, swsDstW_ = 0, swsDstH_ = 0, swsSpace_ = -1, swsFull_ = -1, swsFlags_ = 0;
+    bool swsThreaded_ = false;      // sws_ was made with threads of its own (scaleThreaded)
     MemPtr tmp_;                    // swscale's output, top row first, before it is flipped into an Image
     size_t tmpBytes_ = 0;
     std::list<CacheEntry> lru_;     // most recently used first
@@ -1813,6 +1814,58 @@ static bool growBuffer(Buffer& buf, size_t& have, size_t need)
     return (bool)buf;
 }
 
+// convert()'s swscale context. For frames of 1080p and more it gets threads of its own: swscale's plain sws_scale()
+// runs on one processor, and a 4K frame's conversion took longer than its decode. (FFmpeg 5 and later; the threads
+// are used by sws_scale_frame() only, see scaleThreaded.) 'threaded' says which it got.
+static SwsContext* makeConvertSws(int sw, int sh, AVPixelFormat sf, int dw, int dh, AVPixelFormat df, int flags, bool& threaded)
+{
+    threaded = false;
+#if LIBSWSCALE_VERSION_MAJOR >= 6
+    const int threads = std::min(4, videoDecoderThreads());
+    if (threads > 1 && (int64_t)dw * dh >= 1920 * 1080) {
+        if (SwsContext* c = sws_alloc_context()) {
+            av_opt_set_int(c, "srcw", sw, 0);
+            av_opt_set_int(c, "srch", sh, 0);
+            av_opt_set_int(c, "src_format", sf, 0);
+            av_opt_set_int(c, "dstw", dw, 0);
+            av_opt_set_int(c, "dsth", dh, 0);
+            av_opt_set_int(c, "dst_format", df, 0);
+            av_opt_set_int(c, "sws_flags", flags, 0);
+            av_opt_set_int(c, "threads", threads, 0);
+            if (sws_init_context(c, nullptr, nullptr) >= 0) {
+                threaded = true;
+                return c;
+            }
+            sws_freeContext(c);
+        }
+    }
+#endif
+    return sws_getContext(sw, sh, sf, dw, dh, df, flags, nullptr, nullptr, nullptr);
+}
+
+// 'src' whole into 'dst' (BGRA, w x h, rows 'stride' apart, 'bytes' long) on the context's own threads. False if it
+// could not (the caller then uses sws_scale).
+static bool scaleThreaded(SwsContext* c, const AVFrame* src, uint8_t* dst, int stride, int w, int h, size_t bytes)
+{
+#if LIBSWSCALE_VERSION_MAJOR >= 6
+    FramePtr out(av_frame_alloc());
+    if (!out) return false;
+    out->format = AV_PIX_FMT_BGRA;
+    out->width = w;
+    out->height = h;
+    // (the frame must hold a reference to its memory, or swscale makes memory of its own; the buffer is the reader's,
+    // so letting it go frees nothing)
+    out->buf[0] = av_buffer_create(dst, bytes, [](void*, uint8_t*) {}, nullptr, 0);
+    if (!out->buf[0]) return false;
+    out->data[0] = dst;
+    out->linesize[0] = stride;
+    return sws_scale_frame(c, out.get(), src) >= 0;
+#else
+    (void)c, (void)src, (void)dst, (void)stride, (void)w, (void)h, (void)bytes;
+    return false;
+#endif
+}
+
 // Copies a BGRA frame as stored (top row first, tw0 x th0) into 'img' (ow x oh, bottom row first), turned by
 // 'rotation' degrees clockwise; with 'alpha' the colours are premultiplied, else the picture is made opaque.
 static void storeTurned(const uint8_t* src, int srcStride, int ow, int oh, int tw0, int th0, int rotation, bool alpha, Image& img)
@@ -1891,7 +1944,7 @@ ImagePtr FFReader::convert(const AVFrame* f, int ow, int oh)
 
     if (!sws_ || swsSrcW_ != f->width || swsSrcH_ != f->height || swsSrcFmt_ != (int)fmt || swsDstW_ != tw || swsDstH_ != th ||
         swsSpace_ != space || swsFull_ != full || swsFlags_ != flags) {
-        sws_.reset(sws_getContext(f->width, f->height, fmt, tw, th, AV_PIX_FMT_BGRA, flags, nullptr, nullptr, nullptr));
+        sws_.reset(makeConvertSws(f->width, f->height, fmt, tw, th, AV_PIX_FMT_BGRA, flags, swsThreaded_));
         if (!sws_) return nullptr;
         // The source's own matrix and range; the destination is RGB, so its table and range are not used.
         const int* coefficients = sws_getCoefficients(space);
@@ -1913,7 +1966,9 @@ ImagePtr FFReader::convert(const AVFrame* f, int ow, int oh)
     if (!growBuffer(tmp_, tmpBytes_, need)) return nullptr;
     uint8_t* dst[4] = {tmp_.get(), nullptr, nullptr, nullptr};
     int dstStride[4] = {stride, 0, 0, 0};
-    if (sws_scale(sws_.get(), f->data, f->linesize, 0, f->height, dst, dstStride) <= 0) return nullptr;
+    if (!(swsThreaded_ && scaleThreaded(sws_.get(), f, tmp_.get(), stride, tw, th, need)) &&
+        sws_scale(sws_.get(), f->data, f->linesize, 0, f->height, dst, dstStride) <= 0)
+        return nullptr;
     const uint8_t* src = tmp_.get();
     int srcStride = stride;
     if (deinterlace) {
