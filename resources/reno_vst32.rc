@@ -3,8 +3,8 @@
 IDI_ICON1 ICON "reno.ico"
 
 1 VERSIONINFO
-FILEVERSION     1,0,0,0
-PRODUCTVERSION  1,0,0,0
+FILEVERSION     1,1,0,0
+PRODUCTVERSION  1,1,0,0
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0x0L
 FILEOS          0x40004L
@@ -17,11 +17,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Reno"
             VALUE "FileDescription", "Reno 32-bit VST plug-in host"
-            VALUE "FileVersion", "1.0"
+            VALUE "FileVersion", "1.1"
             VALUE "InternalName", "reno_vst32"
             VALUE "OriginalFilename", "reno_vst32.exe"
             VALUE "ProductName", "Reno"
-            VALUE "ProductVersion", "1.0"
+            VALUE "ProductVersion", "1.1"
             VALUE "LegalCopyright", "All rights reserved"
         END
     END
