@@ -10,6 +10,10 @@
 #include <QMediaDevices>
 #include <QAudioDevice>
 #include <QIODevice>
+#include <QThread>
+#include <QTimer>
+#include <cstring>
+#include <mutex>
 
 namespace reno {
 namespace app {
@@ -26,20 +30,44 @@ float outputGain() { return outputGainRef().load(); }
 
 namespace {
 // Sink source: pulls interleaved sound from the mixer, stereo (pull) or multichannel (pullChannels).
+// With no mixer attached (between plays, while the device is kept open) it gives silence. The mixer is attached and
+// taken away under a lock, so once setPull(nullptr) returns no more sound is asked of it.
 class PullDevice : public QIODevice {
 public:
-    AudioOutput::Pull pull;
-    AudioOutput::PullChannels pullChannels;
     bool asFloat = true;
     int channels = 2;
     std::vector<float> ch[6];
 
+    void setPull(AudioOutput::Pull p, AudioOutput::PullChannels pc)
+    {
+        std::lock_guard<std::mutex> lk(pullMutex_);
+        pull_ = std::move(p);
+        pullChannels_ = std::move(pc);
+    }
+
     qint64 readData(char* data, qint64 maxSize) override
     {
-        const int nch = channels == 6 && pullChannels ? 6 : 2;
-        const int frameBytes = (asFloat ? 4 : 2) * nch;
+        std::lock_guard<std::mutex> lk(pullMutex_);
+        const int frameBytes = (asFloat ? 4 : 2) * channels;
         const int frames = (int)(maxSize / frameBytes);
         if (frames <= 0) return 0;
+        if (!pull_ && !pullChannels_) {
+            std::memset(data, 0, (size_t)frames * (size_t)frameBytes);
+            return (qint64)frames * frameBytes;
+        }
+        return mix(data, frames);
+    }
+    qint64 writeData(const char*, qint64) override { return 0; }
+    bool isSequential() const override { return true; }
+    qint64 bytesAvailable() const override { return 1 << 20; }
+
+private:
+    qint64 mix(char* data, int frames)
+    {
+        const int nch = channels == 6 && pullChannels_ ? 6 : 2;
+        const int frameBytes = (asFloat ? 4 : 2) * nch;
+        AudioOutput::Pull& pull = pull_;
+        AudioOutput::PullChannels& pullChannels = pullChannels_;
         for (int c = 0; c < nch; ++c)
             if ((int)ch[c].size() < frames) ch[c].resize((size_t)frames);
         if (nch == 6) {
@@ -73,9 +101,9 @@ public:
         }
         return (qint64)frames * frameBytes;
     }
-    qint64 writeData(const char*, qint64) override { return 0; }
-    bool isSequential() const override { return true; }
-    qint64 bytesAvailable() const override { return 1 << 20; }
+    std::mutex pullMutex_;
+    AudioOutput::Pull pull_;
+    AudioOutput::PullChannels pullChannels_;
 };
 
 // The sound card chosen in Preferences, else the system default.
@@ -89,17 +117,24 @@ QAudioDevice chosenOutput(const std::string& id)
     return dev;
 }
 
+// The sound card is kept open for a while after playing stops, giving silence: opening a new QAudioSink takes a few
+// hundred milliseconds on Windows, and that was heard as a wait before every play and every click on the timeline
+// while playing. Playing again soon on the same card in the same format takes the open one.
 class QtOutput : public AudioOutput {
 public:
-    ~QtOutput() override { stop(); }
+    QtOutput()
+    {
+        idle_.setSingleShot(true);
+        QObject::connect(&idle_, &QTimer::timeout, [this] { close(); });
+    }
+    ~QtOutput() override { close(); }
     bool start(int sampleRate, Pull pull) override
     {
-        stop();
         QAudioDevice dev = chosenOutput(AppState::get().prefs.audioDevice);
         if (dev.isNull()) return false;
-        device_.pull = std::move(pull);
-        device_.pullChannels = nullptr;
-        return open(dev, sampleRate, 2);
+        if (!openFor(dev, sampleRate, 2)) return false;
+        device_.setPull(std::move(pull), nullptr);
+        return true;
     }
     int maxChannels() const override
     {
@@ -108,22 +143,20 @@ public:
     }
     bool startChannels(int sampleRate, int channels, PullChannels pull) override
     {
-        stop();
         if (channels != 6) return false;
         QAudioDevice dev = chosenOutput(AppState::get().prefs.audioDevice);
         if (dev.isNull() || dev.maximumChannelCount() < 6) return false;
-        device_.pull = nullptr;
-        device_.pullChannels = std::move(pull);
-        return open(dev, sampleRate, 6);
+        if (!openFor(dev, sampleRate, 6)) return false;
+        device_.setPull(nullptr, std::move(pull));
+        return true;
     }
     void stop() override
     {
-        if (sink_) {
-            sink_->stop();
-            delete sink_;
-            sink_ = nullptr;
-        }
-        if (device_.isOpen()) device_.close();
+        // no more sound is asked of the mixer from here on; the card goes on with silence until it is closed
+        device_.setPull(nullptr, nullptr);
+        if (!sink_) return;
+        if (QThread::currentThread() == idle_.thread()) idle_.start(kKeepOpenMs);
+        else close();
     }
     double latencySeconds() const override
     {
@@ -133,6 +166,36 @@ public:
     std::string name() const override { return name_; }
 
 private:
+    static const int kKeepOpenMs = 30000;
+
+    // The open sink if it is the same card in the same format and still running, else a new one.
+    bool openFor(const QAudioDevice& dev, int sampleRate, int channels)
+    {
+        idle_.stop();
+        const double seconds = bufferSeconds();
+        if (sink_ && dev.id() == deviceId_ && sampleRate == rate_ && channels == device_.channels && seconds == bufferSeconds_ &&
+            sink_->error() == QAudio::NoError && sink_->state() != QAudio::StoppedState)
+            return true;
+        close();
+        return open(dev, sampleRate, channels);
+    }
+
+    // Preferences > Audio Device, Playback buffering (50 ms until set)
+    static double bufferSeconds() { return std::max(0.02, std::min(1.0, vprefs::real("prefs/playbackBuffer"))); }
+
+    void close()
+    {
+        idle_.stop();
+        device_.setPull(nullptr, nullptr);
+        if (sink_) {
+            sink_->stop();
+            delete sink_;
+            sink_ = nullptr;
+        }
+        if (device_.isOpen()) device_.close();
+        deviceId_.clear();
+    }
+
     bool open(const QAudioDevice& dev, int sampleRate, int channels)
     {
         QAudioFormat f;
@@ -153,14 +216,20 @@ private:
         sink_ = new QAudioSink(dev, f);
         frameBytes_ = (device_.asFloat ? 4 : 2) * channels;
         rate_ = sampleRate;
-        // Preferences > Audio Device, Playback buffering (50 ms until set)
-        const double seconds = std::max(0.02, std::min(1.0, vprefs::real("prefs/playbackBuffer")));
-        sink_->setBufferSize((int)(sampleRate * seconds) * frameBytes_);
+        bufferSeconds_ = bufferSeconds();
+        sink_->setBufferSize((int)(sampleRate * bufferSeconds_) * frameBytes_);
         sink_->start(&device_);
-        if (sink_->error() != QAudio::NoError) { stop(); return false; }
+        if (sink_->error() != QAudio::NoError) {
+            close();
+            return false;
+        }
+        deviceId_ = dev.id();
         return true;
     }
     PullDevice device_;
+    QTimer idle_;                   // closes the card when it has been idle a while
+    QByteArray deviceId_;           // the card the open sink plays to
+    double bufferSeconds_ = 0;
     QAudioSink* sink_ = nullptr;
     int frameBytes_ = 8, rate_ = 48000;
     std::string name_ = "default sound device";
