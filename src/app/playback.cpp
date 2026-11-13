@@ -91,6 +91,7 @@ static const double kAhead = 0.12;
 static const double kAheadMost = 0.5;
 static const size_t kCacheFrames = 24;
 static const int kMaxVideoThreads = 8;
+static const int kAutoVideoThreads = 4;         // frames made at once when Preferences leaves it automatic
 static const double kAheadSeconds = 2.0;        // how far ahead of the position idle frame threads render into the RAM preview
 static const double kAheadMostSeconds = 20.0;   // (more where frames are slow: three times the slowest average ahead, at most this)
 static const size_t kRenderWindow = 16;         // frames in the overall average render time
@@ -429,7 +430,9 @@ void Playback::startAt(double from)
     // Frames: Preferences' number of threads (else every processor Reno may use) render ahead when frames take longer
     // than they last, if every effect allows several threads (OpenFX render thread safety) and no nested project
     // needs one thread.
-    int threads = app_.prefs.renderThreads > 0 ? app_.prefs.renderThreads : processorCount();
+    // (automatic: at most kAutoVideoThreads. Each frame being made holds its own full-size working pictures, ~100 MB at
+    // 1080p, and a frame's own work already spreads over every processor; a higher number set in Preferences is used.)
+    int threads = app_.prefs.renderThreads > 0 ? app_.prefs.renderThreads : std::min(kAutoVideoThreads, processorCount());
     threads = std::max(1, std::min(kMaxVideoThreads, threads));
     threadsAsked_ = threads;
     threadsCheckedAt_ = steadyNow();

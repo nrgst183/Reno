@@ -322,15 +322,35 @@ OfxStatus describeInContext(const Def& d, OfxImageEffectHandle effect)
 }
 
 // Float frames are kept per thread between renders: a full-size frame is tens of megabytes and allocating it each time costs as much in page faults
-// as the effect itself. Frames bigger than 1080p are not kept.
+// as the effect itself. Frames bigger than 1080p are not kept, and all threads together keep at most kScratchBudget: three
+// 1080p frames a thread, on every thread that ever rendered (eight playing, more rendering), held 100 MB a thread for good.
 struct Scratch {
     std::vector<float> src, src2, out;
-    static void keep(std::vector<float>& from, std::vector<float>& to)
+    static constexpr size_t kScratchBudget = (size_t)256 << 20;
+    static std::atomic<size_t>& kept()
     {
-        if (from.capacity() <= (size_t)10 * 1000 * 1000) to = std::move(from);          // 40 MB at most each: a 1080p frame, not a 4K one
-        else to = std::vector<float>();
+        static std::atomic<size_t> k{0};
+        return k;
+    }
+    static size_t bytesOf(const std::vector<float>& v) { return v.capacity() * sizeof(float); }
+    // out of the keeping: the caller uses it now
+    static void take(std::vector<float>& from, std::vector<float>& to)
+    {
+        kept().fetch_sub(bytesOf(from));
+        to = std::move(from);
         from = std::vector<float>();
     }
+    static void keep(std::vector<float>& from, std::vector<float>& to)
+    {
+        const size_t bytes = bytesOf(from);
+        to = std::vector<float>();
+        if (bytes && from.capacity() <= (size_t)10 * 1000 * 1000) {          // 40 MB at most each: a 1080p frame, not a 4K one
+            if (kept().fetch_add(bytes) + bytes <= kScratchBudget) to = std::move(from);
+            else kept().fetch_sub(bytes);
+        }
+        from = std::vector<float>();
+    }
+    ~Scratch() { kept().fetch_sub(bytesOf(src) + bytesOf(src2) + bytesOf(out)); }
 };
 thread_local Scratch gScratch;
 
@@ -340,9 +360,9 @@ OfxStatus render(const Def& d, OfxImageEffectHandle effect, PS inArgs)
     Ctx c;
     c.owner = effect;
     bool tiesDown = false;     // an effect VEGAS draws in float into an 8-bit frame: a result exactly half way between two levels goes to the lower one (Levels' captured pictures)
-    c.src.px = std::move(gScratch.src);
-    c.src2.px = std::move(gScratch.src2);
-    c.out.px = std::move(gScratch.out);
+    Scratch::take(gScratch.src, c.src.px);
+    Scratch::take(gScratch.src2, c.src2.px);
+    Scratch::take(gScratch.out, c.out.px);
     if (d.generator) c.src.px.clear();                              // nothing is loaded into them: empty, as new
     if (!d.transition) c.src2.px.clear();
     struct GiveBack {

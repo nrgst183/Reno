@@ -44,6 +44,12 @@ const std::vector<ShortcutInfo>& shortcutList();
 
 class MainWindow : public QMainWindow {
 public:
+    void updateDockTabs();              // a docked window's own tab shows while it is alone in its place
+    // A docked window's tab dragged away (beyond the drag distance, the mouse at 'global'): the window comes out and
+    // follows the mouse; let go over another window to join its tabs (its middle) or sit beside it (near its edge), or
+    // near an edge of the timeline's area to dock along that side of the main window; elsewhere it stays floating.
+    // Esc puts everything back as it was.
+    void dragDockFromTab(QDockWidget* d, const QPoint& global, const QPoint& grabInTab);
     MainWindow();
     ~MainWindow() override;
 
@@ -136,7 +142,6 @@ private:
     QDockWidget* dock(const QString& title, const QString& name, QWidget* w);
     // The same, the window made by 'make' as a child of the dock's page (a window made elsewhere and moved in is styled twice).
     QDockWidget* dock(const QString& title, const QString& name, const std::function<QWidget*(QWidget*)>& make);
-    void updateDockTabs();              // a docked window's own tab shows while it is alone in its place
     void compositingMenu(QMenu* menu, uint64_t trackId);    // added to a video track's menu
     void showDiskSpace();               // status bar's right-hand side
     void restyle();                     // colours of the window's own bars

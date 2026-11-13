@@ -128,6 +128,9 @@ private:
 // ------------------------------------------------------------------ effects
 class Plugin;
 class Instance;
+// Goes up whenever any instance's revision does (a parameter set, a key added ...): what was worked out from every
+// instance's revision is still right while this has not moved (FxRuntime::videoRevision).
+std::atomic<uint64_t>& anyInstanceRevision();
 struct HwndInteractImpl;
 
 struct ClipDesc {
@@ -250,6 +253,11 @@ public:
     // Called (on whatever thread made the change) when a parameter's value or one of its properties changed.
     std::function<void(Param* p, const std::string& what)> onParamChanged;
     std::atomic<uint64_t> revision{1};
+    void bumpRevision()
+    {
+        ++revision;
+        anyInstanceRevision().fetch_add(1);
+    }
 
     // The effect's own window at the top of its panel, if it supplies one (VEGAS's "HWnd interact").
     bool hasHwndInteract() const;

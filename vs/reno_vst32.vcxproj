@@ -45,7 +45,9 @@
       <AdditionalIncludeDirectories>$(RenoRoot)third_party\vst2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <SubSystem>Console</SubSystem>
+      <!-- a windowless program: started by Reno with no console (none is made for it), main() still its start -->
+      <SubSystem>Windows</SubSystem>
+      <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>user32.lib;gdi32.lib;ole32.lib;oleaut32.lib;uuid.lib;shell32.lib;advapi32.lib;comdlg32.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>

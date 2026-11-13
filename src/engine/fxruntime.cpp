@@ -112,6 +112,7 @@ void FxRuntime::clear()
         for (auto& kv : video_) v.push_back(std::move(kv.second));
         for (auto& kv : audio_) a.push_back(std::move(kv.second));
         video_.clear();
+        ++mapRev_;
         audio_.clear();
         errors_.clear();
         fallbacks_.clear();
@@ -306,10 +307,22 @@ void FxRuntime::setError(uint64_t id, const std::string& e)
 
 uint64_t FxRuntime::videoRevision() const
 {
-    std::lock_guard<std::mutex> lk(mutex_);
+    // (read before the walk: a change during it leaves the cached value stale, so the next call walks again)
+    const uint64_t epoch = ofx::anyInstanceRevision().load(), map = mapRev_.load();
+    {
+        std::lock_guard<std::mutex> rk(revMutex_);
+        if (revEpoch_ == epoch && revMap_ == map && epoch != 0) return revCached_;
+    }
     uint64_t r = 0;
-    for (const auto& kv : video_)
-        if (kv.second.inst) r += kv.second.inst->revision.load() * 1000003ull + kv.first;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        for (const auto& kv : video_)
+            if (kv.second.inst) r += kv.second.inst->revision.load() * 1000003ull + kv.first;
+    }
+    std::lock_guard<std::mutex> rk(revMutex_);
+    revCached_ = r;
+    revEpoch_ = epoch;
+    revMap_ = map;
     return r;
 }
 
@@ -334,6 +347,7 @@ void FxRuntime::prepareVideo(const FxSlot& s, const Project& p, const char* role
             std::lock_guard<std::mutex> lk(mutex_);
             auto it = video_.find(s.id);
             if (it != video_.end()) { old.push_back(std::move(it->second)); video_.erase(it); }
+            ++mapRev_;
         }
         if (!old.empty() && old[0].inst) carried = old[0].inst->saveState();
         retire(std::move(old), std::vector<AudioFx>());
@@ -398,6 +412,7 @@ void FxRuntime::prepareVideo(const FxSlot& s, const Project& p, const char* role
     if (fellBack.empty()) fallbacks_.erase(s.id);
     else fallbacks_[s.id] = fellBack;
     video_[s.id] = std::move(fx);
+    ++mapRev_;
 }
 
 void FxRuntime::prepareAudio(const FxSlot& s, const Project& p)
@@ -671,7 +686,7 @@ void FxRuntime::releaseExcept(const std::set<uint64_t>& keep)
     {
         std::lock_guard<std::mutex> lk(mutex_);
         for (auto it = video_.begin(); it != video_.end();) {
-            if (!keep.count(it->first)) { v.push_back(std::move(it->second)); errors_.erase(it->first); fallbacks_.erase(it->first); it = video_.erase(it); }
+            if (!keep.count(it->first)) { v.push_back(std::move(it->second)); errors_.erase(it->first); fallbacks_.erase(it->first); it = video_.erase(it); ++mapRev_; }
             else ++it;
         }
         for (auto it = audio_.begin(); it != audio_.end();) {

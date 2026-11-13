@@ -14,6 +14,9 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
+#include <QMouseEvent>
+#include <QKeyEvent>
+#include <QDockWidget>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QElapsedTimer>
@@ -662,6 +665,98 @@ void testAbout()
           "about: lists the third-party notices");
 }
 
+// A docked window's tab dragged: out (it floats under the mouse), onto another window's middle (they share a place,
+// as tabs), beside it, and out again with Esc (back as it was).
+void testDockDrag()
+{
+    MainWindow w;
+    w.resize(1500, 900);
+    w.show();
+    uitest::settle(300);
+    QDockWidget* mixer = w.findChild<QDockWidget*>("dockMixer");
+    QDockWidget* preview = w.findChild<QDockWidget*>("dockPreview");
+    if (!mixer || !preview) {
+        check(false, "dock drag: the Mixing Console and Video Preview windows");
+        return;
+    }
+    // (each in a place of its own, so each shows its own tab)
+    w.removeDockWidget(mixer);
+    w.addDockWidget(Qt::BottomDockWidgetArea, mixer);
+    mixer->show();
+    preview->show();
+    uitest::settle(150);
+    w.updateDockTabs();
+    auto tabOf = [](QDockWidget* d) -> QWidget* {
+        for (QWidget* t : d->findChildren<QWidget*>("dockTab"))
+            if (t->isVisible()) return t;
+        return nullptr;
+    };
+    auto mouse = [](QWidget* to, QEvent::Type type, const QPoint& global, Qt::MouseButtons held) {
+        QMouseEvent e(type, QPointF(to->mapFromGlobal(global)), QPointF(global), Qt::LeftButton, held, Qt::NoModifier);
+        QApplication::sendEvent(to, &e);
+    };
+    // drag the tab: by the drag distance it comes out
+    QWidget* tab = tabOf(mixer);
+    check(tab != nullptr, "dock drag: the Mixing Console shows its own tab");
+    if (!tab) return;
+    const QPoint start = tab->mapToGlobal(QPoint(20, tab->height() / 2));
+    mouse(tab, QEvent::MouseButtonPress, start, Qt::LeftButton);
+    mouse(tab, QEvent::MouseMove, start + QPoint(0, -30), Qt::LeftButton);
+    uitest::settle(80);
+    check(mixer->isFloating() && w.property("dockDragging").toBool(), "dock drag: pulled by its tab, the window comes out and follows the mouse");
+    // over the Video Preview's middle: shown as going in with it; let go: they share a place, as tabs
+    const QPoint mid = preview->mapToGlobal(QPoint(preview->width() / 2, preview->height() / 2));
+    mouse(&w, QEvent::MouseMove, mid, Qt::LeftButton);
+    uitest::settle(50);
+    const QRect mark = w.property("dockDropArea").toRect();
+    check(mark == QRect(preview->mapToGlobal(QPoint(0, 0)), preview->size()), "dock drag: over another window's middle, all of it is marked");
+    mouse(&w, QEvent::MouseButtonRelease, mid, Qt::NoButton);
+    uitest::settle(150);
+    check(!mixer->isFloating() && w.tabifiedDockWidgets(preview).contains(mixer) && !w.property("dockDragging").toBool(),
+          "dock drag: let go there, the two share the place as tabs",
+          QString("floating %1, tabbed %2, dragging %3").arg(mixer->isFloating()).arg(w.tabifiedDockWidgets(preview).contains(mixer)).arg(w.property("dockDragging").toBool()).toStdString());
+    // out again, to the Video Preview's left edge (it is now one of its tabs: take it out first with the tab row)
+    w.removeDockWidget(mixer);
+    w.addDockWidget(Qt::BottomDockWidgetArea, mixer);
+    mixer->show();
+    uitest::settle(150);
+    w.updateDockTabs();
+    tab = tabOf(mixer);
+    if (tab) {
+        const QPoint s2 = tab->mapToGlobal(QPoint(20, tab->height() / 2));
+        mouse(tab, QEvent::MouseButtonPress, s2, Qt::LeftButton);
+        mouse(tab, QEvent::MouseMove, s2 + QPoint(0, -30), Qt::LeftButton);
+        uitest::settle(50);
+        const QPoint left = preview->mapToGlobal(QPoint(6, preview->height() / 2));
+        mouse(&w, QEvent::MouseMove, left, Qt::LeftButton);
+        uitest::settle(50);
+        mouse(&w, QEvent::MouseButtonRelease, left, Qt::NoButton);
+        uitest::settle(150);
+        const QRect mr(mixer->mapToGlobal(QPoint(0, 0)), mixer->size()), pr(preview->mapToGlobal(QPoint(0, 0)), preview->size());
+        check(!mixer->isFloating() && mr.right() <= pr.left() + 2 && !w.tabifiedDockWidgets(preview).contains(mixer),
+              "dock drag: let go near another window's left edge, it goes at its left");
+        // and Esc while dragging puts it back
+        tab = tabOf(mixer);
+        if (tab) {
+            const QRect was(mixer->mapToGlobal(QPoint(0, 0)), mixer->size());
+            const QPoint s3 = tab->mapToGlobal(QPoint(20, tab->height() / 2));
+            mouse(tab, QEvent::MouseButtonPress, s3, Qt::LeftButton);
+            mouse(tab, QEvent::MouseMove, s3 + QPoint(0, -40), Qt::LeftButton);
+            uitest::settle(50);
+            QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(&w, &esc);
+            uitest::settle(150);
+            const QRect now(mixer->mapToGlobal(QPoint(0, 0)), mixer->size());
+            check(!mixer->isFloating() && now == was, "dock drag: Esc puts it back as it was",
+                  QString("floating %1, was %2,%3 %4x%5, now %6,%7 %8x%9").arg(mixer->isFloating()).arg(was.x()).arg(was.y()).arg(was.width()).arg(was.height())
+                      .arg(now.x()).arg(now.y()).arg(now.width()).arg(now.height()).toStdString());
+        }
+    } else {
+        check(false, "dock drag: the Mixing Console's tab again");
+    }
+    uitest::shot(&w, gOut + "/dock_drag.png");
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -691,6 +786,7 @@ int main(int argc, char** argv)
     testBrowsers();
     testProperties();
     testAbout();
+    testDockDrag();
     testScan();
     // the Playback objects and their threads are gone: the program ends the ordinary way, as Reno does
     return uitest::summary();

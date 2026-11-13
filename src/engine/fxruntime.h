@@ -121,6 +121,11 @@ private:
     int madeSoFar_ = 0, toMake_ = 0;                    // for onMaking
     void prepareSurround(const Project& p);             // a 5.1 project's master effects (see prepare())
     mutable std::mutex mutex_;
+    // videoRevision, as last worked out, and what it was worked out from (anyInstanceRevision, mapRev_): asked for
+    // many times a frame by playing, it walked every effect each time under mutex_, which every render needs too.
+    std::atomic<uint64_t> mapRev_{1};          // goes up when video_ gains or loses an effect
+    mutable std::mutex revMutex_;
+    mutable uint64_t revCached_ = 0, revEpoch_ = 0, revMap_ = 0;
     std::map<uint64_t, VideoFx> video_;
     std::map<uint64_t, AudioFx> audio_;
     std::map<uint64_t, std::string> errors_;

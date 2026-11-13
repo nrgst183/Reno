@@ -154,6 +154,7 @@
 #include <QInputDialog>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QRubberBand>
 #include <QStyle>
 #include <QLabel>
 #include <QLineEdit>
@@ -922,11 +923,216 @@ public:
         v->addWidget(strip_);
         QObject::connect(fl, &QToolButton::clicked, dock, [dock] { dock->setFloating(!dock->isFloating()); });
         QObject::connect(cl, &QToolButton::clicked, dock, [dock] { dock->close(); });
+        // the tab can be dragged: away, the window comes out and can be docked somewhere else (as VEGAS's)
+        dock_ = dock;
+        tab_ = tab;
+        tab->setCursor(Qt::ArrowCursor);
+        tab->installEventFilter(this);
+        title->installEventFilter(this);
     }
     void setTabShown(bool on) { strip_->setVisible(on); }
 
+protected:
+    bool eventFilter(QObject* o, QEvent* e) override
+    {
+        if (e->type() == QEvent::MouseButtonPress) {
+            auto* me = static_cast<QMouseEvent*>(e);
+            if (me->button() == Qt::LeftButton) {
+                pressAt_ = me->globalPosition().toPoint();
+                grab_ = tab_->mapFromGlobal(pressAt_);
+                pressed_ = true;
+                return true;
+            }
+        } else if (e->type() == QEvent::MouseMove && pressed_) {
+            auto* me = static_cast<QMouseEvent*>(e);
+            const QPoint g = me->globalPosition().toPoint();
+            if ((g - pressAt_).manhattanLength() >= QApplication::startDragDistance()) {
+                pressed_ = false;
+                if (auto* mw = dynamic_cast<MainWindow*>(dock_->parentWidget())) mw->dragDockFromTab(dock_, g, grab_);
+            }
+            return true;
+        } else if (e->type() == QEvent::MouseButtonRelease) {
+            pressed_ = false;
+        }
+        return QWidget::eventFilter(o, e);
+    }
+
 private:
     QWidget* strip_ = nullptr;
+    QWidget* tab_ = nullptr;
+    QDockWidget* dock_ = nullptr;
+    bool pressed_ = false;
+    QPoint pressAt_, grab_;
+};
+
+// Moving a docked window by its tab (MainWindow::dragDockFromTab): while the button is held the window floats under the
+// mouse, and a blue frame shows where it would go on letting go.
+class DockDrag : public QObject {
+public:
+    // 'before': the layout as it was before the window came out (Esc goes back to it)
+    DockDrag(MainWindow* mw, QDockWidget* d, const std::vector<QDockWidget*>& docks, const QPoint& grab, const QByteArray& before)
+        : QObject(mw), mw_(mw), d_(d), docks_(docks), grab_(grab), before_(before)
+    {
+        band_ = new QRubberBand(QRubberBand::Rectangle);
+        band_->setObjectName("dockDropMark");
+        band_->setStyleSheet("QRubberBand { background: rgba(18, 176, 255, 60); border: 2px solid #12b0ff; }");
+        qApp->installEventFilter(this);
+        mw_->grabMouse();
+        mw_->setProperty("dockDragging", true);
+    }
+    ~DockDrag() override
+    {
+        delete band_;
+        mw_->setProperty("dockDragging", false);
+    }
+    void moveTo(const QPoint& g)
+    {
+        d_->move(g - grab_);
+        const Target t = targetAt(g);
+        target_ = t;
+        mw_->setProperty("dockDropArea", t.mark.isNull() ? QRect() : t.mark);
+        if (t.mark.isNull()) {
+            band_->hide();
+        } else {
+            band_->setGeometry(t.mark);
+            band_->show();
+            band_->raise();
+        }
+    }
+
+protected:
+    bool eventFilter(QObject*, QEvent* e) override
+    {
+        switch (e->type()) {
+        case QEvent::MouseMove:
+            moveTo(static_cast<QMouseEvent*>(e)->globalPosition().toPoint());
+            return true;
+        case QEvent::MouseButtonRelease:
+            finish(true);
+            return true;
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonDblClick:
+            return true;
+        case QEvent::ShortcutOverride:
+            // (Esc is the drag's while it goes on, not a shortcut's: Stop and the like do not get it)
+            if (static_cast<QKeyEvent*>(e)->key() == Qt::Key_Escape) {
+                e->accept();
+                return true;
+            }
+            return false;
+        case QEvent::KeyPress:
+            if (static_cast<QKeyEvent*>(e)->key() == Qt::Key_Escape) {
+                finish(false);
+                return true;
+            }
+            return false;
+        default:
+            return false;
+        }
+    }
+
+private:
+    // Where the window would go: beside or with another docked window, or along a side of the main window.
+    struct Target {
+        QDockWidget* with = nullptr;
+        bool tabs = false;
+        Qt::DockWidgetArea side = Qt::NoDockWidgetArea;   // with 'with': which side of it; alone: of the main window
+        QRect mark;
+    };
+    Target targetAt(const QPoint& g) const
+    {
+        Target t;
+        for (QDockWidget* o : docks_) {
+            if (o == d_ || o->isFloating() || !o->isVisible()) continue;
+            const QRect r(o->mapToGlobal(QPoint(0, 0)), o->size());
+            if (!r.contains(g)) continue;
+            t.with = o;
+            const double fx = (g.x() - r.left()) / (double)std::max(1, r.width()), fy = (g.y() - r.top()) / (double)std::max(1, r.height());
+            // the outer quarter on a side: beside it, on that side; the middle: with it, as tabs
+            const double edge = std::min({fx, 1 - fx, fy, 1 - fy});
+            if (edge > 0.25) {
+                t.tabs = true;
+                t.mark = r;
+            } else if (edge == fx) {
+                t.side = Qt::LeftDockWidgetArea;
+                t.mark = QRect(r.left(), r.top(), r.width() / 2, r.height());
+            } else if (edge == 1 - fx) {
+                t.side = Qt::RightDockWidgetArea;
+                t.mark = QRect(r.left() + r.width() / 2, r.top(), r.width() - r.width() / 2, r.height());
+            } else if (edge == fy) {
+                t.side = Qt::TopDockWidgetArea;
+                t.mark = QRect(r.left(), r.top(), r.width(), r.height() / 2);
+            } else {
+                t.side = Qt::BottomDockWidgetArea;
+                t.mark = QRect(r.left(), r.top() + r.height() / 2, r.width(), r.height() - r.height() / 2);
+            }
+            return t;
+        }
+        // near an edge of the timeline's area: along that side of the main window
+        if (QWidget* c = mw_->centralWidget()) {
+            const QRect r(c->mapToGlobal(QPoint(0, 0)), c->size());
+            if (r.contains(g)) {
+                const int band = std::clamp(std::min(r.width(), r.height()) / 5, 24, 60);
+                const int dl = g.x() - r.left(), dr = r.right() - g.x(), dt = g.y() - r.top(), db = r.bottom() - g.y();
+                const int m = std::min({dl, dr, dt, db});
+                if (m <= band) {
+                    if (m == dl) {
+                        t.side = Qt::LeftDockWidgetArea;
+                        t.mark = QRect(r.left(), r.top(), r.width() / 4, r.height());
+                    } else if (m == dr) {
+                        t.side = Qt::RightDockWidgetArea;
+                        t.mark = QRect(r.right() - r.width() / 4, r.top(), r.width() / 4, r.height());
+                    } else if (m == dt) {
+                        t.side = Qt::TopDockWidgetArea;
+                        t.mark = QRect(r.left(), r.top(), r.width(), r.height() / 3);
+                    } else {
+                        t.side = Qt::BottomDockWidgetArea;
+                        t.mark = QRect(r.left(), r.bottom() - r.height() / 3, r.width(), r.height() / 3);
+                    }
+                }
+            }
+        }
+        return t;
+    }
+    void finish(bool drop)
+    {
+        qApp->removeEventFilter(this);
+        mw_->releaseMouse();
+        band_->hide();
+        // (addDockWidget leaves a floating window floating: it is docked first, then moved where it goes)
+        if (drop && (target_.with || target_.side != Qt::NoDockWidgetArea)) d_->setFloating(false);
+        if (!drop) {
+            // (restoreState, too, leaves a floating window floating)
+            d_->setFloating(false);
+            mw_->restoreState(before_, kLayoutVersion);
+        } else if (target_.with && target_.tabs) {
+            mw_->tabifyDockWidget(target_.with, d_);
+            d_->show();
+            d_->raise();
+        } else if (target_.with) {
+            const Qt::DockWidgetArea area = mw_->dockWidgetArea(target_.with);
+            const Qt::Orientation o = target_.side == Qt::LeftDockWidgetArea || target_.side == Qt::RightDockWidgetArea ? Qt::Horizontal : Qt::Vertical;
+            mw_->addDockWidget(area, d_);
+            // (splitDockWidget puts its second after its first: for the left or top side, the other way round)
+            mw_->splitDockWidget(target_.with, d_, o);
+            if (target_.side == Qt::LeftDockWidgetArea || target_.side == Qt::TopDockWidgetArea) mw_->splitDockWidget(d_, target_.with, o);
+        } else if (target_.side != Qt::NoDockWidgetArea) {
+            mw_->addDockWidget(target_.side, d_);
+        }
+        mw_->setProperty("dockDropArea", QRect());
+        // (now, not when this goes: the next drag may start before it is deleted)
+        mw_->setProperty("dockDragging", false);
+        mw_->updateDockTabs();
+        deleteLater();
+    }
+
+    MainWindow* mw_;
+    QDockWidget* d_;
+    std::vector<QDockWidget*> docks_;
+    QPoint grab_;
+    QByteArray before_;
+    QRubberBand* band_ = nullptr;
+    Target target_;
 };
 
 QWidget* masterPage(QWidget* parent, QWidget* masterBus, std::function<void()> showMixer, Playback* pb = nullptr)
@@ -2515,6 +2721,19 @@ QDockWidget* MainWindow::dock(const QString& title, const QString& name, const s
     docks_.push_back(d);
     QObject::connect(d, &QDockWidget::topLevelChanged, this, [this](bool) { applyDockOptions(this, docks_); });
     return d;
+}
+
+void MainWindow::dragDockFromTab(QDockWidget* d, const QPoint& global, const QPoint& grabInTab)
+{
+    if (!d || property("dockDragging").toBool()) return;
+    // out of its place, the same size, under the mouse where the tab was held (by the floating window's title)
+    const QSize size = d->size();
+    const QByteArray before = saveState(kLayoutVersion);
+    d->setFloating(true);
+    d->resize(size);
+    const QPoint grab(std::clamp(grabInTab.x(), 8, std::max(8, size.width() - 8)), 10);
+    auto* drag = new DockDrag(this, d, docks_, grab, before);
+    drag->moveTo(global);
 }
 
 void MainWindow::updateDockTabs()

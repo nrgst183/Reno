@@ -24,6 +24,12 @@
 namespace reno {
 namespace ofx {
 
+std::atomic<uint64_t>& anyInstanceRevision()
+{
+    static std::atomic<uint64_t> r{1};
+    return r;
+}
+
 const char* depthString(PixelDepth d) { return d == PixelDepth::Float ? kOfxBitDepthFloat : kOfxBitDepthByte; }
 
 static const char* pixelOrder(PixelDepth d) { return d == PixelDepth::Byte ? kVegasPixelOrderBGRA : kVegasPixelOrderRGBA; }
@@ -730,7 +736,7 @@ void Instance::setClipSource(const std::string& clip, std::function<ImagePtr(dou
     c->props.setInt(kOfxImageClipPropConnected, (c->isOutput || c->source) ? 1 : 0);
     if (was == now || c->isOutput) return;
     clipPrefsDirty = true;
-    ++revision;
+    bumpRevision();
     if (!created_ || changeDepth > 8) return;
     ++changeDepth;
     PropertySet in;
@@ -899,7 +905,7 @@ void Instance::userSetValue(Param* p, const std::vector<double>& v, double time,
         p->value = vv;
     }
     p->props.setInt(kOfxParamPropIsAnimating, p->keys.empty() ? 0 : 1);
-    ++revision;
+    bumpRevision();
     changed(p, kOfxChangeUserEdited, time);
     if (onParamChanged) onParamChanged(p, "value");
 }
@@ -915,7 +921,7 @@ void Instance::userSetString(Param* p, const std::string& str, double time, bool
     } else {
         p->str = str;
     }
-    ++revision;
+    bumpRevision();
     changed(p, kOfxChangeUserEdited, time);
     if (onParamChanged) onParamChanged(p, "value");
 }
@@ -925,7 +931,7 @@ void Instance::userPushButton(Param* p, double time)
     if (!p || p->kind != ParamKind::PushButton) return;
     std::lock_guard<std::recursive_mutex> lk(mutex);
     currentTime = time;
-    ++revision;
+    bumpRevision();
     changed(p, kOfxChangeUserEdited, time);
 }
 
@@ -941,7 +947,7 @@ void Instance::userDeleteKeys(Param* p, double time)
     p->keys.clear();
     p->keyCurves.clear();
     p->props.setInt(kOfxParamPropIsAnimating, 0);
-    ++revision;
+    bumpRevision();
     changed(p, kOfxChangeUserEdited, time);
     if (onParamChanged) onParamChanged(p, "value");
 }
@@ -961,7 +967,7 @@ bool Instance::userMoveKey(Param* p, double time, double to)
     if (curve != Param::KeyLinear) p->keyCurves[to] = curve;
     else p->keyCurves.erase(to);
     currentTime = to;
-    ++revision;
+    bumpRevision();
     changed(p, kOfxChangeUserEdited, to);
     if (onParamChanged) onParamChanged(p, "value");
     return true;
@@ -973,7 +979,7 @@ bool Instance::userSetKeyCurve(Param* p, double time, int curve)
     std::lock_guard<std::recursive_mutex> lk(mutex);
     if (curve == Param::KeyLinear) p->keyCurves.erase(time);
     else p->keyCurves[time] = curve;
-    ++revision;
+    bumpRevision();
     changed(p, kOfxChangeUserEdited, time);
     if (onParamChanged) onParamChanged(p, "value");
     return true;
@@ -989,7 +995,7 @@ bool Instance::userDeleteKey(Param* p, double time)
     p->keys.erase(it);
     p->keyCurves.erase(time);
     p->props.setInt(kOfxParamPropIsAnimating, p->keys.empty() ? 0 : 1);
-    ++revision;
+    bumpRevision();
     changed(p, kOfxChangeUserEdited, time);
     if (onParamChanged) onParamChanged(p, "value");
     return true;
@@ -1335,7 +1341,7 @@ void Instance::loadState(const Json& state)
             p->props.setInt(kOfxParamPropIsAnimating, p->strKeys.empty() ? 0 : 1);
         }
     }
-    ++revision;
+    bumpRevision();
     clipPrefsDirty = true;
     struct Saved { Param* p; std::vector<double> value; std::map<double, std::vector<double>> keys; std::string str; std::map<double, std::string> strKeys; std::map<double, int> curves; };
     std::vector<Saved> saved;
@@ -1350,7 +1356,7 @@ void Instance::loadState(const Json& state)
         sv.p->keyCurves = sv.curves;
         sv.p->props.setInt(kOfxParamPropIsAnimating, (sv.p->keys.empty() && sv.p->strKeys.empty()) ? 0 : 1);
     }
-    ++revision;
+    bumpRevision();
 }
 
 // ---------------------------------------------------------------------- the effect's own window (VEGAS)

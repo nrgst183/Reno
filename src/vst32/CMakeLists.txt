@@ -40,6 +40,13 @@ else()
   target_link_libraries(reno_vst32 PRIVATE Threads::Threads ${CMAKE_DL_LIBS} rt)
 endif()
 if(WIN32)
+  # a windowless program: Reno starts it with no console, so Windows makes no console host for each one; main() is
+  # still where it starts
+  if(MSVC)
+    target_link_options(reno_vst32 PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+  else()
+    target_link_options(reno_vst32 PRIVATE -mwindows)
+  endif()
   target_link_libraries(reno_vst32 PRIVATE user32 gdi32 ole32 oleaut32 uuid shell32 advapi32 comdlg32 winmm)
   # its icon and version info
   enable_language(RC)

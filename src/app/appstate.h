@@ -76,7 +76,7 @@ struct Preferences {
     bool vegasPeakFiles = true;
     // Preferences > Video: render threads for playback (0 = automatic, 2) and Dynamic RAM Preview limit in MB.
     int renderThreads = 0;
-    int ramPreviewMb = 1536;
+    int ramPreviewMb = 200;         // VEGAS's default (frames played are kept in it too, so it fills as you play)
     // Preferences > Editing:
     // time-selection envelope fades; align is "outside", "centered" or "inside"
     bool timeSelEnvFades = true;
