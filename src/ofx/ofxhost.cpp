@@ -885,7 +885,7 @@ void pluginSetParam(Param* p)
 {
     Instance* inst = (p->set && p->set->owner) ? asInstance(p->set->owner) : nullptr;
     if (!inst) return;
-    ++inst->revision;
+    inst->bumpRevision();
     if (inst->onParamChanged) inst->onParamChanged(p, "value");
 }
 

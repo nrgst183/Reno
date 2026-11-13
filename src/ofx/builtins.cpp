@@ -343,6 +343,7 @@ struct Scratch {
     static void keep(std::vector<float>& from, std::vector<float>& to)
     {
         const size_t bytes = bytesOf(from);
+        kept().fetch_sub(bytesOf(to));          // (what 'to' held was counted: a render nested on this thread gave it back)
         to = std::vector<float>();
         if (bytes && from.capacity() <= (size_t)10 * 1000 * 1000) {          // 40 MB at most each: a 1080p frame, not a 4K one
             if (kept().fetch_add(bytes) + bytes <= kScratchBudget) to = std::move(from);

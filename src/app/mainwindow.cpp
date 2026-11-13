@@ -1001,13 +1001,24 @@ public:
 protected:
     bool eventFilter(QObject*, QEvent* e) override
     {
+        if (finished_) return false;
         switch (e->type()) {
         case QEvent::MouseMove:
+            // (the button let go where no release came to Reno: another program took the mouse, say. Dropped here,
+            // or every click in Reno would go to the drag)
+            if (!(QGuiApplication::mouseButtons() & Qt::LeftButton)) {
+                finish(true);
+                return true;
+            }
             moveTo(static_cast<QMouseEvent*>(e)->globalPosition().toPoint());
             return true;
         case QEvent::MouseButtonRelease:
             finish(true);
             return true;
+        case QEvent::ApplicationStateChange:
+            // Reno no longer the active program (Alt+Tab): no release or Esc will come, so the drag is undone
+            if (QGuiApplication::applicationState() != Qt::ApplicationActive) finish(false);
+            return false;
         case QEvent::MouseButtonPress:
         case QEvent::MouseButtonDblClick:
             return true;
@@ -1094,6 +1105,8 @@ private:
     }
     void finish(bool drop)
     {
+        if (finished_) return;
+        finished_ = true;
         qApp->removeEventFilter(this);
         mw_->releaseMouse();
         band_->hide();
@@ -1131,6 +1144,7 @@ private:
     QByteArray before_;
     QRubberBand* band_ = nullptr;
     Target target_;
+    bool finished_ = false;
 };
 
 QWidget* masterPage(QWidget* parent, QWidget* masterBus, std::function<void()> showMixer, Playback* pb = nullptr)

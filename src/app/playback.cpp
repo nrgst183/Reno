@@ -1589,9 +1589,9 @@ void Playback::ramToReady(bool post)
     const int step = std::max(1, c.step);
     const int dir = c.rate < 0 ? -1 : 1;
     const double pos = clockPos();
+    const uint64_t stamp = frameStamp();         // (before the project: see renderPlayingFrame)
     std::shared_ptr<const Project> sp = app_.snapshot();
     const double scale = frameScale(*sp, dynScale_);
-    const uint64_t stamp = frameStamp();
     ram_.setCursor((int64_t)std::floor(pos * fps + 1e-6));
     int64_t g = (int64_t)std::floor(pos * fps + 1e-6);
     if (step > 1) g = dir > 0 ? (g + step - 1) / step * step : g / step * step;
@@ -1698,11 +1698,25 @@ void Playback::showFrame(const QImage& image, double seconds, double ms, double 
     if (onFrame) onFrame(image, seconds, ms);
 }
 
+// (each part mixed in, not added: in a sum, one part going down - an effect removed - could cancel another going up and
+// give a stamp seen before, whose kept frames would then be shown)
+static uint64_t stampMix(uint64_t h, uint64_t v)
+{
+    h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+    h ^= h >> 31;
+    h *= 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 27;
+    return h;
+}
+
 uint64_t Playback::frameStamp() const
 {
-    return app_.revision() * 1000003ull + app_.fx.videoRevision() + (app_.bypassAllFx ? 7 : 0) + (app_.muteAllVideo ? 31 : 0) + (fullQuality_ ? 13 : 0) +
-           videoProxyGeneration() * 7919ull +
-           nestedProjectsGeneration() * 104729ull;
+    uint64_t h = stampMix(0x5EED, app_.revision());
+    h = stampMix(h, app_.fx.videoRevision());
+    h = stampMix(h, (app_.bypassAllFx ? 1u : 0u) | (app_.muteAllVideo ? 2u : 0u) | (fullQuality_ ? 4u : 0u));
+    h = stampMix(h, videoProxyGeneration());
+    h = stampMix(h, nestedProjectsGeneration());
+    return h;
 }
 
 void RamFrameStore::setLimit(size_t bytes)
@@ -1823,8 +1837,8 @@ std::vector<std::pair<int64_t, double>> RamFrameStore::keys() const
 
 int64_t Playback::ramPreview(double from, double to, const std::function<bool(double)>& progress)
 {
+    const uint64_t stamp = frameStamp();         // (before the project: see renderPlayingFrame)
     std::shared_ptr<const Project> p = app_.snapshot();
-    const uint64_t stamp = frameStamp();
     ram_.setLimit((size_t)std::max(0, app_.prefs.ramPreviewMb) * 1024 * 1024);
     const int64_t first = p->frameAt(std::max(0.0, from)), last = std::max(first, p->frameAt(to - 1e-6));
     int64_t made = 0;
@@ -2202,6 +2216,9 @@ void Playback::renderStoppedFrame(std::unique_lock<std::mutex>& lk)
     for (double r : requestTimes_) if (r > now - 0.35) ++recent;
     const double lastMs = pausedRenderMs_;
     lk.unlock();
+    // (the stamp before the project: an edit between the two then leaves an old stamp, which the stores turn away,
+    // rather than a frame of the old project kept under the new one)
+    const uint64_t stamp = frameStamp();
     std::shared_ptr<const Project> p = app_.snapshot();
     const double periodMs = 1000.0 / std::max(1.0, p->settings.fps());
     const bool draft = !full && recent >= 3 && lastMs > 1.5 * periodMs && !fullQuality_;
@@ -2221,7 +2238,7 @@ void Playback::renderStoppedFrame(std::unique_lock<std::mutex>& lk)
     }
     lk.unlock();
     bool approx = false;
-    QImage image = renderFrame(*p, t, frame, frameStamp(), scale, draft, cancel.get(), ms, rendered, quick, &approx);
+    QImage image = renderFrame(*p, t, frame, stamp, scale, draft, cancel.get(), ms, rendered, quick, &approx);
     lk.lock();
     if (stoppedCancel_ == cancel) stoppedCancel_.reset();
     if (cancel->load()) {
@@ -2292,13 +2309,16 @@ void Playback::renderPlayingFrame(int index, std::unique_lock<std::mutex>& lk)
     job.ahead = aheadJob;
     inFlight_.push_back(job);
     lk.unlock();
+    // (the stamp before the project: an edit between the two then leaves an old stamp, which the stores turn away,
+    // rather than a frame of the old project kept under the new one)
+    const uint64_t stamp = frameStamp();
     std::shared_ptr<const Project> p = app_.snapshot();
     const double scale = frameScale(*p, dyn);
     double ms = 0;
     bool rendered = false;
     ++diag_.started;
     if (aheadJob) ++diag_.aheadStarted;
-    QImage image = renderFrame(*p, p->frameTime(frame), frame, frameStamp(), scale, false, cancel.get(), ms, rendered, false, nullptr, !aheadJob);
+    QImage image = renderFrame(*p, p->frameTime(frame), frame, stamp, scale, false, cancel.get(), ms, rendered, false, nullptr, !aheadJob);
     if (rendered) { ++diag_.rendered; diag_.renderMs = diag_.renderMs.load() + ms; }
     if (rendered && aheadJob) { --rendered_; ++renderedAhead_; }
     lk.lock();

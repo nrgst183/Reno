@@ -317,7 +317,14 @@ uint64_t FxRuntime::videoRevision() const
     {
         std::lock_guard<std::mutex> lk(mutex_);
         for (const auto& kv : video_)
-            if (kv.second.inst) r += kv.second.inst->revision.load() * 1000003ull + kv.first;
+            if (kv.second.inst) {
+                // (mixed, not summed: removing an effect must not bring back a value seen before)
+                for (const uint64_t v : {kv.first, kv.second.inst->revision.load()}) {
+                    r ^= v + 0x9E3779B97F4A7C15ull + (r << 6) + (r >> 2);
+                    r *= 0xBF58476D1CE4E5B9ull;
+                    r ^= r >> 29;
+                }
+            }
     }
     std::lock_guard<std::mutex> rk(revMutex_);
     revCached_ = r;
