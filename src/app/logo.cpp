@@ -8,7 +8,7 @@
 namespace reno {
 namespace app {
 
-const char* renoVersion() { return "1.1"; }
+const char* renoVersion() { return "1.2"; }
 
 // Like VEGAS Pro's icon (dark square, thin rim, big letter, version in the corner) but in the inverse of VEGAS's blue: orange.
 QImage renoLogo(int size)
