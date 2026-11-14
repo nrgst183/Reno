@@ -14,6 +14,11 @@ struct Row {
 const Row kRows[] = {
 #include "vegfxlayouts.inc"
 };
+std::function<int(const std::string&, const std::string&)>& source()
+{
+    static std::function<int(const std::string&, const std::string&)> fn;
+    return fn;
+}
 }  // namespace
 
 int knownFxSettingIsWhole(const std::string& effectId, const std::string& setting)
@@ -24,8 +29,11 @@ int knownFxSettingIsWhole(const std::string& effectId, const std::string& settin
         return t;
     }();
     auto it = table.find({effectId, setting});
-    return it == table.end() ? -1 : it->second;
+    if (it != table.end()) return it->second;
+    return source() ? source()(effectId, setting) : -1;
 }
+
+void setFxSettingKindSource(std::function<int(const std::string& effectId, const std::string& setting)> fn) { source() = std::move(fn); }
 
 }  // namespace veg
 }  // namespace reno

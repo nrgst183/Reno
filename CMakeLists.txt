@@ -161,7 +161,7 @@ if(RENO_WITH_APP AND TARGET reno_media)
 
     # reno_cli: command-line renderer and plug-in checker (Qt Gui for the built-in text fonts, no widgets);
     # reno.exe runs it to try each new plug-in file in a separate process (src/cli/plugincheck.cpp)
-    add_executable(reno_cli src/cli/main.cpp src/cli/plugincheck.cpp
+    add_executable(reno_cli src/cli/main.cpp src/cli/plugincheck.cpp src/cli/projectcli.cpp
                             src/app/appstate.cpp src/app/builtintext.cpp src/app/rendertemplates.cpp src/app/logo.cpp)
     if(WIN32)
       target_sources(reno_cli PRIVATE resources/reno.rc)

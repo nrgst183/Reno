@@ -6,6 +6,7 @@
 #include "prefsapply.h"
 #include "logbook.h"
 #include "../vegas/vegas.h"
+#include "../vegas/vegfxlayouts.h"
 #include "../engine/timefmt.h"
 #include "../engine/fxnames.h"
 #include "../engine/fxlog.h"
@@ -34,6 +35,22 @@ AppState::AppState()
 {
     mediaOpener = [](const std::string& path, std::string* error) { return openMediaOrProject(path, error); };
     snapshot_ = std::make_shared<const Project>(project_);
+    // saving a .veg: whether a setting of an effect VEGAS's records say nothing about is whole numbers, from a live
+    // instance of the effect (a colour of 0,0,1,1 would otherwise be left out, as the writer cannot tell)
+    veg::setFxSettingKindSource([](const std::string& effectId, const std::string& setting) {
+        AppState& a = AppState::get();
+        int whole = -1;
+        const Project& pr = a.project_;
+        pr.forEachFx([&](const FxSlot& s) {
+            if (whole >= 0 || s.kind != "ofx" || s.pluginId != effectId) return;
+            ofx::Instance* inst = a.fx.video(s.id);
+            if (!inst) return;
+            std::lock_guard<std::recursive_mutex> lk(inst->mutex);
+            if (ofx::Param* p = inst->params.find(setting))
+                if (p->dim > 0) whole = p->isWhole() ? 1 : 0;
+        });
+        return whole;
+    });
     fx.onVideoParamChanged = [](uint64_t, ofx::Param*, const std::string& what) {
         if (what != "value") return;
         post([] {

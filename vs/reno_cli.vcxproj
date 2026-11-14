@@ -38,6 +38,7 @@
   <ItemGroup>
     <ClCompile Include="..\src\cli\main.cpp" />
     <ClCompile Include="..\src\cli\plugincheck.cpp" />
+    <ClCompile Include="..\src\cli\projectcli.cpp" />
     <ClCompile Include="..\src\app\appstate.cpp" />
     <ClCompile Include="..\src\app\builtintext.cpp" />
     <ClCompile Include="..\src\app\rendertemplates.cpp" />

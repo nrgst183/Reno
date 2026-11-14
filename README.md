@@ -92,6 +92,18 @@ against every VEGAS version. Known gaps are listed in [docs/NOTES.md](docs/NOTES
 `-t` picks one of Render As's templates. `--video-codec` and `--audio-codec` take any FFmpeg encoder by name
 (`ffmpeg -encoders` lists them).
 
+It can also build or change a project, then render it:
+
+    reno_cli new clip.reno --size 1920x1080 --fps 29.97 + add intro.mp4 + add music.wav --at 0
+    reno_cli edit clip.reno fx 1.1 "Gaussian Blur" "Horizontal range=0.02" + fx master "eFX Limiter" Threshold=-6
+    reno_cli edit clip.reno --script commands.txt
+    reno_cli info clip.reno --params
+    reno_cli clip.reno -o clip.mp4
+
+Commands are separated by `+`. They add tracks, media, generated media, effects (with settings and keyframes),
+transitions, markers and regions. `reno_cli fx-list` lists the plug-ins, and `reno_cli fx-params "Gaussian Blur"` lists
+a plug-in's settings. `reno_cli --help` has the full list.
+
 It can also measure the built-in effects on your processor and graphics card, in milliseconds per frame:
 
     reno_cli fxbench --both --size 1920x1080

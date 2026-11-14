@@ -17,6 +17,7 @@
 #include "../ofx/ofxhost.h"
 #include "../vegas/vegas.h"
 #include "plugincheck.h"
+#include "projectcli.h"
 // "model": a project as JSON for tools/vegcov_compare.py. Included rather than listed as a source of its own so the
 // build scripts that name main.cpp and plugincheck.cpp only need no change.
 #include "modeldump.cpp"
@@ -83,7 +84,8 @@ enum Exit {
 
 const char* kHelp =
     "reno_cli - render a VEGAS project, a Reno project or a media file from the command line, using the same\n"
-    "code and templates as File > Render As. It also checks plug-ins (see below).\n"
+    "code and templates as File > Render As. It also makes and changes projects (new, edit: see the end) and checks\n"
+    "plug-ins (see below).\n"
     "\n"
     "Usage:\n"
     "  reno_cli [options] <project.veg | project.reno | media file>\n"
@@ -2085,6 +2087,60 @@ static int runToolCommand(std::vector<std::string> args)
     return kContinue;
 }
 
+// new, edit, info, fx-list, fx-params (projectcli.cpp): the project made or changed the editor's way. Takes reno_cli's
+// options for finding and choosing plug-ins anywhere on the line.
+static int runProjectCommand(std::vector<std::string> args)
+{
+    Options o;
+    std::vector<std::string> rest;
+    for (size_t i = 0; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        auto realBuiltin = [&](int* v) {
+            if (i + 1 >= args.size() || (args[i + 1] != "real" && args[i + 1] != "builtin")) return false;
+            *v = args[++i] == "builtin" ? 1 : 0;
+            return true;
+        };
+        if (a == "--no-scan") o.noScan = true;
+        else if (a == "-q" || a == "--quiet") gQuiet = true;
+        else if (a == "-v" || a == "--verbose") gVerbose = true;
+        else if (a == "--log" && i + 1 < args.size()) o.logFile = args[++i];
+        else if (a == "--plugin-path" && i + 1 < args.size()) o.pluginPaths.push_back(args[++i]);
+        else if (a == "--efx") { if (!realBuiltin(&o.efx)) { err("--efx real|builtin"); return kUsage; } }
+        else if (a == "--vegas-fx") { if (!realBuiltin(&o.vegasFx)) { err("--vegas-fx real|builtin"); return kUsage; } }
+        else if (a == "--dx-fx") { if (!realBuiltin(&o.dxFx)) { err("--dx-fx real|builtin"); return kUsage; } }
+        else rest.push_back(a);
+    }
+    av_log_set_level(gVerbose ? AV_LOG_WARNING : AV_LOG_QUIET);
+    setUpLogging(o);
+    setUpProcess();
+    int qargc = 1;
+    char arg0[] = "reno_cli";
+    char* qargv[] = {arg0, nullptr};
+    QGuiApplication qapp(qargc, qargv);
+    keepCNumbers();
+    QGuiApplication::setOrganizationName("Reno");
+    QGuiApplication::setApplicationName("Reno");
+    installBuiltinTextRasterizer();
+    AppState& app = AppState::get();
+    setUpHost(o, app);
+    // fx-params and fx-list only need the saved plug-in list unless asked to look
+    const std::string probe = selfExePath();
+    scanForNewPlugins(o, probe);
+    if (!o.pluginPaths.empty() && !gCancel.load()) {
+        const int code = scanPluginPaths(o, probe);
+        if (code != kContinue) return code;
+    }
+    const int code = runProjectCli(rest, app, gQuiet);
+    if (gLogFile) std::fclose(gLogFile);
+    // as after a render: plug-ins go with the process
+    std::fflush(nullptr);
+#ifdef _WIN32
+    ExitProcess((UINT)code);
+#else
+    std::_Exit(code);
+#endif
+}
+
 int main(int argc, char** argv)
 {
     std::vector<std::string> args = readCommandLine(argc, argv);
@@ -2093,8 +2149,11 @@ int main(int argc, char** argv)
     if (toolCode != kContinue) return toolCode;
     if (args.empty()) {
         std::fputs(kHelp, stdout);
+        std::fputs("\n", stdout);
+        std::fputs(kProjectCliHelp, stdout);
         return kUsage;
     }
+    if (isProjectCliCommand(args[0])) return runProjectCommand(args);
     Options o;
     std::string problem;
     bool help = false, version = false;
@@ -2104,6 +2163,8 @@ int main(int argc, char** argv)
     }
     if (help) {
         std::fputs(kHelp, stdout);
+        std::fputs("\n", stdout);
+        std::fputs(kProjectCliHelp, stdout);
         return kOk;
     }
     if (version) {
