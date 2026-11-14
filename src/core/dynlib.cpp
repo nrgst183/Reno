@@ -46,7 +46,10 @@ bool DynLib::open(const std::string& path, std::string* error)
     HMODULE h = LoadLibraryExW(w.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     DWORD code = h ? 0 : GetLastError();
     if (!h) {
-        h = LoadLibraryExW(w.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        // Both flags need a full path: a bare name such as "vulkan-1.dll" fails with ERROR_INVALID_PARAMETER, so it
+        // is loaded the ordinary way, from the program's folder, the system folders and PATH.
+        const bool bareName = w.find(L'\\') == std::wstring::npos;
+        h = LoadLibraryExW(w.c_str(), nullptr, bareName ? 0 : LOAD_WITH_ALTERED_SEARCH_PATH);
         if (!h) code = GetLastError();
     }
     SetErrorMode(oldMode);
