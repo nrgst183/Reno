@@ -196,6 +196,9 @@ void setEfxPreferBuiltin(bool on);
 bool efxReproducedId(const std::string& vst2Uid);                   // 'MX2A' (as a number) and the other five ids
 std::unique_ptr<AudioPlugin> efxCreate(const AudioPluginDesc& desc, std::string* error);
 bool efxIsReproduction(const AudioPluginDesc& desc);                // a plug-in efxCreate made
+// The eFX effects as Reno's built-in effects list them (vendor kBuiltinAudioVendor): VST2 entries with the MAGIX plug-ins'
+// ids and names, which efxCreate makes without any file; saved in projects as the MAGIX plug-ins.
+std::vector<AudioPluginDesc> efxBuiltinPlugins();
 extern const char* const kEfxVendor;
 
 }  // namespace reno

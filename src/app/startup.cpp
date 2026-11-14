@@ -26,6 +26,7 @@
 #include <QScreen>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWindow>
 
 namespace reno {
 namespace app {
@@ -284,6 +285,14 @@ MainWindow* runStartup(const StartupOptions& o)
     if (o.showSplash) {
         splash->show();
         splash->raise();
+        // On the screen and painted before anything else starts: the graphics card check below loads the card's driver
+        // (and any overlay hooked into Vulkan) on another thread, and while it does Windows lets no other thread load a
+        // library - the splash's first paint, which loads a few, would wait for it. At most a fifth of a second.
+        QElapsedTimer shown;
+        shown.start();
+        while (shown.elapsed() < 200 && !(splash->windowHandle() && splash->windowHandle()->isExposed()))
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        splash->repaint();
     }
     QCoreApplication::processEvents();
     if (o.onSplash) o.onSplash(splash);

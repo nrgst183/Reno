@@ -108,7 +108,7 @@ struct PluginManager::Impl {
             p.kind = FxBrowser::AudioFx;
             p.name = qs(e.desc.name);
             p.group = e.desc.vendor.empty() ? QString("Unknown Vendor") : qs(e.desc.vendor);
-            p.format = e.desc.format == "DX" ? QString("DirectX") : e.desc.format == "BUILTIN" ? QString("Built-in") : qs(e.desc.format == "VST2" ? std::string("VST") : e.desc.format);
+            p.format = e.desc.format == "DX" ? QString("DirectX") : (e.desc.format == "BUILTIN" || e.desc.vendor == kBuiltinAudioVendor) ? QString("Built-in") : qs(e.desc.format == "VST2" ? std::string("VST") : e.desc.format);
             p.file = qs(e.desc.path);
             p.data = qs(e.desc.toJson().dump());
             p.key = "audio:" + qs(e.desc.key());

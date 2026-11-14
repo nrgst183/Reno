@@ -389,7 +389,7 @@ struct FxBrowser::Impl {
                 FxRow r;
                 r.name = qs(e.desc.name);
                 r.vendor = qs(e.desc.vendor);
-                const QString fmt = e.desc.format == "DX" ? "DirectX" : e.desc.format == "BUILTIN" ? "Built-in" : qs(e.desc.format);
+                const QString fmt = e.desc.format == "DX" ? "DirectX" : (e.desc.format == "BUILTIN" || e.desc.vendor == kBuiltinAudioVendor) ? "Built-in" : qs(e.desc.format);
                 r.group = r.vendor.isEmpty() ? QString("Unknown Vendor") : r.vendor;
                 r.data = qs(e.desc.toJson().dump());
                 r.works = e.ok;

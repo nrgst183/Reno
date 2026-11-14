@@ -10,6 +10,7 @@
 #include "../../src/app/timeline.h"
 #include "../../src/app/vprefs.h"
 #include "../../src/audiofx/audioplugin.h"
+#include "../../src/engine/catalog.h"
 #include "uitestlib.h"
 #include <QApplication>
 #include <QComboBox>
@@ -64,6 +65,18 @@ int main(int argc, char** argv)
     });
     AudioPlugin* pl = app.fx.audio(slot);
     check(pl != nullptr && efxIsReproduction(pl->desc), "the slot is made as Reno's eFX Limiter, with no plug-in file installed");
+    // listed with Reno's built-in effects, with no MAGIX plug-in installed
+    auto listed = [] {
+        int n = 0;
+        bool builtin = true;
+        for (const AudioFxEntry& e : Catalog::get().audio())
+            if (e.desc.format == "VST2" && efxReproducedId(e.desc.uid)) {
+                ++n;
+                builtin = builtin && e.desc.vendor == kBuiltinAudioVendor && e.ok;
+            }
+        return builtin ? n : -n;
+    };
+    check(listed() == 11, "the eleven eFX effects are listed as Reno built-in effects", std::to_string(listed()));
     if (pl) pl->paramSet(5, 0.4f);
 
     withPrefs([](QDialog* d) {
@@ -78,6 +91,7 @@ int main(int argc, char** argv)
     check(vprefs::text("prefs/vegasEfxSource") == "real", "OK saves it");
     check(!efxPreferBuiltin(), "  the audio host follows");
     check(app.fx.audio(slot) == nullptr && !app.fx.error(slot).empty(), "  the slot is made again from the installed plug-in: none here, so it says so");
+    check(listed() == 0, "  and the list leaves Reno's versions out (only installed MAGIX plug-ins would be listed)", std::to_string(listed()));
 
     vprefs::reload();
     withPrefs([](QDialog* d) {
@@ -90,5 +104,6 @@ int main(int argc, char** argv)
     pl = app.fx.audio(slot);
     check(efxPreferBuiltin() && pl && efxIsReproduction(pl->desc), "choosing Reno's again makes the slot again");
     check(pl && std::fabs(pl->paramGet(5) - 0.4f) < 1e-6f, "  with the setting changed before kept");
+    check(listed() == 11, "  and lists them as built-in again");
     return uitest::summary();
 }

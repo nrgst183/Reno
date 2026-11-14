@@ -1332,11 +1332,14 @@ void TimelineWidget::Impl::updateLoop(const QPointF& pos, Qt::KeyboardModifiers 
     if (!drag.started) {
         if (std::fabs(pos.x() - drag.pressPos.x()) < 4.0) return;
         drag.started = true;
+        drag.loopCursorWas = app.cursor();
     }
     double line = -1;
     const double t = snapped(drag.snaps, timeAtF(pos.x()), mods, &line);
     showSnap(line, t);
     app.setLoop(drag.anchor, t);
+    // as VEGAS: the cursor goes with the edge being dragged, so the preview shows the frame there (not while playing)
+    if (!playback || !playback->playing()) userCursor(t);
 }
 
 bool TimelineWidget::Impl::beginMove()

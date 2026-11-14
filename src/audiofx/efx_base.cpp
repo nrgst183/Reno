@@ -438,6 +438,22 @@ bool efxReproducedId(const std::string& vst2Uid)
 
 bool efxIsReproduction(const AudioPluginDesc& desc) { return desc.vendor == kEfxVendor; }
 
+std::vector<AudioPluginDesc> efxBuiltinPlugins()
+{
+    std::vector<AudioPluginDesc> out;
+    for (const auto& k : kEfx) {
+        const std::unique_ptr<efx::EfxPlugin> p = k.make();
+        AudioPluginDesc d;
+        d.format = "VST2";
+        d.uid = std::to_string(idOf(k.id));
+        d.name = p->desc.name;
+        d.vendor = kBuiltinAudioVendor;
+        d.numInputs = d.numOutputs = 2;
+        out.push_back(d);
+    }
+    return out;
+}
+
 std::unique_ptr<AudioPlugin> efxCreate(const AudioPluginDesc& desc, std::string* error)
 {
     if (desc.format == "VST2") {

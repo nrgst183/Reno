@@ -662,6 +662,24 @@ int main(int argc, char** argv)
         check(child<QSpinBox>(d, "fpsNum")->value() == 24000 && child<QSpinBox>(d, "fpsDen")->value() == 1001 &&
                   (tpl->currentIndex() == 0 || tpl->currentText().contains("1280x720, 23.976")),
               "project properties: 23.976 is 24000/1001 exactly (and the template follows)", tpl->currentText().toStdString());
+        // any rate typed in, as VEGAS's list takes it
+        auto typeRate = [&](const QString& text) {
+            rate->lineEdit()->setText(text);
+            emit rate->lineEdit()->editingFinished();
+            uitest::settle(20);
+        };
+        typeRate("140");
+        check(child<QSpinBox>(d, "fpsNum")->value() == 140 && child<QSpinBox>(d, "fpsDen")->value() == 1 && rate->currentText() == "140.000",
+              "project properties: a typed rate (140) is used as it is", rate->currentText().toStdString());
+        typeRate("29.97");
+        check(child<QSpinBox>(d, "fpsNum")->value() == 30000 && child<QSpinBox>(d, "fpsDen")->value() == 1001 && rate->currentText() == "29.970 (NTSC)",
+              "project properties: 29.97 typed is NTSC's 30000/1001 exactly", rate->currentText().toStdString());
+        typeRate("12.345");
+        check(child<QSpinBox>(d, "fpsNum")->value() == 2469 && child<QSpinBox>(d, "fpsDen")->value() == 200, "project properties: other rates to the thousandth");
+        typeRate("fast");
+        check(child<QSpinBox>(d, "fpsNum")->value() == 2469 && rate->currentText() == "12.345", "project properties: what is not a rate is put back");
+        check(!child<QSpinBox>(d, "fpsNum")->isVisible(), "project properties: no fraction boxes, just the rate");
+        rate->setCurrentIndex(rate->findText("23.976 (IVTC Film)"));
         pick(child<QComboBox>(d, "renderQuality"), "best");
         pick(child<QComboBox>(d, "fieldOrder"), "upper");
         uitest::shot(d, gOut + "/project_properties_video.png");

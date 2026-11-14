@@ -3,6 +3,7 @@
 #include "../core/process.h"
 #include "../ofx/ofxhost.h"
 #include "../ofx/builtins.h"
+#include "../audiofx/audioplugin.h"
 #include <filesystem>
 #include <algorithm>
 #include <set>
@@ -58,8 +59,26 @@ std::vector<VideoFxEntry> Catalog::video() const
 
 std::vector<AudioFxEntry> Catalog::audio() const
 {
-    std::lock_guard<std::mutex> lk(mutex_);
-    return audio_;
+    std::vector<AudioFxEntry> out;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        out = audio_;
+    }
+    // Reno's own eFX effects (Limiter, Compressor ...) are built in: listed with Reno's other built-in effects whether
+    // or not the MAGIX plug-ins are installed. While Reno's versions are the ones used (Preferences), the installed
+    // plug-ins' own entries are left out, so each effect is listed once; with the installed ones chosen, those are listed.
+    if (efxPreferBuiltin()) {
+        out.erase(std::remove_if(out.begin(), out.end(), [](const AudioFxEntry& e) { return e.desc.format == "VST2" && efxReproducedId(e.desc.uid); }),
+                  out.end());
+        for (const AudioPluginDesc& d : efxBuiltinPlugins()) {
+            AudioFxEntry e;
+            e.desc = d;
+            e.ok = true;
+            out.push_back(e);
+        }
+        std::sort(out.begin(), out.end(), [](const AudioFxEntry& a, const AudioFxEntry& b) { return toLower(a.desc.name) < toLower(b.desc.name); });
+    }
+    return out;
 }
 
 bool Catalog::empty() const

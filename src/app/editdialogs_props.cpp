@@ -20,6 +20,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <numeric>
 #include <QFrame>
 #include <QGridLayout>
 #include <QLocale>
@@ -837,10 +838,13 @@ public:
         out360_ = new QCheckBox("360 Output", vt);
         out360_->setObjectName("output360");
         out360_->setToolTip("A 360° (equirectangular) video: enables the Video Preview 360° mode, and Render As marks files as 360°");
+        // as VEGAS's: a list of the usual rates that takes any other typed in (140, 29.97 ...)
         rate_ = new QComboBox(vt);
         rate_->setObjectName("frameRate");
+        rate_->setEditable(true);
+        rate_->setInsertPolicy(QComboBox::NoInsert);
+        rate_->setToolTip("Frames per second: pick one or type any rate (29.97 and the other NTSC rates are kept exact)");
         for (const Rate& r : kRates) rate_->addItem(r.label);
-        rate_->addItem("Custom...");
         {
             // two columns: width, height, HDR mode, 360 on the left; field order, pixel aspect, rotation, frame rate on the right
             QGridLayout* g = new QGridLayout();
@@ -871,23 +875,13 @@ public:
         den_ = new QSpinBox(vt);
         den_->setObjectName("fpsDen");
         den_->setRange(1, 1000000);
-        {
-            // the exact rate (Reno's): under the frame rate, shown for Custom... (a rate the list does not have)
-            QWidget* exact = new QWidget(vt);
-            exact->setObjectName("exactRate");
-            QHBoxLayout* frac = new QHBoxLayout(exact);
-            frac->setContentsMargins(0, 0, 0, 0);
-            frac->addStretch(1);
-            frac->addWidget(new QLabel("Exact rate:", vt));
-            frac->addWidget(num_);
-            frac->addWidget(new QLabel("/", vt));
-            frac->addWidget(den_);
-            rateText_ = new QLabel(vt);
-            frac->addWidget(rateText_);
-            vv->addWidget(exact);
-            exact->hide();
-            QObject::connect(rate_, &QComboBox::currentIndexChanged, exact, [this, exact](int i) { exact->setVisible(i == rate_->count() - 1); });
-        }
+        // (the rate as an exact fraction, which the project keeps: the dialog's own record, never shown; the list sets it)
+        for (QSpinBox* b : {num_, den_}) b->hide();
+        rateText_ = new QLabel(vt);
+        rateText_->hide();
+        QObject::connect(rate_->lineEdit(), &QLineEdit::editingFinished, this, [this] { rateTyped(); });
+        // (shown from its start, not scrolled to the end of a long name)
+        QObject::connect(rate_, &QComboBox::currentIndexChanged, this, [this](int) { rate_->lineEdit()->setCursorPosition(0); });
         stereo_ = combo(vt, "stereo3d", {{"Off", "off"}, {"Side by side (half)", "sbshalf"}, {"Side by side (full)", "sbsfull"}, {"Top/bottom (half)", "tbhalf"},
                                          {"Top/bottom (full)", "tbfull"}, {"Line alternate", "line"}, {"Checkerboard", "checker"},
                                          {"Anaglyphic (red/cyan)", "anaglyph-rc"}, {"Anaglyphic (amber/blue)", "anaglyph-ab"},
@@ -1223,10 +1217,7 @@ public:
         par_->setCurrentIndex(pi);
         num_->setValue(s.fpsNum);
         den_->setValue(s.fpsDen);
-        int ri = (int)(sizeof(kRates) / sizeof(kRates[0]));
-        for (int k = 0; k < (int)(sizeof(kRates) / sizeof(kRates[0])); ++k)
-            if ((long long)kRates[k].num * s.fpsDen == (long long)s.fpsNum * kRates[k].den) ri = k;
-        rate_->setCurrentIndex(ri);
+        showRate(s.fpsNum, s.fpsDen);
         pickData(format_, qs(s.pixelFormat == "32bit" ? "32bit" : "8bit") + "|" + qs(s.pixelRange == "video" ? "video" : "full"));
         pickData(hdr_, qs(s.hdrMode));
         masterDisplay_ = s.masterDisplay;
@@ -1288,10 +1279,7 @@ public:
             height_->setValue(t.h);
             num_->setValue(t.num);
             den_->setValue(t.den);
-            int r = (int)(sizeof(kRates) / sizeof(kRates[0]));
-            for (int k = 0; k < r; ++k)
-                if ((long long)kRates[k].num * t.den == (long long)t.num * kRates[k].den) { r = k; break; }
-            rate_->setCurrentIndex(r);
+            showRate(t.num, t.den);
             for (int k = 0; k < par_->count(); ++k)
                 if (std::fabs(par_->itemData(k).toDouble() - t.par) < 5e-5) par_->setCurrentIndex(k);
             pickData(field_, t.field);
@@ -1356,6 +1344,7 @@ private:
         if (name.contains('/') || name.contains('\\')) { QMessageBox::warning(this, "Save Template", "A template's name cannot have / or \\ in it."); return; }
         Project tp;
         ProjectSettings& t = tp.settings;
+        rateTyped();
         t.width = width_->value() & ~1;
         t.height = height_->value() & ~1;
         t.fpsNum = num_->value();
@@ -1390,12 +1379,7 @@ private:
         const ProjectSettings& t = tp.settings;
         width_->setValue(t.width);
         height_->setValue(t.height);
-        num_->setValue(t.fpsNum);
-        den_->setValue(t.fpsDen);
-        int r = (int)(sizeof(kRates) / sizeof(kRates[0]));
-        for (int k = 0; k < r; ++k)
-            if ((long long)kRates[k].num * t.fpsDen == (long long)t.fpsNum * kRates[k].den) { r = k; break; }
-        rate_->setCurrentIndex(r);
+        showRate(t.fpsNum, t.fpsDen);
         for (int k = 0; k < par_->count(); ++k)
             if (std::fabs(par_->itemData(k).toDouble() - t.pixelAspect) < 5e-5) par_->setCurrentIndex(k);
         pickData(field_, qs(t.fieldOrder));
@@ -1426,12 +1410,7 @@ private:
             if (std::fabs(fr - std::round(fr)) < 1e-3) { n = (int)std::lround(fr); d = 1; }
             else if (std::fabs(fr * 1.001 - std::round(fr * 1.001)) < 1e-3) { n = (int)std::lround(fr * 1.001) * 1000; d = 1001; }
             else { n = (int)std::lround(fr * 1000); d = 1000; }
-            int ri = (int)(sizeof(kRates) / sizeof(kRates[0]));
-            for (int k = 0; k < ri; ++k)
-                if ((long long)kRates[k].num * d == (long long)n * kRates[k].den) { ri = k; break; }
-            rate_->setCurrentIndex(ri);
-            num_->setValue(n);
-            den_->setValue(d);
+            showRate(n, d);
         }
         pickData(field_, info.fieldOrder == "upper" || info.fieldOrder == "lower" ? qs(info.fieldOrder) : QString("none"));
         syncTemplate();
@@ -1442,15 +1421,51 @@ private:
     {
         const int i = rate_->currentIndex();
         const int n = (int)(sizeof(kRates) / sizeof(kRates[0]));
-        const bool custom = i >= n;
-        if (!custom) {
+        if (i >= 0 && i < n) {
             QSignalBlocker b1(num_), b2(den_);
             num_->setValue(kRates[i].num);
             den_->setValue(kRates[i].den);
         }
-        num_->setEnabled(custom);
-        den_->setEnabled(custom);
         syncRateText();
+    }
+    // the rate shown: its name from the list, or the number (three decimals, as VEGAS writes it)
+    void showRate(int num, int den)
+    {
+        const int n = (int)(sizeof(kRates) / sizeof(kRates[0]));
+        int ri = -1;
+        for (int k = 0; k < n; ++k)
+            if ((long long)kRates[k].num * den == (long long)num * kRates[k].den) ri = k;
+        {
+            QSignalBlocker b1(num_), b2(den_);
+            num_->setValue(num);
+            den_->setValue(den);
+        }
+        QSignalBlocker b(rate_);
+        rate_->setCurrentIndex(ri);
+        if (ri < 0) rate_->setEditText(QString::number((double)num / std::max(1, den), 'f', 3));
+        rate_->lineEdit()->setCursorPosition(0);
+        syncRateText();
+    }
+    // a rate typed in: the number at its start; one of the list's (to within 0.0005: 29.97 is 30000/1001) or thousandths
+    void rateTyped()
+    {
+        bool ok = false;
+        const QString t = rate_->currentText().trimmed();
+        const QString first = t.section(' ', 0, 0).remove(',');
+        const double v = first.toDouble(&ok);
+        if (!ok || !(v >= 0.5 && v <= 1000.0)) {
+            showRate(num_->value(), den_->value());     // not a rate: back to what it was
+            return;
+        }
+        int num = (int)std::lround(v * 1000.0), den = 1000;
+        for (const Rate& r : kRates)
+            if (std::fabs((double)r.num / r.den - v) < 0.0005) { num = r.num; den = r.den; }
+        const int g = std::gcd(num, den);
+        num /= g;
+        den /= g;
+        if (num == num_->value() && den == den_->value() && rate_->currentIndex() >= 0) return;
+        showRate(num, den);
+        syncTemplate();
     }
     void syncRateText() { rateText_->setText(QString("= %1 fps").arg((double)num_->value() / den_->value(), 0, 'f', 3)); }
 
@@ -1462,6 +1477,7 @@ private:
         s.height = height_->value() & ~1;
         s.fieldOrder = s8(field_->currentData().toString());
         s.pixelAspect = par_->currentData().toDouble();
+        rateTyped();
         s.fpsNum = num_->value();
         s.fpsDen = den_->value();
         {

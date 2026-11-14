@@ -491,7 +491,8 @@ struct TimelineWidget::Impl {
         double pressTime = 0;
         Hit hit;
         bool collapseOnRelease = false;
-        bool pickOneOnRelease = false;     // a click (no drag) on a group already selected: just the event clicked
+        bool pickOneOnRelease = false;
+        double loopCursorWas = -1;         // a time selection being dragged: where the cursor was (Esc puts it back)     // a click (no drag) on a group already selected: just the event clicked
         // Ctrl+drag of events (VEGAS): copies are moved, the originals stay. copies: (original, copy) ids, the copies'
         // ids worked out when the drag starts (each update starts again from the project as it was then, so they come
         // out the same every time); copyGroups: a group of originals -> the copies' new group
@@ -573,9 +574,8 @@ struct TimelineWidget::Impl {
     // good part of painting them and is hardly seen at that size. Set by paintLanes.
     bool dense = false;
     std::string loadedPath;
-    // New events flash yellow for a moment (VEGAS outlines events just added): the events of the project as last seen,
-    // and when each new one appeared (QDateTime ms). The project they belong to (a project opened or a new one: no flash).
-    std::unordered_set<uint64_t> seenEvents;
+    // New events flash yellow for a moment (VEGAS outlines events just added): when each new one appeared (QDateTime ms). The project they belong to (a project opened or a new one: no flash).
+    uint64_t seenNextId = 0;                        // the project's next event id when last looked (ids only grow: higher ones are new)
     std::unordered_map<uint64_t, qint64> flashing;
     std::string seenPath;
     bool seenValid = false;

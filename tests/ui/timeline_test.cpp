@@ -467,6 +467,7 @@ int main(int argc, char** argv)
         uitest::mouseDrag(&w, QPoint(w.xAt(3.3), stripY), QPoint(w.xAt(8.6), stripY));
         check(st().loopEnd > st().loopStart && near(st().loopStart, p.quantize(w.timeAt(w.xAt(3.3))), fr) && near(st().loopEnd, p.quantize(w.timeAt(w.xAt(8.6))), fr),
               "dragging in the strip above the ruler sets the loop region", num(st().loopStart) + " " + num(st().loopEnd));
+        check(near(st().cursor(), st().loopEnd, fr), "  and the cursor went along with the edge being dragged (the preview shows it)", num(st().cursor()));
         // the ends can be dragged
         uitest::mouseDrag(&w, QPoint(w.xAt(st().loopEnd), stripY), QPoint(w.xAt(10.0) - 3, stripY));
         check(near(st().loopEnd, 10.0), "a loop region's end can be dragged (and snaps)", num(st().loopEnd));

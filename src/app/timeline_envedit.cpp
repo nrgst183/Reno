@@ -1160,7 +1160,10 @@ bool TimelineWidget::Impl::cancelMouseDrag()
         selPoints.clear();
         for (uint64_t i : was.baseSelection) selPoints.insert((int)i);
         break;
-    case Drag::LoopRange: app.setLoop(was.oldLoopA, was.oldLoopB); break;
+    case Drag::LoopRange:
+        app.setLoop(was.oldLoopA, was.oldLoopB);
+        if (was.loopCursorWas >= 0) userCursor(was.loopCursorWas);
+        break;
     case Drag::Scrub:
         scrubSoundDone(was.resumePlayback);
         if (was.resumePlayback && playback) playback->play();

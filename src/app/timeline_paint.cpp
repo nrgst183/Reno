@@ -336,32 +336,42 @@ const qint64 kFlashHoldMs = 250, kFlashFadeMs = 650;
 void TimelineWidget::Impl::noteNewEvents()
 {
     const Project& pj = app.project();
-    std::unordered_set<uint64_t> now;
-    for (const Track& t : pj.tracks)
-        for (const Event& e : t.events) now.insert(e.id);
-    // another project (opened, or a new one): its events are not new
-    const bool same = seenValid && seenPath == app.path() && !(now.size() > 0 && seenEvents.empty() && !app.canUndo());
-    const qint64 t0 = QDateTime::currentMSecsSinceEpoch();
-    size_t added = 0;
-    if (same)
-        for (uint64_t id : now)
-            if (!seenEvents.count(id)) ++added;
-    // (a change that brings in thousands at once - a big paste, Undo of a large deletion - is not lit up)
-    if (same && added > 0 && added <= 500)
-        for (uint64_t id : now)
-            if (!seenEvents.count(id)) flashing[id] = t0;
-    seenEvents.swap(now);
+    // (every change of the project comes here - each step of a drag too - so nothing is looked at unless ids were handed
+    // out: an event made since has an id at or above the counter as it was then)
+    const bool same = seenValid && seenPath == app.path();
+    const uint64_t was = seenNextId;
+    seenNextId = pj.nextId;
     seenPath = app.path();
     seenValid = true;
-    if (flashing.empty()) return;
+    if (!same || pj.nextId <= was) return;
+    const qint64 t0 = QDateTime::currentMSecsSinceEpoch();
+    std::vector<uint64_t> fresh;
+    for (const Track& t : pj.tracks)
+        for (const Event& e : t.events)
+            if (e.id >= was) {
+                fresh.push_back(e.id);
+                // (a change that brings in thousands at once - a big paste - is not lit up)
+                if (fresh.size() > 500) return;
+            }
+    if (fresh.empty()) return;
+    for (uint64_t id : fresh) flashing[id] = t0;
     if (!flashTimer) {
         flashTimer = new QTimer(q);
         flashTimer->setInterval(33);
         QObject::connect(flashTimer, &QTimer::timeout, q, [this] {
             const qint64 t = QDateTime::currentMSecsSinceEpoch();
-            for (auto it = flashing.begin(); it != flashing.end();)
-                it = (t - it->second > kFlashHoldMs + kFlashFadeMs || !seenEvents.count(it->first)) ? flashing.erase(it) : std::next(it);
-            q->update();
+            // only the flashing events' rectangles are drawn again (a few of them; many: the lanes)
+            QRegion r;
+            const bool few = flashing.size() <= 16;
+            for (auto it = flashing.begin(); it != flashing.end();) {
+                if (few) {
+                    const QRect er = q->eventRectOf(it->first);
+                    if (!er.isEmpty()) r |= er.adjusted(-2, -2, 2, 2);
+                }
+                it = (t - it->second > kFlashHoldMs + kFlashFadeMs) ? flashing.erase(it) : std::next(it);
+            }
+            if (!few) q->update(lanesRect());
+            else if (!r.isEmpty()) q->update(r);
             if (flashing.empty()) flashTimer->stop();
         });
     }

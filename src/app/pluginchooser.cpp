@@ -503,7 +503,7 @@ struct PluginChooser::Impl {
                 Choice c;
                 c.label = qs(e.desc.name.empty() ? pathFileName(e.desc.path) : e.desc.name);
                 c.vendor = qs(e.desc.vendor);
-                c.format = e.desc.format == "DX" ? QString("DirectX") : e.desc.format == "BUILTIN" ? QString("Built-in") : qs(e.desc.format);
+                c.format = e.desc.format == "DX" ? QString("DirectX") : (e.desc.format == "BUILTIN" || e.desc.vendor == kBuiltinAudioVendor) ? QString("Built-in") : qs(e.desc.format);
                 c.group = c.vendor.isEmpty() ? QString("Unknown Vendor") : c.vendor;
                 c.vegas = isVegasAudio(e.desc);
                 c.works = e.ok;
