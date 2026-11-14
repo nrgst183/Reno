@@ -1081,7 +1081,7 @@ protected:
         case QEvent::MouseMove:
             // (the button let go where no release came to Reno: another program took the mouse, say. Dropped here,
             // or every click in Reno would go to the drag)
-            if (!(QGuiApplication::mouseButtons() & Qt::LeftButton)) {
+            if (!(static_cast<QMouseEvent*>(e)->buttons() & Qt::LeftButton)) {
                 finish(true);
                 return true;
             }
@@ -2834,7 +2834,10 @@ void MainWindow::updateDockTabs()
                 if (d->windowTitle() == bar->tabText(index)) return d;
             return nullptr;
         };
-        new DockTabBarDrag(bar, this, dockAt);
+        if (!bar->property("renoTabDrag").toBool()) {      // (this runs often: the one filter a row)
+            bar->setProperty("renoTabDrag", true);
+            new DockTabBarDrag(bar, this, dockAt);
+        }
         QObject::connect(bar, &QTabBar::tabCloseRequested, this, [this, dockAt](int index) {
             if (QDockWidget* d = dockAt(index)) d->close();
             QTimer::singleShot(0, this, [this] { updateDockTabs(); });
