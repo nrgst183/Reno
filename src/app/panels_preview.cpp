@@ -2163,7 +2163,7 @@ PreviewWidget::PreviewWidget(Playback* playback, QWidget* parent) : QWidget(pare
 
     d->loadSettings();
     d->view->playback = playback;
-    if (playback) playback->setFullQuality(d->view->quality == PreviewQuality::Best);
+    if (playback) playback->setPreviewQuality((int)d->view->quality);
     d->view->captionChannel = std::max(0, std::min(4, QSettings().value("preview/captions", 0).toInt()));
 
     Impl* impl = d.get();
@@ -2217,7 +2217,7 @@ void PreviewWidget::setQuality(PreviewQuality quality, PreviewSize size)
     d->view->quality = quality;
     d->view->size = size;
     d->view->qualityChanged();
-    if (d->pb) d->pb->setFullQuality(quality == PreviewQuality::Best);
+    if (d->pb) d->pb->setPreviewQuality((int)quality);
     d->showSizes();
     QSettings s;
     s.setValue("preview/size", (int)size);

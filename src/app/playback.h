@@ -228,6 +228,12 @@ public:
     // The preview at Best quality: frames with motion blur, supersampling and interlaced fields as a render has them
     // (FrameOptions::subFrames). Several renders per frame, so slower.
     void setFullQuality(bool on);
+    // The preview's quality, as VEGAS's: 0 Draft, 1 Preview, 2 Good, 3 Best (-1: the project's render quality). It sets
+    // how carefully frames are resampled and what effects are told (FrameOptions::quality); Draft also has effects
+    // draft. Proxies are used at Draft and Preview only (and with no quality set), as in VEGAS; Best also makes the
+    // frames as a render has them (setFullQuality).
+    void setPreviewQuality(int quality);
+    int previewQuality() const { return quality_.load(); }
 
     // The size the preview shows frames at (Preview Quality and size, PictureView::previewSize; 0 x 0: the project's)
     // and whether it is Auto. While playing, frames are rendered at that size instead of the project's
@@ -463,6 +469,7 @@ private:
     double frameScale(const Project& p, double dyn);
     std::deque<Cached> cache_;
     std::atomic<bool> fullQuality_{false};
+    std::atomic<int> quality_{-1};
     std::atomic<bool> dim_{false};
     std::atomic<bool> metronomeOn_{false};
     std::mutex metronomeMutex_;

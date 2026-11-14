@@ -321,7 +321,7 @@ public:
     struct Key {
         const ofx::Plugin* plugin = nullptr;    // (instances of one effect with the same settings make the same picture: the render workers' own share them)
         int w = 0, h = 0, depth = 0;
-        int flags = 0;                          // RenderOptions' interactive, draft, previewSizeForAll, mediaSize
+        int flags = 0;                          // RenderOptions' interactive, draft, previewSizeForAll, mediaSize, quality
         int setupW = 0, setupH = 0;
         double setupFps = 0;
         std::vector<double> nums;               // every setting's value at the time
@@ -352,7 +352,7 @@ public:
         k.w = ro.width;
         k.h = ro.height;
         k.depth = (int)ro.depth;
-        k.flags = (ro.interactive ? 1 : 0) | (ro.draft ? 2 : 0) | (ro.previewSizeForAll ? 4 : 0) | (ro.mediaSize ? 8 : 0);
+        k.flags = (ro.interactive ? 1 : 0) | (ro.draft ? 2 : 0) | (ro.previewSizeForAll ? 4 : 0) | (ro.mediaSize ? 8 : 0) | ((ro.quality + 1) << 4);
         k.setupW = inst->setup.width;
         k.setupH = inst->setup.height;
         k.setupFps = inst->setup.fps;
@@ -495,7 +495,7 @@ void clearComposeMemo()
 }
 
 // ---------------------------------------------------------------------- resampling
-// How carefully frames are resampled (Project Properties' render quality, or a draft preview).
+// How carefully frames are resampled (Project Properties' render quality, the preview's quality, or a draft preview).
 enum Quality { kDraft = 0, kPreview = 1, kGood = 2, kBest = 3 };
 
 static Quality qualityOf(const std::string& s)
@@ -2043,7 +2043,7 @@ struct VideoEngine::Pass {
     Pass(VideoEngine& e, const Project& pr, const FrameOptions& o)
         : eng(e), p(pr), opt(o), W(0), H(0), PW(pr.settings.width), PH(pr.settings.height), fps(pr.settings.fps()),
           par(pr.settings.pixelAspect > 0.01 && pr.settings.pixelAspect < 100 ? pr.settings.pixelAspect : 1.0),
-          quality(o.draft ? kDraft : qualityOf(pr.settings.renderQuality)),
+          quality(o.draft ? kDraft : o.interactive && o.quality >= kDraft && o.quality <= kBest ? (Quality)o.quality : qualityOf(pr.settings.renderQuality)),
           pd(floatProject(pr.settings) ? PixelDepth::Float : PixelDepth::Byte),
           deinterlace(pr.settings.fieldOrder != "upper" && pr.settings.fieldOrder != "lower"
                           ? (pr.settings.deinterlace == "blend" ? 1 : (pr.settings.deinterlace == "interpolate" || pr.settings.deinterlace == "smart" ? 2 : 0)) : 0)
@@ -2080,7 +2080,9 @@ struct VideoEngine::Pass {
             ro.previewSizeForAll = !inst->scalable();
         }
         ro.interactive = opt.interactive;
-        ro.draft = opt.draft;
+        // (Draft quality tells effects to draft, as VEGAS does; the preview's quality is what they are told it is)
+        ro.draft = opt.draft || (opt.interactive && opt.quality == kDraft);
+        if (opt.interactive && opt.quality >= kDraft && opt.quality <= kBest) ro.quality = opt.quality;
         ro.depth = pd;
         if (timeline >= 0) ro.timelineTime = timeline * fps;
         ro.abort = opt.cancel;

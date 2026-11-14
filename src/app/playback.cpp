@@ -1207,10 +1207,16 @@ double Playback::renderingFor() const
     return doneSerial_ >= wantedSerial_ ? 0.0 : std::max(0.0, now - pendingSince_);
 }
 
-void Playback::setFullQuality(bool on)
+void Playback::setFullQuality(bool on) { setPreviewQuality(on ? 3 : -1); }
+
+void Playback::setPreviewQuality(int quality)
 {
-    if (fullQuality_.exchange(on) == on) return;
-    pool_.setUseProxies(!on);
+    const int q = quality >= 0 && quality <= 3 ? quality : -1;
+    const bool full = q == 3;
+    const bool qChanged = quality_.exchange(q) != q;
+    const bool fullChanged = fullQuality_.exchange(full) != full;
+    if (!qChanged && !fullChanged) return;
+    pool_.setUseProxies(q <= 1);
     requestFrame();
 }
 
@@ -1731,7 +1737,7 @@ uint64_t Playback::frameStamp() const
 {
     uint64_t h = stampMix(0x5EED, app_.revision());
     h = stampMix(h, app_.fx.videoRevision());
-    h = stampMix(h, (app_.bypassAllFx ? 1u : 0u) | (app_.muteAllVideo ? 2u : 0u) | (fullQuality_ ? 4u : 0u));
+    h = stampMix(h, (app_.bypassAllFx ? 1u : 0u) | (app_.muteAllVideo ? 2u : 0u) | (fullQuality_ ? 4u : 0u) | ((uint64_t)(quality_.load() + 1) << 3));
     h = stampMix(h, videoProxyGeneration());
     h = stampMix(h, nestedProjectsGeneration());
     return h;
@@ -1863,6 +1869,7 @@ int64_t Playback::ramPreview(double from, double to, const std::function<bool(do
     FrameOptions fo;
     fo.skipEffects = app_.bypassAllFx;
     fo.subFrames = fullQuality_;
+    fo.quality = quality_;
     for (int64_t f = first; f <= last; ++f) {
         if (progress && !progress((double)(f - first) / (double)(last - first + 1))) break;
         if (ram_.has(stamp, f, 1.0)) {
@@ -2069,6 +2076,7 @@ QImage Playback::renderNow(double seconds)
     FrameOptions fo;
     fo.skipEffects = app_.bypassAllFx;
     fo.subFrames = fullQuality_;
+    fo.quality = quality_;
     if (app_.muteAllVideo) return blackFrame(*p);
     ImagePtr img = video_.render(*p, seconds, fo);
     return img ? toQImage(*img) : QImage();
@@ -2101,6 +2109,7 @@ QImage Playback::renderFrame(const Project& p, double t, int64_t frame, uint64_t
     FrameOptions fo;
     fo.skipEffects = app_.bypassAllFx;
     fo.subFrames = fullQuality_;
+    fo.quality = quality_;
     fo.scale = scale;
     fo.draft = draft;
     fo.cancel = cancel;
@@ -2189,6 +2198,7 @@ void Playback::prewarmLoop()
         FrameOptions fo;
         fo.skipEffects = app_.bypassAllFx;
         fo.subFrames = fullQuality_;
+        fo.quality = quality_;
         fo.scale = frameScale(*p, 1.0);
         if (!pick && !nested.empty()) {
             std::sort(nested.begin(), nested.end(), [](const Event* a, const Event* b) { return a->start < b->start; });

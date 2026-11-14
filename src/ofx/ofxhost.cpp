@@ -1047,7 +1047,16 @@ struct RenderCall {
         }
     }
 
-    const char* vegasQuality() const { return opt.draft ? kVegasRenderQualityDraft : (opt.interactive ? kVegasRenderQualityPreview : kVegasRenderQualityBest); }
+    const char* vegasQuality() const
+    {
+        if (opt.draft) return kVegasRenderQualityDraft;
+        if (!opt.interactive) return kVegasRenderQualityBest;
+        switch (opt.quality) {
+        case 2: return kVegasRenderQualityGood;
+        case 3: return kVegasRenderQualityBest;
+        default: return kVegasRenderQualityPreview;
+        }
+    }
 
     // BeginSequenceRender, Render and EndSequenceRender for this one frame ('gl': with OpenGL). False with 'failMsg' set
     // when the plug-in would not start or failed.

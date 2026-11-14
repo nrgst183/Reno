@@ -179,6 +179,9 @@ struct FrameOptions {
     // Motion blur, supersampling and interlaced fields (the video output's "motionblur" and "supersample" envelopes
     // and Project Properties' field order) take several renders per frame.
     bool subFrames = false;
+    // The preview's quality (VEGAS's Draft, Preview, Good, Best: 0 to 3), which sets how carefully frames are resampled and
+    // what effects are told; -1: the project's render quality (Project Properties). Only for previews (interactive).
+    int quality = -1;
     // Frame size as a fraction of the project's frame (the preview's quality and size; VEGAS renders Half and Preview
     // at half size, which lets a busy project play smoothly).
     double scale = 1.0;

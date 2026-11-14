@@ -203,6 +203,9 @@ struct RenderOptions {
     // The next effect of the chain is a built-in one that takes this frame from the graphics card (Instance::gpuChainable()): a built-in effect that renders
     // on the card may then leave the frame there (Image::gpuHold) instead of downloading it. Whoever reads the pixels calls Image::sync() first.
     bool deferGpuOutput = false;
+    // The preview's quality, 0 to 3 (Draft, Preview, Good, Best), told to effects as VEGAS's render quality; -1: draft, preview while
+    // interactive, best for a final render.
+    int quality = -1;
 };
 
 class Instance : public EffectBase {

@@ -330,6 +330,20 @@ int main(int argc, char** argv)
         pb.requestFrame();
         uitest::settle(800);
         check(near(sample(pb.lastFrame(), 0.2, 0.5), 10, 200, 10), "below Best again: the proxy", pxs(sample(pb.lastFrame(), 0.2, 0.5)));
+        // as in VEGAS, proxies only at Draft and Preview quality
+        pb.setPreviewQuality(2);
+        pb.requestFrame();
+        uitest::settle(800);
+        check(near(sample(pb.lastFrame(), 0.2, 0.5), 200, 40, 10), "Good quality: the original", pxs(sample(pb.lastFrame(), 0.2, 0.5)));
+        pb.setPreviewQuality(1);
+        pb.requestFrame();
+        uitest::settle(800);
+        check(near(sample(pb.lastFrame(), 0.2, 0.5), 10, 200, 10), "Preview quality: the proxy", pxs(sample(pb.lastFrame(), 0.2, 0.5)));
+        pb.setPreviewQuality(0);
+        pb.requestFrame();
+        uitest::settle(800);
+        check(near(sample(pb.lastFrame(), 0.2, 0.5), 10, 200, 10), "Draft quality: the proxy", pxs(sample(pb.lastFrame(), 0.2, 0.5)));
+        pb.setPreviewQuality(-1);
         // proxy removed: the original again
         QFile::remove(QString::fromStdString(videoProxyPath(P)));
         videoProxiesChanged();
