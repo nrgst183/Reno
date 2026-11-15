@@ -349,9 +349,28 @@ std::string userDataDir()
 }
 
 // ---------------------------------------------------------------- images
-static void* alignedAlloc(size_t n)
+// Picture buffers are kept for reuse when they are freed instead of being given back. The system hands out a block this
+// big as new pages, and the first write to each page then costs a page fault: rendering a preview made a buffer for every
+// picture and spent a quarter of its time in them. The blocks kept are capped, and only one the same size is reused.
+namespace {
+const size_t kHeader = 64;                         // (holds the block's size; keeps the picture 64-byte aligned)
+const size_t kKeepFrom = 256 * 1024;
+const size_t kKeepBytes = (size_t)128 << 20;
+const size_t kKeepBlocks = 48;
+
+struct KeptBlocks {
+    std::mutex m;
+    std::vector<std::pair<size_t, void*>> blocks;  // (size, block), oldest first
+    size_t bytes = 0;
+};
+KeptBlocks& keptBlocks()
 {
-    if (n == 0) n = 64;
+    static KeptBlocks* k = new KeptBlocks();       // (never destroyed: images can be freed after the program's globals go)
+    return *k;
+}
+
+void* systemAlloc(size_t n)
+{
 #ifdef _WIN32
     return _aligned_malloc(n, 64);
 #else
@@ -361,13 +380,61 @@ static void* alignedAlloc(size_t n)
 #endif
 }
 
-static void alignedFree(void* p)
+void systemFree(void* p)
 {
 #ifdef _WIN32
     _aligned_free(p);
 #else
     std::free(p);
 #endif
+}
+}  // namespace
+
+static void* alignedAlloc(size_t n)
+{
+    if (n == 0) n = 64;
+    if (n >= kKeepFrom) {
+        KeptBlocks& k = keptBlocks();
+        std::lock_guard<std::mutex> lk(k.m);
+        for (size_t i = k.blocks.size(); i-- > 0;)
+            if (k.blocks[i].first == n) {
+                void* base = k.blocks[i].second;
+                k.blocks.erase(k.blocks.begin() + (std::ptrdiff_t)i);
+                k.bytes -= n;
+                return (uint8_t*)base + kHeader;
+            }
+    }
+    void* base = systemAlloc(n + kHeader);
+    if (!base) return nullptr;
+    *(size_t*)base = n;
+    return (uint8_t*)base + kHeader;
+}
+
+static void alignedFree(void* p)
+{
+    if (!p) return;
+    void* base = (uint8_t*)p - kHeader;
+    const size_t n = *(size_t*)base;
+    if (n >= kKeepFrom && n <= kKeepBytes) {
+        std::vector<void*> drop;
+        {
+            KeptBlocks& k = keptBlocks();
+            std::lock_guard<std::mutex> lk(k.m);
+            // the oldest go first to make room
+            size_t first = 0;
+            while (first < k.blocks.size() && (k.bytes + n > kKeepBytes || k.blocks.size() - first >= kKeepBlocks)) {
+                k.bytes -= k.blocks[first].first;
+                drop.push_back(k.blocks[first].second);
+                ++first;
+            }
+            k.blocks.erase(k.blocks.begin(), k.blocks.begin() + (std::ptrdiff_t)first);
+            k.blocks.emplace_back(n, base);
+            k.bytes += n;
+        }
+        for (void* d : drop) systemFree(d);
+        return;
+    }
+    systemFree(base);
 }
 
 ImagePtr Image::make(int w, int h, PixelDepth d, bool clear)
