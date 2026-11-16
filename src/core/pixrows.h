@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cmath>
+#include <cstring>
 #include "cpufeat.h"
 // (Every x64 compiler takes the SSE2 path; define RENO_NO_SSE2 for the plain loops, which give the same bytes.)
 #if !defined(RENO_NO_SSE2) && (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64))
@@ -102,6 +103,37 @@ inline void blendRow(uint8_t* d, const uint8_t* a, const uint8_t* b, int n, unsi
     for (; i < n; ++i) d[i] = (uint8_t)((a[i] * ta + b[i] * tb + 128) >> 8);
 }
 
+// blendRow into a frame nothing reads soon (a new frame): the same bytes, written past the cache where the row allows
+// it, so that the memory of a frame just made is not read in first. The caller ends its rows with streamDone().
+inline void blendRowStream(uint8_t* d, const uint8_t* a, const uint8_t* b, int n, unsigned ta, unsigned tb)
+{
+    int i = 0;
+#ifdef RENO_PIXROWS_SSE2
+    for (; i < n && (((uintptr_t)(d + i)) & 15); ++i) d[i] = (uint8_t)((a[i] * ta + b[i] * tb + 128) >> 8);
+    const __m128i zero = _mm_setzero_si128(), vta = _mm_set1_epi16((short)ta), vtb = _mm_set1_epi16((short)tb), c128 = _mm_set1_epi16(128);
+    for (; i + 16 <= n; i += 16) {
+        const __m128i av = _mm_loadu_si128((const __m128i*)(a + i)), bv = _mm_loadu_si128((const __m128i*)(b + i));
+        __m128i out[2];
+        for (int h = 0; h < 2; ++h) {
+            const __m128i a16 = h ? _mm_unpackhi_epi8(av, zero) : _mm_unpacklo_epi8(av, zero);
+            const __m128i b16 = h ? _mm_unpackhi_epi8(bv, zero) : _mm_unpacklo_epi8(bv, zero);
+            __m128i v = _mm_add_epi16(_mm_mullo_epi16(a16, vta), _mm_mullo_epi16(b16, vtb));
+            out[h] = _mm_srli_epi16(_mm_add_epi16(v, c128), 8);
+        }
+        _mm_stream_si128((__m128i*)(d + i), _mm_packus_epi16(out[0], out[1]));
+    }
+#endif
+    for (; i < n; ++i) d[i] = (uint8_t)((a[i] * ta + b[i] * tb + 128) >> 8);
+}
+
+// After stores past the cache: makes them visible to other threads before the work is handed over.
+inline void streamDone()
+{
+#ifdef RENO_PIXROWS_SSE2
+    _mm_sfence();
+#endif
+}
+
 // d += (s x m + 128) >> 8, to at most 255, for 'n' bytes (addScaled's 8-bit loop)
 inline void addScaledRow(uint8_t* d, const uint8_t* s, int n, unsigned m)
 {
@@ -138,6 +170,23 @@ inline void opaqueRow(uint8_t* d, int n)
     }
 #endif
     for (; x < n; ++x) d[(size_t)x * 4 + 3] = 255;
+}
+
+// d = s with alpha 255 (copies a frame and makes it opaque in one pass), for n pixels
+inline void opaqueCopyRow(uint8_t* d, const uint8_t* s, int n)
+{
+    int x = 0;
+#ifdef RENO_PIXROWS_SSE2
+    const __m128i a = _mm_set1_epi32((int)0xFF000000u);
+    for (; x + 4 <= n; x += 4) {
+        const __m128i v = _mm_loadu_si128((const __m128i*)(s + (size_t)x * 4));
+        _mm_storeu_si128((__m128i*)(d + (size_t)x * 4), _mm_or_si128(v, a));
+    }
+#endif
+    for (; x < n; ++x) {
+        std::memcpy(d + (size_t)x * 4, s + (size_t)x * 4, 3);
+        d[(size_t)x * 4 + 3] = 255;
+    }
 }
 
 // ---- OpenFX built-ins' float <-> 8-bit conversions (builtins.cpp: load / store)

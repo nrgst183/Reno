@@ -286,9 +286,16 @@ void describeDevices(VkApi& api, VkInstance inst, std::vector<VkPhysicalDevice>&
             d.fcUseSzinf = d.fcSignedZeroInfNanF32 || forced;       // (the kernels test for NaN and infinity and rely on the sign of zero)
             d.floatControlsUsed = (d.fcUseRte || d.fcUseDenorm || d.fcUseSzinf) && !(off && off[0] && off[0] != '0');
         }
+        {
+            VkPhysicalDeviceFeatures ft = {};
+            api.vkGetPhysicalDeviceFeatures(phys[k], &ft);
+            const char* no64 = std::getenv("RENO_VK_NO_FLOAT64");
+            d.float64 = ft.shaderFloat64 && !(no64 && no64[0] && no64[0] != '0');
+        }
         d.maxStorageRange = pr.limits.maxStorageBufferRange;
         d.maxPushConstants = pr.limits.maxPushConstantsSize;
         d.maxGroupInvocations = pr.limits.maxComputeWorkGroupInvocations;
+        d.maxSharedMemory = pr.limits.maxComputeSharedMemorySize;
         VkPhysicalDeviceMemoryProperties mp = {};
         api.vkGetPhysicalDeviceMemoryProperties(phys[k], &mp);
         for (uint32_t h = 0; h < mp.memoryHeapCount; ++h)
@@ -668,6 +675,10 @@ std::shared_ptr<Core> openCore(int selected, std::string& why)
                 di.ppEnabledExtensionNames = &subset;
             }
     }
+    // doubles for the kernels that have a version using them (the recursive Gaussians, the transforms)
+    VkPhysicalDeviceFeatures en = {};
+    en.shaderFloat64 = c->info.float64 ? VK_TRUE : VK_FALSE;
+    di.pEnabledFeatures = &en;
     VkResult r = c->api.vkCreateDevice(c->phys, &di, nullptr, &c->dev);
     if (r != VK_SUCCESS || !c->dev) { c->dev = VK_NULL_HANDLE; return fail(strfmt("vkCreateDevice failed (%d)", (int)r)); }
     std::string e2;
@@ -906,6 +917,20 @@ DeviceInfo currentDevice()
     Global& g = G();
     std::lock_guard<std::mutex> lk(g.mu);
     return g.core ? g.core->info : DeviceInfo();
+}
+
+bool deviceDoubles()
+{
+    Global& g = G();
+    std::lock_guard<std::mutex> lk(g.mu);
+    return g.core && g.core->info.float64;
+}
+
+uint32_t deviceSharedMemory()
+{
+    Global& g = G();
+    std::lock_guard<std::mutex> lk(g.mu);
+    return g.core ? g.core->info.maxSharedMemory : 0u;
 }
 
 void shutdown()

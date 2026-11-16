@@ -51,7 +51,10 @@ void gpuAddGaussPass(Plan& p, int from, int to, const vfxgauss::Coefsf& cf, bool
     pc.w = w; pc.h = h; pc.vert = vert ? 1u : 0u; pc.q8 = flags;
     float* dst = &pc.n0;
     for (int k = 0; k < 5; ++k) { dst[k] = cf.n[k]; dst[5 + k] = cf.d[k]; dst[10 + k] = cf.m[k]; dst[15 + k] = cf.bn[k]; dst[20 + k] = cf.bm[k]; }
-    p.add(fused ? "vg_line" : "vg_line_mad", from, to, vert ? w : h, 1).setPush(pc);
+    // (fused: the multiply-adds in the card's doubles when it has them, a thread per line and channel; else in integer arithmetic, a thread per line; the
+    // same result, vg_line_hd far quicker)
+    const bool hd = fused && gpu::deviceDoubles();
+    p.add(hd ? "vg_line_hd" : fused ? "vg_line" : "vg_line_mad", from, to, (vert ? w : h) * (hd ? 4u : 1u), 1).setPush(pc);
 }
 
 void gpuAddGaussHalves(Plan& p, int from, int to, const vfxgauss::Coefsf& cx, const vfxgauss::Coefsf& cy, bool q8)

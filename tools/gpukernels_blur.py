@@ -12,6 +12,14 @@ def efma(S, a, b, c):
     return (SF.from_f32(S, S.conv(a, 'f')) * SF.from_f32(S, S.conv(b, 'f')) + SF.from_f32(S, S.conv(c, 'f'))).to_f32()
 
 
+def hfma(S, a, b, c):
+    """efma with the card's own doubles (a device with shaderFloat64): the same steps - the product of two floats exact in a double, the double sum rounded to a float - in
+    hardware instead of tools/sf64.py, which made the recursive Gaussians below the slowest kernels of all. The same result as efma except below the smallest normal float
+    (about 1e-38), where sf64 takes subnormals as zero and the card keeps them, as the CPU's fmaf does; the effects' stores turn such values to 0 either way."""
+    a, b, c = S.conv(a, 'f'), S.conv(b, 'f'), S.conv(c, 'f')
+    return S.fconv(S.fconv(a, 'd') * S.fconv(b, 'd') + S.fconv(c, 'd'), 'f')
+
+
 def store12(S, v):
     """more::oclStore12 (builtins_more_internal.h): the kernel's 8-bit store, v cut to 0..1 and to 12 bits, scaled to a byte with the half down, as a float level / 255; not a number: 0"""
     t = S.min(S.max(v, S.f(0.0)), S.f(1.0)) * 4096.0
@@ -135,6 +143,82 @@ def _vg_line_body(S, fused):
 
 kernel("vg_line", [('w', 'u'), ('h', 'u'), ('vert', 'u'), ('q8', 'u')] + _coef_fields(), [PIC_IN, PIC_OUT], local=(64, 1))(_vg_line(True))
 kernel("vg_line_mad", [('w', 'u'), ('h', 'u'), ('vert', 'u'), ('q8', 'u')] + _coef_fields(), [PIC_IN, PIC_OUT], local=(64, 1))(_vg_line(False))
+def _vg_line_hd_body(S):
+    """vg_line with hfma, a thread per line and channel (4 x lines threads: the four channels' recursions are apart, and a thread per line left most of the card idle
+    waiting on its chain of doubles). Each channel goes through the same steps, in the same order, as in _vg_line_body; a thread reads and writes only its own channel."""
+    P = S.p
+    vert = S.ne(P.vert, 0)
+    L = S.select(vert, P.h, P.w)
+    lines = S.select(vert, P.w, P.h)
+    q8 = S.ne(P.q8 & 1, 0)
+    qs = S.ne(P.q8 & 2, 0)
+    with S.if_(S.gx < lines * 4):
+        ln = S.gx >> 2
+        ch = S.gx & 3
+        src = S.buf('in0')
+        out = S.buf('out')
+        def idx(p): return S.select(vert, (P.h - 1 - p) * P.w + ln, ln * P.w + p)
+        def co(nm, k): return getattr(P, '%s%d' % (nm, k))
+        d = [co('d', k) for k in range(5)]
+        fma = lambda a, b, c: hfma(S, a, b, c)
+        for anti in (False, True):
+            nn = [co('m' if anti else 'n', k) for k in range(5)]
+            ee = [co('bm' if anti else 'bn', k) for k in range(5)]
+            def pos(i): return (L - 1 - i) if anti else i
+            V = [S.var('f') for _ in range(9)]
+            y = S.var('f')
+            def put(i, val):
+                a = idx(pos(i))
+                st = maybe_store(S, q8, val)
+                if anti:
+                    out.store_comp(a, ch, maybe_store(S, qs, out.load_comp(a, ch) + st))
+                else:
+                    out.store_comp(a, ch, st)
+            x0 = src.load_comp(idx(pos(S.u(0))), ch)
+            if not anti:
+                v15 = -ee[4] * x0
+            else:
+                v15 = (nn[4] - ee[4]) * x0
+            v14 = fma(nn[3] - ee[3], x0, v15)
+            v13 = fma(nn[2] - ee[2], x0, v14)
+            v12 = fma(nn[1] - ee[1], x0, v13)
+            v11 = fma(nn[0] - ee[0], x0, v12)
+            V[0].set(v11); V[1].set(v12); V[2].set(v13); V[3].set(v14); V[4].set(v15)
+            y.set(v11)
+            put(S.u(0), y.get())
+            with S.if_(L >= 2):
+                x1 = src.load_comp(idx(pos(S.u(1))), ch)
+                v22 = y.get()
+                V[5].set(S.f(0.0))
+                V[6].set(v22 * d[0])
+                V[7].set(S.f(0.0))
+                V[8].set(S.f(0.0))
+                V[0].set(fma(x1, nn[0], V[1].get()))
+                V[1].set(fma(x1, nn[1], V[2].get()))
+                V[2].set(fma(x1, nn[2], V[3].get()))
+                V[3].set(fma(x1, nn[3], V[4].get()))
+                V[4].set(x1 * nn[4] if anti else S.f(0.0))
+                n22 = V[0].get() - V[5].get()
+                y.set(n22)
+                put(S.u(1), n22)
+            with S.for_(2, L) as i:
+                xi = src.load_comp(idx(pos(i)), ch)
+                v22 = y.get()
+                V[5].set(fma(v22, d[1], V[6].get()))
+                V[6].set(fma(v22, d[2], V[7].get()))
+                V[7].set(fma(v22, d[3], V[8].get()))
+                V[8].set(v22 * d[4])
+                V[0].set(fma(xi, nn[0], V[1].get()))
+                V[1].set(fma(xi, nn[1], V[2].get()))
+                V[2].set(fma(xi, nn[2], V[3].get()))
+                V[3].set(fma(xi, nn[3], V[4].get()))
+                V[4].set(xi * nn[4] if anti else S.f(0.0))
+                n22 = V[0].get() - V[5].get()
+                y.set(n22)
+                put(i, n22)
+
+
+kernel("vg_line_hd", [('w', 'u'), ('h', 'u'), ('vert', 'u'), ('q8', 'u')] + _coef_fields(), [PIC_IN, PIC_OUT], local=(64, 1))(_vg_line_hd_body)
 
 
 # ---------------------------------------------------------------------------------------------------------- the little kernels after the recursions (vfxblurs.h)

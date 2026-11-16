@@ -23,7 +23,9 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace reno {
@@ -119,6 +121,18 @@ inline void trim(const char* kind, qint64 most)
         total -= f.size();
         QFile::remove(f.absoluteFilePath());
     }
+}
+
+// trim() on a thread of its own, one folder at a time: the thumbnail folder holds tens of thousands of files, and listing
+// them held up starting the program and every change of the preferences.
+inline void trimSoon(const char* kind, qint64 most)
+{
+    std::thread([k = std::string(kind), most] {
+        static std::mutex one;
+        lowerThreadPriority();
+        std::lock_guard<std::mutex> lk(one);
+        trim(k.c_str(), most);
+    }).detach();
 }
 
 }  // namespace mediacache

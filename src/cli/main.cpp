@@ -1162,6 +1162,7 @@ int runPreviewProfile(AppState& app, const std::string& input, double from, doub
     out(strfmt("Profiling %s: frames %lld to %lld (%.2f - %.2f s) at %.0f%% size, %d picture thread%s", input.c_str(), (long long)f0, (long long)f1 - 1,
                p.frameTime(f0), p.frameTime(f1), fo.scale * 100.0, threads, threads == 1 ? "" : "s"));
     profile::reset();
+    resetImageMemoryPeak();
     profile::setEnabled(true);
     std::vector<double> ms((size_t)(f1 - f0), 0.0);
     std::vector<uint64_t> hashes(hashFrames ? (size_t)(f1 - f0) : 0, 0);
@@ -1227,6 +1228,12 @@ int runPreviewProfile(AppState& app, const std::string& input, double from, doub
         }
         if (!hashFile.empty()) writeFile(hashFile, lines);
         std::printf("hash      %016llx over %lld pictures\n", (unsigned long long)all, (long long)hashes.size());
+    }
+    {
+        int64_t inUse = 0, peak = 0, kept = 0;
+        imageMemoryStats(inUse, peak, kept);
+        std::printf("memory    pictures: %.0f MB held at the end, at most %.0f MB at once, %.0f MB of freed ones kept for reuse; frames the media readers keep: %.0f MB\n",
+                    inUse / 1048576.0, peak / 1048576.0, kept / 1048576.0, mediaFramesHeldBytes() / 1048576.0);
     }
     std::printf("\n%s", profile::formatReport(profile::snapshot(), wallMs).c_str());
     std::fflush(stdout);

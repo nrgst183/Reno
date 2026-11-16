@@ -867,8 +867,8 @@ bool planSoftContrast(Ctx& c, Plan& p)
     p.add("sc_gray", a, g, p.w, p.h).setPush(P::ScGray{p.w, p.h});
     if (su.blur) {
         const CgBlurCoefs cf = cgBlurCoefs(su.sigma);
-        p.add("cg_blur", g, g, p.h, 1).setPush(P::CgBlur{p.w, p.h, 0u, cf.gain, cf.c1, cf.c2, cf.c3});
-        p.add("cg_blur", g, g, p.w, 1).setPush(P::CgBlur{p.w, p.h, 1u, cf.gain, cf.c1, cf.c2, cf.c3});
+        p.add("cg_blur_ch", g, g, p.h * 4, 1).setPush(P::CgBlur{p.w, p.h, 0u, cf.gain, cf.c1, cf.c2, cf.c3});
+        p.add("cg_blur_ch", g, g, p.w * 4, 1).setPush(P::CgBlur{p.w, p.h, 1u, cf.gain, cf.c1, cf.c2, cf.c3});
     }
     std::vector<float> tab(1024 + (su.ext != 0 ? su.vmask.size() : 1), 0.f);
     if (su.trim)
@@ -952,8 +952,8 @@ bool planGlint(Ctx& c, Plan& p)
         const int fl = p.addBuf(1024, (uint32_t)((maxShear + 1023) / 1024), 4);
         auto cg = [&](int buf, uint32_t w, uint32_t h, double sx, double sy) {
             const CgBlurCoefs cx = cgBlurCoefs(sx), cy = cgBlurCoefs(sy);
-            p.add("cg_blur", buf, buf, h, 1).setPush(P::CgBlur{w, h, 0u, cx.gain, cx.c1, cx.c2, cx.c3});
-            p.add("cg_blur", buf, buf, w, 1).setPush(P::CgBlur{w, h, 1u, cy.gain, cy.c1, cy.c2, cy.c3});
+            p.add("cg_blur_ch", buf, buf, h * 4, 1).setPush(P::CgBlur{w, h, 0u, cx.gain, cx.c1, cx.c2, cx.c3});
+            p.add("cg_blur_ch", buf, buf, w * 4, 1).setPush(P::CgBlur{w, h, 1u, cy.gain, cy.c1, cy.c2, cy.c3});
         };
         for (uint32_t i = 0; i < n; ++i) {
             const DbGeom& d = su.streaks[i];

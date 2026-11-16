@@ -2830,6 +2830,46 @@ def cg_blur(S):
             ys = step((yi.x, yi.y, yi.z, yi.w), h)
             out.store(q, S.vec4(ys[0], ys[1], ys[2], ys[3]))
 
+@kernel("cg_blur_ch", WH + [('vert', 'u'), ('gain', 'f'), ('c1', 'f'), ('c2', 'f'), ('c3', 'f')], [PIC_IN, PIC_OUT], local=(64, 1))
+def cg_blur_ch(S):
+    """cg_blur with a thread per line and channel (gx = line * 4 + channel): each channel's steps as cg_blur does them, in the same order; a thread reads and writes only
+    its own channel, so in place (in0 == out) still works. A thread per line left the card mostly idle on lines of a few hundred pixels."""
+    P = S.p
+    vert = S.ne(P.vert, 0)
+    n = S.select(vert, P.h, P.w)
+    lines = S.select(vert, P.w, P.h)
+    with S.if_(S.gx < lines * 4):
+        line = S.gx >> 2
+        ch = S.gx & 3
+        src = S.buf('in0')
+        out = S.buf('out')
+        def idx(q): return S.select(vert, q * P.w + line, line * P.w + q)
+        tiny = S.f(1e-5)
+        zero = S.f(0.0)
+        def step(x, h):
+            acc = x * P.gain
+            acc = acc + P.c1 * h[0].get()
+            acc = acc + P.c2 * h[1].get()
+            acc = acc + P.c3 * h[2].get()
+            y = S.select(tiny > acc, zero, acc)
+            h[2].set(h[1].get())
+            h[1].set(h[0].get())
+            h[0].set(y)
+            return y
+        x0 = src.load_comp(idx(S.u(0)), ch)
+        h = [S.var('f', x0) for _ in range(3)]
+        with S.for_(0, n) as i:
+            y = step(src.load_comp(idx(i), ch), h)
+            out.store_comp(idx(i), ch, y)
+        la = out.load_comp(idx(n - 1), ch)
+        for r in range(3):
+            h[r].set(la)
+        with S.for_(0, n) as t:
+            q = idx(n - 1 - t)
+            y = step(out.load_comp(q, ch), h)
+            out.store_comp(q, ch, y)
+
+
 
 @kernel("ocl_blur", WH + [('vert', 'u'), ('n0', 'f'), ('n1', 'f'), ('n2', 'f'), ('d1', 'f'), ('d2', 'f'), ('d3', 'f'), ('t1', 'f'), ('t2', 'f'), ('t3', 'f'), ('gc', 'f'), ('ga', 'f')],
         [PIC_IN, PIC_OUT], local=(64, 1))

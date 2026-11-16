@@ -22,7 +22,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <cstring>
 
 namespace reno {
@@ -233,6 +235,37 @@ bool curveBytes8(const std::vector<CurvePoint>& P, unsigned char out[256])
     return true;
 }
 
+// The three 8-bit tables of a Color Curves setting (the master curve folded in), kept for the last settings seen: making them
+// samples every Bezier piece with pow, and the same curves come back for every frame. Null when the setting holds no curves.
+using CurveBytes = std::array<unsigned char, 768>;
+static std::shared_ptr<const CurveBytes> curveTables8(const std::string& prop)
+{
+    static std::mutex mu;
+    static std::map<std::string, std::shared_ptr<const CurveBytes>> kept;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = kept.find(prop);
+        if (it != kept.end()) return it->second;
+    }
+    std::vector<CurvePoint> curves[4];
+    if (!readCurves(prop, curves)) return nullptr;
+    auto lut = std::make_shared<CurveBytes>();
+    unsigned char m[256], t[256];
+    const bool haveM = curveBytes8(curves[3], m);
+    for (int k = 0; k < 3; ++k) {
+        const bool ok = curveBytes8(curves[k], t);
+        for (int v = 0; v < 256; ++v) {
+            unsigned char r = ok ? t[v] : (unsigned char)v;
+            if (haveM) r = m[r];
+            (*lut)[(size_t)k * 256 + (size_t)v] = r;
+        }
+    }
+    std::lock_guard<std::mutex> lk(mu);
+    if (kept.size() >= 32) kept.clear();
+    kept[prop] = lut;
+    return lut;
+}
+
 // The row function (see Def::rows): the three tables with the master curve folded in, then each pixel's straight colour looked up.
 struct CurveTables { std::vector<float> ch[3]; };
 
@@ -245,17 +278,8 @@ bool colorCurvesRows(Ctx& c, RowFn& fn)
     }
     if (c.levels) {
         // 8-bit: three byte tables (the master curve folded in), applied to the premultiplied bytes and held to the alpha.
-        auto lut = std::make_shared<std::array<unsigned char, 768>>();
-        unsigned char m[256], t[256];
-        const bool haveM = curveBytes8(curves[3], m);
-        for (int k = 0; k < 3; ++k) {
-            const bool ok = curveBytes8(curves[k], t);
-            for (int v = 0; v < 256; ++v) {
-                unsigned char r = ok ? t[v] : (unsigned char)v;
-                if (haveM) r = m[r];
-                (*lut)[(size_t)k * 256 + (size_t)v] = r;
-            }
-        }
+        std::shared_ptr<const CurveBytes> lut = curveTables8(c.s("Property"));
+        if (!lut) return false;
         fn = [lut](const float* sp, float* o, int n, int) {
             uint8_t lv[4 * 1024];
             for (int base = 0; base < n; base += 1024) {
@@ -666,19 +690,10 @@ bool colorCurvesGpuTables(Ctx& c, std::vector<float>& out)
 // Color Curves, 8-bit: the 768 byte-table entries colorCurvesRows() looks up (false: no curves, the frame is copied)
 bool colorCurves8GpuTables(Ctx& c, std::vector<float>& out)
 {
-    std::vector<CurvePoint> curves[4];
-    if (!readCurves(c.s("Property"), curves)) return false;
-    out.assign(768, 0.f);
-    unsigned char m[256], t[256];
-    const bool haveM = curveBytes8(curves[3], m);
-    for (int k = 0; k < 3; ++k) {
-        const bool ok = curveBytes8(curves[k], t);
-        for (int v = 0; v < 256; ++v) {
-            unsigned char r = ok ? t[v] : (unsigned char)v;
-            if (haveM) r = m[r];
-            out[(size_t)k * 256 + (size_t)v] = (float)r;
-        }
-    }
+    const std::shared_ptr<const CurveBytes> lut = curveTables8(c.s("Property"));
+    if (!lut) return false;
+    out.resize(768);
+    for (size_t i = 0; i < 768; ++i) out[i] = (float)(*lut)[i];
     return true;
 }
 

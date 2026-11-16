@@ -39,8 +39,8 @@ double clamp01d(double v) { return std::max(0.0, std::min(1.0, v)); }
 void addCgBlur(Plan& p, int buf, double sx, double sy)
 {
     const CgBlurCoefs cx = cgBlurCoefs(sx), cy = cgBlurCoefs(sy);
-    p.add("cg_blur", buf, buf, p.h, 1).setPush(P::CgBlur{p.w, p.h, 0u, cx.gain, cx.c1, cx.c2, cx.c3});
-    p.add("cg_blur", buf, buf, p.w, 1).setPush(P::CgBlur{p.w, p.h, 1u, cy.gain, cy.c1, cy.c2, cy.c3});
+    p.add("cg_blur_ch", buf, buf, p.h * 4, 1).setPush(P::CgBlur{p.w, p.h, 0u, cx.gain, cx.c1, cx.c2, cx.c3});
+    p.add("cg_blur_ch", buf, buf, p.w * 4, 1).setPush(P::CgBlur{p.w, p.h, 1u, cy.gain, cy.c1, cy.c2, cy.c3});
 }
 
 // the layer's alpha in all lanes of a new buffer

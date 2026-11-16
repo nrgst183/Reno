@@ -542,6 +542,7 @@ void Playback::pause()
         queue_.clear();
         queued_ = 0;
     }
+    releaseKeptImageMemory();
     peakL_ = 0;
     peakR_ = 0;
     {

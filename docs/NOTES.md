@@ -42,6 +42,13 @@ Details worth knowing:
     gives the same bytes as running the effects one by one (vkchain_test compares them). `RENO_VK_NO_DEFER=1` turns it off.
   - Descriptor sets, pipeline lookups, staging and device buffers, the command pool and the pipeline cache (on disk)
     are kept between frames.
+  - The recursive Gaussians of the effects drawn as VEGAS's OpenCL kernels draw them (`vg_line`, `vkblur.cpp`) do each
+    fused multiply-add in doubles, and the transforms of Starburst and Defocus (`ff_stage`, `ff_mul`, `vkfft.cpp`) work
+    in doubles. On a card with `shaderFloat64` those are the card's own doubles (`vg_line_hd`, `ff_stage_hd`,
+    `ff_mul_hd`); without it, doubles made of 32-bit integer arithmetic (`tools/sf64.py`), several times slower for the
+    Gaussians. With doubles, `vg_line_hd` runs a thread per line and channel, and a transform of n <= 2048 does every
+    stage of a line in one pass, in shared memory (`ff_line_hd`), instead of a pass per stage. All give the same
+    pictures (vkcheck). `RENO_VK_NO_FLOAT64=1` uses the integer versions on every card.
   - `reno_cli gpupick` (and Preferences > Video > GPU effects, run behind the splash screen once per card + driver +
     Reno version) times every built-in effect on the CPU and on the card and keeps the quicker, in `gpu_pick.txt` in
     the data folder. An effect whose GPU picture differs from the CPU's in that measurement goes to the CPU. "Always the

@@ -76,6 +76,17 @@ void fftPasses(Plan& p, int data, int tab, uint32_t count, uint32_t n, bool inve
 {
     uint32_t L = 0;
     while ((1u << L) < n) ++L;
+    // A card with doubles and room for a line of 2048 of them in a workgroup does every stage of a line in one pass
+    // (ff_line_hd: the same butterflies, the line read and written once rather than once a stage).
+    const size_t lines = (size_t)count * n;
+    if (gpu::deviceDoubles() && n <= 2048 && lines <= 65535 && gpu::deviceSharedMemory() >= 2048u * 16u) {
+        for (uint32_t vert = 0; vert < 2; ++vert) {
+            Pass& ps = p.add("ff_line_hd", 0, data, 256, (uint32_t)lines);
+            ps.table = tab;
+            ps.setPush(P::FfLineHd{n, L, inverse ? 0u : 1u, vert, inverse ? 1u : 0u, perStage ? 1u : 0u, (uint32_t)lines, 0u});
+        }
+        return;
+    }
     const size_t nt = (size_t)count * n * n / 2;
     uint32_t wd, ht;
     flat(nt, wd, ht);
@@ -90,7 +101,7 @@ void fftPasses(Plan& p, int data, int tab, uint32_t count, uint32_t n, bool inve
                 off = inverse ? n / 2 : 0;
                 step = n / len;
             }
-            Pass& ps = p.add("ff_stage", 0, data, wd, ht);
+            Pass& ps = p.add(gpu::deviceDoubles() ? "ff_stage_hd" : "ff_stage", 0, data, wd, ht);   // (the card's doubles when it has them: the same arithmetic)
             ps.table = tab;
             ps.setPush(P::FfStage{(uint32_t)nt, wd, ht, n, L, lg, inverse ? 0u : 1u, vert, off, step, 0u});
         }
@@ -153,7 +164,7 @@ bool planDefocus(Ctx& c, Plan& p)
             uint32_t w2, h2;
             const size_t nm = n * 2 * T * T;
             flat(nm, w2, h2);
-            Pass& ps = p.add("ff_mul", 0, dat, w2, h2);
+            Pass& ps = p.add(gpu::deviceDoubles() ? "ff_mul_hd" : "ff_mul", 0, dat, w2, h2);
             ps.in1 = kf;
             ps.setPush(P::FfMul{(uint32_t)nm, w2, h2, T * T, 0u});
         }
@@ -228,7 +239,7 @@ bool planStarburst(Ctx& c, Plan& p)
     {
         const size_t nm = (size_t)2 * N * N;
         flat(nm, wd, ht);
-        Pass& ps = p.add("ff_mul", 0, ab, wd, ht);
+        Pass& ps = p.add(gpu::deviceDoubles() ? "ff_mul_hd" : "ff_mul", 0, ab, wd, ht);
         ps.in1 = kb;
         ps.setPush(P::FfMul{(uint32_t)nm, wd, ht, N * N, 0u});
     }

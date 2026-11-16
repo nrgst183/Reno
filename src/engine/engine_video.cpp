@@ -3189,7 +3189,19 @@ ImagePtr VideoEngine::renderOnce(const Project& p, double seconds, const FrameOp
             mine = gComposeFast.load() && it != pass.memo.end() && it->second == top && top.use_count() == 2;
         }
         if (mine) gFastOwned.fetch_add(1, std::memory_order_relaxed);
-        out = mine ? top : top->clone();
+        if (mine) out = top;
+        else if (!opt.transparent) {
+            // the copy made opaque as it is made (one pass over the frame instead of two)
+            top->sync();
+            out = Image::make(top->w, top->h, PixelDepth::Byte, false);
+            if (!out) return nullptr;
+            const Image& src = *top;
+            Image& dst = *out;
+            parallelRows(dst.h, (size_t)dst.w * 4, [&](int ya, int yb) {
+                for (int y = ya; y < yb; ++y) pix::opaqueCopyRow(dst.row(y), src.row(y), dst.w);
+            });
+            return out;
+        } else out = top->clone();
     } else {
         out = pass.blank();
         if (out && top && top->w == pass.W && top->h == pass.H) compositeOver(*out, *top, 1.f);

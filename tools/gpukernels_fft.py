@@ -35,6 +35,21 @@ def stc(S, buf, wi, re, im):
     buf.store(wi + 3, im.lo)
 
 
+def ldd(S, buf, wi):
+    """ldc as the card's doubles"""
+    return S.words_to_d(buf.load(wi), buf.load(wi + 1)), S.words_to_d(buf.load(wi + 2), buf.load(wi + 3))
+
+
+def std(S, buf, wi, re, im):
+    """stc from the card's doubles"""
+    rh, rl = S.d_to_words(re)
+    ih, il = S.d_to_words(im)
+    buf.store(wi, rh)
+    buf.store(wi + 1, rl)
+    buf.store(wi + 2, ih)
+    buf.store(wi + 3, il)
+
+
 def bitrev(S, x, nbits):
     """the nbits low bits of x in reverse order"""
     r = x
@@ -52,6 +67,18 @@ def bitrev(S, x, nbits):
 def ff_stage(S):
     """one stage (len = 2 ^ lg) of fft1() on every row (or column) of every n x n array of the buffer, in place; a thread per butterfly. The twiddle of butterfly k is the complex
     number twoff + k * twstep of the table. scr: the elements are at the bit-reversed slots (the forward transform)."""
+    _ff_stage_body(S, False)
+
+
+@kernel("ff_stage_hd", LIN + [('n', 'u'), ('ln', 'u'), ('lg', 'u'), ('scr', 'u'), ('vert', 'u'), ('twoff', 'u'), ('twstep', 'u'), ('pad', 'u')],
+        [(2, 'data', 'u', 'rw'), TABU])
+def ff_stage_hd(S):
+    """ff_stage with the card's own doubles (a device with shaderFloat64): the same arithmetic as tools/sf64.py's (add, subtract and multiply rounded to nearest), the words
+    read and written as they are; sf64 takes subnormal doubles as zero, which the transforms of pictures do not come near"""
+    _ff_stage_body(S, True)
+
+
+def _ff_stage_body(S, hw):
     P = S.p
     with lin(S):
         t = S.gy * P.wd + S.gx
@@ -73,27 +100,94 @@ def ff_stage(S):
             base = a << (ln * 2)
             e0 = base + S.select(vert, p0 * P.n + line, line * P.n + p0)
             e1 = base + S.select(vert, p1 * P.n + line, line * P.n + p1)
-            u = ldc(S, d, e0 * 4)
-            v = ldc(S, d, e1 * 4)
-            w = ldc(S, tab, (P.twoff + k * P.twstep) * 4)
+            if hw:
+                u = ldd(S, d, e0 * 4)
+                v = ldd(S, d, e1 * 4)
+                w = ldd(S, tab, (P.twoff + k * P.twstep) * 4)
+            else:
+                u = ldc(S, d, e0 * 4)
+                v = ldc(S, d, e1 * 4)
+                w = ldc(S, tab, (P.twoff + k * P.twstep) * 4)
             vr, vi, wr, wi = v[0], v[1], w[0], w[1]
             tr = vr * wr - vi * wi
             ti = vr * wi + vi * wr
-            stc(S, d, e1 * 4, u[0] - tr, u[1] - ti)
-            stc(S, d, e0 * 4, u[0] + tr, u[1] + ti)
+            (std if hw else stc)(S, d, e1 * 4, u[0] - tr, u[1] - ti)
+            (std if hw else stc)(S, d, e0 * 4, u[0] + tr, u[1] + ti)
+
+
+@kernel("ff_line_hd", [('n', 'u'), ('ln', 'u'), ('scr', 'u'), ('vert', 'u'), ('inv', 'u'), ('perstage', 'u'), ('lines', 'u'), ('pad', 'u')],
+        [(2, 'data', 'u', 'rw'), TABU], local=(256, 1))
+def ff_line_hd(S):
+    """every stage (len = 2 .. n) of fft1() on one row (or column) of one n x n array: a workgroup of 256 per line (gy = array * n + line), the line held in shared memory as the
+    card's doubles (n at most 2048). Each butterfly is ff_stage_hd's - the same elements, twiddle and arithmetic, the stages in the same order - but the line is read and
+    written once instead of once a stage: the transforms were bound by memory traffic. The twiddle offset and step are worked out as fftPasses() does (perstage: the table
+    stage by stage; inv: the inverse's numbers)."""
+    P = S.p
+    re = S.shared_array('d', 2048)
+    im = S.shared_array('d', 2048)
+    g = S.gy
+    lid = S.gx
+    with S.if_(g < P.lines):
+        d, tab = S.buf('data'), S.buf('table')
+        ln = P.ln
+        a = g >> ln
+        line = g & (P.n - 1)
+        base = a << (ln * 2)
+        vert = S.ne(P.vert, 0)
+        scr = S.ne(P.scr, 0)
+        inv = S.ne(P.inv, 0)
+        perstage = S.ne(P.perstage, 0)
+        def el(p): return base + S.select(vert, p * P.n + line, line * P.n + p)
+        with S.for_(lid, P.n, 256) as p:
+            u = ldd(S, d, el(p) * 4)
+            re.store(p, u[0])
+            im.store(p, u[1])
+        S.barrier()
+        with S.for_(1, ln + 1) as lg:
+            lh = S.u(1) << (lg - 1)
+            off = S.select(perstage, S.select(inv, P.n - 1, S.u(0)) + lh - 1, S.select(inv, P.n >> 1, S.u(0)))
+            step = S.select(perstage, S.u(1), P.n >> lg)
+            with S.for_(lid, P.n >> 1, 256) as j:
+                k = j & (lh - 1)
+                i0 = ((j >> (lg - 1)) << lg) + k
+                i1 = i0 + lh
+                p0 = S.select(scr, bitrev(S, i0, ln), i0)
+                p1 = S.select(scr, bitrev(S, i1, ln), i1)
+                w = ldd(S, tab, (off + k * step) * 4)
+                ur, ui = re.load(p0), im.load(p0)
+                vr, vi, wr, wi = re.load(p1), im.load(p1), w[0], w[1]
+                tr = vr * wr - vi * wi
+                ti = vr * wi + vi * wr
+                re.store(p1, ur - tr)
+                im.store(p1, ui - ti)
+                re.store(p0, ur + tr)
+                im.store(p0, ui + ti)
+            S.barrier()
+        with S.for_(lid, P.n, 256) as p:
+            std(S, d, el(p) * 4, re.load(p), im.load(p))
 
 
 @kernel("ff_mul", LIN + [('m2', 'u'), ('pad', 'u')], [(1, 'kf', 'u', 'r'), (2, 'data', 'u', 'rw')])
 def ff_mul(S):
     """data[i] = data[i] * kf[i] (the product pl[i] *= kf[i] of the CPU: re = ar kr - ai ki, im = ar ki + ai kr); kf one array, data one or more"""
+    _ff_mul_body(S, False)
+
+
+@kernel("ff_mul_hd", LIN + [('m2', 'u'), ('pad', 'u')], [(1, 'kf', 'u', 'r'), (2, 'data', 'u', 'rw')])
+def ff_mul_hd(S):
+    """ff_mul with the card's own doubles (see ff_stage_hd)"""
+    _ff_mul_body(S, True)
+
+
+def _ff_mul_body(S, hw):
     P = S.p
     with lin(S):
         t = S.gy * P.wd + S.gx
         with S.if_(t < P.nt):
             d, kf = S.buf('data'), S.buf('kf')
-            a = ldc(S, d, t * 4)
-            k = ldc(S, kf, (t & (P.m2 - 1)) * 4)
-            stc(S, d, t * 4, a[0] * k[0] - a[1] * k[1], a[0] * k[1] + a[1] * k[0])
+            a = (ldd if hw else ldc)(S, d, t * 4)
+            k = (ldd if hw else ldc)(S, kf, (t & (P.m2 - 1)) * 4)
+            (std if hw else stc)(S, d, t * 4, a[0] * k[0] - a[1] * k[1], a[0] * k[1] + a[1] * k[0])
 
 
 # ---------------------------------------------------------------------------------------------------------- Defocus (defocusRenderGpu)

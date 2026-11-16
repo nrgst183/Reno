@@ -1204,13 +1204,17 @@ struct NestedShared {
     {
         std::lock_guard<std::mutex> lk(mutex);
         frames.push_front({frame, generation, img});
-        // four frames, and no more than 64 MB of them (a dozen full-size deep frames are hundreds of megabytes, in
-        // every nested project used). Frames asked for again are nearly always one of the last three made (another
-        // layer or a stutter going back a frame or two); keeping a dozen held ~150 MB more in a project with five
-        // nested projects and saved no time.
+        // four frames in a final render, and no more than 64 MB of them (a dozen full-size deep frames are hundreds of
+        // megabytes, in every nested project used). Frames asked for again are nearly always one of the last three made
+        // (another layer or a stutter going back a frame or two); keeping a dozen held ~150 MB more in a project with
+        // five nested projects and saved no time there. While previewing, several picture threads are each at their own
+        // frame and stutters go back further: with four kept, a project nested four deep made each nested frame about
+        // twice and played at 65 frames a second on four threads, 26 on eight; with 32 (still at most 64 MB, about 32
+        // preview-size frames) 74 and 72, and the peak memory of projects with ten nested projects stayed the same.
+        const size_t most = gFinalDepth > 0 ? 4 : 32;
         size_t bytes = 0;
         for (const CachedFrame& f : frames) bytes += f.img ? f.img->byteSize() : 0;
-        while (frames.size() > 1 && (frames.size() > 4 || bytes > (64u << 20))) {
+        while (frames.size() > 1 && (frames.size() > most || bytes > (64u << 20))) {
             bytes -= frames.back().img ? frames.back().img->byteSize() : 0;
             frames.pop_back();
         }

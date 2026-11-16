@@ -355,7 +355,7 @@ std::string userDataDir()
 namespace {
 const size_t kHeader = 64;                         // (holds the block's size; keeps the picture 64-byte aligned)
 const size_t kKeepFrom = 256 * 1024;
-const size_t kKeepBytes = (size_t)128 << 20;
+const size_t kKeepBytes = (size_t)64 << 20;
 const size_t kKeepBlocks = 48;
 
 struct KeptBlocks {
@@ -367,6 +367,15 @@ KeptBlocks& keptBlocks()
 {
     static KeptBlocks* k = new KeptBlocks();       // (never destroyed: images can be freed after the program's globals go)
     return *k;
+}
+
+// picture memory held by frames, and the most held at once (imageMemoryStats)
+std::atomic<int64_t> gImageInUse{0}, gImagePeak{0};
+void noteImageUse(size_t n)
+{
+    const int64_t now = gImageInUse.fetch_add((int64_t)n, std::memory_order_relaxed) + (int64_t)n;
+    int64_t peak = gImagePeak.load(std::memory_order_relaxed);
+    while (now > peak && !gImagePeak.compare_exchange_weak(peak, now, std::memory_order_relaxed)) {}
 }
 
 void* systemAlloc(size_t n)
@@ -401,12 +410,14 @@ static void* alignedAlloc(size_t n)
                 void* base = k.blocks[i].second;
                 k.blocks.erase(k.blocks.begin() + (std::ptrdiff_t)i);
                 k.bytes -= n;
+                noteImageUse(n);
                 return (uint8_t*)base + kHeader;
             }
     }
     void* base = systemAlloc(n + kHeader);
     if (!base) return nullptr;
     *(size_t*)base = n;
+    noteImageUse(n);
     return (uint8_t*)base + kHeader;
 }
 
@@ -415,6 +426,7 @@ static void alignedFree(void* p)
     if (!p) return;
     void* base = (uint8_t*)p - kHeader;
     const size_t n = *(size_t*)base;
+    gImageInUse.fetch_sub((int64_t)n, std::memory_order_relaxed);
     if (n >= kKeepFrom && n <= kKeepBytes) {
         std::vector<void*> drop;
         {
@@ -435,6 +447,29 @@ static void alignedFree(void* p)
         return;
     }
     systemFree(base);
+}
+
+void imageMemoryStats(int64_t& inUse, int64_t& peak, int64_t& kept)
+{
+    inUse = gImageInUse.load();
+    peak = gImagePeak.load();
+    KeptBlocks& k = keptBlocks();
+    std::lock_guard<std::mutex> lk(k.m);
+    kept = (int64_t)k.bytes;
+}
+
+void resetImageMemoryPeak() { gImagePeak.store(gImageInUse.load()); }
+
+void releaseKeptImageMemory()
+{
+    std::vector<std::pair<size_t, void*>> drop;
+    {
+        KeptBlocks& k = keptBlocks();
+        std::lock_guard<std::mutex> lk(k.m);
+        drop.swap(k.blocks);
+        k.bytes = 0;
+    }
+    for (const auto& b : drop) systemFree(b.second);
 }
 
 ImagePtr Image::make(int w, int h, PixelDepth d, bool clear)
@@ -744,8 +779,15 @@ void blendImages(Image& dst, const Image& a, const Image& b, float t)
             if (&from != &dst) std::memcpy(dst.data.get(), from.data.get(), dst.byteSize());
             return;
         }
+        // (into a frame other than the two: it is new, so its rows are written past the cache)
+        const bool fresh = &dst != &a && &dst != &b;
         parallelRows(dst.h, (size_t)dst.w * 4, [&](int y0, int y1) {
-        for (int y = y0; y < y1; ++y) pix::blendRow(dst.row(y), a.row(y), b.row(y), dst.w * 4, ta, tb);
+        if (fresh) {
+            for (int y = y0; y < y1; ++y) pix::blendRowStream(dst.row(y), a.row(y), b.row(y), dst.w * 4, ta, tb);
+            pix::streamDone();
+        } else {
+            for (int y = y0; y < y1; ++y) pix::blendRow(dst.row(y), a.row(y), b.row(y), dst.w * 4, ta, tb);
+        }
         });
     } else {
         parallelRows(dst.h, (size_t)dst.w * 4, [&](int y0, int y1) {

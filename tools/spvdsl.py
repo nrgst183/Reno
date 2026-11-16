@@ -17,13 +17,13 @@ OP = dict(
     TypeVoid=19, TypeBool=20, TypeInt=21, TypeFloat=22, TypeVector=23, TypeStruct=30, TypeRuntimeArray=29, TypeArray=28, ConstantComposite=44, ConstantNull=46, TypePointer=32,
     TypeFunction=33, Constant=43, ConstantTrue=41, ConstantFalse=42, Function=54, FunctionEnd=56, Variable=59, Load=61, Store=62,
     AccessChain=65, CompositeConstruct=80, CompositeExtract=81, Label=248, Return=253, Branch=249, BranchConditional=250,
-    SelectionMerge=247, LoopMerge=246, Select=169, Bitcast=124, ConvertFToU=109, ConvertFToS=110, ConvertSToF=111, ConvertUToF=112,
+    SelectionMerge=247, LoopMerge=246, Select=169, Bitcast=124, FConvert=115, ConvertFToU=109, ConvertFToS=110, ConvertSToF=111, ConvertUToF=112,
     SNegate=126, FNegate=127, IAdd=128, FAdd=129, ISub=130, FSub=131, IMul=132, FMul=133, UDiv=134, SDiv=135, FDiv=136, UMod=137,
     SRem=138, FRem=140, FMod=141, VectorTimesScalar=142, IsNan=156, IsInf=157, LogicalEqual=164, LogicalNotEqual=165, LogicalOr=166,
     LogicalAnd=167, LogicalNot=168, IEqual=170, INotEqual=171, UGreaterThan=172, SGreaterThan=173, UGreaterThanEqual=174,
     SGreaterThanEqual=175, ULessThan=176, SLessThan=177, ULessThanEqual=178, SLessThanEqual=179, FOrdEqual=180, FUnordNotEqual=183,
     FOrdLessThan=184, FOrdGreaterThan=186, FOrdLessThanEqual=188, FOrdGreaterThanEqual=190, ShiftRightLogical=194,
-    AtomicIAdd=234, ShiftRightArithmetic=195, ShiftLeftLogical=196, BitwiseOr=197, BitwiseXor=198, BitwiseAnd=199, Not=200, BitCount=205)
+    AtomicIAdd=234, ControlBarrier=224, ShiftRightArithmetic=195, ShiftLeftLogical=196, BitwiseOr=197, BitwiseXor=198, BitwiseAnd=199, Not=200, BitCount=205)
 
 GLSL = dict(Round=1, RoundEven=2, Trunc=3, FAbs=4, SAbs=5, FSign=6, Floor=8, Ceil=9, Fract=10, Sin=13, Cos=14, Tan=15, Asin=16, Acos=17,
             Atan=18, Atan2=25, Pow=26, Exp=27, Log=28, Exp2=29, Log2=30, Sqrt=31, InverseSqrt=32, FMin=37, UMin=38, SMin=39, FMax=40,
@@ -122,6 +122,20 @@ class Buffer:
         val = self.S.conv(val, self.elem)
         p = self.S._op("AccessChain", self.ptrty, self.var, self.S.u(0).id, idx.id)
         self.S._emit("Store", p, val.id)
+    def load_comp(self, idx, comp):
+        """one float of the vec4 at idx (a 'v4' buffer): comp a number or a uint value"""
+        S = self.S
+        assert self.elem == 'v4'
+        idx, comp = S.conv(idx, 'u'), S.conv(comp, 'u')
+        p = S._op("AccessChain", S._ptr(2, S.tid['f']), self.var, S.u(0).id, idx.id, comp.id)
+        return S._load(p, 'f')
+    def store_comp(self, idx, comp, val):
+        """writes one float of the vec4 at idx, leaving the other three as they are (other threads may write them)"""
+        S = self.S
+        assert self.elem == 'v4'
+        idx, comp, val = S.conv(idx, 'u'), S.conv(comp, 'u'), S.conv(val, 'f')
+        p = S._op("AccessChain", S._ptr(2, S.tid['f']), self.var, S.u(0).id, idx.id, comp.id)
+        S._emit("Store", p, val.id)
     def atomic_add(self, idx, val):
         """buf[idx] += val atomically (a 'u' buffer opened 'rw'); the old value is not returned"""
         S = self.S
@@ -331,6 +345,35 @@ class Shader:
         if ty == 'b': return self.b(x)
         raise TypeError("cannot make a %s from %r" % (ty, x))
 
+    def _dtype(self):
+        """the 64-bit float type, made (with the Float64 capability) the first time a kernel uses a double; only for a device with shaderFloat64"""
+        if 'd' not in self.tid:
+            self._emit_sec("cap", "Capability", 10)
+            self.tid['d'] = self._type("d", "TypeFloat", 64)
+        return self.tid['d']
+
+    def fconv(self, x, ty):
+        """a float as a double (ty 'd', exact) or a double as a float (ty 'f', rounded to nearest): OpFConvert"""
+        if not isinstance(x, V) or x.ty not in ('f', 'd') or ty not in ('f', 'd'):
+            raise TypeError("kernel %s: fconv of %r to %s" % (self.name, x, ty))
+        if x.ty == ty: return x
+        if ty == 'd': self._dtype()
+        return self._v("FConvert", ty, x.id)
+
+    def words_to_d(self, hi, lo):
+        """the double whose IEEE bits are the words (hi, lo) (tools/sf64.py's layout), on a device with shaderFloat64"""
+        self._dtype()
+        if 'uv2' not in self.tid: self.tid['uv2'] = self._type("uv2", "TypeVector", self.tid['u'], 2)
+        pair = self._v("CompositeConstruct", 'uv2', self.conv(lo, 'u').id, self.conv(hi, 'u').id)
+        return self._v("Bitcast", 'd', pair.id)
+
+    def d_to_words(self, x):
+        """(hi, lo): the IEEE bits of the double x as two words"""
+        if not isinstance(x, V) or x.ty != 'd': raise TypeError("kernel %s: d_to_words of %r" % (self.name, x))
+        if 'uv2' not in self.tid: self.tid['uv2'] = self._type("uv2", "TypeVector", self.tid['u'], 2)
+        pair = self._v("Bitcast", 'uv2', x.id)
+        return self._v("CompositeExtract", 'u', pair.id, 1), self._v("CompositeExtract", 'u', pair.id, 0)
+
     def vec4(self, a, b, c, d):
         parts = [self.conv(t, 'f') for t in (a, b, c, d)]
         return self._v("CompositeConstruct", 'v4', *[p.id for p in parts])
@@ -363,7 +406,7 @@ class Shader:
         else:
             o = self.conv(o, ty)
         x, y = (o, v) if rev else (v, o)
-        if ty in ('f', 'v4'):
+        if ty in ('f', 'v4', 'd'):
             op = dict(add="FAdd", sub="FSub", mul="FMul", div="FDiv", mod="FMod")[name]
         elif ty == 'u':
             op = dict(add="IAdd", sub="ISub", mul="IMul", div="UDiv", mod="UMod")[name]
@@ -376,6 +419,8 @@ class Shader:
         if op == "FDiv" and ty == 'v4':
             return self.vec4(*[self._fdiv_exact(self.extract(x, k), self.extract(y, k)) for k in range(4)])
         r = self._v(op, ty, x.id, y.id)
+        if op == "FDiv" and ty == 'd':
+            raise TypeError("kernel %s: no exact double division" % self.name)
         if op in ("FAdd", "FSub", "FMul"):
             self._emit_sec("annot", "Decorate", r.id, 42)      # NoContraction: a GPU must not fuse a multiply and an add (the CPU rounds each step)
         return r
@@ -592,6 +637,18 @@ class Shader:
         # (a private variable is a separate one each time it is asked for)
         return LocalArray(self, var, self._ptr(6, self.tid[ty]), ty)
     def buf(self, name): return self.buffers[name]
+    def shared_array(self, elem, n):
+        """an array of n values shared by the invocations of a workgroup (Workgroup storage): load(idx), store(idx, val); elem 'u', 'f' or 'd'"""
+        et = self._dtype() if elem == 'd' else self.tid[elem]
+        arr = self._type(("sharr", elem, n), "TypeArray", et, self._const('u', n))
+        var = self._newid()
+        self._emit_sec("types", "Variable", self._ptr(4, arr), var, 4)
+        return LocalArray(self, var, self._ptr(4, et), elem)
+
+    def barrier(self):
+        """every invocation of the workgroup waits here, and sees what the others wrote to the shared arrays before it (must be reached by all of them)"""
+        self._emit("ControlBarrier", self._const('u', 2), self._const('u', 2), self._const('u', 0x108))
+
     def if_(self, c): return _If(self, c)
     def else_(self): return _Else(self)
     def for_(self, start, end, step=1, signed=False):

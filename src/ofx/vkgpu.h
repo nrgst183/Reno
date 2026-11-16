@@ -22,13 +22,14 @@ struct DeviceInfo {
     uint64_t localMemoryBytes = 0;
     uint32_t computeQueueFamily = 0xffffffffu;
     bool usable = false;
-    uint32_t maxStorageRange = 0, maxPushConstants = 0, maxGroupInvocations = 0;
+    uint32_t maxStorageRange = 0, maxPushConstants = 0, maxGroupInvocations = 0, maxSharedMemory = 0;
     bool timestamps = false;
     // Float controls (Vulkan 1.2 / VK_KHR_shader_float_controls), as the driver reports them: fcKnown is false when they could not be asked (a Vulkan 1.0/1.1 device).
     bool fcUseRte = false, fcUseDenorm = false, fcUseSzinf = false;      // the controls put into every kernel
     bool fcKnown = false, fcRteF32 = false, fcDenormPreserveF32 = false, fcDenormFlushF32 = false, fcRtzF32 = false, fcSignedZeroInfNanF32 = false;
     int fcDenormIndependence = -1, fcRoundingIndependence = -1;      // 0 = 32-bit only, 1 = all, 2 = none
     bool floatControlsUsed = false;     // every kernel is made with RoundingModeRTE and DenormPreserve for 32-bit floats
+    bool float64 = false;               // shaderFloat64: kernels may use the card's doubles (turned on when the device is made; off with RENO_VK_NO_FLOAT64=1)
     std::string note;                   // why it is not usable
     std::string typeName() const;
     std::string apiVersionText() const;
@@ -54,6 +55,10 @@ std::string status();
 // Why the last run() on this thread failed (the check that stopped it), or "".
 std::string lastRunFailure();
 DeviceInfo currentDevice();
+// Whether the device in use runs kernels with doubles (DeviceInfo::float64), for the plans that have a kernel of each kind. Cheap: asked per pass.
+bool deviceDoubles();
+// The bytes of shared memory a workgroup may have on the device in use (0: none in use).
+uint32_t deviceSharedMemory();
 // Closes everything (the device is made again on the next use); the pipeline cache is written first.
 void shutdown();
 

@@ -160,6 +160,8 @@ public:
 
 // Opens a file (video, audio or a frame). Null with *error set if it cannot be read.
 std::unique_ptr<MediaReader> openMedia(const std::string& path, std::string* error = nullptr);
+// Bytes of the frames all open readers keep (converted ones, and decoded ones kept for going back), for measurements.
+int64_t mediaFramesHeldBytes();
 
 struct EncodeSettings {
     std::string path;                   // the container is chosen from the extension (.mp4, .mov, .mkv, .avi, .webm, .wav, .mp3 ...)

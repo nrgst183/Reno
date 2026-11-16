@@ -147,9 +147,9 @@ inline void apply()
     ofx::Host::get().config.previewSizeForAll = vprefs::on("prefs/previewSizeAllFx");
     reno::setProbeExeOverride(QDir::fromNativeSeparators(vprefs::text("prefs/renoCliPath").trimmed()).toStdString());
     ofx::Param::newKeyCurve().store(vprefs::curveCode("prefs/curveVideoFx"));
-    mediacache::trim("thumbs", (qint64)std::max(0, vprefs::number("prefs/thumbCacheMb")) * 1024 * 1024);
-    mediacache::trim("peaks", (qint64)std::max(0, vprefs::number("prefs/peakCacheMb")) * 1024 * 1024);
-    mediacache::trim("proxies", (qint64)std::max(256, vprefs::number("prefs/proxyCacheMb")) * 1024 * 1024);
+    mediacache::trimSoon("thumbs", (qint64)std::max(0, vprefs::number("prefs/thumbCacheMb")) * 1024 * 1024);
+    mediacache::trimSoon("peaks", (qint64)std::max(0, vprefs::number("prefs/peakCacheMb")) * 1024 * 1024);
+    mediacache::trimSoon("proxies", (qint64)std::max(256, vprefs::number("prefs/proxyCacheMb")) * 1024 * 1024);
 }
 
 // Applies the interface size and High DPI settings (Preferences > Display and Preferences > Reno > Interface).

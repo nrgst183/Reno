@@ -21,7 +21,7 @@ namespace {
 typedef std::chrono::steady_clock Clock;
 double msSince(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
-const int kRevision = 1;                // raised when the kernels or this rule change so every card is measured again
+const int kRevision = 2;                // raised when the kernels or this rule change so every card is measured again
 const int kW = 1920, kH = 1080;
 const int kMaxCases = 2;
 const double kCpuMustWinBy = 1.25;      // the CPU is picked only when it is this much faster than the GPU run on its own (a chain on the card saves transfers)

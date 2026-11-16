@@ -74,6 +74,12 @@ private:
 // Set by the Vulkan path: brings a frame whose pixels are only on the card into 'data' (and lets the card's copy go).
 extern void (*gImageSyncHook)(const Image&);
 using ImagePtr = std::shared_ptr<Image>;
+// Bytes of picture memory (Image::make): held by frames now, the most held at once since resetImageMemoryPeak, and freed
+// blocks kept for reuse. For measurements (reno_cli --profile).
+void imageMemoryStats(int64_t& inUse, int64_t& peak, int64_t& kept);
+void resetImageMemoryPeak();
+// Gives the freed picture blocks kept for reuse back to the system (when playing stops: nothing will want them soon).
+void releaseKeptImageMemory();
 
 // dst = src over dst, both premultiplied, same size and depth (Byte). 'opacity' 0..1 scales src.
 void compositeOver(Image& dst, const Image& src, float opacity);

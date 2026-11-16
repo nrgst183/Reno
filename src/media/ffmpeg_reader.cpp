@@ -2672,4 +2672,7 @@ std::string mediaBackendVersion()
     return strfmt("FFmpeg %s (libavcodec %u.%u.%u)", name ? name : "?", v >> 16, (v >> 8) & 255u, v & 255u);
 }
 
+// Bytes of the frames all open readers keep (converted ones, and decoded ones kept for going back), for measurements.
+int64_t mediaFramesHeldBytes() { return gReadersHeld.load(); }
+
 }  // namespace reno
