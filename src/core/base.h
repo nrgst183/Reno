@@ -96,10 +96,14 @@ void parallelTasks(int n, const std::function<void(int index)>& fn);
 // What parallelTasks has done since the program began (for measurements and tests): the calls that handed work out, the
 // tasks they held, and how many of those ran on the pool's helper threads rather than on the thread that asked.
 void parallelTaskStats(uint64_t& jobs, uint64_t& tasks, uint64_t& tasksOnHelpers);
-// For a thread that has to wait for another one: runs some of the work waiting in that pool (parallelRows bands,
-// parallelTasks tasks), so that the processor it would leave idle helps instead - the thread it waits for may be
-// counting on the pool's threads, and this may be one of them. False if there was none to run.
+// For a thread that has to wait for another one: runs some of the parallelRows bands waiting in that pool, so that the
+// processor it would leave idle helps instead - the thread it waits for may be counting on the pool's threads, and this
+// may be one of them. Not parallelTasks tasks: a task can read media or wait itself, which from a thread holding a
+// reader or waiting for a frame locked the reader twice or waited in a circle. False if there was none to run.
 bool helpWithPoolWork();
+// True while this thread runs a band or task of a job another thread is waiting for. Such a thread must not wait for
+// work another thread has started: that thread may be the one waiting for this band, and both would wait for ever.
+bool inOthersPoolWork();
 
 // Puts the calling thread a step below normal priority (Windows: below normal; elsewhere: a little nicer).
 void lowerThreadPriority();

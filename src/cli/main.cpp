@@ -195,7 +195,7 @@ const char* kHelp =
     "                           frame time, the frame rate, and a table of where the time went: per plug-in (total\n"
     "                           ms, calls, ms per call, preview or project size, thread safety), media decoding\n"
     "                           and seeks, and the rest. Writes nothing. --threads N renders N pictures at once\n"
-    "                           (default 1, and 1 if a plug-in is not thread safe) and limits processors used.\n"
+    "                           (default 1; plug-ins that are not thread safe run one call at a time, as in the editor) and limits processors used.\n"
     "                           (--profile followed by something that is not a project file is the H.264 profile.)\n"
     "                           --preview-profile is the same as --profile with a project.\n"
     "\n"
@@ -1128,23 +1128,6 @@ int runPreviewProfile(AppState& app, const std::string& input, double from, doub
     fo.interactive = true;
     fo.scale = scale >= 0.999 ? 1.0 : scale;
     const int64_t f0 = p.frameAt(from), f1 = std::max(f0 + 1, p.frameAt(to));
-    // several frames at once only if every effect allows it (Playback::parallelSafe)
-    int threads = std::max(1, threadsAsked);
-    std::string why;
-    if (threads > 1) {
-        bool safe = nestedVideoParallelSafe(p);
-        p.forEachFx([&](const FxSlot& sl) {
-            if (!safe || sl.bypass) return;
-            if (ofx::Instance* inst = app.fx.video(sl.id))
-                if (!inst->plugin || inst->plugin->safety < 1) safe = false;
-        });
-        if (!safe) {
-            threads = 1;
-            why = " (asked for " + std::to_string(threadsAsked) + ": a plug-in is not thread safe, as in the editor)";
-        }
-    }
-    out(strfmt("Profiling %s: frames %lld to %lld (%.2f - %.2f s) at %.0f%% size, %d picture thread%s", input.c_str(), (long long)f0, (long long)f1 - 1,
-               p.frameTime(f0), p.frameTime(f1), fo.scale * 100.0, threads, threads == 1 ? "" : "s"));
     // the first frame opens files and starts effects: timed but not counted
     profile::setEnabled(false);
     const auto w0 = std::chrono::steady_clock::now();
@@ -1154,6 +1137,30 @@ int runPreviewProfile(AppState& app, const std::string& input, double from, doub
         err("the first picture could not be rendered");
         return kRenderFailed;
     }
+    // Nested projects make their effects on the main thread between frames (setUpHost), and until they have them their
+    // pictures are drawn without effects. The editor gets there within a few frames; this loop never gives the main
+    // thread back, so it waits for them here, or the frames timed would be lighter than the ones the editor shows.
+    {
+        const auto w1 = std::chrono::steady_clock::now(), until = w1 + std::chrono::seconds(60);
+        while (!nestedVideoParallelSafe(p, true) && std::chrono::steady_clock::now() < until && !gCancel.load()) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        const double waited = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w1).count();
+        if (waited > 50) out(strfmt("nested projects' effects made in %.0f ms, not counted", waited));
+    }
+    // several frames at once as the editor plays them (Playback::parallelSafe): a plug-in that is not thread safe is
+    // run one call at a time by the effects themselves (FxRuntime::prepareLanes, RenderGate), so only nested projects
+    // whose effects are not ready hold it to one. (Asked after the first frame, which creates the effects of the nested
+    // projects it shows; the editor asks again every half second while playing.)
+    int threads = std::max(1, threadsAsked);
+    std::string why;
+    if (threads > 1 && !nestedVideoParallelSafe(p, true)) {
+        threads = 1;
+        why = " (asked for " + std::to_string(threadsAsked) + ": a nested project's effects are not ready, as in the editor)";
+    }
+    out(strfmt("Profiling %s: frames %lld to %lld (%.2f - %.2f s) at %.0f%% size, %d picture thread%s", input.c_str(), (long long)f0, (long long)f1 - 1,
+               p.frameTime(f0), p.frameTime(f1), fo.scale * 100.0, threads, threads == 1 ? "" : "s"));
     profile::reset();
     profile::setEnabled(true);
     std::vector<double> ms((size_t)(f1 - f0), 0.0);

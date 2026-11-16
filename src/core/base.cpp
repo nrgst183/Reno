@@ -512,7 +512,14 @@ ImagePtr Image::converted(PixelDepth d) const
 namespace {
 thread_local bool tInBand = false;                 // this thread is running a band
 thread_local bool tIsHelper = false;               // this is one of the pool's threads
+thread_local int tOthersBands = 0;                 // bands of other threads' jobs this thread is running (they wait for them)
 std::atomic<uint64_t> gTaskJobs{0}, gTasks{0}, gTasksOnHelpers{0};
+
+// Counts the bands of another thread's job while this thread runs them.
+struct OthersBand {
+    OthersBand() { ++tOthersBands; }
+    ~OthersBand() { --tOthersBands; }
+};
 
 class RowPool {
 public:
@@ -548,19 +555,23 @@ public:
         std::unique_lock<std::mutex> lk(job->m);
         job->done.wait(lk, [&] { return job->left.load() == 0; });
     }
-    // Runs the bands left of the oldest job waiting, on the calling thread (see helpWithPoolWork).
+    // Runs the bands left of the oldest parallelRows job waiting, on the calling thread (see helpWithPoolWork). Jobs of
+    // whole tasks are left to the pool: a task can read media or wait for a frame, and the thread asking may be holding
+    // a reader or waiting for another thread itself.
     bool helpOnce()
     {
         std::shared_ptr<Job> job;
         {
             std::lock_guard<std::mutex> lk(m_);
-            while (!queue_.empty() && !job) {
-                job = queue_.front();
-                queue_.pop_front();
-                if (job->next.load() >= job->bands) job.reset();     // (all its bands taken already)
+            for (auto it = queue_.begin(); it != queue_.end() && !job;) {
+                if ((*it)->next.load() >= (*it)->bands) { it = queue_.erase(it); continue; }     // (all its bands taken already)
+                if ((*it)->tasks) { ++it; continue; }
+                job = *it;
+                queue_.erase(it);
             }
         }
         if (!job) return false;
+        OthersBand ob;
         work(*job);
         return true;
     }
@@ -582,6 +593,7 @@ private:
                         job = queue_.front();
                         queue_.pop_front();
                     }
+                    OthersBand ob;
                     work(*job);
                 }
             });
@@ -678,6 +690,8 @@ bool helpWithPoolWork()
     RowPool& pool = RowPool::get();
     return pool.workers() > 0 && pool.helpOnce();
 }
+
+bool inOthersPoolWork() { return tOthersBands > 0; }
 
 void parallelTasks(int n, const std::function<void(int index)>& fn)
 {

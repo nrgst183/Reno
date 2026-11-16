@@ -1161,7 +1161,7 @@ struct NestedShared {
         uint64_t generation;
         bool operator<(const Making& o) const { return std::tie(frame, w, h, generation) < std::tie(o.frame, o.w, o.h, o.generation); }
     };
-    std::set<Making> making;                    // under mutex
+    std::map<Making, int> making;               // how many readers make each (under mutex)
     std::condition_variable madeCv;             // told when one of them is finished
 
     // The frame from the kept ones, waiting first if another reader is making it. Null with 'mine' true: not kept and
@@ -1175,6 +1175,10 @@ struct NestedShared {
             if (ImagePtr have = findLocked(frame, w, h, generation)) return have;
             if (!making.count(key)) break;
             if (mediaReadHints().cancelled()) return nullptr;
+            // A thread running a band of another thread's job makes the frame too rather than waiting: the thread
+            // making it may be waiting for that very band, and the two would wait for each other for ever (several
+            // picture threads on a project with nested projects did, now and then).
+            if (inOthersPoolWork()) break;
             // While waiting, this thread does the pool's work - very likely bands of the frame being made, which would
             // otherwise have one processor fewer (on two cores, none to help it at all).
             lk.unlock();
@@ -1182,7 +1186,7 @@ struct NestedShared {
             lk.lock();
             if (!helped && making.count(key)) madeCv.wait_for(lk, std::chrono::milliseconds(1));
         }
-        making.insert(key);
+        ++making[key];
         mine = true;
         return nullptr;
     }
@@ -1190,7 +1194,8 @@ struct NestedShared {
     {
         {
             std::lock_guard<std::mutex> lk(mutex);
-            making.erase(Making{frame, w, h, generation});
+            auto it = making.find(Making{frame, w, h, generation});
+            if (it != making.end() && --it->second <= 0) making.erase(it);
         }
         madeCv.notify_all();
     }
