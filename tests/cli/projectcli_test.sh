@@ -64,7 +64,7 @@ check "a video clip over the first, on its track, and a transition: exit 0" "$(r
 check "video-out effect, track and event changes: exit 0" "$(run edit p.reno fx video-out 'Brightness and Contrast' Brightness=0.1 + track 3 --volume -6 --pan -0.5 + event 2.1 --fade-in 0.5 --name Opening + track 1 --name Colour)" 0
 run info p.reno --params > /dev/null; cp last.out info2.txt
 has "  the track's new name" 'Track 1 (video) "Colour"' info2.txt
-has "  the colour" "Color = 1,0.501961,0,1" info2.txt
+has "  the color" "Color = 1,0.501961,0,1" info2.txt
 has "  the blur's range" "Horizontal range = 0.2" info2.txt
 has "  the blur's keyframes" "Vertical range = keyframes 0@0s 0.5@2s" info2.txt
 has "  Alpha off" "Alpha = off" info2.txt
@@ -123,7 +123,7 @@ run info s.veg --params > /dev/null; cp last.out info3.txt
 has "  the effect's name (from the plug-in: a .veg holds the identifier)" "fx 1: Brightness and Contrast" info3.txt
 has "  its keyframes came back from the .veg" "Brightness = keyframes 0@0s 0.3@1.6s" info3.txt
 check "render it: exit 0" "$(run s.veg -o s.mp4 -y -q)" 0
-near3 "  the grey at the start" "$(pixel s.mp4 0.0 160 90)" "128 128 128" 6
+near3 "  the gray at the start" "$(pixel s.mp4 0.0 160 90)" "128 128 128" 6
 b=$(pixel s.mp4 1.5 160 90); g=${b%% *}
 [ "${g:-0}" -gt 150 ] && ok "  brighter where the keyframes say (1.5 s: $b)" || bad "  brighter where the keyframes say" "$b"
 near3 "  the generated blue after it" "$(pixel s.mp4 2.5 160 90)" "0 0 255" 12

@@ -134,7 +134,7 @@ static std::string settingsText(const Project& p, const Track& t)
     std::string bus = "master";
     for (size_t i = 0; i < p.buses.size(); ++i)
         if (p.buses[i].id == t.output) bus = p.buses[i].name.empty() ? strfmt("bus %zu", i + 1) : p.buses[i].name;
-    std::string s = strfmt("%s '%s' colour %06x height %d%s%s%s%s level %.6g pan %.6g", t.type == TrackType::Video ? "video" : "audio",
+    std::string s = strfmt("%s '%s' color %06x height %d%s%s%s%s level %.6g pan %.6g", t.type == TrackType::Video ? "video" : "audio",
                            t.name.c_str(), t.color & 0xFFFFFF, t.height, t.minimized ? " minimized" : "", t.mute ? " mute" : "",
                            t.solo ? " solo" : "", t.invertPhase ? " invert" : "", t.level, t.pan);
     if (t.type == TrackType::Audio) s += " panType " + t.panType + " out " + bus;
@@ -186,7 +186,7 @@ static void checkSample(const std::string& path, bool table, std::map<std::strin
         check(video == (w.kind == 3), where + ": kind");
         check(t.mute == ((w.flags & 2) != 0) && t.solo == ((w.flags & 1) != 0), where + ": mute and solo");
         check(t.minimized == ((w.flags & 0x10000) != 0), where + ": minimized");
-        check(t.color == veg::trackColorOfIndex(w.colour) && t.color != 0, where + ": colour", strfmt("index %u -> %08x", w.colour, t.color));
+        check(t.color == veg::trackColorOfIndex(w.colour) && t.color != 0, where + ": color", strfmt("index %u -> %08x", w.colour, t.color));
         const int defH = video ? 64 : 68;
         check(t.height == ((int)w.height == defH ? 0 : (int)w.height), where + ": height", strfmt("file %u, read %d", w.height, t.height));
         if (!video && w.haveAudio) {

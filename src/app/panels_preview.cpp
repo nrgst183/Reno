@@ -1976,7 +1976,7 @@ QWidget* PreviewWidget::Impl::buildToolBar()
     button360->setCheckable(true);
     button360->setAutoRaise(true);
     button360->setFocusPolicy(Qt::NoFocus);
-    button360->setToolTip(QString::fromUtf8("360\u00B0 Preview: look round a 360\u00B0 project's picture (drag to turn, the wheel to zoom); "
+    button360->setToolTip(QString::fromUtf8("360\u00B0 Preview: look around a 360\u00B0 project's picture (drag to turn, the wheel to zoom); "
                                             "Project Properties' 360\u00B0 output makes a project a 360\u00B0 one"));
     auto* copy = new GlyphButton(Glyph::Copy, "Copy Snapshot to Clipboard", bar);
     copy->setObjectName("copySnapshot");

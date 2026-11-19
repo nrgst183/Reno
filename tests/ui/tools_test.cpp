@@ -536,7 +536,7 @@ int main(int argc, char** argv)
                 if (e.mediaId == snd && e.start > 2.5 && near(e.end(), 8.0) && e.offset > 0.5) cutAfter = true;
                 if (e.mediaId != snd && near(e.start, 2.0)) newOne = true;
             }
-        check(cutBefore && cutAfter && newOne, "recording over an event cuts it back round the new recording", strfmt("%d events", t2 ? (int)t2->events.size() : 0));
+        check(cutBefore && cutAfter && newOne, "recording over an event cuts it back around the new recording", strfmt("%d events", t2 ? (int)t2->events.size() : 0));
         // Ctrl+Alt+R arms the selected track; with nothing armed, Ctrl+R arms the selected audio track
         rec->setArmed(a2, false);
         check(!rec->inputOpen(), "with nothing armed the input is closed");
@@ -712,10 +712,10 @@ int main(int argc, char** argv)
         check(inverts >= 1 && pm->count("Video FX") == inverts && pm->count("Transitions") == 0, "the search box narrows the list",
               strfmt("%d listed, %d named so", pm->count("Video FX"), inverts));
         pm->setFilter(QString());
-        check(pm->count("Favorites") == 0, "no favourites at first");
+        check(pm->count("Favorites") == 0, "no favorites at first");
         pm->setFavorite("video:reno.test.invert", true);
         check(pm->keys("Favorites") == QStringList() << "video:reno.test.invert" && QSettings().value("pluginManager/favorites").toStringList().size() == 1,
-              "a favourite is listed under Favorites and remembered");
+              "a favorite is listed under Favorites and remembered");
         // double-clicking an effect with a video event selected puts it on the event (as the Video FX window does)
         uint64_t vev = 0;
         for (const Track& t : st().project().tracks)
@@ -882,7 +882,7 @@ int main(int argc, char** argv)
                 const QRgb c = grey.pixel(x, y);
                 if (std::abs(qRed(c) - qGreen(c)) > 2 || std::abs(qGreen(c) - qBlue(c)) > 2) allGrey = false;
             }
-        check(allGrey && before != grey, "saturation 0 makes the event grey");
+        check(allGrey && before != grey, "saturation 0 makes the event gray");
         st().undo();
         e = st().project().findEvent(ev1);
         check(e && e->fx.empty() && cg->slot() == 0, "undo takes it off again");
@@ -897,7 +897,7 @@ int main(int argc, char** argv)
         const ColorGrade g = ColorGrade::fromJson(cg->state());
         e = st().project().findEvent(ev1);
         const ColorGrade inProject = e && !e->fx.empty() ? ColorGrade::fromJson(e->fx[0].state) : ColorGrade();
-        check(g.gain.y > 0.3 && std::fabs(g.gain.x) < 0.15 && inProject.gain.y == g.gain.y, "dragging the Gain wheel up pushes towards red",
+        check(g.gain.y > 0.3 && std::fabs(g.gain.x) < 0.15 && inProject.gain.y == g.gain.y, "dragging the Gain wheel up pushes toward red",
               strfmt("%.2f,%.2f", g.gain.x, g.gain.y));
         check(st().undoName() == "Color Grading", "one undo step for the drag");
         const QImage warm = pb->renderNow(1.0);

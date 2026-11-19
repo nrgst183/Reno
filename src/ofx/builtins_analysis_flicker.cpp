@@ -519,7 +519,7 @@ void addFlickerEffect(std::vector<Def>& out)
     ps.push_back(custom("SmoothedHistogram", "Smoothed histogram", ""));
     for (size_t k = hiddenFrom; k < ps.size(); ++k) ps[k].secret = true;
     Def d = make("de.magix:FlickerReducer", "Flicker Control",
-                 "Removes flicker (brightness that jumps from frame to frame) by comparing each frame with the ones round it, or adds it at a frequency", ps, flickerRender);
+                 "Removes flicker (brightness that jumps from frame to frame) by comparing each frame with the ones around it, or adds it at a frequency", ps, flickerRender);
     d.temporal = true;
     d.destroy = destroyState;
     d.changed = flickerChanged;

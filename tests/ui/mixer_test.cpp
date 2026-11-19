@@ -196,7 +196,7 @@ int main(int argc, char** argv)
         check(p1 > 0.4 && p1 < 0.6, "dragging the pan knob right pans right", strfmt("%.3f", p1));
         check(oneStep([&] { return track(t1)->pan; }, 0.0, "Track Pan"), "and is one undo step");
         uitest::mouseDoubleClick(pan, QPoint(pan->property("knobX").toInt(), g.center().y()));
-        check(track(t1)->pan == 0.0, "double-click centres it");
+        check(track(t1)->pan == 0.0, "double-click centers it");
 
         QToolButton* mute = kid<QToolButton>(s1, "mute");
         click(mute);

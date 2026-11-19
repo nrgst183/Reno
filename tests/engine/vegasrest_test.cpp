@@ -170,7 +170,7 @@ static void settingsTests()
     {
         auto inst = instanceOf(V + "brightnessandcontrast");
         check(inst && parentOf(*inst, "GroupInput") == "Group" && parentOf(*inst, "GroupOutput") == "Group" && parentOf(*inst, "DoAnalysis") == "Group", "Brightness and Contrast: Input and Output are inside Automatic Contrast");
-        check(inst && P(*inst, "Group") && P(*inst, "Group")->label() == "Automatic Contrast", "  labelled as VEGAS labels it");
+        check(inst && P(*inst, "Group") && P(*inst, "Group")->label() == "Automatic Contrast", "  labeled as VEGAS labels it");
         check(inst && P(*inst, "DoAnalysis") && P(*inst, "DoAnalysis")->kind == ofx::ParamKind::PushButton && P(*inst, "DoAnalysis")->label() == "Calculate Brightness & Contrast", "  the analysis is a button");
         check(inst && P(*inst, "ReferenceMode") && P(*inst, "ReferenceMode")->choices().size() == 3 && val(*inst, "Min") == 0 && val(*inst, "Max") == 1, "  three analysis modes, output range 0 to 1");
     }
@@ -313,7 +313,7 @@ static void buttonTests()
         });
         float lo[3], hi[3];
         for (int k = 0; k < 3; ++k) range(renderAt(*inst, 0), k, lo[k], hi[k]);
-        check(hi[0] - lo[0] < 0.45f && hi[1] - lo[1] < 0.45f, "Color Curves at its defaults leaves the colours as they are", strfmt("red %.2f..%.2f", lo[0], hi[0]));
+        check(hi[0] - lo[0] < 0.45f && hi[1] - lo[1] < 0.45f, "Color Curves at its defaults leaves the colors as they are", strfmt("red %.2f..%.2f", lo[0], hi[0]));
         setv(*inst, "AutoMode", {1});
         setv(*inst, "DoAnalysis", {1});
         check(val(*inst, "DoAnalysis") == 0, "Color Curves: Calculate (DoAnalysis) runs once and is cleared");
@@ -337,8 +337,8 @@ static void buttonTests()
         // an old project that only has "color"
         auto old = instanceOf(V + "border", nullptr, W, H);
         { Json js; Json::parse("{\"params\":{\"color\":{\"v\":[0.9,0.8,0.7,1]},\"Size\":{\"v\":[0.1]}}}", js); old->loadState(js); }
-        check(val(*old, "color", 0) == 0.9 && val(*old, "Size") == 0.1, "  an old project's colour and size load as saved");
-        check(std::fabs(val(*old, "color_rgb", 1) - 0.8) < 1e-9, "  and color_rgb follows the colour it loaded with");
+        check(val(*old, "color", 0) == 0.9 && val(*old, "Size") == 0.1, "  an old project's color and size load as saved");
+        check(std::fabs(val(*old, "color_rgb", 1) - 0.8) < 1e-9, "  and color_rgb follows the color it loaded with");
         // the same state loaded into a fresh instance draws what the old built-in drew: black border solid with Type 2
         auto draw = instanceOf(V + "border", nullptr, W, H);
         connect(*draw, W, H, [](int, int, int, int, double, float c[3]) { c[0] = c[1] = c[2] = 0.5f; });
@@ -362,7 +362,7 @@ static void buttonTests()
         check(temp > 6600 && temp <= 15000 && std::fabs(tint) <= 100, "White Balance: Select neutral color sets a temperature for a bluish picture", strfmt("temp %.3f tint %.3f", temp, tint));
         ImagePtr after = renderAt(*inst, 3);
         const double r = meanOf(after, 0), g = meanOf(after, 1), b = meanOf(after, 2);
-        check(std::fabs(r - b) * 1.5 < std::fabs(rb - bb) && std::fabs(rb - bb) > 0.1, "  and the picture moves toward neutral (VEGAS applies the picked colour at its derived Amount, not in full)", strfmt("r %.3f g %.3f b %.3f (was r %.3f b %.3f)", r, g, b, rb, bb));
+        check(std::fabs(r - b) * 1.5 < std::fabs(rb - bb) && std::fabs(rb - bb) > 0.1, "  and the picture moves toward neutral (VEGAS applies the picked color at its derived Amount, not in full)", strfmt("r %.3f g %.3f b %.3f (was r %.3f b %.3f)", r, g, b, rb, bb));
         // equalise
         auto eq = instanceOf(V + "whitebalance", nullptr, W, H);
         connect(*eq, W, H, [](int x, int, int w, int, double, float c[3]) { const float v = 0.4f + 0.2f * (float)x / (w - 1); c[0] = c[1] = c[2] = v; });
@@ -389,7 +389,7 @@ static void buttonTests()
         ImagePtr o = renderAt(*inst, 2);
          pixAt(o, W / 2, H / 2, mid);
          pixAt(o, 3, 3, corner);
-        check(mid[0] > 0.95f && corner[0] < 0.05f, "Select effect range: the colour in the middle is in the mask, the grey around it is not", strfmt("%.2f / %.2f", mid[0], corner[0]));
+        check(mid[0] > 0.95f && corner[0] < 0.05f, "Select effect range: the color in the middle is in the mask, the gray around it is not", strfmt("%.2f / %.2f", mid[0], corner[0]));
         check(val(*inst, "EnableLimitHue") == 1 && val(*inst, "LimitHueWidth") < 90, "  the hue limit is on and narrow", strfmt("width %.1f", val(*inst, "LimitHueWidth")));
     }
     {
@@ -592,7 +592,7 @@ static void newEffectTests()
             // all of the luminance is one value: one tall bar, a quarter of the way along the graph's width
             int whiteCols = 0;
             for (int x = 0; x < W; ++x) { bool hit = false; for (int y = 0; y < H; ++y) if (og.at(x, y)[0] > 0.8f) hit = true; if (hit) ++whiteCols; }
-            check(whiteCols > 0 && whiteCols <= 4, "  a picture of one grey is one bar", std::to_string(whiteCols) + " columns");
+            check(whiteCols > 0 && whiteCols <= 4, "  a picture of one gray is one bar", std::to_string(whiteCols) + " columns");
             const Buf ol = runDef(*d, {{"LogarithmicScale", {1}}, {"Type", {1}}}, src);
             check(maxDiff(ol, o) > 0.05, "  Type and Logarithmic scale change the graph");
         }
@@ -783,7 +783,7 @@ static void effectTests()
         check(maxDiff(a, runDef(*d, {{pre + "rotation", {30}}}, fish)) > 0.02, "  so does the rotation between them");
         check(maxDiff(a, runDef(*d, {{pre + "falloff.use", {0}}}, fish)) > 0.001, "  and the vignetting setting");
         check(maxDiff(a, runDef(*d, {{pre + "narrowing", {80}}}, fish)) > 0.02, "  and the radius");
-        check(maxDiff(a, runDef(*d, {{pre + "center", {5}}}, fish)) > 0.01, "  and the centre offset");
+        check(maxDiff(a, runDef(*d, {{pre + "center", {5}}}, fish)) > 0.01, "  and the center offset");
         check(maxDiff(a, runDef(*d, {{pre + "fov", {200}}}, fish)) > 0.02, "  and the field of view");
     }
 }

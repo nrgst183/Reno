@@ -141,7 +141,7 @@ void testImport(const std::string& file)
         if (ev.size() == 6)
             check(ev[0].first->pan == -1.0 && ev[1].first->pan == 1.0 && ev[2].first->pan == 0.0 && ev[3].first->pan == 0.0 && ev[4].first->pan == -1.0 &&
                       ev[5].first->pan == 1.0,
-                  "import (tracks, stereo project): new tracks panned to their side (L, Ls left; R, Rs right; C, LFE centre)");
+                  "import (tracks, stereo project): new tracks panned to their side (L, Ls left; R, Rs right; C, LFE center)");
     }
     {
         const uint64_t m = freshImport(file, "tracks", true);
@@ -500,7 +500,7 @@ void testPlayback(Playback& pb)
         std::lock_guard<std::mutex> lk(dev->m);
         const double c = rmsOf(dev->got[ChC], 4096), l = rmsOf(dev->got[ChL], 4096), lfe = rmsOf(dev->got[ChLFE], 4096);
         check(during == 6 && dev->channels == 6 && c > 0.05 && l < 1e-4 && lfe < 1e-4,
-              "playback: a 5.1 project on a six-channel device plays its six channels (centre-only sound on C alone)",
+              "playback: a 5.1 project on a six-channel device plays its six channels (center-only sound on C alone)",
               strfmt("channels %d, C %.4f, L %.5f, LFE %.5f", dev->channels, c, l, lfe));
     }
     {

@@ -250,7 +250,7 @@ int main(int argc, char** argv)
             view->hide();
         }
         check(view && shown.contains("Extensions") && shown.contains("Mixer Preview Fader") && shown.contains("Audio Bus Tracks") && shown.contains("Video Bus Track") && greyed.isEmpty(),
-              "View: VEGAS's items, none greyed", greyed.join(", ").toStdString());
+              "View: VEGAS's items, none grayed", greyed.join(", ").toStdString());
         check(!shown.isEmpty() && shown.last() == "Rebuild Audio Peaks" && !shown.contains("Next Window") && !shown.contains("Zoom In"),
               "View ends with Rebuild Audio Peaks, as VEGAS's", shown.isEmpty() ? std::string() : shown.last().toStdString());
         QAction* next = w.findChild<QAction*>("nextWindow");
@@ -443,7 +443,7 @@ int main(int argc, char** argv)
         bool greyed = false;
         for (QAction* a : m.actions())
             if (plain(a->text()) == "Paste Event Attributes") greyed = !a->isEnabled();
-        check(greyed, "event menu: Paste Event Attributes is greyed with nothing copied");
+        check(greyed, "event menu: Paste Event Attributes is grayed with nothing copied");
         uitest::shot(&w, out + "/menus_window.png");
         // pictures of the event menu and the Edit menu as they look
         {
@@ -731,7 +731,7 @@ int main(int argc, char** argv)
               "View > Audio Envelopes > Track Volume is ticked with a volume envelope shown");
         trigger("View/Audio Envelopes/Track Volume");
         check(!AppState::findEnvelope(app.project(), r)->visible, "... and hides the track volume envelopes");
-        check(!item("View/Video Envelopes/Event Velocity")->isEnabled(), "View > Video Envelopes > Event Velocity is greyed with none");
+        check(!item("View/Video Envelopes/Event Velocity")->isEnabled(), "View > Video Envelopes > Event Velocity is grayed with none");
         check(trigger("Options/Ruler Format/Absolute Frames") && app.project().settings.rulerFormat == "frames" &&
                   item("Options/Ruler Format/Absolute Frames")->isChecked(), "Options > Ruler Format > Absolute Frames");
         // Options > Quickfade Audio Edits: on as in VEGAS (10 ms); off takes the quick fades away

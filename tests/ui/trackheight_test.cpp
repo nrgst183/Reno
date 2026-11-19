@@ -149,7 +149,7 @@ int main(int argc, char** argv)
         uitest::mouseDrag(&w, edge(t1), edge(t1) + QPoint(0, 30));
         w.minimizeAllTracks();
         uitest::settle(50);
-        check(h(t0) == 24 && h(t1) == 24 && h(t2) == 24, "` minimises every track");
+        check(h(t0) == 24 && h(t1) == 24 && h(t2) == 24, "` minimizes every track");
         w.minimizeAllTracks();
         uitest::settle(50);
         check(h(t0) == h0 && h(t1) == h1 + 30 && h(t2) == h2 + 30, "and ` again brings them back as they were (t1 and t2, still selected, resized together)",

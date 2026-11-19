@@ -991,7 +991,7 @@ void addFiltersVegasRest(std::vector<Def>& out)
             if (p.name == kStRefine) p.hint = "Click to automatically refine the results.";
             if (p.name == kStSmooth) p.hint = "The Smoothing parameter is the parameter that helps to define how much \"unsteadiness\" should be kept in a scene, the higher that factor is, the more the movements are smoothed.";
         }
-        Def d = make("com.magix.ofx.vr.stabilization", "360 Stabilization", "VEGAS\\360", "Steadies a 360 degree picture from the camera's analysed motion", ps, stabilization);
+        Def d = make("com.magix.ofx.vr.stabilization", "360 Stabilization", "VEGAS\\360", "Steadies a 360 degree picture from the camera's analyzed motion", ps, stabilization);
         d.changed = stabilizationChanged;
         d.temporal = true;
         out.push_back(d);
@@ -1012,7 +1012,7 @@ void addFiltersVegasRest(std::vector<Def>& out)
                                 choice("ChannelsXaxisChannel", "X axis channel", 0, {"Red", "Green", "Blue"}, "Channels"), boolean("ChannelsXaxisInvert", "X axis invert", false, "Channels"),
                                 choice("ChannelsYaxisChannel", "Y axis channel", 1, {"Red", "Green", "Blue"}, "Channels"), boolean("ChannelsYaxisInvert", "Y axis invert", false, "Channels"),
                                 boolean("AlphaChannelScalesRGBChannels", "Alpha channel scales RGB channels", false), boolean("FlipInputSurfaces", "Flip input surfaces", false)};
-        Def d = make(std::string(kVegas) + "displacementmap", "Displacement Map", "VEGAS", "Pixels moved by the picture's own colour channels", ps, displacementMap);
+        Def d = make(std::string(kVegas) + "displacementmap", "Displacement Map", "VEGAS", "Pixels moved by the picture's own color channels", ps, displacementMap);
         d.general = true;
         out.push_back(d);
     }

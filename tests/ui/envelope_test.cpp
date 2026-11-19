@@ -177,7 +177,7 @@ int main(int argc, char** argv)
         w.toggleTrackEnvelope("volume");
         check(envOf(vol) && envOf(vol)->visible, "and again shows it");
         w.toggleTrackEnvelope("pan");
-        check(envOf(pan) && envOf(pan)->points[0].value == 0.0, "P puts a pan envelope on, centred");
+        check(envOf(pan) && envOf(pan)->points[0].value == 0.0, "P puts a pan envelope on, centered");
         w.removeTrackEnvelope("pan");
         check(!envOf(pan), "Shift+P takes it off");
         st().undo();
@@ -191,7 +191,7 @@ int main(int argc, char** argv)
         QStringList items;
         const QPoint hdr = w.headerRect(ids.v2).center();
         check(menuPick(&w, hdr, "Fade to Color", "Insert/Remove Envelope", &items), "track menu: Insert/Remove Envelope > Fade to Color");
-        check(envOf(trackEnv(ids.v2, "fadecolor")) != nullptr, "(the fade to colour envelope is there)");
+        check(envOf(trackEnv(ids.v2, "fadecolor")) != nullptr, "(the fade to color envelope is there)");
         // a new envelope's segments start Smooth, VEGAS 18's default envelope fade type
         check(envOf(trackEnv(ids.v2, "fadecolor"))->points[0].curve == CurveSmooth, "a new envelope point starts Smooth (VEGAS's default)");
         check(items.contains("Composite Level") && items.contains("Mute") && !items.contains("Pan"), "a video track offers Composite Level, Fade to Color, Mute",
@@ -218,11 +218,11 @@ int main(int argc, char** argv)
         check(lineY > a2.top() && lineY < a2.top() + a2.height() / 2, "the volume line at 0 dB is drawn in the upper part of the track", strfmt("%d in %d..%d", lineY, a2.top(), a2.bottom()));
         check(coloured(img, QRect(w.xAt(8.0), lineY - 2, 200, 5), false) > 150, "a blue line for volume", strfmt("%d", coloured(img, QRect(w.xAt(8.0), lineY - 2, 200, 5), false)));
         const int panY = w.envelopePointPos(pan, 0).y();
-        check(std::abs(panY - (a2.top() + a2.height() / 2)) <= 3, "the pan line in the middle (centre)", strfmt("%d", panY));
+        check(std::abs(panY - (a2.top() + a2.height() / 2)) <= 3, "the pan line in the middle (center)", strfmt("%d", panY));
         check(coloured(img, QRect(w.xAt(8.0), panY - 2, 200, 5), true) > 150, "a red line for pan");
         const QRect v2 = w.trackRect(ids.v2);
         const int fy = w.envelopePointPos(trackEnv(ids.v2, "fadecolor"), 0).y();
-        check(fy > v2.top() && fy < v2.center().y(), "fade to colour at 50% top is drawn above the middle", strfmt("%d", fy));
+        check(fy > v2.top() && fy < v2.center().y(), "fade to color at 50% top is drawn above the middle", strfmt("%d", fy));
         // hidden envelopes are not drawn
         st().showEnvelope(pan, false);
         uitest::settle(50);
@@ -483,7 +483,7 @@ int main(int argc, char** argv)
         items.clear();
         check(menuPick(&w, vr.center(), "Fade to Color", "Insert/Remove Envelope", &items) && findEnvelope(p.videoEnvelopes, "fadecolor"), "the video output's menu: Fade to Color");
         check(items.contains("Mute") && items.contains("Motion Blur Amount") && items.contains("Video Supersampling"),
-              "the video output offers fade to colour, mute, motion blur and supersampling", items.join(", ").toStdString());
+              "the video output offers fade to color, mute, motion blur and supersampling", items.join(", ").toStdString());
         menuPick(&w, br.center(), "Pan", "Insert/Remove Envelope");
         check(findEnvelope(p.buses[0].envelopes, "pan") != nullptr, "a bus's envelopes");
         EnvelopeRef mv;

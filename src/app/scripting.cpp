@@ -752,7 +752,7 @@ void runScript(QWidget* parent, const std::string& path, const std::string& args
     const bool replaces = session.startedNew || !session.openedPath.empty();
     if (replaces && !replaceAsked) replaceOk = letProjectGo(parent, app, name);
     if (session.cancelled) {
-        app.status(s8(name) + ": the script cancelled its changes.");
+        app.status(s8(name) + ": the script canceled its changes.");
     } else if (!replaceOk) {
         app.status(s8(name) + ": the project the script made was not used (the open project was kept).");
     } else {

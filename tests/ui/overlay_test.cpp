@@ -116,10 +116,10 @@ int main(int argc, char** argv)
     const QPointF c = pv->canonicalToView(960, 540);
     const QPoint cpx((int)std::lround(c.x() * dpr), (int)std::lround(c.y() * dpr));
     check(!c.isNull() && std::abs(c.x() - pic->width() / 2.0) < 3 && std::abs(c.y() - pic->height() / 2.0) < 3,
-          "the frame's centre (960, 540 canonical) is the middle of the picture", strfmt("%.1f,%.1f of %dx%d", c.x(), c.y(), pic->width(), pic->height()));
+          "the frame's center (960, 540 canonical) is the middle of the picture", strfmt("%.1f,%.1f of %dx%d", c.x(), c.y(), pic->width(), pic->height()));
     check(near(gs, cpx + QPoint(15, 0), qRgb(255, 0, 0)) && near(gs, cpx + QPoint(0, -15), qRgb(255, 0, 0)) && near(gs, cpx + QPoint(-15, 0), qRgb(255, 0, 0)),
-          "the effect's red cross is drawn over the picture where its centre is");
-    check(near(gs, cpx + QPoint(8, 4), qRgb(0, 255, 0)), "and its green square round it (8 screen pixels whatever the zoom)");
+          "the effect's red cross is drawn over the picture where its center is");
+    check(near(gs, cpx + QPoint(8, 4), qRgb(0, 255, 0)), "and its green square around it (8 screen pixels whatever the zoom)");
     {
         // the picture is still under the controls: away from them it is what the preview shows without them
         pv->setShowOverlays(false);
@@ -242,7 +242,7 @@ int main(int argc, char** argv)
         const QPointF m0 = pv->canonicalToView(960, 540);
         // the frame's middle, moved to the middle of the bottom right quarter: 480 right and 270 down
         check(pv->overlayActive() && std::abs(m0.x() - (cNow.x() + 480 / pp)) < 1.5 && std::abs(m0.y() - (cNow.y() + 270 / pp)) < 1.5,
-              "with Track Motion the effect's controls are where its picture went", strfmt("%.1f,%.1f (centre %.1f,%.1f)", m0.x(), m0.y(), cNow.x(), cNow.y()));
+              "with Track Motion the effect's controls are where its picture went", strfmt("%.1f,%.1f (center %.1f,%.1f)", m0.x(), m0.y(), cNow.x(), cNow.y()));
         const QPointF m1 = pv->canonicalToView(1960, 540);
         check(std::abs((m1.x() - m0.x()) - 500 / pp) < 1.5, "at half the size", strfmt("%.1f", m1.x() - m0.x()));
         QImage gm = uitest::shot(pic, out + "/overlay_track_motion.png").convertToFormat(QImage::Format_RGB32);
@@ -365,7 +365,7 @@ int main(int argc, char** argv)
         uitest::settle(600);
         pic->update();
         uitest::settle(200);
-        check(pv->overlayActive() && pv->overlayEffect() == s2, std::string(fx) + " has the centre cross over the picture");
+        check(pv->overlayActive() && pv->overlayEffect() == s2, std::string(fx) + " has the center cross over the picture");
         w.fxWindow()->close();
         uitest::settle(200);
     }

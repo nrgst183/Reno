@@ -1429,7 +1429,7 @@ void secondaryGammaCurve(double gamma, float& c, float& a) { secondaryGamma(gamm
 void addFilters2(std::vector<Def>& out)
 {
     {
-        Def d = filter("colorcorrectorsecondary", "Color Corrector (Secondary)", "A range of colours (by brightness, saturation and hue) recoloured or made transparent",
+        Def d = filter("colorcorrectorsecondary", "Color Corrector (Secondary)", "A range of colors (by brightness, saturation and hue) recolored or made transparent",
                        {wheelPoint("Chrominance", "Chrominance"), dbl("RotateHue", "Rotate hue", 0, -3600, 3600), dbl("Saturation", "Saturation", 1, 0, 10),
                         dbl("Gamma", "Gamma", 1, 0.01, 10), dbl("Gain", "Gain", 1, 0, 10), dbl("Offset", "Offset", 0, -255, 255), dbl("Alpha", "Alpha", 1, 0, 1),
                         button("SelectEffectRange", "Select effect range"), boolean("ShowMask", "Show mask", false), boolean("InvertMask", "Invert mask", false),
@@ -1454,7 +1454,7 @@ void addFilters2(std::vector<Def>& out)
         out.push_back(d);
     }
     {
-        Def d = filter("colorcorrector", "Color Corrector", "Shadows, midtones and highlights pushed towards colours; saturation, gain, gamma and offset",
+        Def d = filter("colorcorrector", "Color Corrector", "Shadows, midtones and highlights pushed toward colors; saturation, gain, gamma and offset",
                        {wheelPoint("Low", "Low"), wheelPoint("Mid", "Mid"), wheelPoint("High", "High"), dbl("Saturation", "Saturation", 1, 0, 10),
                         dbl("Gamma", "Gamma", 1, 0, 10), dbl("Gain", "Gain", 1, 0, 10), dbl("Offset", "Offset", 0, -255, 255)},
                        colorCorrector);
@@ -1478,7 +1478,7 @@ void addFilters2(std::vector<Def>& out)
         ps.back().dmin = 0; ps.back().dmax = 4;
         ps.push_back(dbl("Offset", "Offset", 0, -1, 1));
         ps.push_back(boolean("AutoNormalize", "Auto normalize", true));
-        out.push_back(filter("convolutionkernel", "Convolution Kernel", "Each pixel made from its neighbours by a 3 x 3 kernel (blur, sharpen, emboss, edges)", ps,
+        out.push_back(filter("convolutionkernel", "Convolution Kernel", "Each pixel made from its neighbors by a 3 x 3 kernel (blur, sharpen, emboss, edges)", ps,
                              convolutionKernel));
     }
     {

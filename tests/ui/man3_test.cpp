@@ -162,7 +162,7 @@ int main(int argc, char** argv)
         smoothPath(0, 0, 0, 0, 0, 1, 1, 1, 0, 0.5, x, y);
         const bool straight = near(x, 0.5) && near(y, 0.5);
         smoothPath(100, 0, 0, 0, 0, 1, 1, 1, 0, 0.5, x, y);
-        check(straight && !near(y, 0.5, 1e-3) && near(x, 0.5, 0.2), "Smoothness: 0 a straight line, 100 a curve through the keys round it", num(x) + ", " + num(y));
+        check(straight && !near(y, 0.5, 1e-3) && near(x, 0.5, 0.2), "Smoothness: 0 a straight line, 100 a curve through the keys around it", num(x) + ", " + num(y));
         smoothPath(100, 0, 0, 0, 0, 1, 1, 1, 0, 1.0, x, y);
         check(near(x, 1) && near(y, 1), "Smoothness: the curve still reaches the next key");
     }
@@ -233,7 +233,7 @@ int main(int argc, char** argv)
         check(re && re->stretchToFill && re->panCrop.size() == 1 && near(re->panCrop[0].smoothness, 40) && near(re->panCrop[0].pivotX, 0.1) &&
                   near(re->panCrop[0].pivotY, -0.2) && re->panCrop[0].curve == KeySharp && rt && rt->motion.size() == 1 && near(rt->motion[0].smoothness, 70) &&
                   rt->motion[0].curve == KeySlow,
-              "the project keeps Smoothness, the rotation centre, the new types and Stretch to fill frame");
+              "the project keeps Smoothness, the rotation center, the new types and Stretch to fill frame");
     }
 
     // ================================================================== Event Pan/Crop
@@ -352,7 +352,7 @@ int main(int argc, char** argv)
     {
         const PanCropKey k = ev(V)->panCrop[0];
         check(px && near(k.rotation, 180) && near(k.cx, 0.0, 1e-6) && near(k.cy, 0.5, 1e-6) && near(k.cx + k.pivotX, 0.25, 1e-6),
-              "pan/crop: with a rotation centre set, turning the box turns it round that point", num(k.cx) + ", " + num(k.cy) + " pivot " + num(k.pivotX));
+              "pan/crop: with a rotation center set, turning the box turns it around that point", num(k.cx) + ", " + num(k.cy) + " pivot " + num(k.pivotX));
     }
     // Stretch to fill frame
     if (QComboBox* st = child<QComboBox>(pc, "stretchToFill")) {
@@ -807,7 +807,7 @@ int main(int argc, char** argv)
             fillDownmixMenu(&m, &playback);
             QStringList t = texts(&m);
             check(t == QStringList({"5.1 Surround Output", "Stereo Output", "Mono Output"}) && !find(&m, "5.1 Surround Output")->isEnabled(),
-                  "Downmix Output: 5.1 (greyed in a stereo project), stereo, mono", t.join(", ").toStdString());
+                  "Downmix Output: 5.1 (grayed in a stereo project), stereo, mono", t.join(", ").toStdString());
             find(&m, "Mono Output")->trigger();
             check(playback.monoOutput(), "Downmix Output: Mono");
             playback.setMonoOutput(false);

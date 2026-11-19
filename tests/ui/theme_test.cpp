@@ -131,7 +131,7 @@ int main(int argc, char** argv)
         {
             const QRect td = tl->timeDisplayRect();
             check(td.width() == tl->headerWidth(), "the time display is as wide as the headers");
-            check(near(img.pixelColor(td.left() + 3, td.bottom() - 3), QColor(70, 70, 70)), "the time display's grey", rgb(img.pixelColor(td.left() + 3, td.bottom() - 3)).toStdString());
+            check(near(img.pixelColor(td.left() + 3, td.bottom() - 3), QColor(70, 70, 70)), "the time display's gray", rgb(img.pixelColor(td.left() + 3, td.bottom() - 3)).toStdString());
         }
         uitest::shot(&w, out + "/theme_vegas_1920.png");
         {
@@ -140,7 +140,7 @@ int main(int argc, char** argv)
             tl->toggleMinimizeTrack();
             uitest::settle(100);
             const QRect hr = tl->headerRect(a);
-            check(hr.height() == 24 && tl->headerPartRect(a, TimelineWidget::PartLevel).isEmpty(), "a minimised header keeps its top row only");
+            check(hr.height() == 24 && tl->headerPartRect(a, TimelineWidget::PartLevel).isEmpty(), "a minimized header keeps its top row only");
             uitest::shot(tl, out + "/theme_vegas_minimised.png");
             tl->toggleMinimizeTrack();
             uitest::settle(50);

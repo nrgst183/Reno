@@ -139,7 +139,7 @@ static void curveTests()
         const double top = std::fabs(q[2] - 198.0 / 255) + std::fabs(q[0] - 1.0) + std::fabs(q[1] - 1.0);
         straight(o, 128, 3, q);
         const double mid = std::fabs(q[2] - 84.0 / 255) + std::fabs(q[0] - 128.0 / 255) + std::fabs(q[1] - 128.0 / 255);
-        check(top < 0.01 && mid < 0.03, "Yellow Tint: white becomes (1, 1, 198/255), the middle grey (128, 128, 84)/255: the blue curve bends", strfmt("%.3f %.3f", top, mid));
+        check(top < 0.01 && mid < 0.03, "Yellow Tint: white becomes (1, 1, 198/255), the middle gray (128, 128, 84)/255: the blue curve bends", strfmt("%.3f %.3f", top, mid));
     }
     {
         const Buf o = withPreset("Blues and Yellows");
@@ -216,11 +216,11 @@ static void curveTests()
         straight(half, 10, 3, s);
         straight(o, 10, 3, q);
         a = o.at(10, 3)[3];
-        check(std::fabs(q[0] - (1.f - s[0])) < 0.012f && std::fabs(a - 0.5f) < 1e-6f, "a half transparent float picture: the colour is curved as a straight colour, alpha stays", strfmt("%.3f alpha %.3f", q[0], a));
+        check(std::fabs(q[0] - (1.f - s[0])) < 0.012f && std::fabs(a - 0.5f) < 1e-6f, "a half transparent float picture: the color is curved as a straight color, alpha stays", strfmt("%.3f alpha %.3f", q[0], a));
         // 8-bit (VEGAS's way, exact): the byte tables act on the premultiplied bytes and are held to the alpha
         const Buf o8 = runS(*d, {}, {{"Property", inv}}, half, 1.0, true);
         const float *p8 = o8.at(10, 3);
-        check(std::fabs(p8[3] - 0.5f) < 0.5f / 255 + 1e-6f && p8[0] <= p8[3] + 1.f / 255 && p8[0] > 0.45f, "a half transparent 8-bit picture: the colour is curved as bytes and held to the alpha", strfmt("%.3f alpha %.3f", p8[0], p8[3]));
+        check(std::fabs(p8[3] - 0.5f) < 0.5f / 255 + 1e-6f && p8[0] <= p8[3] + 1.f / 255 && p8[0] > 0.45f, "a half transparent 8-bit picture: the color is curved as bytes and held to the alpha", strfmt("%.3f alpha %.3f", p8[0], p8[3]));
     }
     for (const char* bad : {"", "abc", "AQAAAAIAAAA=", "////////////////////////"}) {
         const Buf o = runS(*d, {}, {{"Property", bad}}, src, 1.0);
@@ -323,7 +323,7 @@ static void meshTests()
         float q[3], s[3];
         straight(o, (int)(0.7 * W), H / 2, q);
         straight(src, W / 2, H / 2, s);
-        check(std::fabs(q[0] - s[0]) < 0.04f && std::fabs(q[1] - s[1]) < 0.06f, "Target: the point moved to 0.7 carries the colour that was at 0.5", strfmt("%.3f vs %.3f", q[0], s[0]));
+        check(std::fabs(q[0] - s[0]) < 0.04f && std::fabs(q[1] - s[1]) < 0.06f, "Target: the point moved to 0.7 carries the color that was at 0.5", strfmt("%.3f vs %.3f", q[0], s[0]));
         straight(o, 2, 2, q);
         straight(src, 2, 2, s);
         check(std::fabs(q[0] - s[0]) < 0.02f, "Target: a corner nowhere near the moved point is as it was");
@@ -338,7 +338,7 @@ static void meshTests()
         float q[3], s[3];
         straight(o, W / 2, H / 2, q);
         straight(src, (int)(0.7 * W), H / 2, s);
-        check(std::fabs(q[0] - s[0]) < 0.02f, "Source: the middle takes the colour from 0.7", strfmt("%.3f vs %.3f", q[0], s[0]));
+        check(std::fabs(q[0] - s[0]) < 0.02f, "Source: the middle takes the color from 0.7", strfmt("%.3f vs %.3f", q[0], s[0]));
     }
     {
         // the pulled-away mesh leaves the uncovered part transparent, and nothing is out of range

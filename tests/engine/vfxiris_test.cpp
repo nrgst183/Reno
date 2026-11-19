@@ -94,7 +94,7 @@ static void geometry()
     const Iris c(W, H, 0, 1, 1, 0.5, 1, 0.5, 0.5, 0.0, 0.0, col);
     check(std::fabs(c.maxDist - std::sqrt(20.0f * 20.0f + 12.0f * 12.0f)) < 1e-4f, "circle: largest distance is the corner's");
     check(c.cellW == W && c.cellH == H, "one cell is the frame");
-    check(std::fabs(c.distance(20, 12)) < 1e-6f, "circle: zero at the centre");
+    check(std::fabs(c.distance(20, 12)) < 1e-6f, "circle: zero at the center");
     check(std::fabs(c.distance(30, 12) - 10.0f) < 1e-5f, "circle: ten pixels along a row");
     // Center y counts from the top: a circle at y = 1 has its centre on the row above the kernels' top row (row H)
     const Iris t(W, H, 0, 1, 1, 0.5, 1, 0.5, 1.0, 0.0, 0.0, col);
@@ -123,7 +123,7 @@ static void blending()
     for (size_t i = 0; i < o0.size(); i += 4)
         if (i != mid && (o0[i] != gA[i] || o0[i + 1] != gA[i + 1] || o0[i + 2] != gA[i + 2])) same0 = false;
     check(same0, "progress 0 shows the outgoing picture");
-    check(o1[mid] == gB[mid] && o1[mid + 1] == gB[mid + 1], "progress 1 shows the incoming picture at the centre");
+    check(o1[mid] == gB[mid] && o1[mid + 1] == gB[mid + 1], "progress 1 shows the incoming picture at the center");
     // Direction 0 swaps the two pictures and runs the progress backwards: its frame at 1 - p equals the other direction's frame at p drawn from the exchanged pictures
     const Iris a(W, H, 4, 1, 1, 0.3, 1, 0.5, 0.5, 0.2, 0.1, col), b(W, H, 4, 1, 1, 0.7, 0, 0.5, 0.5, 0.2, 0.1, col);
     check(!a.swapPics && b.swapPics && std::fabs(a.threshold - 0.3f) < 1e-6f && std::fabs(b.threshold - 0.3f) < 1e-6f, "Direction 0 swaps and reverses");
@@ -137,7 +137,7 @@ static void blending()
     bool sawBorder = false;
     for (size_t i = 0; i < ob2.size(); i += 4)
         if (ob2[i] == 1.f && ob2[i + 1] == 0.f && ob2[i + 2] == 0.f && ob2[i + 3] == 1.f) sawBorder = true;
-    check(sawBorder, "the border colour shows");
+    check(sawBorder, "the border color shows");
 }
 
 static void nonsense()

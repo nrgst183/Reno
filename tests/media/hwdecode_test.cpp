@@ -251,7 +251,7 @@ int main(int argc, char** argv)
             std::atomic<bool> stop{true};
             ImagePtr none;
             { MediaReadHintsScope h(&stop, false); none = q->videoFrame(3.0, W, H); }
-            check(!none, "emulated card: a cancelled read gives nothing");
+            check(!none, "emulated card: a canceled read gives nothing");
             check(same(q->videoFrame(3.0, W, H), qRef->videoFrame(3.0, W, H)) && same(q->videoFrame(2.9, W, H), qRef->videoFrame(2.9, W, H)), "emulated card: reads after a cancel are right, forwards and back");
         }
         {   // deep pictures straight to float, and the 8-bit way
@@ -327,7 +327,7 @@ int main(int argc, char** argv)
             for (int r = 0; x && y && r < x->h; ++r)
                 for (int i = 0; i < x->w * 4; ++i) sum += std::abs((int)x->row(r)[i] - (int)y->row(r)[i]);
             const double mean = x ? sum / ((double)x->w * x->h * 4) : 99;
-            check(mean < 1.0, "NV12 pictures from a file convert (colours right: mean difference from planar 4:2:0 under 1)", std::to_string(mean));
+            check(mean < 1.0, "NV12 pictures from a file convert (colors right: mean difference from planar 4:2:0 under 1)", std::to_string(mean));
         }
         // the emulated card hands the pictures over as NV12 (8-bit) and P010 (10-bit), as a real one does
         hw::setEmulation(true, -1, -1, true);

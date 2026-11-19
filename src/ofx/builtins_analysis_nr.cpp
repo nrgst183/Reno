@@ -440,7 +440,7 @@ void addDenoiseEffects(std::vector<Def>& out)
         ps.push_back(group("Sharpening", "Sharpening"));
         ps.push_back(dbl("Amount", "Amount", 0.0, 0, 1, "Sharpening"));
         out.push_back(make("de.magix:DenoisingNLM", "Denoise",
-                           "Reduces noise: every pixel becomes the average of the pixels round it that have the same surroundings (non-local means), brightness and colour separately, with an optional sharpening",
+                           "Reduces noise: every pixel becomes the average of the pixels around it that have the same surroundings (non-local means), brightness and color separately, with an optional sharpening",
                            ps, denoisingNLM));
     }
     {

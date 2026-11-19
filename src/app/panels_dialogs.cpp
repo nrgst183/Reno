@@ -384,7 +384,7 @@ public:
         text += QString("%1 video %2 found, %3.\n%4 audio %5 found, %6.")
                     .arg(vTotal).arg(vTotal == 1 ? "effect" : "effects").arg(vBad == 0 ? QString("all work") : QString("%1 do not work").arg(vBad))
                     .arg(aTotal).arg(aTotal == 1 ? "effect" : "effects").arg(aBad == 0 ? QString("all work") : QString("%1 do not work").arg(aBad));
-        if (vBad + aBad > 0) text += "\nPoint at a greyed entry in the lists to see why.";
+        if (vBad + aBad > 0) text += "\nPoint at a grayed entry in the lists to see why.";
         summary_->setText(text);
         cancel_->hide();
         background_->hide();
@@ -600,7 +600,7 @@ private:
         label(0, "Free software; see Copyrights and Patents.", 110, 114, 321, 13);
         label(0, "", 110, 128, 327, 13);
         label(0, "This product is licensed to:", 110, 148, 321, 13);
-        flat(0, "Everyone: no licence is needed", 125, 162, 306, 13);
+        flat(0, "Everyone: no license is needed", 125, 162, 306, 13);
         flat(0, "", 125, 177, 306, 13);
         label(0, "Serial Number:", 128, 192, 98, 13);
         flat(0, "Not required", 242, 192, 300, 13);
@@ -649,10 +649,10 @@ private:
     void addCopyrightsPage()
     {
         label(4, "The following copyrights apply:", 19, 68, 377, 13);
-        QLabel* c1 = label(4, "OpenFX headers and the VST 2 interface header: BSD 3-Clause licence, used to host video and sound effect plug-ins. "
+        QLabel* c1 = label(4, "OpenFX headers and the VST 2 interface header: BSD 3-Clause license, used to host video and sound effect plug-ins. "
                               "FFmpeg: GNU LGPL 2.1 or later, loaded as separate libraries.",
                            19, 94, 405, 26);
-        QLabel* c2 = label(4, "Qt: GNU Lesser General Public Licence (LGPL) version 3, used for the interface.", 19, 130, 405, 26);
+        QLabel* c2 = label(4, "Qt: GNU Lesser General Public License (LGPL) version 3, used for the interface.", 19, 130, 405, 26);
         c1->setObjectName("aboutNotices1");
         c2->setObjectName("aboutNotices2");
         for (QLabel* c : {c1, c2}) {

@@ -363,20 +363,20 @@ int main(int argc, char** argv)
     check(near(valueOf(P, "p_choice")[0], 3), "choice: picking an option sets it");
     // colours
     QAbstractButton* rgb = in<QAbstractButton>("p_rgb", "fxColour");
-    check(rgb != nullptr, "colour: a colour button");
+    check(rgb != nullptr, "color: a color button");
     if (rgb) {
         rgb->click();
         settle();
         QColorDialog* dlg = w->findChild<QColorDialog*>("fxColourDialog");
-        check(dlg && dlg->isVisible() && !dlg->testOption(QColorDialog::ShowAlphaChannel), "colour: the button opens a colour dialog (no alpha for RGB)");
+        check(dlg && dlg->isVisible() && !dlg->testOption(QColorDialog::ShowAlphaChannel), "color: the button opens a color dialog (no alpha for RGB)");
         if (dlg) {
             dlg->setCurrentColor(QColor::fromRgbF(1.f, 0.f, 0.5f));
             const std::vector<double> v = valueOf(P, "p_rgb");
-            check(near(v[0], 1, 3e-3) && near(v[1], 0, 3e-3) && near(v[2], 0.5, 3e-3), "colour: the value follows the dialog as it changes");
+            check(near(v[0], 1, 3e-3) && near(v[1], 0, 3e-3) && near(v[2], 0.5, 3e-3), "color: the value follows the dialog as it changes");
             dlg->reject();
             settle();
             const std::vector<double> b = valueOf(P, "p_rgb");
-            check(near(b[0], 0.1, 1e-3) && near(b[1], 0.2, 1e-3) && near(b[2], 0.3, 1e-3), "colour: cancelling puts the colour back");
+            check(near(b[0], 0.1, 1e-3) && near(b[1], 0.2, 1e-3) && near(b[2], 0.3, 1e-3), "color: canceling puts the color back");
         }
     }
     QAbstractButton* rgba = in<QAbstractButton>("p_rgba", "fxColour");
@@ -384,13 +384,13 @@ int main(int argc, char** argv)
         rgba->click();
         settle();
         QColorDialog* dlg = w->findChild<QColorDialog*>("fxColourDialog");
-        check(dlg && dlg->testOption(QColorDialog::ShowAlphaChannel), "colour: RGBA gets an alpha control");
+        check(dlg && dlg->testOption(QColorDialog::ShowAlphaChannel), "color: RGBA gets an alpha control");
         if (dlg) {
             dlg->setCurrentColor(QColor::fromRgbF(0.f, 1.f, 0.f, 0.5f));
             dlg->accept();
             settle();
             const std::vector<double> v = valueOf(P, "p_rgba");
-            check(near(v[1], 1, 3e-3) && near(v[3], 0.5, 3e-3), "colour: RGBA value with alpha", num(v[3]));
+            check(near(v[1], 1, 3e-3) && near(v[3], 0.5, 3e-3), "color: RGBA value with alpha", num(v[3]));
         }
     }
     // 2D / 3D
@@ -421,7 +421,7 @@ int main(int argc, char** argv)
     if (text) text->setPlainText("abc\ndef");
     check(strOf(P, "p_str") == "abc\ndef", "multi-line string: typing sets it", strOf(P, "p_str"));
     if (QAbstractButton* push = in<QAbstractButton>("p_button", "fxPush")) {
-        check(push->text() == "Do It", "push button: labelled");
+        check(push->text() == "Do It", "push button: labeled");
         push->click();
         settle();
         check(strOf(P, "p_str") == "pushed 1" && text && text->toPlainText() == "pushed 1", "push button: the effect's answer shows in another control");
@@ -445,7 +445,7 @@ int main(int argc, char** argv)
         check(choice && choice->count() == 2, "effect-driven: the options change again");
         driver->setValue(0);
         settle();
-        check(row("dep") && row("dep")->isVisibleTo(w) && !row("dep")->isEnabled(), "effect-driven: shown again, greyed out");
+        check(row("dep") && row("dep")->isVisibleTo(w) && !row("dep")->isEnabled(), "effect-driven: shown again, grayed out");
     } else {
         check(false, "driver: number box");
     }
@@ -567,20 +567,20 @@ int main(int argc, char** argv)
             settle();
             const std::vector<double> v = valueOf(P, "p_rgb");
             check(dlg && near(after[1], 1, 3e-3) && near(v[0], before[0], 1e-3) && near(v[1], before[1], 1e-3) && near(v[2], before[2], 1e-3),
-                  "undo: everything chosen in one visit to the colour dialog is one step");
+                  "undo: everything chosen in one visit to the color dialog is one step");
             // the colour's number boxes
             QList<QDoubleSpinBox*> cb = row("p_rgb") ? row("p_rgb")->findChildren<QDoubleSpinBox*>("fxColourBox") : QList<QDoubleSpinBox*>();
-            check(cb.size() == 3 && near(cb[0]->value(), before[0], 1e-3), "colour: number boxes for red, green and blue show the colour");
+            check(cb.size() == 3 && near(cb[0]->value(), before[0], 1e-3), "color: number boxes for red, green and blue show the color");
             if (cb.size() == 3) {
                 cb[1]->setValue(0.75);
                 settle();
-                check(near(valueOf(P, "p_rgb")[1], 0.75), "colour: typing a channel sets it", num(valueOf(P, "p_rgb")[1]));
+                check(near(valueOf(P, "p_rgb")[1], 0.75), "color: typing a channel sets it", num(valueOf(P, "p_rgb")[1]));
                 app.undo();
                 settle();
-                check(near(valueOf(P, "p_rgb")[1], before[1], 1e-3) && near(cb[1]->value(), before[1], 1e-3), "undo: and the box shows the colour that comes back");
+                check(near(valueOf(P, "p_rgb")[1], before[1], 1e-3) && near(cb[1]->value(), before[1], 1e-3), "undo: and the box shows the color that comes back");
             }
             QList<QDoubleSpinBox*> cba = row("p_rgba") ? row("p_rgba")->findChildren<QDoubleSpinBox*>("fxColourBox") : QList<QDoubleSpinBox*>();
-            check(cba.size() == 4, "colour with alpha: four number boxes", std::to_string(cba.size()));
+            check(cba.size() == 4, "color with alpha: four number boxes", std::to_string(cba.size()));
         }
         // keyframes on and off are steps too; and the arrows go from one keyframe to the next
         app.setCursor(1.0);
@@ -751,7 +751,7 @@ int main(int argc, char** argv)
     {
         // the one that took its place is picked: General has no test-kind parameters, so look at the panel's rows
         QWidget* panel = one<QWidget>("fxOfxPanel");
-        check(panel && row("p_dbl") == nullptr, "remove: the neighbour is picked");
+        check(panel && row("p_dbl") == nullptr, "remove: the neighbor is picked");
     }
     app.undo();
     settle();
@@ -1041,7 +1041,7 @@ int main(int argc, char** argv)
                   host ? std::to_string(host->width()) + "x" + std::to_string(host->height()) : "");
             QScrollArea* sa = one<QScrollArea>("fxScroll");
             check(sa && sa->viewport()->width() >= 320 && sa->viewport()->height() >= 180 && w->width() < 520,
-                  "plug-in window: the window is fitted round it", std::to_string(w->width()) + "x" + std::to_string(w->height()));
+                  "plug-in window: the window is fitted around it", std::to_string(w->width()) + "x" + std::to_string(w->height()));
             const int idles = tv.idles();
             settle(300);
             check(tv.idles() > idles + 2, "plug-in window: given idle time", std::to_string(tv.idles() - idles));

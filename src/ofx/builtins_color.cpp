@@ -786,7 +786,7 @@ void addFiltersColor(std::vector<Def>& out)
         std::vector<PDef> ps = {text("LUTName", "Name", "", false), text("LUTFilename", "File", "", false), choice("Interpolation", "Interpolation", 0, {"Linear (good)", "Tetrahedral (best)"}),
                                 dbl("Gain", "Strength", 1, 0, 1)};
         ps[3].hint = "How much of the LUT's result is mixed with the original: 0 is no LUT.";
-        out.push_back(make("com.vegascreativesoftware:lutfilter", "LUT Filter", "A colour look-up table (.cube) applied to the picture", ps, lutFilter));
+        out.push_back(make("com.vegascreativesoftware:lutfilter", "LUT Filter", "A color look-up table (.cube) applied to the picture", ps, lutFilter));
     }
     {
         std::vector<std::string> looks = {"none"};
@@ -804,7 +804,7 @@ void addFiltersColor(std::vector<Def>& out)
         ps[6].secret = true;
         // the three pictures are VEGAS's OfxParamTypeImage settings: they hold no value the host can read, so the picture's colours are kept in
         // "internaldata" (the captured statistics)
-        out.push_back(make("com.vegascreativesoftware:colormatch", "Color Match", "The clip's colours moved towards those of a reference picture (the Lab statistics VEGAS captured)", ps, colorMatch));
+        out.push_back(make("com.vegascreativesoftware:colormatch", "Color Match", "The clip's colors moved toward those of a reference picture (the Lab statistics VEGAS captured)", ps, colorMatch));
     }
     {
         std::vector<PDef> ps;
@@ -840,8 +840,8 @@ void addFiltersColor(std::vector<Def>& out)
             ps.push_back(text("LUTFilename" + sx, "LUT file", "", false));
         }
         ps.push_back(boolean("AutoAdjust", "Auto adjust", false));
-        ps.push_back(intp("CSpaceVersion", "Colour space version", 0, 0, 1000));
-        ps.push_back(text("CSpaceName", "Colour space", "", false));
+        ps.push_back(intp("CSpaceVersion", "Color space version", 0, 0, 1000));
+        ps.push_back(text("CSpaceName", "Color space", "", false));
         for (auto& p : ps)
             if (p.type == PT::Custom || p.name == "AutoAdjust" || p.name == "CSpaceVersion" || p.name == "CSpaceName" || p.name.compare(0, 3, "LUT") == 0 || p.name == "ExposureLnAdjust") p.secret = true;
         out.push_back(make("com.vegascreativesoftware:colorgrading", "Color Grading", "Lift, gamma, gain and offset wheels, curves, levels and LUTs of the Color Grading panel", ps, colorGrading));

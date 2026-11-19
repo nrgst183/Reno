@@ -232,7 +232,7 @@ static void vegasParamsTests()
         const Def* d = findDef(o.id);
         check(d != nullptr, o.id + ": exists");
         if (!d) continue;
-        check(d->label == o.label, o.id + ": labelled as VEGAS labels it", d->label);
+        check(d->label == o.label, o.id + ": labeled as VEGAS labels it", d->label);
         bool same = d->params.size() == o.want.size();
         std::string why = strfmt("%zu parameters, VEGAS has %zu", d->params.size(), o.want.size());
         for (size_t i = 0; same && i < o.want.size(); ++i) {
@@ -240,7 +240,7 @@ static void vegasParamsTests()
             const Want& w = o.want[i];
             if (p.name != w.name) { same = false; why = "parameter " + std::to_string(i) + " is " + p.name + ", VEGAS has " + w.name; }
             else if (std::string(kindOf(p)) != w.kind) { same = false; why = p.name + " is a " + kindOf(p) + ", VEGAS has a " + w.kind; }
-            else if (p.label != w.label) { same = false; why = p.name + " is labelled '" + p.label + "', VEGAS has '" + w.label + "'"; }
+            else if (p.label != w.label) { same = false; why = p.name + " is labeled '" + p.label + "', VEGAS has '" + w.label + "'"; }
             else if (p.choices != w.choices) { same = false; why = p.name + ": other choices"; }
             else if (p.parent != w.parent) { same = false; why = p.name + " is in group '" + p.parent + "', expected '" + w.parent + "'"; }
         }
@@ -321,7 +321,7 @@ static void registrationTests()
     int found = 0;
     for (const auto& i : infos)
         if (i.id == kBz || i.id == kBump || i.id == kStereo || i.id == kLens || i.id == kFlow || i.id == kTimeWarp || i.id == kZoom) ++found;
-    check(found == 7, "the catalogue lists all seven", strfmt("%d", found));
+    check(found == 7, "the catalog lists all seven", strfmt("%d", found));
     check(infos.size() <= 256, "the built-ins fit the 256 the host has entry points for", strfmt("%zu", infos.size()));
     // the order of the hidden parameters etc. is the effect's own; the presets package must still parse after the additions
     check(!ofx::builtinPresetPackage().empty(), "the preset package is there");
@@ -465,7 +465,7 @@ static void lensTests()
             const double want = std::hypot(sx + 0.5 - W * 0.5, sy + 0.5 - H * 0.5) / (W * 0.5) * 0.5;
             check(std::fabs(o.at(px, py)[0] - want) < 0.008, strfmt("k1, k2, k3: pixel %d takes the source at r (a r^3 + b r^2 + c r + d)", px), strfmt("%.4f vs %.4f", o.at(px, py)[0], want));
         }
-        check(std::fabs(o.at(W / 2, H / 2)[0] - src.at(W / 2, H / 2)[0]) < 0.01, "... and the centre stays");
+        check(std::fabs(o.at(W / 2, H / 2)[0] - src.at(W / 2, H / 2)[0]) < 0.01, "... and the center stays");
         // the edge of the shorter side stays where it is (d = 1 - a - b - c)
         check(std::fabs(o.at(W / 2, 0)[0] - src.at(W / 2, 0)[0]) < 0.02, "... and so does the middle of the top edge (r = 1)", strfmt("%.4f vs %.4f", o.at(W / 2, 0)[0], src.at(W / 2, 0)[0]));
         const Buf n = runS(*d, {{"RadialDistParam1", {-0.1}}}, {}, src);
@@ -500,7 +500,7 @@ static void lensTests()
         // a lens that is off the picture's middle is not corrected the same on both sides
         const Buf q = runS(*d, {{"RadialDistParam1", {0.1}}}, {}, src);
         const Buf r = runS(*d, {{"RadialDistParam1", {0.1}}, {"DistCenter", {0.25, 0.5}}}, {}, src);
-        check(maxDiff(q, r) > 0.05, "... and the picture differs from the centred one");
+        check(maxDiff(q, r) > 0.05, "... and the picture differs from the centered one");
     }
     {
         // Localization, Query and QueryResult only hold their value (no lens database in Reno): the picture does not change with them
@@ -625,7 +625,7 @@ static void bezierTests()
         const Buf o = runS(*d, {{"Type_0", {0}}, {"Width_0", {0.6}}, {"Height_0", {0.6}}}, {}, white);
         const double want = kPi * (0.3 * W) * (0.3 * H);
         check(std::fabs(sum(o, 3) - want) / want < 0.005, "an Oval has the area of an ellipse (0.5%)", strfmt("%.1f vs %.1f", sum(o, 3), want));
-        check(o.at(100, 50)[3] > 0.999f && o.at(100, 3)[3] < 1e-4f && o.at(10, 50)[3] < 1e-4f, "... centred on the frame");
+        check(o.at(100, 50)[3] > 0.999f && o.at(100, 3)[3] < 1e-4f && o.at(10, 50)[3] < 1e-4f, "... centered on the frame");
         const Buf dm = runS(*d, {{"Type_0", {2}}, {"Width_0", {0.5}}, {"Height_0", {0.5}}}, {}, white);
         check(std::fabs(sum(dm, 3) - 100.0 * 50.0 / 2) / (100.0 * 50.0 / 2) < 0.002 && dm.at(100, 50)[3] > 0.9999f && dm.at(55, 30)[3] < 1e-4f, "a Diamond is half of its box", strfmt("%.2f", sum(dm, 3)));
         // Location puts the middle of the shape there (y up): the right quarter of the frame, a quarter down
@@ -810,7 +810,7 @@ static void timeWarpTests()
     check(eventFxRate(e) == 1.0, "a bypassed Time Warp does nothing");
     e.fx[0].bypass = false;
     e.fx[0].state["params"]["Choice Box Algorithm"] = val({0});
-    check(eventFxResample(e) == "force", "the Morph method blends the neighbouring frames");
+    check(eventFxResample(e) == "force", "the Morph method blends the neighboring frames");
     e.fx[0].state["params"]["Choice Box Algorithm"] = val({1});
     check(eventFxResample(e) == "optical", "the Optical Flow method follows the motion");
     // Reno's own Slow Motion is read by its own names
@@ -1160,7 +1160,7 @@ static void overlayTests()
     check(parseBezPath(text(), bp) && bp.pts.size() == 3, "... and adds nothing");
     tool->value[0] = 1;
     check(click(300, 60), "with the Add tool a click on a side is taken");
-    check(parseBezPath(text(), bp) && bp.pts.size() == 4 && std::fabs(bp.pts[1].x - 300.0 / 640) < 0.01, "... and adds a point there, between the neighbours", text());
+    check(parseBezPath(text(), bp) && bp.pts.size() == 4 && std::fabs(bp.pts[1].x - 300.0 / 640) < 0.01, "... and adds a point there, between the neighbors", text());
     tool->value[0] = 2;
     check(click(300, 60), "with the Delete tool a click on a point is taken");
     check(parseBezPath(text(), bp) && bp.pts.size() == 3, "... and removes it");

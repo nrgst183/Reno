@@ -34,10 +34,10 @@ int main(int argc, char** argv)
                 if (cand.tracks[t].type == TrackType::Audio && cand.tracks[t].events[e].normalize) { src = f; ti = t; ei = e; }
         if (!src.empty()) { p = cand; break; }
     }
-    if (src.empty()) { std::printf("SKIP: no sample project has a normalised sound event\n"); return 0; }
-    check(true, "a sample with a normalised sound event opens");
+    if (src.empty()) { std::printf("SKIP: no sample project has a normalized sound event\n"); return 0; }
+    check(true, "a sample with a normalized sound event opens");
     Event& a = p.tracks[ti].events[ei];
-    check(a.normalize && a.normalizeGain > 0, "its sound event is normalised: a normalising gain is kept apart from its level");
+    check(a.normalize && a.normalizeGain > 0, "its sound event is normalized: a normalizing gain is kept apart from its level");
     const double origGain = a.gain, origNormalize = a.normalizeGain;
     (void)origNormalize;
     (void)origGain;
@@ -59,7 +59,7 @@ int main(int argc, char** argv)
         check(importVegasProject(out, r).ok && r.tracks.size() == q.tracks.size() && r.tracks[ti].events.size() == q.tracks[ti].events.size(), "read back again");
         if (r.tracks.size() == q.tracks.size() && r.tracks[ti].events.size() == q.tracks[ti].events.size()) {
             const Event& c = r.tracks[ti].events[ei];
-            check(c.normalize && std::fabs(c.normalizeGain - 2.25) < 1e-4 && std::fabs(c.gain - 0.5) < 1e-4, "Normalize on, normalising gain 2.25, level still 0.5");
+            check(c.normalize && std::fabs(c.normalizeGain - 2.25) < 1e-4 && std::fabs(c.gain - 0.5) < 1e-4, "Normalize on, normalizing gain 2.25, level still 0.5");
         }
     }
     std::remove(out.c_str());

@@ -228,7 +228,7 @@ void addFiltersMask(std::vector<Def>& out)
         d.id = "de.magix:LensCorrection";
         d.label = "VEGAS Lens Correction";
         d.group = kGroup;
-        d.description = "Removes barrel or pincushion distortion with the PTLens radial model (k1, k2, k3) about a distortion centre; "
+        d.description = "Removes barrel or pincushion distortion with the PTLens radial model (k1, k2, k3) about a distortion center; "
                         "Scale hides the empty corners. Reno has no lens database, so enter the numbers.";
         d.params = {choice("Localization", "", 0, {"Select lens", "Nothing found"}), group("GroupDb", "Lens Model"),
                     text("Query", "Search for", "", false), choice("QueryResult", "Found Lenses", 0, {"Nothing found"}, "GroupDb"),

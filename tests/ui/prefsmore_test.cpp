@@ -520,7 +520,7 @@ int main(int argc, char** argv)
             const QImage img = tl->grab().toImage();
             const QColor c = img.pixelColor(std::min(img.width() - 1, r.left() + 30), std::min(img.height() - 1, r.bottom() - 2));
             const bool sel = app.selection().count(audioEvent) != 0;
-            check(sel ? c.lightness() < 140 : c == QColor(216, 216, 216), "reverse event background: VEGAS's light grey (dark when selected)",
+            check(sel ? c.lightness() < 140 : c == QColor(216, 216, 216), "reverse event background: VEGAS's light gray (dark when selected)",
                   c.name().toStdString());
         }
         prefs(*w, [](QDialog* d) { setCheck(d, "reverseEventBg", false); });
@@ -765,7 +765,7 @@ int main(int argc, char** argv)
             }
         });
         const bool closedWithQuestion = w->close();
-        check(asked && !closedWithQuestion, "leaving: asks to save changes by default (and stays when cancelled)");
+        check(asked && !closedWithQuestion, "leaving: asks to save changes by default (and stays when canceled)");
         w->show();
         prefs(*w, [](QDialog* d) { setCheck(d, "confirmExit", false); });
         asked = false;

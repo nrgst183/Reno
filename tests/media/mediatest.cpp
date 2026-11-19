@@ -434,7 +434,7 @@ void verifyPictures(MediaReader& r, const std::string& name, const Tolerance& to
         if (!right) {
             if (distance(tl, kOrange) < 40 && distance(bl, kBlue) < 40) why = ": the picture is UPSIDE DOWN (the orange marker is at the top left)";
             else if (distance(br, kOrange) < 40) why = ": the picture is MIRRORED left to right";
-            else why = ": the corner markers are not the colours that were written";
+            else why = ": the corner markers are not the colors that were written";
         }
         check(right, "%s the picture is the right way up (orange marker at the bottom left, blue at the top left)%s", n, why);
     }
@@ -451,7 +451,7 @@ void verifyPictures(MediaReader& r, const std::string& name, const Tolerance& to
                 worstMean = m;
             }
         }
-        check(worst <= tol.colour, "%s colours come back as written (worst is %s, off by %.1f of 255; allowed %.0f)%s", n, kPatchName[worstPatch], worst, tol.colour,
+        check(worst <= tol.colour, "%s colors come back as written (worst is %s, off by %.1f of 255; allowed %.0f)%s", n, kPatchName[worstPatch], worst, tol.colour,
               worst <= tol.colour ? "" : strfmt(": wrote B%d G%d R%d, read B%.0f G%.0f R%.0f", kPatch[worstPatch].b, kPatch[worstPatch].g, kPatch[worstPatch].r,
                                                 worstMean.b, worstMean.g, worstMean.r).c_str());
     }
@@ -732,7 +732,7 @@ void verifyStill(const std::string& path, int number)
           distance(tl, kOrange) <= 1.0 ? ": it is UPSIDE DOWN" : "");
     double worst = 0;
     for (int p = 0; p < kPatches; ++p) worst = std::max(worst, distance(meanOf(*a, patchRect(p), 4), kPatch[p]));
-    check(worst <= 1.0, "%s colours are exactly as written (worst off by %.2f)", n, worst);
+    check(worst <= 1.0, "%s colors are exactly as written (worst off by %.2f)", n, worst);
     ImagePtr half = r->videoFrame(0.0, 320, 180);
     check(half && half->w == 320 && half->h == 180 && frameNumber(half.get()) == number, "%s scales to 320x180", n);
 }

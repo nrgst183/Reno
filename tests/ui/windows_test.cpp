@@ -59,7 +59,7 @@ int main(int argc, char** argv)
     scopes.setImage(grey);
     VideoScopes::Stats s = scopes.stats();
     check(s.pixels == 320 * 180 && std::abs(s.meanLuma - 128) < 0.01 && s.stdDevLuma < 0.01 && s.minLuma == 128 && s.maxLuma == 128,
-          "a flat grey: mean luma 128, no spread", strfmt("%d %.2f %.2f %d %d", s.pixels, s.meanLuma, s.stdDevLuma, s.minLuma, s.maxLuma));
+          "a flat gray: mean luma 128, no spread", strfmt("%d %.2f %.2f %d %d", s.pixels, s.meanLuma, s.stdDevLuma, s.minLuma, s.maxLuma));
     QImage half(200, 100, QImage::Format_RGB32);
     half.fill(Qt::black);
     QPainter(&half).fillRect(QRect(0, 0, 100, 100), Qt::white);

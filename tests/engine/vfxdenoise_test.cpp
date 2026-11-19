@@ -45,7 +45,7 @@ int main()
     flat(255, 0, 255, 250, 2, 254, "Denoise: magenta -> 250 2 254");
     flat(0, 0, 255, 0, 0, 255, "Denoise: blue stays");
     flat(255, 255, 0, 255, 255, 0, "Denoise: yellow stays");
-    flat(16, 16, 16, 15, 16, 15, "Denoise: dark grey -> 15 16 15");
+    flat(16, 16, 16, 15, 16, 15, "Denoise: dark gray -> 15 16 15");
     flat(255, 128, 0, 254, 128, 0, "Denoise: orange -> 254 128 0");
 
     // both strengths 0: the picture is passed on (8-bit levels)

@@ -918,7 +918,7 @@ bool analyzeAutoDucking(uint64_t controllerId, double from, double to, std::stri
         to = length;
     }
     if (!(to > from)) {
-        if (error) *error = "there is no sound to analyse";
+        if (error) *error = "there is no sound to analyze";
         return false;
     }
     const double floorDb = ctl->duckFloor, peak = ctl->duckPeak;

@@ -215,7 +215,7 @@ int main(int argc, char** argv)
         tr().motion = {key3d(camFraction() / 2)};
         img = video.render(p, 0, fo);
         check(is(pixel(img, 20, 20), kTL) && is(pixel(img, 180, 80), kBR) && is(pixel(img, 98, 48), kTL) && is(pixel(img, 102, 52), kBR),
-              "towards the camera by half its distance: twice the size", pxs(pixel(img, 20, 20)));
+              "toward the camera by half its distance: twice the size", pxs(pixel(img, 20, 20)));
         // behind the camera: nothing
         tr().motion = {key3d(1.5)};
         img = video.render(p, 0, fo);
@@ -239,14 +239,14 @@ int main(int argc, char** argv)
         tr().motion = {key3d(0, 50, 0)};
         img = video.render(p, 0, fo);
         save(img, "turnX50");
-        check(rowWidth(img, 15) > rowWidth(img, 75) + 10, "Rotation X: the top comes towards the camera and looks wider than the bottom",
+        check(rowWidth(img, 15) > rowWidth(img, 75) + 10, "Rotation X: the top comes toward the camera and looks wider than the bottom",
               strfmt("top %d, bottom %d", rowWidth(img, 15), rowWidth(img, 75)));
         // orientation turns the picture about its own centre; rotation about the rotation centre (offset)
         MotionKey o = key3d(-camFraction());
         o.oriZ = 90;
         tr().motion = {o};
         img = video.render(p, 0, fo);
-        check(is(pixel(img, 85, 30), kBL) && is(pixel(img, 115, 30), kTL), "Orientation Z turns the picture about its centre", pxs(pixel(img, 85, 30)));
+        check(is(pixel(img, 85, 30), kBL) && is(pixel(img, 115, 30), kTL), "Orientation Z turns the picture about its center", pxs(pixel(img, 85, 30)));
         MotionKey r = key3d(0);
         r.w = r.h = 0.5;
         r.offX = 0.25;          // turning about a point a quarter of the frame to the right of the picture's centre
@@ -348,7 +348,7 @@ int main(int argc, char** argv)
         addTrack(p, blue, "srcalpha");
         p.findTrack(b)->motion = {key3d(-1)};
         img = video.render(p, 0, fo);
-        check(is(pixel(img, 10, 10), kBlue) && is(pixel(img, 100, 50), kRed), "a 2D track below shows round the 3D pictures", pxs(pixel(img, 10, 10)));
+        check(is(pixel(img, 10, 10), kBlue) && is(pixel(img, 100, 50), kRed), "a 2D track below shows around the 3D pictures", pxs(pixel(img, 10, 10)));
     }
 
     // ---------------------------------------------------------------- compositing parents in 3D

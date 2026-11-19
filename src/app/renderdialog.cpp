@@ -1115,7 +1115,7 @@ public:
             QMessageBox::information(this, "Render As",
                                      "Choose a format and a template, a folder and a name, and click Render.\n\n"
                                      "Render Options changes how the project is rendered. Customize Template... changes the template's settings. "
-                                     "Project Location puts the file beside the project file. The star makes a template a favourite; "
+                                     "Project Location puts the file beside the project file. The star makes a template a favorite; "
                                      "the Filters menu shows only the templates you want.");
         });
 
@@ -1426,7 +1426,7 @@ private:
                 auto* it = new QTreeWidgetItem(tree_);
                 it->setText(1, fav ? QString::fromUtf8("\u2605") : QString::fromUtf8("\u2606"));
                 it->setTextAlignment(1, Qt::AlignCenter);
-                it->setToolTip(1, fav ? "A favourite (click to take it off)" : "Click to make it a favourite");
+                it->setToolTip(1, fav ? "A favorite (click to take it off)" : "Click to make it a favorite");
                 it->setText(0, t.custom ? t.name + "  (custom)" : t.name);
                 it->setToolTip(0, templateInfo(*f, t));
                 it->setData(0, kRoleFormat, fi);
@@ -1823,7 +1823,7 @@ private:
             }
             const bool cancelled = job->cancel.load();
             logbook::write(logbook::Kind::Renders, logbook::Basic,
-                           cancelled ? QString("Render cancelled") : ok ? QString("Render finished") : QString("Render failed: %1").arg(QString::fromStdString(err)));
+                           cancelled ? QString("Render canceled") : ok ? QString("Render finished") : QString("Render failed: %1").arg(QString::fromStdString(err)));
             if (ok && !desc.empty()) logbook::write(logbook::Kind::Renders, logbook::Detailed, "  " + QString::fromStdString(desc).replace('\n', "\n  "));
             AppState::post([job, self, ok, cancelled, err, desc] {
                 if (job->alive.load()) self->finished(ok, cancelled, err, desc);
@@ -1838,7 +1838,7 @@ private:
         if (!running_) return;
         job_->cancel.store(true);
         cancelRender_->setEnabled(false);
-        result_->setText("Cancelling...");
+        result_->setText("Canceling...");
     }
 
     void removeOutput()
@@ -1974,7 +1974,7 @@ public:
             if (mode_ == NewTrack || closeWhenDone_->isChecked()) QTimer::singleShot(0, this, [this] { accept(); });
         } else if (cancelled) {
             removeOutput();
-            setWindowTitle("Render cancelled");
+            setWindowTitle("Render canceled");
             result_->setText("The render was stopped. The unfinished file was deleted.");
         } else {
             removeOutput();

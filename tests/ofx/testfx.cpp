@@ -717,7 +717,7 @@ static OfxStatus filterAction(Kind k, const char* who, const char* action, const
     if (!strcmp(action, kOfxActionUnload)) { bump("unload"); return kOfxStatOK; }
     if (!strcmp(action, kOfxActionDescribe)) {
         switch (k) {
-        case K_INVERT: describeBasics(e, "Test Invert", "Reno Test", "Inverts the colour (alpha minus colour).", true, true, {kOfxImageEffectContextFilter}); break;
+        case K_INVERT: describeBasics(e, "Test Invert", "Reno Test", "Inverts the color (alpha minus color).", true, true, {kOfxImageEffectContextFilter}); break;
         case K_TEMPORAL: describeBasics(e, "Test Temporal Average", "Reno Test", "Averages three frames.", true, true, {kOfxImageEffectContextFilter}, true); break;
         case K_FLOATONLY: describeBasics(e, "Test Float Only", "Reno Test", "Floating point pictures only.", false, true, {kOfxImageEffectContextFilter}); break;
         case K_BYTEONLY: describeBasics(e, "Test Byte Only", "Reno Test", "8-bit pictures only.", true, false, {kOfxImageEffectContextFilter}); break;
@@ -885,7 +885,7 @@ static void describeParams(OfxImageEffectHandle e)
     pp = defineParam(ps, kOfxParamTypeRGB, "p_rgb", "Colour");
     sd(pp, kOfxParamPropDefault, 0, 0.1); sd(pp, kOfxParamPropDefault, 1, 0.2); sd(pp, kOfxParamPropDefault, 2, 0.3);
 
-    pp = defineParam(ps, kOfxParamTypeRGBA, "p_rgba", "Colour With Alpha");
+    pp = defineParam(ps, kOfxParamTypeRGBA, "p_rgba", "Color With Alpha");
     sd(pp, kOfxParamPropDefault, 0, 0.4); sd(pp, kOfxParamPropDefault, 1, 0.5); sd(pp, kOfxParamPropDefault, 2, 0.6); sd(pp, kOfxParamPropDefault, 3, 0.7);
 
     pp = defineParam(ps, kOfxParamTypeDouble2D, "p_d2", "Point");

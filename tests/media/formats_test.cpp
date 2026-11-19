@@ -354,7 +354,7 @@ void checkPictures(MediaReader& r, const Sample& s)
         const double d = distance(meanOf(*img, patchRect(i), 8), kPatch[i]);
         if (d > worst) { worst = d; worstName = kPatchName[i]; }
     }
-    check(worst <= s.colourTol, "%s colours are right (the furthest, %s, is %.0f off; %.0f allowed)", n, worstName.c_str(), worst, s.colourTol);
+    check(worst <= s.colourTol, "%s colors are right (the furthest, %s, is %.0f off; %.0f allowed)", n, worstName.c_str(), worst, s.colourTol);
     const Mean bg = meanOf(*img, Rect{0, 150, 150, 50}, 4);
     check(bg.a > 250, "%s opaque parts are opaque (alpha %.0f)", n, bg.a);
     if (s.alpha) {

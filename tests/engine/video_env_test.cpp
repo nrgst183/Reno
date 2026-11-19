@@ -312,10 +312,10 @@ int main(int argc, char** argv)
         T().fadeBottom = 0xFF000000;        // black
         T().envelopes = {env("fadecolor", {pt(0, 1.0)})};
         img = video.render(p, 1.0, preview);
-        check(near(pixel(img, 50, 50), 0, 255, 0), "a track's fade-to-colour envelope at +100% shows the top colour", pxs(pixel(img, 50, 50)));
+        check(near(pixel(img, 50, 50), 0, 255, 0), "a track's fade-to-color envelope at +100% shows the top color", pxs(pixel(img, 50, 50)));
         T().envelopes = {env("fadecolor", {pt(0, -0.5)})};
         img = video.render(p, 1.0, preview);
-        check(near(pixel(img, 50, 50), 0, 0, 128, 3), "and at -50% is half way to the bottom colour", pxs(pixel(img, 50, 50)));
+        check(near(pixel(img, 50, 50), 0, 0, 128, 3), "and at -50% is half way to the bottom color", pxs(pixel(img, 50, 50)));
         // a see-through part of the track stays see-through
         T().motion.resize(1);
         T().motion[0].w = 0.5;
@@ -323,7 +323,7 @@ int main(int argc, char** argv)
         T().envelopes = {env("fadecolor", {pt(0, 1.0)})};
         img = video.render(p, 1.0, preview);
         check(near(pixel(img, 160, 90), 0, 255, 0) && near(pixel(img, 10, 10), 255, 0, 0),
-              "fading to colour colours only the track's picture, not the see-through part around it",
+              "fading to color colors only the track's picture, not the see-through part around it",
               pxs(pixel(img, 160, 90)) + " / " + pxs(pixel(img, 10, 10)));
         T().motion.clear();
         T().envelopes.clear();
@@ -333,10 +333,10 @@ int main(int argc, char** argv)
         p.videoFadeBottom = 0xFF000000;
         p.videoEnvelopes = {env("fadecolor", {pt(0, 0.0), pt(2.0, -1.0)})};
         img = video.render(p, 1.0, preview);
-        check(near(pixel(img, 50, 50), 0, 0, 128, 3), "the video output's fade-to-colour envelope fades the whole picture (half way to black)", pxs(pixel(img, 50, 50)));
+        check(near(pixel(img, 50, 50), 0, 0, 128, 3), "the video output's fade-to-color envelope fades the whole picture (half way to black)", pxs(pixel(img, 50, 50)));
         p.videoEnvelopes = {env("fadecolor", {pt(0, 1.0)})};
         img = video.render(p, 1.0, preview);
-        check(near(pixel(img, 50, 50), 255, 255, 255) && pixel(img, 50, 50).a == 255, "and to the top colour (white), still solid", pxs(pixel(img, 50, 50)));
+        check(near(pixel(img, 50, 50), 255, 255, 255) && pixel(img, 50, 50).a == 255, "and to the top color (white), still solid", pxs(pixel(img, 50, 50)));
         p.videoEnvelopes = {env("mute", {pt(0, 1.0)})};
         img = video.render(p, 1.0, preview);
         check(img && near(pixel(img, 50, 50), 0, 0, 0) && pixel(img, 50, 50).a == 255, "the video output's mute envelope makes it black", pxs(pixel(img, 50, 50)));
@@ -405,7 +405,7 @@ int main(int argc, char** argv)
         mask->parentMotion[0].h = 0.5;
         img = video.render(p, 1.0, preview);
         check(near(pixel(img, 100, 90), 0, 0, 255) && near(pixel(img, 20, 90), 255, 0, 0) && near(pixel(img, 180, 90), 255, 0, 0),
-              "parent motion shrinks the whole masked group (red in the left of the middle, blue round it)",
+              "parent motion shrinks the whole masked group (red in the left of the middle, blue around it)",
               pxs(pixel(img, 100, 90)) + " / " + pxs(pixel(img, 20, 90)) + " / " + pxs(pixel(img, 180, 90)));
         mask->parentMotion.clear();
         mask->motion.resize(1);

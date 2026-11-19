@@ -175,7 +175,7 @@ int main(int argc, char** argv)
         ofx::BezCurve g2;
         check(ofx::decodeGradingCurve(gt, g2) && g2.size() == 2 && near(g2[1].inShare, 0.2, 1e-6), "and is written in the same format");
         size_t at = ofx::bezInsert(g2, 0.5, 0.7, 1.0);
-        check(at == 1 && g2.size() == 3 && near(g2[1].y, 0.7, 1e-9), "a point is inserted between its neighbours");
+        check(at == 1 && g2.size() == 3 && near(g2[1].y, 0.7, 1e-9), "a point is inserted between its neighbors");
         check(ofx::bezRemove(g2, 1) && !ofx::bezRemove(g2, 0) && g2.size() == 2, "a point is removed, the end points stay");
     }
 
@@ -538,9 +538,9 @@ int main(int argc, char** argv)
             double st[12] = {0};
             const std::string b = base64Decode(d);
             if (b.size() >= 96) std::memcpy(st, b.data(), 96);
-            check(st[0] > 55 && st[0] < 75 && st[2] > 15 && st[4] > 40, "its mean Lab colour is orange's", strfmt("L %.1f a %.1f b %.1f", st[0], st[2], st[4]));
+            check(st[0] > 55 && st[0] < 75 && st[2] > 15 && st[4] > 40, "its mean Lab color is orange's", strfmt("L %.1f a %.1f b %.1f", st[0], st[2], st[4]));
             const QImage p1 = frame(1.0);
-            check(sum(p1, 0) != sum(p0, 0), "the picture is matched towards it");
+            check(sum(p1, 0) != sum(p0, 0), "the picture is matched toward it");
             p1.save(gOut + "/fxeditors_colormatch_frame.png");
             uitest::shot(w, gOut + "/fxeditors_colormatch.png");
             if (QAbstractButton* clear = in<QAbstractButton>("ImageSource", "fxMatchSourceClear")) {

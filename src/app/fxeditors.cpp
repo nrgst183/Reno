@@ -1232,7 +1232,7 @@ public:
             QObject::connect(grab_[k], &QPushButton::clicked, this, [this, k] {
                 const QImage img = previewFrame ? previewFrame() : QImage();
                 if (img.isNull()) {
-                    if (tell) tell("There is no picture in the preview to take colours from.");
+                    if (tell) tell("There is no picture in the preview to take colors from.");
                     return;
                 }
                 capture(k, img);
@@ -1292,7 +1292,7 @@ private:
     {
         double s[6];
         if (!colorMatchStatistics(img, s)) {
-            if (tell) tell("The picture has no colours to take.");
+            if (tell) tell("The picture has no colors to take.");
             return false;
         }
         write(side, s, true);

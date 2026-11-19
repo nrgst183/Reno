@@ -53,7 +53,7 @@ static void opticalFlow()
     check(interpolateOpticalFlow(*out, *a, *b, 0.5f), "optical flow: runs");
     const double c = centreX(*out);
     // a plain blend would give two half-bright squares (centre 30 with the brightness half); the flow gives one square near x = 30
-    check(std::fabs(c - (10 + 8 + 12)) < 4.5, "optical flow: the square is half way", strfmt("centre %.1f", c));
+    check(std::fabs(c - (10 + 8 + 12)) < 4.5, "optical flow: the square is half way", strfmt("center %.1f", c));
     ImagePtr o0 = Image::make(96, 48, PixelDepth::Byte, true), o1 = Image::make(96, 48, PixelDepth::Byte, true);
     interpolateOpticalFlow(*o0, *a, *b, 0.f);
     interpolateOpticalFlow(*o1, *a, *b, 1.f);
@@ -127,7 +127,7 @@ static void colorGrade()
     h.prepare();
     float c[3] = {0.8f, 0.4f, 0.2f}, c0[3] = {0.8f, 0.4f, 0.2f};
     h.apply(c);
-    check(std::fabs(c[0] - c0[0]) + std::fabs(c[1] - c0[1]) + std::fabs(c[2] - c0[2]) > 0.01, "luts: a look changes a colour");
+    check(std::fabs(c[0] - c0[0]) + std::fabs(c[1] - c0[1]) + std::fabs(c[2] - c0[2]) > 0.01, "luts: a look changes a color");
     h.lookLut.strength = 0;
     h.prepare();
     float c2[3] = {0.8f, 0.4f, 0.2f};
@@ -172,7 +172,7 @@ static void colorGrade()
     sat.prepare();
     float s[3] = {0.9f, 0.2f, 0.1f};
     sat.apply(s);
-    check(std::fabs(s[0] - s[1]) < 0.02 && std::fabs(s[1] - s[2]) < 0.02, "utilities: HSL saturation 0 is grey", strfmt("%.3f %.3f %.3f", s[0], s[1], s[2]));
+    check(std::fabs(s[0] - s[1]) < 0.02 && std::fabs(s[1] - s[2]) < 0.02, "utilities: HSL saturation 0 is gray", strfmt("%.3f %.3f %.3f", s[0], s[1], s[2]));
     // RL wheels: shadows do not touch highlights
     ColorGrade rl;
     rl.shadows.master = 0.5;
@@ -197,21 +197,21 @@ static void colorGrade()
     pk.prepare();
     float d2[3] = {0.1f, 0.12f, 0.2f};
     pk.apply(d2);
-    check(d2[0] + d2[1] + d2[2] < 0.12f, "picker: black point makes the colour black", strfmt("%.3f %.3f %.3f", d2[0], d2[1], d2[2]));
+    check(d2[0] + d2[1] + d2[2] < 0.12f, "picker: black point makes the color black", strfmt("%.3f %.3f %.3f", d2[0], d2[1], d2[2]));
     ColorGrade pw;
     const float bright[3] = {0.8f, 0.7f, 0.6f};
     pw.setWhitePoint(bright);
     pw.prepare();
     float b2[3] = {0.8f, 0.7f, 0.6f};
     pw.apply(b2);
-    check(std::fabs(b2[0] - 1) < 0.05 && std::fabs(b2[1] - 1) < 0.05 && std::fabs(b2[2] - 1) < 0.05, "picker: white point makes the colour white", strfmt("%.3f %.3f %.3f", b2[0], b2[1], b2[2]));
+    check(std::fabs(b2[0] - 1) < 0.05 && std::fabs(b2[1] - 1) < 0.05 && std::fabs(b2[2] - 1) < 0.05, "picker: white point makes the color white", strfmt("%.3f %.3f %.3f", b2[0], b2[1], b2[2]));
     ColorGrade pn;
     const float warm[3] = {0.7f, 0.5f, 0.3f};
     pn.setNeutralTone(warm);
     pn.prepare();
     float n2[3] = {0.7f, 0.5f, 0.3f};
     pn.apply(n2);
-    check(std::fabs(n2[0] - n2[2]) < std::fabs(0.7f - 0.3f) * 0.5, "picker: neutral tone pulls the colour towards grey", strfmt("%.3f %.3f %.3f", n2[0], n2[1], n2[2]));
+    check(std::fabs(n2[0] - n2[2]) < std::fabs(0.7f - 0.3f) * 0.5, "picker: neutral tone pulls the color toward gray", strfmt("%.3f %.3f %.3f", n2[0], n2[1], n2[2]));
     // JSON
     ColorGrade all;
     all.cameraLut.source = "preset:" + lutPresets()[0].id;

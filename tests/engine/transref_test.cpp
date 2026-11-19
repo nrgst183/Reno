@@ -83,9 +83,9 @@ int main()
         // Clock Wipe, hard edge, half way: the incoming picture covers the right half. The 12 o'clock ray runs between the
         // columns 159 and 160, the hand (straight down) through column 161 at 0.21: VEGAS's pixel there is 79 % incoming.
         const Buf o = run("clockwipe", {{"FeatherAngle", {0}}}, black, white, 0.5);
-        check(std::fabs(at(o, 161, 140) - 0.79f) < 0.02f, "Clock Wipe: the hard edge is anti-aliased (column 161 below the centre)", num(at(o, 161, 140)));
+        check(std::fabs(at(o, 161, 140) - 0.79f) < 0.02f, "Clock Wipe: the hard edge is anti-aliased (column 161 below the center)", num(at(o, 161, 140)));
         check(at(o, 160, 140) < 0.01f && at(o, 162, 140) > 0.99f, "  the columns either side are whole");
-        check(at(o, 160, 40) > 0.99f && at(o, 159, 40) < 0.01f, "  above the centre the edge lies between the columns 159 and 160");
+        check(at(o, 160, 40) > 0.99f && at(o, 159, 40) < 0.01f, "  above the center the edge lies between the columns 159 and 160");
         const Buf cc = run("clockwipe", {{"FeatherAngle", {0}}, {"Direction", {1}}}, black, white, 0.5);
         check(std::fabs(at(cc, 159, 140) - 0.79f) < 0.02f && at(cc, 161, 40) < 0.01f && at(cc, 160, 40) > 0.99f, "  counter-clockwise is the mirror picture about x = 160.5");
     }
@@ -125,7 +125,7 @@ int main()
         const Buf o = run("zoom", {{"Direction", {0}}}, black, stripes, 0.25);
         float lo = 1, hi = 0;
         for (int x = 150; x < 170; ++x) { lo = std::min(lo, at(o, x, 90)); hi = std::max(hi, at(o, x, 90)); }
-        check(lo > 0.45f && hi < 0.55f, "Zoom: the shrunk picture is box-filtered (stripes average to grey)", num(lo) + " .. " + num(hi));
+        check(lo > 0.45f && hi < 0.55f, "Zoom: the shrunk picture is box-filtered (stripes average to gray)", num(lo) + " .. " + num(hi));
     }
     {
         // Iris with 6 x 6 cells: VEGAS's pictures (matched exactly) put the sixth cell's circle about x = 292

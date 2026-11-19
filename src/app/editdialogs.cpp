@@ -1997,13 +1997,13 @@ protected:
 
         rotateBtn_ = toolButton(this, "Rotation", "Enable Rotation (Shift+F8): dragging just outside a corner turns the box", "enableRotation", true);
         rotateBtn_->setChecked(true);
-        snapBtn_ = toolButton(this, "Snap", "Enable Snapping (F8): the box's edges and centre snap to the grid", "enableSnapping", true);
+        snapBtn_ = toolButton(this, "Snap", "Enable Snapping (F8): the box's edges and center snap to the grid", "enableSnapping", true);
         objectBtn_ = toolButton(this, "Object Space", "Edit in Object Space (O): moving keeps to the box's own (turned) axes", "objectSpace", true);
         moveXBtn_ = toolButton(this, "Lock X", "Prevent Movement (X): the box moves only up and down", "preventMoveX", true);
         moveYBtn_ = toolButton(this, "Lock Y", "Prevent Movement (Y): the box moves only across", "preventMoveY", true);
         lockBtn_ = toolButton(this, "Lock Aspect", "Lock Aspect Ratio (A): sizing keeps the box's shape (hold Shift to reverse it for one drag)", "lockAspect", true);
         lockBtn_->setChecked(true);
-        centreBtn_ = toolButton(this, "Size About Center", "Scale About Center (C): sizing keeps the box's centre where it is", "sizeAboutCenter", true);
+        centreBtn_ = toolButton(this, "Size About Center", "Scale About Center (C): sizing keeps the box's center where it is", "sizeAboutCenter", true);
         centreBtn_->setChecked(true);
         scaleXBtn_ = toolButton(this, "Fix Width", "Prevent Scaling (Shift+X): the box's width stays", "preventScaleX", true);
         scaleYBtn_ = toolButton(this, "Fix Height", "Prevent Scaling (Shift+Y): the box's height stays", "preventScaleY", true);
@@ -2045,7 +2045,7 @@ protected:
         if (hasPivot()) {
             pivotXBox_ = new Spin(panel_, -1.0e6, 1.0e6, 1, 1, "pivotX");
             pivotYBox_ = new Spin(panel_, -1.0e6, 1.0e6, 1, 1, "pivotY");
-            pivotXBox_->setToolTip("The point the box rotates about (drag the circle in the workspace; Ctrl+drag moves it off the box centre)");
+            pivotXBox_->setToolTip("The point the box rotates about (drag the circle in the workspace; Ctrl+drag moves it off the box center)");
             pivotYBox_->setToolTip(pivotXBox_->toolTip());
             panel_->add("X Center", pivotXBox_);
             panel_->add("Y Center", pivotYBox_);
@@ -2055,7 +2055,7 @@ protected:
         }
         panel_->group("Keyframe interpolation");
         smoothBox_ = new Spin(panel_, 0, 100, 1, 1, "keySmoothness");
-        smoothBox_->setToolTip("Smoothness: 0 moves the centre in a straight line to the next keyframe, higher values curve through the surrounding keyframes");
+        smoothBox_->setToolTip("Smoothness: 0 moves the center in a straight line to the next keyframe, higher values curve through the surrounding keyframes");
         panel_->add("Smoothness", smoothBox_);
         curveBox_ = combo(panel_, "keyCurve", curveItems());
         curveBox_->setToolTip("How values change from the keyframe at the cursor to the next one");
@@ -2681,7 +2681,7 @@ protected:
         moveEdit_ = combo(panel_, "editMovement", {{"Unconstrained", "free"}, {"Horizontal", "x"}, {"Vertical", "y"}});
         snapEdit_->setToolTip("Yes: the box's edges snap to the workspace grid when it is moved or sized");
         lockEdit_->setToolTip("Yes: the box keeps its shape when it is sized");
-        centreEdit_->setToolTip("Yes: dragging an edge keeps the box centre; No: the opposite side stays");
+        centreEdit_->setToolTip("Yes: dragging an edge keeps the box center; No: the opposite side stays");
         moveEdit_->setToolTip("Which ways the box can be moved");
         panel_->add("Snap to grid", snapEdit_);
         panel_->add("Lock aspect", lockEdit_);
@@ -3495,8 +3495,8 @@ private:
             {"Anchor", "Anchor Creation Tool: click to add points to a Bezier mask (drag to pull out handles); click the first point to close it", "toolAnchor"},
             {"Delete Anchor", "Anchor Deletion Tool: click a point to take it out of its path", "toolAnchorDelete"},
             {"Split Tangent", "Split Tangent Tool: drag a handle without moving the other one (drag a point to pull out new handles)", "toolSplitTangent"},
-            {"Rectangle", "Rectangle or Square Mask Creation Tool: drag to draw (Shift: a square, Ctrl: from the centre)", "toolRectMask"},
-            {"Oval", "Oval or Circle Mask Creation Tool: drag to draw (Shift: a circle, Ctrl: from the centre)", "toolOvalMask"},
+            {"Rectangle", "Rectangle or Square Mask Creation Tool: drag to draw (Shift: a square, Ctrl: from the center)", "toolRectMask"},
+            {"Oval", "Oval or Circle Mask Creation Tool: drag to draw (Shift: a circle, Ctrl: from the center)", "toolOvalMask"},
         };
         QVBoxLayout* column = new QVBoxLayout();
         column->setSpacing(3);
@@ -4339,7 +4339,7 @@ public:
         const QString deg = QString::fromUtf8("\xc2\xb0");
         d3.push_back(panel_->group("3D Position"));
         zBox_ = spin("boxZ", -1.0e6, 1.0e6, 1, "Z Center", QString());
-        zBox_->setToolTip("Distance of the picture's centre from the frame plane towards the camera, in pixels (negative: further away)");
+        zBox_->setToolTip("Distance of the picture's center from the frame plane toward the camera, in pixels (negative: further away)");
         depthBox_ = spin("boxDepth", 1, 1.0e6, 1, "Depth", QString());
         d3.push_back(panel_->group("3D Rotation"));
         rxBox_ = spin("boxRotX", -36000, 36000, 1, "X", deg);
@@ -4377,7 +4377,7 @@ public:
         rows2d_.push_back(intensityBox_);
         colorBtn_ = new QToolButton(panel_);
         colorBtn_->setObjectName("effectColor");
-        colorBtn_->setToolTip("The colour of the shadow or the glow");
+        colorBtn_->setToolTip("The color of the shadow or the glow");
         colorBtn_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         rows2d_.push_back(panel_->add("Color", colorBtn_));
         rows2d_.push_back(colorBtn_);

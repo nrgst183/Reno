@@ -260,7 +260,7 @@ int main(int argc, char** argv)
     if (!vstFile.empty()) {
         std::string err;
         std::vector<AudioPluginDesc> d = describeAudioPluginFile(vstFile, &err);
-        if (d.empty()) check(false, "the VST effect is recognised", err);
+        if (d.empty()) check(false, "the VST effect is recognized", err);
         else { vst = d[0]; haveVst = true; }
     }
     check(!builtin.empty(), "built-in effects exist", std::to_string(builtin.size()));

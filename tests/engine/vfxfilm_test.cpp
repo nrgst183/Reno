@@ -58,14 +58,14 @@ int main()
     check(near(T[1].g[2].c, 16.0) && near(T[1].g[2].a, 0.0005) && near(T[1].g[2].b, 0.0005) && T[1].g[2].enable == 1, "Very Old Film's dust");
     check(T[2].g[0].enable == 0 && near(T[2].g[1].c, 0.64) && T[2].g[4].enable == 0, "Low Quality Color Film has no flicker and no jitter");
     check(near(T[3].g[4].c, 25.6) && near(T[3].grain, 0.25), "Circa 1908's jitter");
-    check(near(T[4].g[1].c, 0.32) && near(T[4].tintBgr[0], 0.7490196078431373), "Circa 1980's scratches and colour (blue first)");
+    check(near(T[4].g[1].c, 0.32) && near(T[4].tintBgr[0], 0.7490196078431373), "Circa 1980's scratches and color (blue first)");
     check(near(T[0].g[1].b, 3e-5) && near(T[0].g[2].a, 0) && near(T[0].g[2].c, 0), "Reset to None draws nothing");
 
     // the OpenFX presets (6-digit numbers, red first) are the table's presets
     {
         const vfxfilm::Params p = vfxfilm::paramsFor(0.15, 0.25, 0.75, 0.716875, 0.3525, true, true, 0, 0.5);
         check(near(p.g[0].c, 3.2) && near(p.g[1].c, 3.2) && near(p.g[3].c, 16.0) && near(p.g[4].c, 6.4) && p.g[4].enable == 1, "Very Old Film's settings give all five groups");
-        check(near(p.tintBgr[0], 0.35294117647058826), "(and the table's own colour)");
+        check(near(p.tintBgr[0], 0.35294117647058826), "(and the table's own color)");
         const vfxfilm::Params q = vfxfilm::paramsFor(0.10, 0.20, 0.352941, 0.717647, 0.749020, false, true, 0, 0.1);
         check(near(q.g[1].c, 0.32) && q.g[0].enable == 0 && near(q.tintBgr[0], 0.7490196078431373), "Circa 1980's settings give its table");
         const vfxfilm::Params r = vfxfilm::paramsFor(0.15, 0.35, 0.352941, 0.717647, 0.749020, false, true, 0, 0.2);

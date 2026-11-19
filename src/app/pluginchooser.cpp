@@ -1330,7 +1330,7 @@ PluginChooser::PluginChooser(ChooserKind kind, const QString& title, const FxCha
     d->saveBtn = button("Save &As...", "chooserSaveAs");
     d->saveBtn->setToolTip("Save Plug-In Package As...");
     d->lutBtn = button("Save &LUT...", "chooserSaveLut");
-    d->lutBtn->setToolTip("Save Plug-In Chain as LUT file... (VEGAS writes the chain's colour changes as a look-up table here; Reno cannot do that yet)");
+    d->lutBtn->setToolTip("Save Plug-In Chain as LUT file... (VEGAS writes the chain's color changes as a look-up table here; Reno cannot do that yet)");
     d->lutBtn->setEnabled(false);
     g->addWidget(d->okBtn, 0, 1, Qt::AlignTop);
     g->addWidget(cancel, 1, 1, Qt::AlignTop);

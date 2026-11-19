@@ -190,7 +190,7 @@ int main(int argc, char** argv)
         check(std::fabs(a0 - a1) < 0.02, "Shift+drag keeps it on its line through the middle", num(a0) + " -> " + num(a1));
         // a click on a speaker mutes it for this sound
         uitest::mouseClick(f, f->speakerRect(ChC).center().toPoint());
-        check(panOf(t1).speakerMutes == (1u << ChC) && app.undoName() == "Surround Pan Speaker Mutes", "a click on the centre speaker mutes it");
+        check(panOf(t1).speakerMutes == (1u << ChC) && app.undoName() == "Surround Pan Speaker Mutes", "a click on the center speaker mutes it");
     }
 
     // ---------------------------------------------------------------- the controls
@@ -201,7 +201,7 @@ int main(int argc, char** argv)
         QComboBox* route = win.findChild<QComboBox*>("surroundRoute");
         QComboBox* motion = win.findChild<QComboBox*>("surroundMotion");
         center->setValue(0);
-        check(panOf(t1).center == 0, "Center to the bottom: -Inf (a phantom centre)");
+        check(panOf(t1).center == 0, "Center to the bottom: -Inf (a phantom center)");
         center->setValue(1000);
         check(near(panOf(t1).center, std::pow(10.0, 12.0 / 20.0), 1e-6), "Center to the top: +12 dB");
         center->setValue((int)std::lround((60.0 / 72.0) * 999.0) + 1);

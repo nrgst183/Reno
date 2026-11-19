@@ -138,7 +138,7 @@ int main(int argc, char** argv)
             Params p = {{"Angle", {ang}}, {"Center", {cs2[ci][0], cs2[ci][1]}}};
             if (ci == 1) p["Background"] = {0.2, 0.4, 0.6, 0.5};
             if (ci == 1 || (ci == 0 && (ang == 180.0 || ang == -90.0))) continue;   // (centre 1 has a background colour; those no longer match the older model)
-            cases.push_back({strfmt("mirror %g centre %d", ang, ci), V + "mirror", p, {}, ref2::mirror});
+            cases.push_back({strfmt("mirror %g center %d", ang, ci), V + "mirror", p, {}, ref2::mirror});
         }
     }
 

@@ -266,7 +266,7 @@ int main(int argc, char** argv)
         check(tn && tn->text() == k.name, std::string(k.name) + ": the title bar", tn ? tn->text().toStdString() : "none");
         if (QWidget* page = one<QWidget>("fxDxPage")) {
             uitest::shot(w, gOut + "/fxlook_" + QString(k.uid).mid(5) + ".png");
-            if (lightOn) check(page->palette().color(QPalette::Window) == QColor(240, 240, 240), std::string(k.name) + ": the page is light grey (the light dialogs option)");
+            if (lightOn) check(page->palette().color(QPalette::Window) == QColor(240, 240, 240), std::string(k.name) + ": the page is light gray (the light dialogs option)");
             else check(page->palette().color(QPalette::Window).lightness() < 100, std::string(k.name) + ": the page is dark (the default)");
         }
         const int n = plugin->paramCount();

@@ -77,10 +77,10 @@ int main()
     vfxblurs::glow(grey, W, H, 0.1, 100.f, 0.f, white, store12, out);
     bool white4 = true;
     for (float v : out) white4 = white4 && v == 1.f;
-    check(white4, "Glow: a strong glow of a lit picture is the glow colour, alpha included");
+    check(white4, "Glow: a strong glow of a lit picture is the glow color, alpha included");
     // Chroma Blur: grey stays grey, and the luma is the picture's
     vfxblurs::chromaBlur(grey, W, H, 4.0, 4.0, store12, out);
-    check(maxDiff(out, grey) <= 2.f / 255.f, "Chroma Blur: grey stays grey");
+    check(maxDiff(out, grey) <= 2.f / 255.f, "Chroma Blur: gray stays gray");
     // odd sizes and nonsense amounts do not crash and give the right amount of numbers
     for (int sz = 1; sz <= 3; ++sz) {
         const std::vector<float> tiny = flat(sz, 1, 0.5f, 0.2f, 0.9f), tiny2 = flat(1, sz, 0.5f, 0.2f, 0.9f);

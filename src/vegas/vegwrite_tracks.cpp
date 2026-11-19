@@ -125,7 +125,7 @@ std::string Writer::trackHeader(const Track& t, size_t index, const Chunk& base,
         if (t.color != 0) {
             ci = trackColorIndex(t.color);
             if ((trackColorOfIndex(ci) & 0xFFFFFF) != (t.color & 0xFFFFFF))
-                warnCount("%d track colour(s) are not one of VEGAS's track colours; the nearest of them was saved.");
+                warnCount("%d track color(s) are not one of VEGAS's track colors; the nearest of them was saved.");
             // an index that already gave this colour is kept (VEGAS counts indexes past 8)
             if (o && trackColorOfIndex(hc->data.u32(0x14)) == trackColorOfIndex(ci)) ci = hc->data.u32(0x14);
         }

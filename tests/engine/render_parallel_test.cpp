@@ -255,7 +255,7 @@ int main(int argc, char** argv)
     {
         // after a cancelled render the next one is whole
         Out o = render(avi, 4, "avi", len);
-        check(o.ok && o.bytes == ref.bytes, "a render after a cancelled one is whole");
+        check(o.ok && o.bytes == ref.bytes, "a render after a canceled one is whole");
     }
 
     // ---- an encoder that fails: the error comes back, nothing hangs

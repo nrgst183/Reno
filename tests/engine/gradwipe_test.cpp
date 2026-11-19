@@ -90,7 +90,7 @@ int main()
         for (int y = 0; y < n; ++y)
             for (int x = 0; x < n; ++x) g[(size_t)y * n + x] = (uint8_t)std::min(255.0, std::floor(4.0 * std::hypot((double)(x - n / 2), (double)(y - n / 2)) + 0.5));
         std::vector<double> prof;
-        check(vgw::radialProfile(g, n, n, prof) && prof.size() == (size_t)n / 2 + 1 && prof[8] == 32, "a picture of rings about its middle is recognised");
+        check(vgw::radialProfile(g, n, n, prof) && prof.size() == (size_t)n / 2 + 1 && prof[8] == 32, "a picture of rings about its middle is recognized");
         g[(size_t)14 * n + 14] = 0;
         g[(size_t)21 * n + 42] = 255;
         check(!vgw::radialProfile(g, n, n, prof), "  and a picture with something else in it is not");

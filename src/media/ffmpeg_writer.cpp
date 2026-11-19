@@ -1301,7 +1301,7 @@ bool FFWriter::smartCompatible(const SmartSource& src, std::string* why)
         (!sameTag(src.colorRange, (int)venc_->color_range, 0) ||
          !(sameTag(src.colorSpace, (int)venc_->colorspace, 2) || (src.colorSpace == 5 && (int)venc_->colorspace == 6)) ||
          !sameTag(src.colorPrimaries, (int)venc_->color_primaries, 2) || !sameTag(src.colorTrc, (int)venc_->color_trc, 2)))
-        return no(strfmt("the source's colour description differs from the file's (%d/%d/%d/%d, the encoder: %d/%d/%d/%d)", src.colorRange, src.colorSpace, src.colorPrimaries, src.colorTrc, (int)venc_->color_range, (int)venc_->colorspace, (int)venc_->color_primaries, (int)venc_->color_trc));
+        return no(strfmt("the source's color description differs from the file's (%d/%d/%d/%d, the encoder: %d/%d/%d/%d)", src.colorRange, src.colorSpace, src.colorPrimaries, src.colorTrc, (int)venc_->color_range, (int)venc_->colorspace, (int)venc_->color_primaries, (int)venc_->color_trc));
     if (par->profile != src.profile && src.profile != -99 && par->profile != -99) return no("the source's profile differs from the file's");
     // the codec's header (H.264/HEVC parameter sets): the file keeps one for all its pictures, so the source's must be it
     // (the encoder's own extradata when the container has not changed the stream's)

@@ -343,7 +343,7 @@ void testBrowsers()
             if (it->data(0, Qt::UserRole + 2).toBool()) continue;
             QMimeData* bm = t->model()->mimeData(QModelIndexList() << t->indexFromItem(it));
             check(it->foreground(0).color().lightness() < 150 && !it->toolTip(0).isEmpty() && !(it->flags() & Qt::ItemIsDragEnabled) && (bm == nullptr || !bm->hasFormat(kv.second.second)),
-                  n + ": a broken entry is grey, explained, and cannot be dragged");
+                  n + ": a broken entry is gray, explained, and cannot be dragged");
             delete bm;
             t->setCurrentItem(it);
             uitest::key(t, Qt::Key_Return);

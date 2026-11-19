@@ -627,7 +627,7 @@ static void testDescribing()
     if (!inv) return;
     checkEq("describe: label", inv->info.label, std::string("Test Invert"));
     checkEq("describe: grouping", inv->info.grouping, std::string("Reno Test"));
-    checkEq("describe: description", inv->info.description, std::string("Inverts the colour (alpha minus colour)."));
+    checkEq("describe: description", inv->info.description, std::string("Inverts the color (alpha minus color)."));
     CHECK("describe: contexts", inv->info.contexts.size() == 1 && inv->info.contexts[0] == kOfxImageEffectContextFilter);
     CHECK("describe: depths", inv->info.depths.size() == 2 && inv->info.depths[0] == kOfxBitDepthByte && inv->info.depths[1] == kOfxBitDepthFloat);
     CHECK("describe: no window, no overlay", !inv->info.hasHwndInteract && !inv->info.hasOverlay);
@@ -731,7 +731,7 @@ static void testInvert()
                 if (o[c] != clampB(s[3] - s[c])) { exact = false; first = strfmt("pixel %d,%d channel %d: got %d want %d", x, y, c, o[c], clampB(s[3] - s[c])); break; }
             if (exact && o[3] != s[3]) { exact = false; first = strfmt("pixel %d,%d alpha", x, y); }
         }
-    record("invert: every pixel is alpha minus colour", exact, first);
+    record("invert: every pixel is alpha minus color", exact, first);
     CHECK("invert: the host handed over blue-first pictures", gFx.has("invert: depth=byte srcOrder=BGRA dstOrder=BGRA"));
     CHECK("invert: the render window is the whole frame", gFx.has("window=0,0,37,23"));
     checkEq("invert: every image fetched was released", gFx.counter("getImage"), gFx.counter("releaseImage"));
@@ -790,7 +790,7 @@ static void testInvert()
                 }
                 if (ok && o[3] != s[3]) { ok = false; where = "alpha"; }
             }
-        record("invert: float pixels are alpha minus colour, in the right channels", ok, where);
+        record("invert: float pixels are alpha minus color, in the right channels", ok, where);
         // and the 8-bit and float routes agree
         record("invert: float route equals the 8-bit route", sameImage(*f, *out), strfmt("first difference at byte %d", firstDifference(*f, *out)));
     }
@@ -1121,7 +1121,7 @@ static void testParams()
     CHECK("params: dep is not hidden", !prm(*inst, "dep")->secret());
     CHECK("params: the plug-in's property changes reach the application", ev.has("dep", kOfxParamPropEnabled) && ev.has("dep", kOfxParamPropSecret) &&
                                                                               ev.has("p_choice", kOfxParamPropChoiceOption));
-    checkEq("params: choice relabelled", prm(*inst, "p_choice")->choices(), std::vector<std::string>{"Opt4_0", "Opt4_1"});
+    checkEq("params: choice relabeled", prm(*inst, "p_choice")->choices(), std::vector<std::string>{"Opt4_0", "Opt4_1"});
     CHECK("params: the user's edit is reported last", [&] { std::lock_guard<std::mutex> lk(ev.m); return !ev.events.empty() && ev.events.back() == std::make_pair(std::string("driver"), std::string("value")); }());
     CHECK("params: the plug-in read the new value with paramGetValue", gFx.has("name=driver reason=OfxChangeUserEdited time=7"));
     inst->userSetValue(prm(*inst, "driver"), {0}, 8);
@@ -1130,7 +1130,7 @@ static void testParams()
     inst->userSetValue(prm(*inst, "driver"), {11}, 9);
     CHECK("params: dep hidden by the plug-in, and enabled", prm(*inst, "dep")->secret() && prm(*inst, "dep")->enabled());
     checkEq("params: slave = 5.5", prm(*inst, "slave")->value[0], 5.5);
-    checkEq("params: choice relabelled with three options", prm(*inst, "p_choice")->choices(), std::vector<std::string>{"Opt11_0", "Opt11_1", "Opt11_2"});
+    checkEq("params: choice relabeled with three options", prm(*inst, "p_choice")->choices(), std::vector<std::string>{"Opt11_0", "Opt11_1", "Opt11_2"});
     checkEq("params: the choice's value is left alone", prm(*inst, "p_choice")->value[0], 3.0);
 
     // push button -> string set by the plug-in
@@ -1301,7 +1301,7 @@ static void testStateRoundTrip()
         pc->strKeys.clear();        // (the first instance as it was, for what follows)
     }
     CHECK("state: the plug-in's derived properties follow (dep enabled for driver 3)", prm(*b, "dep")->enabled() && !prm(*b, "dep")->secret());
-    checkEq("state: choice options relabelled for driver 3", prm(*b, "p_choice")->choices(), std::vector<std::string>{"Opt3_0", "Opt3_1", "Opt3_2"});
+    checkEq("state: choice options relabeled for driver 3", prm(*b, "p_choice")->choices(), std::vector<std::string>{"Opt3_0", "Opt3_1", "Opt3_2"});
     CHECK("state: animating flag restored", prm(*b, "p_dbl")->props.getInt(kOfxParamPropIsAnimating) == 1 && prm(*b, "p_int")->props.getInt(kOfxParamPropIsAnimating) == 0);
 
     for (double t : {0.0, 10.0, 14.0, 20.0, 41.0}) {
@@ -2723,7 +2723,7 @@ static void testProbe(const std::string& realFxPath)
     const uint8_t* top = p0->row(47);                  // the top row (row 0 is the bottom): colour bars
     CHECK("probe: top row has bars, first white", top[0] == 255 && top[1] == 255 && top[2] == 255);
     const uint8_t* last = top + 63 * 4;
-    CHECK("probe: last bar is dark grey", last[0] == 16 && last[1] == 16 && last[2] == 16);
+    CHECK("probe: last bar is dark gray", last[0] == 16 && last[1] == 16 && last[2] == 16);
     const uint8_t* box = p0->row(48 / 3 + 1) + 1 * 4;  // the moving box at frame 0 is at the left edge, one third up: orange (B=0 G=128 R=255)
     CHECK("probe: orange box in BGRA order", box[0] == 0 && box[1] == 128 && box[2] == 255);
     ImagePtr tiny = makeTestPattern(1, 1, 3);
@@ -2908,7 +2908,7 @@ static void testOverlay()
     CHECK("overlay: described with the drawing's alpha and depth", gFx.has("overlay: describe hasAlpha=1 bitDepth=8"));
     CHECK("overlay: the instance knows its effect", gFx.has("overlay: create effect=set pixelScale=1,1"));
     CHECK("overlay: a second createOverlay makes nothing more", inst->createOverlay() && gFx.counter("overlayCreate") == 1);
-    checkEq("overlay: its property set has the suggested colour", inst->overlayProps()->dimension(kOfxInteractPropSuggestedColour), 3);
+    checkEq("overlay: its property set has the suggested color", inst->overlayProps()->dimension(kOfxInteractPropSuggestedColour), 3);
 
     // drawing: the arguments
     a.time = 3;
@@ -2974,9 +2974,9 @@ static void testOverlay()
         // (a line along a pixel boundary lands in the row or column on either side of it)
         auto hline = [&](int x, int y, const char* c) { return at(x, y) == c || at(x, y - 1) == c; };
         auto vline = [&](int x, int y, const char* c) { return at(x, y) == c || at(x - 1, y) == c; };
-        CHECKM("overlay: the red cross was drawn where the canonical centre is", hline(32 + 15, 24, "255,0,0") && vline(32, 24 - 15, "255,0,0") && hline(32 - 15, 24, "255,0,0"),
+        CHECKM("overlay: the red cross was drawn where the canonical center is", hline(32 + 15, 24, "255,0,0") && vline(32, 24 - 15, "255,0,0") && hline(32 - 15, 24, "255,0,0"),
                "%s %s %s", at(47, 24).c_str(), at(32, 9).c_str(), at(17, 24).c_str());
-        CHECKM("overlay: the green square round it", vline(40, 28, "0,255,0") && hline(28, 16, "0,255,0"), "%s %s", at(40, 28).c_str(), at(28, 16).c_str());
+        CHECKM("overlay: the green square around it", vline(40, 28, "0,255,0") && hline(28, 16, "0,255,0"), "%s %s", at(40, 28).c_str(), at(28, 16).c_str());
         CHECKM("overlay: and nothing elsewhere", at(5, 5) == "0,0,0" && at(60, 44) == "0,0,0", "%s %s", at(5, 5).c_str(), at(60, 44).c_str());
         // half the scale: pixel scale 2 (two canonical units a screen pixel) - the cross is still 40 screen pixels
         inst->userSetValue(center, {64, 48}, 0);

@@ -1720,7 +1720,7 @@ void addGenerators(std::vector<Def>& out)
         d.label = "Solid Color";
         d.group = kGroup;
         d.generator = true;
-        d.description = "A frame of one colour (Reno's own, standing in for VEGAS Solid Color).";
+        d.description = "A frame of one color (Reno's own, standing in for VEGAS Solid Color).";
         d.params = {rgba("Color", "Color", 0, 0, 0, 1)};
         d.render = solidColor;
         out.push_back(d);
@@ -1731,7 +1731,7 @@ void addGenerators(std::vector<Def>& out)
         d.label = "Color Gradient";
         d.group = kGroup;
         d.generator = true;
-        d.description = "A blend between colour stops along a line, an ellipse or a rectangle (Reno's own, standing in for VEGAS Color Gradient).";
+        d.description = "A blend between color stops along a line, an ellipse or a rectangle (Reno's own, standing in for VEGAS Color Gradient).";
         d.params = {choice("GradientType", "Gradient type", 0, {"Linear", "Elliptical", "Rectangular"}),
                     rgba("Color1", "Color 1", 1, 1, 1, 1), rgba("Color2", "Color 2", 0, 0, 0, 1),
                     text("GradientStops", "Gradient stops (position r g b a; ...)", "", false),
@@ -1747,7 +1747,7 @@ void addGenerators(std::vector<Def>& out)
         d.label = "Checkerboard";
         d.group = kGroup;
         d.generator = true;
-        d.description = "Tiles of two colours (Reno's own, standing in for VEGAS Checkerboard).";
+        d.description = "Tiles of two colors (Reno's own, standing in for VEGAS Checkerboard).";
         d.params = {group("TileDimensions", "Tile dimensions"),
                     dbl("TileDimensionsWidth", "Width", 0.1, 0.001, 1, "TileDimensions"),
                     dbl("TileDimensionsHeight", "Height", 0.1, 0.001, 1, "TileDimensions"),
@@ -1794,7 +1794,7 @@ void addGenerators(std::vector<Def>& out)
         d.label = "Test Pattern";
         d.group = kGroup;
         d.generator = true;
-        d.description = "Colour bars and other test patterns (Reno's own, standing in for VEGAS Test Pattern).";
+        d.description = "Color bars and other test patterns (Reno's own, standing in for VEGAS Test Pattern).";
         d.params = {choice("TestPatternType", "Test pattern type", 0, {"Color bars (NTSC)", "Color bars (PAL)", "Gradient", "Pluge and porches", "Ramp",
                                                                       "SMPTE bars (NTSC)", "SMPTE bars (PAL)", "White porches", "Yellow porches"})};
         d.render = testPattern;

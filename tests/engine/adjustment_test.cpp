@@ -146,7 +146,7 @@ int main(int argc, char** argv)
     check(near(pixel(img, 10, 10), 0, 0, 255), "a track above it is not touched", pxs(pixel(img, 10, 10)));
     p.findTrack(adj)->level = 0.5;
     img = video.render(p, 1.0, fo);
-    check(near(pixel(img, 10, 10), 128, 128, 128, 3), "its level mixes the result with the picture under it (half: grey)", pxs(pixel(img, 10, 10)));
+    check(near(pixel(img, 10, 10), 128, 128, 128, 3), "its level mixes the result with the picture under it (half: gray)", pxs(pixel(img, 10, 10)));
     p.findTrack(adj)->level = 1.0;
     p.findTrack(adj)->composite = "multiply";
     img = video.render(p, 1.0, fo);

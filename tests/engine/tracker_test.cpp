@@ -57,7 +57,7 @@ int main()
         ImagePtr f = frame(100, 80);
         double s = 0;
         GrayImage g = toGray(*f, 160, &s);
-        check(g.w == 160 && g.h == 90 && std::fabs(s - 0.5) < 1e-9, "toGray makes a smaller grey picture", strfmt("%dx%d %.3f", g.w, g.h, s));
+        check(g.w == 160 && g.h == 90 && std::fabs(s - 0.5) < 1e-9, "toGray makes a smaller gray picture", strfmt("%dx%d %.3f", g.w, g.h, s));
         GrayImage h = halfSize(g);
         check(h.w == 80 && h.h == 45, "halfSize halves it");
     }

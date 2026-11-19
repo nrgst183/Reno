@@ -441,7 +441,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"File", "Import Media...", "Ctrl+I", S::Window, "Reno's own key"},
         {"File", "Import > Image Sequence...", "", S::Window, "numbered pictures (name_0001.png ...) as one video at a frame rate you choose"},
         {"File", "Properties...", "Alt+Enter", S::Window, "Video, Audio, Ruler, Summary; \"Start all new projects with these settings\""},
-        {"File", "Render As...", "", S::Window, "VEGAS 18's dialog: folder and name, formats with VEGAS's templates, search, favourites, Customize Template, Render Options"},
+        {"File", "Render As...", "", S::Window, "VEGAS 18's dialog: folder and name, formats with VEGAS's templates, search, favorites, Customize Template, Render Options"},
         {"File", "Exit", "Alt+F4", S::Window, ""},
         {"Edit", "Undo", "Ctrl+Z or Alt+Backspace", S::Window, ""},
         {"Edit", "Redo", "Ctrl+Shift+Z or Ctrl+Y", S::Window, ""},
@@ -494,7 +494,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Project Media", "Properties > Media > Alpha channel", "", S::Window, "VEGAS's override of a file's transparency: Undefined (as the file says), None, Straight, Premultiplied"},
         {"Tools", "Audio: Apply Non-Real-Time Event FX...", "", S::Window, "also in the audio event's right-click menu: runs the selected audio events through a chain of plug-ins into new files \"<media> Take 2\", \"Take 3\"... that become the events' active takes; bind a key in Options > Customize Keyboard"},
         {"Tools", "Clean Project Media", "", S::Window, "the media no event uses taken out of the project"},
-        {"Tools", "Rebuild Offline Nested Audio", "", S::Window, "rebuilds missing, outdated or cancelled audio proxies (.sfap0) of nested projects; until then their sound is mixed as it plays"},
+        {"Tools", "Rebuild Offline Nested Audio", "", S::Window, "rebuilds missing, outdated or canceled audio proxies (.sfap0) of nested projects; until then their sound is mixed as it plays"},
         {"Tools", "Scripting: Run Script", "", S::Window, "runs a VEGAS script (.cs, .js, .vb or compiled .dll) against Reno's ScriptPortal.Vegas as one undo step (needs .NET Framework 4 on Windows)"},
         {"Tools", "Scripting: Rescan Script Menu Folder; the scripts in VEGAS's Script Menu folders", "", S::Window, "scripts in Documents\\Vegas Script Menu, VEGAS's Script Menu folders and Reno's tools\\scripts are listed under Tools > Scripting; each can get keys in Options > Customize Keyboard (Script.<name>)"},
         {"Edit", "Open in Audio Editor", "Ctrl+E", S::Window, "the program set in Options > Preferences > Editing (asked for the first time)"},
@@ -528,6 +528,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Navigate", "Cursor to Next Selected Event Edge", "Ctrl+]", S::Window, ""},
         {"Navigate", "Time Select Previous Selected Event", "Ctrl+Shift+[", S::Window, ""},
         {"Navigate", "Time Select Next Selected Event", "Ctrl+Shift+]", S::Window, ""},
+        {"Navigate", "Time Select Right by Marker/Region", "Ctrl+Shift+Right", S::Window, "from the cursor (or the time selection's start) to the next marker or region edge; with the track list's keyboard, track pan"},
         {"Navigate", "Cursor Left / Right", "Left or Right", S::Timeline, "a pixel, at least a frame while quantizing"},
         {"Navigate", "Extend the Time Selection", "Shift+Left or Shift+Right", S::Timeline, ""},
         {"Navigate", "Cursor by Grid Marks", "Page Up or Page Down", S::Timeline, ""},
@@ -538,7 +539,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Navigate", "Go to Marker or Region 1 ... 10", "1, 2 ... 9, 0", S::Window, "a region is selected (with multicamera editing on, 1 ... 9 choose a camera)"},
         {"Navigate", "Jog Left", "F3", S::Window, "a frame back, with its sound; in edge-trimming mode the edge is trimmed a frame"},
         {"Navigate", "Jog Right", "F9", S::Window, ""},
-        {"Navigate", "Select Loop Region", "Shift+Q", S::Window, "the last loop region becomes the time selection again"},
+        {"Navigate", "Select Loop Region", "Shift+L or Shift+Q", S::Window, "the last loop region becomes the time selection again"},
         {"Navigate", "Previous CD Track", "Ctrl+,", S::Window, ""},
         {"Navigate", "Next CD Track", "Ctrl+.", S::Window, ""},
         {"Navigate", "Previous CD Index or Region", ",", S::Window, ""},
@@ -578,7 +579,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"View", "Transitions", "Alt+7", S::Window, "the picked transition's presets as animated thumbnails; drag one onto an overlap"},
         {"View", "Video FX", "Alt+8", S::Window, "video effects and Filter Packages, with the picked effect's presets as thumbnails; drag one onto an event or track"},
         {"View", "Media Generators", "Alt+9", S::Window, "with each generator's presets as thumbnails; drag one onto the timeline"},
-        {"View", "Plug-In Manager", "Ctrl+Alt+1", S::Window, "every plug-in found, in folders (favourites, video FX, transitions, generators, VST / VST3 / DirectX, not working) with the scan result; drag them onto the timeline"},
+        {"View", "Plug-In Manager", "Ctrl+Alt+1", S::Window, "every plug-in found, in folders (favorites, video FX, transitions, generators, VST / VST3 / DirectX, not working) with the scan result; drag them onto the timeline"},
         {"View", "Video Scopes", "Ctrl+Alt+2", S::Window, "vectorscope, waveform (Composite or Luminance, in IRE), RGB parade, histogram (Luminance, Red, Green, Blue, Alpha, Luminance/R/G/B, Lightness/a/b, with the mean and standard deviation); the value under the pointer; Settings: 7.5 IRE Setup, Studio RGB (16 to 235)"},
         {"View", "Surround Panner", "Ctrl+Alt+3", S::Window, "5.1 projects (Project Properties > Audio > Master bus mode): the current track's or bus's surround panner (pan point, Center, Smoothness, Enable LFE, speaker mutes, keyframes)"},
         {"View", "Edit Details", "Ctrl+Alt+4", S::Window, "a table of the events, markers, regions or media; double-click (or F2) a start, end, length, name, fade or Muted cell to change it in place"},
@@ -683,7 +684,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Playback", "Record", "Ctrl+R", S::Window, "records into the armed audio tracks (else the selected one or a new one) from the cursor; again (or Space) stops"},
         {"Playback", "Arm Track for Record", "Ctrl+Alt+R", S::Window, "the selected audio track; its input level shows in the status bar"},
         {"Playback", "Arm for Record and Set Recording Folder", "Ctrl+Alt+Shift+R", S::Window, "Reno records every track into the one folder (Preferences > Audio Device)"},
-        {"Playback", "Preview Cursor Position", "Num+0", S::Window, "plays a second centred on the cursor, then puts the cursor back"},
+        {"Playback", "Preview Cursor Position", "Num+0", S::Window, "plays a second centered on the cursor, then puts the cursor back"},
         {"Playback", "Dynamic RAM Preview", "Shift+B", S::Window, "renders the time selection's frames into memory (up to Preferences > Video > Dynamic RAM Preview max) and plays them looped"},
         {"Playback", "Selective Prerender", "Shift+M", S::Window, "renders the time selection to a file that plays instead until something there changes (Tools > Clean Up Prerendered Video deletes them)"},
         {"Playback", "Enable Multicamera Editing", "Ctrl+Shift+D", S::Window, "Tools > Multicamera > Create Multicamera Track makes the track: each camera is a take"},
@@ -746,7 +747,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Trimmer", "Save Markers/Regions", "S", S::Panel, "the Trimmer's markers and regions are kept with the media in the project and shown on its events (View > Event Media Markers)"},
         {"Trimmer", "Auto-Save Trimmer Markers/Regions", "Shift+S", S::Panel, "on: each marker or region is saved as it is added"},
         {"Trimmer", "Show Video in Preview Window", "Ctrl+P", S::Panel, "on: the Trimmer's picture (and what it plays) shows in the Video Preview too"},
-        {"Event Pan/Crop", "Mask: draw a rectangle / oval (Shift: square / circle; Ctrl: from the centre)", "Rectangle or Oval tool, drag", S::Panel, "the Mask row's tools; a shape drawn turns the Mask switch on"},
+        {"Event Pan/Crop", "Mask: draw a rectangle / oval (Shift: square / circle; Ctrl: from the center)", "Rectangle or Oval tool, drag", S::Panel, "the Mask row's tools; a shape drawn turns the Mask switch on"},
         {"Event Pan/Crop", "Mask: add Bezier points / close the path", "Anchor tool: click (drag: curve handles); click the first point, double-click, Enter or Esc", S::Panel, ""},
         {"Event Pan/Crop", "Mask: move a shape, a point or a handle", "Normal tool: drag (Alt: one handle alone)", S::Panel, "the Split Tangent tool pulls handles out of a point; the Anchor Deletion tool removes points"},
         {"Event Pan/Crop", "Mask: delete the chosen shape (or point)", "Delete", S::Panel, "right-click a shape: Delete, Duplicate, Flip, Positive / Negative, Enabled, Reset Mask"},
@@ -762,13 +763,13 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Track Motion", "Delete the Selected Keyframes", "Delete", S::Panel, "with the keyframe strip clicked"},
         {"Track Motion", "Copy Keyframes by Dragging", "Ctrl+drag keyframes", S::Panel, "the selected keyframes are copied to where they are dropped"},
         {"Event Pan/Crop", "Mask: Rounded Rectangle / Half Oval", "Alt+drag", S::Panel, "with the Rectangle or the Oval Mask Creation Tool"},
-        {"Event Pan/Crop", "Mask: Select / Unselect a Shape", "Alt+Shift+click", S::Panel, "a selected shape has handles to scale it (Shift: keep proportions, Ctrl: about the centre) and to rotate it (Shift: 15 degree steps)"},
+        {"Event Pan/Crop", "Mask: Select / Unselect a Shape", "Alt+Shift+click", S::Panel, "a selected shape has handles to scale it (Shift: keep proportions, Ctrl: about the center) and to rotate it (Shift: 15 degree steps)"},
         {"Event Pan/Crop", "Mask: Duplicate a Shape", "Ctrl+drag", S::Panel, "also Duplicate in the shape's right-click menu"},
         {"Track Motion", "3D Layout: Single Pane, Split, Four, Large Pane and Two", "1 ... 6", S::Panel, "with the track in 3D Source Alpha: the 3D workspace's panes (Camera, Front, Back, Left, Right, Top, Bottom, Perspective)"},
         {"Track Motion", "Prevent Movement Z / Prevent Scaling Z", "Z or Shift+Z", S::Panel, "in 3D Source Alpha"},
         {"Surround Panner", "Move the pan point forward or back / left or right", "Up/Down or Page Up/Page Down or wheel; Left/Right or Shift+Page Up/Page Down or Shift+wheel", S::Panel, "with the Surround Panner window's room focused; Ctrl: finer"},
-        {"Surround Panner", "Move the pan point to a corner, edge or the centre", "Numeric Keypad 1 ... 9 (Ctrl+1, 3, 7, 9: the corners of the largest circle)", S::Panel, "Num Lock on"},
-        {"Surround Panner", "Drag along a line through the centre / round a circle / round the largest circle", "Shift+drag, Alt+drag or Alt+wheel, Alt+Shift+drag or Alt+Shift+wheel", S::Panel, "with Move Freely"},
+        {"Surround Panner", "Move the pan point to a corner, edge or the center", "Numeric Keypad 1 ... 9 (Ctrl+1, 3, 7, 9: the corners of the largest circle)", S::Panel, "Num Lock on"},
+        {"Surround Panner", "Drag along a line through the center / around a circle / around the largest circle", "Shift+drag, Alt+drag or Alt+wheel, Alt+Shift+drag or Alt+Shift+wheel", S::Panel, "with Move Freely"},
         {"Mixing Console", "Rename the Selected Channel", "F2", S::Panel, "click a channel's name to select it (Ctrl+click: several); a double-click on the name renames it too"},
         {"Mixing Console", "Insert Audio Track", "Ctrl+Q", S::Panel, ""},
         {"Mixing Console", "Channel Width: Default, Narrow, Wide", "D or N or W", S::Panel, "also the View Controls' Channel Width slider"},
@@ -779,7 +780,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Mixing Console", "Show / Hide Bus, Audio Track, Master Channels", "U or A or T", S::Panel, ""},
         {"Mixing Console", "Show / Hide Assignable FX Channels", "E", S::Panel, "the assignable effects chains' strips (Insert > Audio Assignable FX)"},
         {"Video FX", "AI Speech to Text", "", S::NotAvailable, "needs VEGAS's cloud service; Insert > Subtitles from a text or CSV file, or from regions, makes the same subtitle events"},
-        {"Video FX", "AI Colorization", "", S::Window, "Reno's Colorization guesses sky, foliage and warm tones (no AI models, so the result differs); Color Grading and Gradient Map colour by hand"},
+        {"Video FX", "AI Colorization", "", S::Window, "Reno's Colorization guesses sky, foliage and warm tones (no AI models, so the result differs); Color Grading and Gradient Map color by hand"},
         {"Video FX", "AI Smart Mask", "", S::NotAvailable, "needs VEGAS's AI models; Bezier Masking and Pan/Crop masks cut a subject out by hand"},
         {"Video FX", "AI Style Transfer", "", S::Window, "Reno's Style Transfer is a painterly approximation named after VEGAS's 17 styles, not VEGAS's neural models"},
         {"Video FX", "AI Upscale", "", S::NotAvailable, "needs VEGAS's AI models; Pan/Crop with Optical Flow resampling and the Unsharp Mask effect are the local stand-ins"},
@@ -1809,9 +1810,10 @@ void MainWindow::addNavigationActions(ActionBuilder& b)
         if (tl->trackListFocused()) tl->changeTrackLevel(-1, true);
         else app.status("Ctrl+Shift+Left pans the selected tracks while the track list has the keyboard (Tab).");
     });
-    b.add("trackPanRight", "Track Pan Right (track list)", keys({"Ctrl+Shift+Right"}), [tl, &app] {
+    // (Ctrl+Shift+Right is also VEGAS's Time Select Right by Marker/Region: that, unless the track list has the keyboard)
+    b.add("trackPanRight", "Track Pan Right (track list)", keys({"Ctrl+Shift+Right"}), [this, tl] {
         if (tl->trackListFocused()) tl->changeTrackLevel(1, true);
-        else app.status("Ctrl+Shift+Right pans the selected tracks while the track list has the keyboard (Tab).");
+        else if (QAction* a = vegasAction("timeSelectRightMarker")) a->trigger();
     });
     auto frameStep = [pb, &app, tl](int dir) {
         const Project& p = app.project();
@@ -1828,7 +1830,7 @@ void MainWindow::addNavigationActions(ActionBuilder& b)
     b.add("exitEditMode", "Exit E&dit Mode", QList<QKeySequence>(), [tl] { tl->exitEditMode(); });
     b.add("jogLeft", "Jog Left", keys({"F3"}), [tl] { tl->jog(-1); });
     b.add("jogRight", "Jog Right", keys({"F9"}), [tl] { tl->jog(1); });
-    b.add("selectLoopRegion", "&Select Loop Region", keys({"Shift+Q"}), [tl] { tl->selectLoopRegion(); });
+    b.add("selectLoopRegion", "&Select Loop Region", keys({"Shift+L", "Shift+Q"}), [tl] { tl->selectLoopRegion(); });
     b.add("prevCdTrack", "Previous CD Track", keys({"Ctrl+,"}), [tl] { tl->cursorToCd(-1, true); });
     b.add("nextCdTrack", "Next CD Track", keys({"Ctrl+."}), [tl] { tl->cursorToCd(1, true); });
     b.add("prevCdIndex", "Previous CD Index or Region", keys({","}), [tl] { tl->cursorToCd(-1, false); });
@@ -2116,6 +2118,7 @@ void MainWindow::addEnvelopeActions(ActionBuilder& b)
     b.timelineOption("showBusTracks", "Show &Bus Tracks", keys({"B"}), &TimelineOptions::showBusTracks);
     b.timelineOption("showVideoBus", "Show &Video Bus Track", keys({"Ctrl+Shift+B"}), &TimelineOptions::showVideoBus);
     b.timelineOption("showFadeLengths", "Show Event &Fade Lengths", keys({"Ctrl+Shift+T"}), &TimelineOptions::showFadeLengths);
+    b.timelineOption("showTrackKeys", "Track &Keyframes", QList<QKeySequence>(), &TimelineOptions::showTrackKeys);
     b.add("envVolume", "&Volume Envelope", keys({"V"}), [tl] { tl->toggleTrackEnvelope("volume"); });
     b.add("envVolumeRemove", "Remove Volume Envelope", keys({"Shift+V"}), [tl] { tl->removeTrackEnvelope("volume"); });
     b.add("envPan", "&Pan Envelope", keys({"P"}), [tl] { tl->toggleTrackEnvelope("pan"); });
@@ -3232,7 +3235,7 @@ void MainWindow::showHelp()
         tabs->addTab(readme, "Read Me");
         auto* keysView = new QTextBrowser(tabs);
         keysView->setObjectName("helpShortcuts");
-        QString html = "<h3>Keyboard shortcuts</h3><p>VEGAS Pro's default keys. Grey lines are things Reno cannot do yet. "
+        QString html = "<h3>Keyboard shortcuts</h3><p>VEGAS Pro's default keys. Gray lines are things Reno cannot do yet. "
                        "\"Timeline\" keys work while the timeline has the keyboard (click it, or Alt+0).</p><table cellspacing=0 cellpadding=2>";
         std::string group;
         for (const ShortcutInfo& k : shortcutList()) {
@@ -3637,7 +3640,7 @@ void MainWindow::syncOptions()
         sig.push_back((char)('a' + (int)o.ripple));
         for (bool v : {o.lockEnvelopes, o.showEnvelopes, o.showBusTracks, o.showVideoBus, o.showFadeLengths, o.quantize, o.showUnquantized, app.snapping, o.snapToGrid,
                        o.snapToMarkers, o.autoRipple, o.ignoreGrouping, o.showWaveforms, o.showEventButtons, o.eventHeaders, app.loopOn, app.bypassAllFx,
-                       o.snapToAllEvents, o.showTakeInfo, o.showMediaMarkers, o.edgeFrames, o.slipAllTakes, o.multicam, app.autoCrossfades(),
+                       o.snapToAllEvents, o.showTakeInfo, o.showMediaMarkers, o.edgeFrames, o.slipAllTakes, o.multicam, o.showTrackKeys, app.autoCrossfades(),
                        app.prefs.quickFadeEdits})
             flag(v);
         const QByteArray was = property("optionsShown").toByteArray();
@@ -3675,6 +3678,7 @@ void MainWindow::syncOptions()
     set("showBusTracks", o.showBusTracks);
     set("showVideoBus", o.showVideoBus);
     set("showFadeLengths", o.showFadeLengths);
+    set("showTrackKeys", o.showTrackKeys);
     set("quantize", o.quantize);
     set("showUnquantized", o.showUnquantized);
     set("snapping", app.snapping);

@@ -63,7 +63,7 @@ static void testPresets()
     if (two.size() == 2) {
         check(two[0].plugin == "a&b" && two[0].name == "Say \"hi\"" && two[0].context == "Generator", "  attributes are unescaped");
         check(two[0].values.size() == 2 && two[0].values[0].isText && two[0].values[0].text == "1 < 2", "  text value unescaped");
-        check(two[0].values.size() == 2 && two[0].values[1].numbers.size() == 4 && two[0].values[1].numbers[1] == 0.25, "  colour has four numbers");
+        check(two[0].values.size() == 2 && two[0].values[1].numbers.size() == 4 && two[0].values[1].numbers[1] == 0.25, "  color has four numbers");
         check(two[1].values.empty(), "  a preset with no values");
     }
     check(ofx::parsePresetPackage("<OfxPresetPackage></OfxPresetPackage>").empty(), "an empty package has no presets");
@@ -217,7 +217,7 @@ static void testNoVegasBundles(const std::string& standin)
         cmd += std::string(" && mkdir -p ") + root + "/Vfx1.ofx.bundle/Contents/" + arch + " " + root + "/Other.ofx.bundle/Contents/" + arch +
                " && touch " + root + "/Vfx1.ofx.bundle/Contents/" + arch + "/Vfx1.ofx " + root + "/Other.ofx.bundle/Contents/" + arch + "/Other.ofx";
     if (std::system(cmd.c_str()) != 0) { check(false, "test folders made"); return; }
-    check(ofx::Host::isVegasBundleFile(vb + "/Vfx1.ofx"), "Vfx1.ofx.bundle is recognised as VEGAS's");
+    check(ofx::Host::isVegasBundleFile(vb + "/Vfx1.ofx"), "Vfx1.ofx.bundle is recognized as VEGAS's");
     check(!ofx::Host::isVegasBundleFile(ob + "/Other.ofx"), "another bundle is not");
 
     host.config.preferBuiltinVegasFx = true;

@@ -304,7 +304,7 @@ void testCodec(const char* name, const char* encoder, AVCodecID id, const char* 
             check(img && img->w == 64 && img->h == 64, tag + "its frame has the picture's size");
             if (img) {
                 const Px p = pixel(*img, 32, 32);
-                check(p.r > 200 && p.g < 80 && p.b < 80 && p.a == 255, tag + "its colour is red (" + std::to_string(p.r) + "," + std::to_string(p.g) + "," + std::to_string(p.b) + ")");
+                check(p.r > 200 && p.g < 80 && p.b < 80 && p.a == 255, tag + "its color is red (" + std::to_string(p.r) + "," + std::to_string(p.g) + "," + std::to_string(p.b) + ")");
             }
             ImagePtr small = r->videoFrame(0, 32, 32);
             check(small && small->w == 32 && small->h == 32, tag + "a smaller frame is scaled");
@@ -386,7 +386,7 @@ void testCodec(const char* name, const char* encoder, AVCodecID id, const char* 
             if (img) {
                 const Px a = pixel(*img, 8, 8), b = pixel(*img, 56, 56);
                 check(a.a > 225 && b.a < 40, tag + "the alpha picture sets the transparency (" + std::to_string(a.a) + ", " + std::to_string(b.a) + ")");
-                check(a.r > 200 && a.g < 80, tag + "the colour stays red where it shows");
+                check(a.r > 200 && a.g < 80, tag + "the color stays red where it shows");
             }
         }
     }

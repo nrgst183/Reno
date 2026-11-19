@@ -242,7 +242,7 @@ int main()
         std::string tb((const char*)&level, 4);
         std::string rec = record(thr, u"25 %", 4, tb);
         rec.append(8 - rec.size() % 8, '\0');
-        check(veg::isLegacyFxAt(veg::Bytes((const uint8_t*)rec.data(), rec.size()), 0), "a Threshold record is recognised");
+        check(veg::isLegacyFxAt(veg::Bytes((const uint8_t*)rec.data(), rec.size()), 0), "a Threshold record is recognized");
         veg::LegacyFxRecord lr;
         if (check(veg::readLegacyFx(veg::Bytes((const uint8_t*)rec.data(), rec.size()), 0, lr), "a Threshold record is read") && lr.statik.size() == 1) {
             check(lr.statik[0] == 0.25 && lr.keys.size() == 1 && lr.keys[0].v.size() == 1 && lr.keys[0].v[0] == 0.25, "its level is a float 0.25");

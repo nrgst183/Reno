@@ -159,7 +159,7 @@ const char* kHelp =
     "                           default, or the Preferences setting) or the installed plug-ins on Windows (real)\n"
     "  --efx real|builtin       VEGAS's eFX audio effects (Limiter, Compressor, Reverb, TubeStage, Phaser,\n"
     "                           ChorusFlanger): Reno's own versions (builtin; default, or the Preferences setting)\n"
-    "                           or the installed MAGIX plug-ins (real; they need a VEGAS licence)\n"
+    "                           or the installed MAGIX plug-ins (real; they need a VEGAS license)\n"
     "  --proxies                with --profile: use the media's video proxies where they exist\n"
     "  --hash [FILE]            with --profile: print one hash over all rendered pictures (and write each\n"
     "                           picture's hash to FILE), to check that an engine change leaves them unchanged\n"

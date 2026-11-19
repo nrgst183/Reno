@@ -365,6 +365,9 @@ public:
     int healEvents(const std::set<uint64_t>& ids);
     // Close Gaps: moves each selected event (and its group) back to where the previous one ends. Returns count moved.
     int closeGaps(const std::set<uint64_t>& ids);
+    // Insert > Add Missing Stream for Selected Event: the other stream of each selected event's media (its sound, or its
+    // picture) as an event at the same place, grouped with it, where it is not on the timeline yet. Returns events added.
+    int addMissingStreams(const std::set<uint64_t>& ids);
     // Insert > Time: 'length' seconds of nothing at 'at'; later events, points, markers and regions move (an event
     // across it is split).
     void insertTime(double at, double length);

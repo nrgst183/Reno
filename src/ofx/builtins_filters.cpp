@@ -2151,13 +2151,13 @@ void addFilters(std::vector<Def>& out)
         out.push_back(d);
     }
     {
-        Def d = filter("invert", "Invert", "The colours turned to their opposites", {dbl("BlendAmount", "Blend amount", 1, 0, 1)}, invert);
+        Def d = filter("invert", "Invert", "The colors turned to their opposites", {dbl("BlendAmount", "Blend amount", 1, 0, 1)}, invert);
         d.rows = invertRows;
         out.push_back(d);
-        d = filter("blackandwhite", "Black and White", "The picture in greys", {dbl("BlendAmount", "Blend amount", 1, 0, 1)}, blackAndWhite);
+        d = filter("blackandwhite", "Black and White", "The picture in grays", {dbl("BlendAmount", "Blend amount", 1, 0, 1)}, blackAndWhite);
         d.rows = blackAndWhiteRows;
         out.push_back(d);
-        d = filter("sepia", "Sepia", "Greys tinted like an old photograph",
+        d = filter("sepia", "Sepia", "Grays tinted like an old photograph",
                    {rgb("Color", "Color", 166.0 / 255.0, 166.0 / 255.0, 0.0), dbl("BlendingStrength", "Blending strength", 0, 0, 1),
                     dbl("BlendingFalloff", "Blending falloff", 0, 0, 1)},
                    sepia);
@@ -2180,7 +2180,7 @@ void addFilters(std::vector<Def>& out)
                          {dbl("Red", "Red", 0, -1, 1), dbl("Green", "Green", 0, -1, 1), dbl("Blue", "Blue", 0, -1, 1),
                           choice("Type", "Type", 1, {"Highlights", "Midtones", "Shadow"}), boolean("PreserveLuminosity", "Preserve luminosity", true)},
                          colorBalance));
-    out.push_back(filter("threshold", "Threshold", "Each colour channel black or white by level", {dbl("Threshold", "Threshold", 0.25, 0, 1)}, threshold));
+    out.push_back(filter("threshold", "Threshold", "Each color channel black or white by level", {dbl("Threshold", "Threshold", 0.25, 0, 1)}, threshold));
     out.push_back(filter("mirror", "Mirror", "One side reflected over the other",
                          {dbl("Angle", "Angle", 0, -360, 360), point("Center", "Center", 0.5, 0.5), rgba("Background", "Background", 0, 0, 0, 0)}, mirror));
     out.push_back(filter("gaussianblur", "Gaussian Blur", "A soft blur",
@@ -2194,14 +2194,14 @@ void addFilters(std::vector<Def>& out)
                          pixelate));
     out.push_back(filter("linearblur", "Linear Blur", "A blur along one direction",
                          {dbl("Angle", "Angle", 0, -360, 360), dbl("Amount", "Amount", 0, 0, 1)}, linearBlur));
-    out.push_back(filter("chromakeyer", "Chroma Keyer", "A colour (a blue or green screen) made transparent",
+    out.push_back(filter("chromakeyer", "Chroma Keyer", "A color (a blue or green screen) made transparent",
                          {rgb("color", "Color", 24.0 / 255.0, 71.0 / 255.0, 241.0 / 255.0), dbl("LowThreshold", "Low threshold", 0, 0, 1),
                           dbl("HighThreshold", "High threshold", 1, 0, 1), dbl("BlurAmount", "Blur amount", 0, 0, 1),
                           boolean("ShowMaskOnly", "Show mask only", false)},
                          chromaKeyer));
     {
         // VEGAS has the colour twice: "color" (with alpha) and "color_rgb" (without). Reno draws with "color" and keeps both the same.
-        Def d = filter("border", "Border", "A soft edge, a bevel or a frame of colour",
+        Def d = filter("border", "Border", "A soft edge, a bevel or a frame of color",
                        {choice("Type", "Type", 0, {"Blurred", "Beveled", "Solid"}), dbl("Size", "Size", 0, 0, 1), dbl("Angle", "Angle", 0, 0, 360),
                         rgba("color", "Color", 1, 1, 1, 1), rgb("color_rgb", "Color", 1, 1, 1)},
                        border);

@@ -540,7 +540,7 @@ struct SurroundPannerWindow::Impl {
         for (auto r : {std::make_pair("Surround Pan", "surround"), std::make_pair("Front Only", "front"), std::make_pair("Center Only", "center"),
                        std::make_pair("LFE Only", "lfe"), std::make_pair("Rear Only", "rear")})
             route->addItem(r.first, QString(r.second));
-        route->setToolTip("Where the sound goes: panned by the point, or straight to the front pair, the centre, the LFE or the rear pair");
+        route->setToolTip("Where the sound goes: panned by the point, or straight to the front pair, the center, the LFE or the rear pair");
         top->addWidget(route);
         panTypeBox = new QComboBox(w);
         panTypeBox->setObjectName("surroundPanType");
@@ -568,7 +568,7 @@ struct SurroundPannerWindow::Impl {
         field->set = [this](Project& p, const SurroundPan& sp) {
             if (SurroundPan* to = surroundPanOf(p, shown())) *to = sp;
         };
-        field->setToolTip("Drag the point (Shift: along the line through the middle, Alt: round its circle, Alt+Shift: round the largest circle, "
+        field->setToolTip("Drag the point (Shift: along the line through the middle, Alt: around its circle, Alt+Shift: around the largest circle, "
                              "Ctrl: finer); arrows, Page Up/Down, the wheel and the keypad move it; click a speaker to mute it");
         v->addWidget(field, 4);
     }

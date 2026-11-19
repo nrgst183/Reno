@@ -174,7 +174,7 @@ int main()
     a.join();
     gSlowFrame = -1;
     check(waiting, "a read just ahead of a busy reader waits for it");
-    check(!got && took < 250, "a cancelled read stops waiting at once", std::to_string(took) + " ms");
+    check(!got && took < 250, "a canceled read stops waiting at once", std::to_string(took) + " ms");
     check(cp.stats().videoOpened == 1, "no second reader is opened for the stretch the busy one is decoding", std::to_string(cp.stats().videoOpened) + " opened");
 
     std::printf("%d passed, %d failed\n", gPass, gFail);

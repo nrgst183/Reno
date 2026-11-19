@@ -55,7 +55,7 @@ int main()
         check(g.isIdentity(), "a new grade changes nothing");
         float c[3] = {0.2f, 0.5f, 0.8f};
         g.apply(c);
-        check(near3(c, 0.2, 0.5, 0.8), "and leaves a colour as it was", rgb(c));
+        check(near3(c, 0.2, 0.5, 0.8), "and leaves a color as it was", rgb(c));
         g.exposure = 1;
         float e[3] = {0.1f, 0.2f, 0.3f};
         g.apply(e);
@@ -64,12 +64,12 @@ int main()
         g.saturation = 0;
         float s[3] = {1.0f, 0.0f, 0.0f};
         g.apply(s);
-        check(near3(s, 0.2126, 0.2126, 0.2126), "saturation 0: grey of the same luma (Rec. 709)", rgb(s));
+        check(near3(s, 0.2126, 0.2126, 0.2126), "saturation 0: gray of the same luma (Rec. 709)", rgb(s));
         g = ColorGrade();
         g.contrast = 2;
         float k[3] = {0.25f, 0.5f, 0.75f};
         g.apply(k);
-        check(near3(k, 0.0, 0.5, 1.0), "contrast 2 stretches about mid grey", rgb(k));
+        check(near3(k, 0.0, 0.5, 1.0), "contrast 2 stretches about mid gray", rgb(k));
         g = ColorGrade();
         g.temperature = 100;
         float t[3] = {0.5f, 0.5f, 0.5f};
@@ -79,13 +79,13 @@ int main()
         g.tint = 100;
         float m[3] = {0.5f, 0.5f, 0.5f};
         g.apply(m);
-        check(m[1] < 0.4f && std::fabs(m[0] - 0.5f) < 1e-4, "tint towards magenta: less green", rgb(m));
+        check(m[1] < 0.4f && std::fabs(m[0] - 0.5f) < 1e-4, "tint toward magenta: less green", rgb(m));
         // wheels: gain pushed towards red (top of the wheel) brightens red and dims the others
         g = ColorGrade();
         g.gain.y = 1;
         float w[3] = {0.5f, 0.5f, 0.5f};
         g.apply(w);
-        check(w[0] > 0.6f && w[1] < 0.5f && w[2] < 0.5f, "the gain wheel towards red", rgb(w));
+        check(w[0] > 0.6f && w[1] < 0.5f && w[2] < 0.5f, "the gain wheel toward red", rgb(w));
         g = ColorGrade();
         g.lift.master = 0.2;
         float l0[3] = {0, 0, 0}, l1[3] = {1, 1, 1};
@@ -174,7 +174,7 @@ int main()
     ImagePtr img = video.render(p, 1.0, fo);
     const uint8_t* px = img->row(10) + 40;
     const int luma = (int)std::lround(0.2126 * 192 + 0.7152 * 128 + 0.0722 * 64);
-    check(std::abs(px[0] - luma) <= 1 && std::abs(px[1] - luma) <= 1 && std::abs(px[2] - luma) <= 1, "on an event it greys the picture (no plug-in needed)",
+    check(std::abs(px[0] - luma) <= 1 && std::abs(px[1] - luma) <= 1 && std::abs(px[2] - luma) <= 1, "on an event it grays the picture (no plug-in needed)",
           strfmt("%d %d %d (luma %d)", px[0], px[1], px[2], luma));
     p.tracks[0].events[0].fx[0].bypass = true;
     img = video.render(p, 1.0, fo);

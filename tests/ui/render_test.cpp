@@ -229,7 +229,7 @@ void testList()
                 check(fmts.indexOf("Panasonic P2 MXF") >= 0 && fmts.indexOf("Panasonic P2 MXF") < fmts.indexOf("Sony MXF"), "render: the formats are in alphabetical order");
                 for (int k = 0; k < fl->count(); ++k)
                     if (fl->item(k)->text() == "Sony Perfect Clarity Audio")
-                        check(!(fl->item(k)->flags() & Qt::ItemIsEnabled) && !fl->item(k)->toolTip().isEmpty(), "render: Perfect Clarity Audio is greyed with a reason");
+                        check(!(fl->item(k)->flags() & Qt::ItemIsEnabled) && !fl->item(k)->toolTip().isEmpty(), "render: Perfect Clarity Audio is grayed with a reason");
             }
             // search
             const int all = templateRows(tree);
@@ -251,14 +251,14 @@ void testList()
                 uitest::settle(30);
                 uitest::mouseClick(tree->viewport(), tree->visualRect(tree->indexFromItem(mp3, 1)).center());
                 uitest::settle(30);
-                check(QSettings().value("render/favorites").toStringList().contains("mp3/320 Kbps, CD Transparent Audio"), "render: the star makes a template a favourite");
+                check(QSettings().value("render/favorites").toStringList().contains("mp3/320 Kbps, CD Transparent Audio"), "render: the star makes a template a favorite");
                 QToolButton* filter = kid<QToolButton>(m, "templateFilter");
                 QAction* favs = nullptr;
                 for (QAction* a : filter->menu()->actions())
                     if (a->objectName() == "filterFavorites") favs = a;
                 favs->setChecked(true);
                 uitest::settle(30);
-                check(templateRows(tree) == 1 && tree->topLevelItem(0)->text(1) == QString::fromUtf8("\u2605"), "render: the Favorites filter shows only favourites",
+                check(templateRows(tree) == 1 && tree->topLevelItem(0)->text(1) == QString::fromUtf8("\u2605"), "render: the Favorites filter shows only favorites",
                       std::to_string(templateRows(tree)));
                 uitest::shot(m, gOut + "/render_favorites.png");
                 favs->setChecked(false);
@@ -276,9 +276,9 @@ void testList()
             match->setChecked(false);
             uitest::settle(30);
             // the loop region option follows the loop region
-            check(!kid<QAction>(m, "regionOnly")->isEnabled(), "render: Render loop region only is greyed without a loop region");
+            check(!kid<QAction>(m, "regionOnly")->isEnabled(), "render: Render loop region only is grayed without a loop region");
             check(!kid<QCheckBox>(m, "regionOnlyBox")->isEnabled() && !kid<QCheckBox>(m, "regionOnlyBox")->isHidden(),
-                  "render: the dialog's own Render loop region only check box is there, greyed too");
+                  "render: the dialog's own Render loop region only check box is there, grayed too");
             stage = 1;
             static_cast<QDialog*>(m)->reject();
             return true;
@@ -639,7 +639,7 @@ void testCancel()
                       kid<QCheckBox>(m, "closeWhenDone") && kid<QCheckBox>(m, "closeWhenDone")->text() == "Close dialog when rendering is complete",
                   "render: Options - Open folder / Close dialog when rendering is complete");
             check(kid<QPushButton>(m, "openFolder") && !kid<QPushButton>(m, "openFolder")->isEnabled() && kid<QPushButton>(m, "openFile") && !kid<QPushButton>(m, "openFile")->isEnabled(),
-                  "render: Open Folder and Open are greyed while rendering");
+                  "render: Open Folder and Open are grayed while rendering");
             check(m->windowTitle().startsWith("Rendering: "), "render: the title says Rendering: N%", m->windowTitle().toStdString());
             uitest::shot(m, gOut + "/render_progress.png");
             kid<QPushButton>(m, "cancelRender")->click();
@@ -654,7 +654,7 @@ void testCancel()
         return false;
     }, "render cancel");
     runRenderDialog(nullptr);
-    check(title == "Render cancelled", "render: Cancel stops the render", title.toStdString());
+    check(title == "Render canceled", "render: Cancel stops the render", title.toStdString());
     check(!QFileInfo(big).exists(), "render: the unfinished file is removed");
 
     // closing the dialog while it renders cancels and waits

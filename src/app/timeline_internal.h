@@ -1514,7 +1514,7 @@ struct TimelineWidget::Impl {
     std::map<double, int> trackKeyTimes(const Track& t) const;
     bool showsTrackKeys(const Row& r, const Track& t) const
     {
-        return r.video && r.h >= 30 && (t.motion.size() + t.parentMotion.size() + t.shadow2d.size() + t.glow2d.size()) >= 2;
+        return opt.showTrackKeys && r.video && r.h >= 30 && (t.motion.size() + t.parentMotion.size() + t.shadow2d.size() + t.glow2d.size()) >= 2;
     }
     double trackKeyY(const Row& r) const { return rowTop(r) + r.h - 2 - kTrackKeyBand / 2.0; }
     void paintTrackKeys(QPainter& p, const Row& r, const Track& t, const QRect& c);

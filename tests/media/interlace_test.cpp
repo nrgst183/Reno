@@ -77,7 +77,7 @@ int main(int argc, char** argv)
         r->setDeinterlace(1);
         ImagePtr blend = r->videoFrame(0.5, 320, 240);
         if (c.interlaced) {
-            check(std::abs(grey(blend, 160, 10) - 128) < 8 && std::abs(grey(blend, 160, 11) - 128) < 8, n + " blended: the two fields mix into grey", column(blend, 6));
+            check(std::abs(grey(blend, 160, 10) - 128) < 8 && std::abs(grey(blend, 160, 11) - 128) < 8, n + " blended: the two fields mix into gray", column(blend, 6));
         } else {
             check(grey(blend, 160, 10) > 245 && grey(blend, 160, 11) < 10, n + " is progressive: deinterlacing leaves it alone", column(blend, 6));
         }

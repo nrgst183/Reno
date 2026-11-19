@@ -58,6 +58,8 @@ struct TimelineOptions {
     bool showFadeHandles = true;
     bool showGainHandle = true;
     bool showEventLength = false;
+    // View > Video Envelopes > Track Keyframes: the strip of a video track's Track Motion keyframes along its lane's bottom
+    bool showTrackKeys = true;
     // Options > Grid Spacing: what the grid lines (and Snap to Grid, Page Up / Down) go by: "ruler" (the ruler's
     // numbered marks), "minutes", "seconds", "milliseconds", "frames", "measures", or notes of the project's tempo.
     std::string gridSpacing = "ruler";

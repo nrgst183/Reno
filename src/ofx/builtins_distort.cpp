@@ -139,7 +139,7 @@ std::vector<PDef> areaParams(double amount)
 
 void addFiltersDistort(std::vector<Def>& out)
 {
-    out.push_back(filter("swirl", "Swirl", "The picture twisted round a centre", areaParams(1.0), swirl));
+    out.push_back(filter("swirl", "Swirl", "The picture twisted around a center", areaParams(1.0), swirl));
     out.push_back(filter("pinchpunch", "Pinch/Punch", "The middle of the picture punched out or pinched in", areaParams(1.0), pinchPunch));
     // (a cross over the picture to drag the centre, as VEGAS has)
     out[out.size() - 2].overlay = maskOverlayPoint("Center");

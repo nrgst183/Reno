@@ -120,7 +120,7 @@ int main()
         int hit = 0;
         for (size_t i = 0; i < o.size(); i += 4)
             if (o[i] == col[0] && o[i + 1] == col[1] && o[i + 2] == col[2]) ++hit;
-        check(hit >= H * 7, "Push with a border: a colour band across the frame");
+        check(hit >= H * 7, "Push with a border: a color band across the frame");
     }
 
     std::printf("vfxwipes_test: %d passed, %d failed\n", gPass, gFail);

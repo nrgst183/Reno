@@ -160,7 +160,7 @@ static void cursorPreviewIgnoresLoop(MainWindow& w)
     const bool stopped = !pb->playing();
     pb->pause();
     check(stopped && lo >= 4.7 && hi <= 5.3 && std::fabs(app.cursor() - 5.0) < 1e-6,
-          "Preview Cursor Position with the loop on: plays round the cursor and stops there",
+          "Preview Cursor Position with the loop on: plays around the cursor and stops there",
           strfmt("%s, cursor went %.3f .. %.3f, now %.3f", stopped ? "stopped" : "still playing", lo, hi, app.cursor()));
     app.loopOn = false;
     app.notify(kPlayback);

@@ -189,10 +189,10 @@ int main(int argc, char** argv)
         box(0.25, 0.25, 0.5, 0.5, 0);
         img = video.render(p, 0, fo);
         check(is(pixel(img, 2, 2), kTL) && is(pixel(img, 100, 50), kTL) && is(pixel(img, 197, 97), kTL),
-              "a box round the top left quarter shows just that quarter, filling the frame", pxs(pixel(img, 197, 97)));
+              "a box around the top left quarter shows just that quarter, filling the frame", pxs(pixel(img, 197, 97)));
         box(0.75, 0.75, 0.5, 0.5, 0);
         img = video.render(p, 0, fo);
-        check(is(pixel(img, 2, 2), kBR) && is(pixel(img, 197, 97), kBR), "and one round the bottom right quarter shows that", pxs(pixel(img, 2, 2)));
+        check(is(pixel(img, 2, 2), kBR) && is(pixel(img, 197, 97), kBR), "and one around the bottom right quarter shows that", pxs(pixel(img, 2, 2)));
 
         box(0.5, 0.5, 0.5, 0.5, 0);            // zoom 2x on the middle
         img = video.render(p, 0, fo);
@@ -331,7 +331,7 @@ int main(int argc, char** argv)
         ImagePtr img = video.render(p, 0, fo);
         check(is(pixel(img, 25, 12), kTL) && is(pixel(img, 75, 12), kTR) && is(pixel(img, 25, 37), kBL) && is(pixel(img, 75, 37), kBR),
               "track motion at half size puts the whole picture in the top left quarter", pxs(pixel(img, 25, 12)));
-        check(black(pixel(img, 150, 75)) && black(pixel(img, 103, 25)) && black(pixel(img, 25, 53)), "with nothing round it", pxs(pixel(img, 150, 75)));
+        check(black(pixel(img, 150, 75)) && black(pixel(img, 103, 25)) && black(pixel(img, 25, 53)), "with nothing around it", pxs(pixel(img, 150, 75)));
         place(0.5, 0.5, 1, 1, 90);              // turned a quarter clockwise: the bottom left comes to the top left
         img = video.render(p, 0, fo);
         check(is(pixel(img, 60, 5), kBL) && is(pixel(img, 140, 5), kTL) && is(pixel(img, 60, 95), kBR) && is(pixel(img, 140, 95), kTR),
@@ -381,7 +381,7 @@ int main(int argc, char** argv)
             int want[3];
             for (int c = 0; c < 3; ++c) want[c] = (int)std::floor(modeChannel(m, top[c] / 255.0, bottom[c] / 255.0) * 255.0 + 0.5);
             check(std::abs(x.b - want[0]) <= 1 && std::abs(x.g - want[1]) <= 1 && std::abs(x.r - want[2]) <= 1,
-                  strfmt("compositing mode %s gives the right colour", m), pxs(x) + strfmt(" (want b=%d g=%d r=%d)", want[0], want[1], want[2]));
+                  strfmt("compositing mode %s gives the right color", m), pxs(x) + strfmt(" (want b=%d g=%d r=%d)", want[0], want[1], want[2]));
         }
         p.findTrack(topTrack)->composite = "cut";
         Px x = pixel(video.render(p, 0, fo), 10, 10);
@@ -423,7 +423,7 @@ int main(int argc, char** argv)
         {
             const double sa = std::floor(0.5 * 255) / 255.0;
             const int want = (int)std::floor((bottom[2] / 255.0 * (1 - sa) + sa * (top[2] / 255.0 * bottom[2] / 255.0)) * 255 + 0.5);
-            check(std::abs(x.r - want) <= 2, "a mode with the track at half opacity is half way to the mode's colour", pxs(x) + strfmt(" want r=%d", want));
+            check(std::abs(x.r - want) <= 2, "a mode with the track at half opacity is half way to the mode's color", pxs(x) + strfmt(" want r=%d", want));
         }
     }
 
@@ -532,7 +532,7 @@ int main(int argc, char** argv)
         tr().glow2d = {g};
         img = video.render(p, 1.0, fo);
         const Px glow = pixel(img, 46, 50), far = pixel(img, 10, 10);
-        check(glow.r > 40 && glow.g > 40 && glow.b > 40 && black(far) && is(pixel(img, 60, 30), kTL), "2D Glow: a glow round the picture's edges, the picture on top",
+        check(glow.r > 40 && glow.g > 40 && glow.b > 40 && black(far) && is(pixel(img, 60, 30), kTL), "2D Glow: a glow around the picture's edges, the picture on top",
               pxs(glow) + " / " + pxs(far));
         // in a 32-bit project too
         p.settings.pixelFormat = "32bit";

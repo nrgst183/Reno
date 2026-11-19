@@ -76,7 +76,7 @@ const char* kProjectCliHelp =
     "          transition:E (the transition into event E; set without N), generator:E (the generated media event E\n"
     "          shows; set without N)\n"
     "  PLUGIN: a name or identifier as fx-list shows it (\"Gaussian Blur\", \"eFX Compressor\"; enough of it to be one)\n"
-    "  SETTING=VALUE: a setting by its name or label (fx-params). Numbers; x,y or x,y,z; colours #rrggbb[aa] or r,g,b[,a]\n"
+    "  SETTING=VALUE: a setting by its name or label (fx-params). Numbers; x,y or x,y,z; colors #rrggbb[aa] or r,g,b[,a]\n"
     "          (0..1); on/off; a choice by its label or its number from 0; text. SETTING@T=VALUE sets a keyframe at T\n"
     "          (from the event's start for an event's effects, from the timeline's start otherwise).\n"
     "          Audio effects: VALUE as the plug-in shows it (-20 for \"-20.0 dB\", or the text of a choice); --raw: the\n"
@@ -574,7 +574,7 @@ public:
         if ((p.kind == K::RGB || p.kind == K::RGBA) && !text.empty() && text[0] == '#') {
             const std::string h = text.substr(1);
             if ((h.size() != 6 && h.size() != 8) || h.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
-                *why = "\"" + text + "\" is not a colour (#rrggbb or #rrggbbaa)";
+                *why = "\"" + text + "\" is not a color (#rrggbb or #rrggbbaa)";
                 return false;
             }
             for (size_t i = 0; i < h.size() / 2 && i < (size_t)p.dim; ++i) (*v)[i] = std::strtol(h.substr(i * 2, 2).c_str(), nullptr, 16) / 255.0;
@@ -1355,8 +1355,8 @@ int fxParams(AppState& app, const std::vector<std::string>& args)
             case K::Double: kind = "number"; break;
             case K::Bool: kind = "on/off"; break;
             case K::Choice: kind = "choice"; break;
-            case K::RGBA: kind = "colour r,g,b,a"; break;
-            case K::RGB: kind = "colour r,g,b"; break;
+            case K::RGBA: kind = "color r,g,b,a"; break;
+            case K::RGB: kind = "color r,g,b"; break;
             case K::Double2D: case K::Int2D: kind = "x,y"; break;
             case K::Double3D: case K::Int3D: kind = "x,y,z"; break;
             default: kind = "text"; break;

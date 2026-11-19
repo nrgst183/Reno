@@ -250,7 +250,7 @@ int main(int argc, char** argv)
         const std::string name = pathFileName(f);
         std::string raw;
         check(readFile(f, raw), name + ": readable");
-        check(isVegasProject(f), name + ": recognised as a VEGAS project");
+        check(isVegasProject(f), name + ": recognized as a VEGAS project");
         Project p;
         const VegasImportResult r = importVegasProject(f, p);
         check(r.ok, name + ": opens (" + r.error + ")");
@@ -418,7 +418,7 @@ int main(int argc, char** argv)
             };
             walk(tree.root);
         }
-        check(badNormalise == 0, strfmt("samples: %d normalised sounds all keep a usable normalise gain", normalised));
+        check(badNormalise == 0, strfmt("samples: %d normalized sounds all keep a usable normalize gain", normalised));
         check(badBus == 0, "samples: every track's output is the master or a bus of the project");
         check(badEnv == 0, strfmt("samples: track volume envelope values are gain factors (%d envelopes)", envs));
         check(badTitles == 0, strfmt("samples: %d Titles & Text media all have RTF text and a size", titles));

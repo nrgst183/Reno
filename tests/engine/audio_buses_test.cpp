@@ -410,7 +410,7 @@ int main(int argc, char** argv)
         // an effect on a bus
         if (!vst.empty()) {
             std::vector<AudioPluginDesc> d = describeAudioPluginFile(vst, &err);
-            if (d.empty()) check(false, "the VST effect is recognised", err);
+            if (d.empty()) check(false, "the VST effect is recognized", err);
             else {
                 p.findTrack(t2)->mute = true;
                 p.findTrack(t1)->output = busA;

@@ -490,7 +490,7 @@ void MainWindow::addVegasViewCommands(VegasCommandBuilder& cmd)
         {"viewEnvAudioMute", "Track &Mute", "mute", 0}, {"viewEnvAudioVolume", "Track &Volume", "volume", 0}, {"viewEnvAudioPan", "Track &Pan", "pan", 0},
         {"viewEnvVideoMute", "Track &Mute", "mute", 1}, {"viewEnvVideoComposite", "Track &Composite Level", "composite", 1},
         {"viewEnvVideoFade", "Track &Fade to Color", "fadecolor", 1}, {"viewEnvVelocity", "Event &Velocity", "velocity", 2},
-        {"viewEnvMotionBlur", "Motion &Blur Amount", "motionblur", 3}, {"viewEnvSupersample", "Video &Supersampling", "supersample", 3}};
+        {"viewEnvTransition", "Transition &Progress", "transition", 2}, {"viewEnvMotionBlur", "Motion &Blur Amount", "motionblur", 3}, {"viewEnvSupersample", "Video &Supersampling", "supersample", 3}};
     auto envLists = [](Project& p, int where) {
         std::vector<Envelopes*> out;
         if (where == 3) out.push_back(&p.videoEnvelopes);
@@ -526,6 +526,10 @@ void MainWindow::addVegasInsertCommands(VegasCommandBuilder& cmd)
 {
     AppState& app = AppState::get();
     TimelineWidget* tl = timeline_;
+    cmd.add("addMissingStream", "Add Missing Stream for Selected Event", QList<QKeySequence>(), [&app] {
+        if (app.selection().empty()) app.status("Add Missing Stream: select an event first.");
+        else app.addMissingStreams(app.selection());
+    });
     cmd.add("insertEmptyEvent", "&Empty Event", QList<QKeySequence>(), [tl] { tl->insertEmptyEvent(); });
     cmd.add("insertAdjustmentEvent", "Ad&justment Event", QList<QKeySequence>(), [tl] { tl->insertAdjustmentEvent(); });
     cmd.add("insertText", "Te&xt...", QList<QKeySequence>(), [this, &app] {
@@ -1026,9 +1030,9 @@ void MainWindow::arrangeVegasViewMenu(QMenu* view)
     QMenu* audioEnv = new QMenu("&Audio Envelopes", view);
     audioEnv->addActions({vegasAction("viewEnvAudioMute"), vegasAction("viewEnvAudioVolume"), vegasAction("viewEnvAudioPan")});
     QMenu* videoEnv = new QMenu("Video &Envelopes", view);
-    videoEnv->addActions({vegasAction("viewEnvVideoMute"), vegasAction("viewEnvVideoComposite"), vegasAction("viewEnvVideoFade")});
+    videoEnv->addActions({vegasAction("viewEnvVideoMute"), vegasAction("viewEnvVideoComposite"), vegasAction("viewEnvVideoFade"), vegasAction("showTrackKeys")});
     videoEnv->addSeparator();
-    videoEnv->addAction(vegasAction("viewEnvVelocity"));
+    videoEnv->addActions({vegasAction("viewEnvVelocity"), vegasAction("viewEnvTransition")});
     videoEnv->addSeparator();
     videoEnv->addActions({vegasAction("viewEnvMotionBlur"), vegasAction("viewEnvSupersample")});
     if (toolbar) view->addAction(toolbar);
@@ -1299,7 +1303,7 @@ void MainWindow::updateVegasCommands()
     struct K { const char* name; const char* kind; int where; };
     const K ks[] = {{"viewEnvAudioMute", "mute", 0}, {"viewEnvAudioVolume", "volume", 0}, {"viewEnvAudioPan", "pan", 0}, {"viewEnvVideoMute", "mute", 1},
                     {"viewEnvVideoComposite", "composite", 1}, {"viewEnvVideoFade", "fadecolor", 1}, {"viewEnvVelocity", "velocity", 2},
-                    {"viewEnvMotionBlur", "motionblur", 3}, {"viewEnvSupersample", "supersample", 3}};
+                    {"viewEnvTransition", "transition", 2}, {"viewEnvMotionBlur", "motionblur", 3}, {"viewEnvSupersample", "supersample", 3}};
     for (const K& k : ks) {
         bool any = false, all = true;
         auto look = [&](const Envelopes& list) {

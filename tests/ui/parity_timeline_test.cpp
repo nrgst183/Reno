@@ -321,14 +321,14 @@ int main(int argc, char** argv)
         const QImage img = uitest::shot(tl, out + "/time_display_color.png");
         const QRect td = tl->timeDisplayRect();
         const int blue = countPixels(img, td.adjusted(2, 2, -10, -2), [](QColor c) { return c.blue() > 140 && c.red() < 30 && c.green() > 70 && c.green() < 110; });
-        check(blue > td.width() * td.height() / 3, "Background Color > Custom... colours the time display", std::to_string(blue));
+        check(blue > td.width() * td.height() / 3, "Background Color > Custom... colors the time display", std::to_string(blue));
         check(QSettings().value("timeline/timeDisplayBackground").toString() == "#005aa0", "and is kept for the next start");
         QMenu c2;
         tl->buildContextMenu(&c2, td.center());
         if (QAction* a = itemOf(subOf(&c2, "Background Color"), "Default")) a->trigger();
         uitest::settle(50);
         const QImage img2 = tl->grab().toImage();
-        check(countPixels(img2, td.adjusted(2, 2, -10, -2), [](QColor c) { return c.blue() > 140 && c.red() < 30; }) == 0, "Default puts the look's colour back");
+        check(countPixels(img2, td.adjusted(2, 2, -10, -2), [](QColor c) { return c.blue() > 140 && c.red() < 30; }) == 0, "Default puts the look's color back");
     }
 
     // ------------------------------------------------------------------ Set Time at Cursor
@@ -528,7 +528,7 @@ int main(int argc, char** argv)
         const QStringList t = headerMenu(0, m);
         const int cut = (int)t.indexOf("Cut");
         check(cut > 0 && t.mid(cut, 4) == QStringList({"Cut", "Copy", "Paste", "Delete"}) && t.indexOf("Duplicate Track") < cut && !itemOf(&m, "Paste")->isEnabled(),
-              "a track's menu: Cut, Copy, Paste (greyed: nothing copied), Delete, after Delete Track (VEGAS's order)", t.join(" | ").toStdString());
+              "a track's menu: Cut, Copy, Paste (grayed: nothing copied), Delete, after Delete Track (VEGAS's order)", t.join(" | ").toStdString());
         if (QAction* c = itemOf(&m, "Copy")) c->trigger();
         const size_t n0 = app.project().tracks.size();
         // paste on the audio track: the copy goes under it
@@ -600,7 +600,7 @@ int main(int argc, char** argv)
         const uint64_t snd = at.events[0].id;
         QMenu m0;
         tl->buildContextMenu(&m0, QPoint(xOf(6.0), lane.top() + 45));
-        check(subOf(&m0, "Synchronize") && !itemOf(subOf(&m0, "Synchronize"), "By Moving")->isEnabled(), "Synchronize is greyed while picture and sound are in step");
+        check(subOf(&m0, "Synchronize") && !itemOf(subOf(&m0, "Synchronize"), "By Moving")->isEnabled(), "Synchronize is grayed while picture and sound are in step");
         app.edit("Slip", [&](Project& p) { p.findEvent(ev)->offset += 0.5; });
         QMenu m1;
         tl->buildContextMenu(&m1, QPoint(xOf(6.0), lane.top() + 45));

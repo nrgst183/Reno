@@ -162,7 +162,7 @@ int main(int argc, char** argv)
               "Tools has Burn Disc's four commands and both Print Video to Tape commands");
         check(!action(w, "burnDvd")->isEnabled() && !action(w, "printToTape")->isEnabled() && !action(w, "externalControl")->isEnabled() &&
                   !action(w, "burnDvd")->property("notAvailable").toString().isEmpty(),
-              "the hardware commands are greyed and say why");
+              "the hardware commands are grayed and say why");
         check(menuHas(tools, "relinkWireless") && menuHas(tools, "layOutAudioCd") && menuHas(tools, "generateLoudnessLog"),
               "Tools has Relink Wireless Adapter Media, Lay Out Audio CD from Events and Generate Loudness Log");
         check(menuHas(tools, "scriptPromoteCaptions") && menuHas(tools, "scriptExportCaptionsYouTube") && menuHas(tools, "scriptExportCaptionsDvda") &&
@@ -354,7 +354,7 @@ int main(int argc, char** argv)
     {
         // 360°: only for a 360° project
         QToolButton* b360 = pv->findChild<QToolButton*>("preview360");
-        check(b360 && !b360->isEnabled(), "the 360° Preview button is greyed in a project that is not 360°");
+        check(b360 && !b360->isEnabled(), "the 360° Preview button is grayed in a project that is not 360°");
         st().edit("360", [](Project& p) { p.settings.output360 = true; });
         uitest::settle(100);
         check(b360 && b360->isEnabled(), "and works in a 360° one");
@@ -366,7 +366,7 @@ int main(int argc, char** argv)
         uitest::settle(200);
         const QImage round = pv->pictureWidget()->grab().toImage();
         uitest::shot(pv, out + "/preview_360.png");
-        check(pv->mode360() && b360->isChecked() && flat != round, "360° mode looks round the picture");
+        check(pv->mode360() && b360->isChecked() && flat != round, "360° mode looks around the picture");
         pv->set360Mode(false);
         // transport: the visible button set
         pv->setVisibleTransportButtons({"record", "loop", "play", "pause", "stop", "goToEnd", "nextFrame"});
@@ -470,7 +470,7 @@ int main(int argc, char** argv)
         QMenu* optionsM = topMenu(w, "Options");
         check(menuHas(insertM, "assignableFx") && menuHas(toolsM, "extractAudioCd") && menuHas(optionsM, "bypassAudioFx") && menuHas(optionsM, "metronome"),
               "Insert > Audio Assignable FX, Tools > Extract Audio from CD, Options > Bypass All Audio FX and Metronome are listed");
-        check(!action(w, "extractAudioCd")->isEnabled() && !action(w, "extractAudioCd")->property("notAvailable").toString().isEmpty(), "Extract Audio from CD is greyed and says why");
+        check(!action(w, "extractAudioCd")->isEnabled() && !action(w, "extractAudioCd")->property("notAvailable").toString().isEmpty(), "Extract Audio from CD is grayed and says why");
 
         // Bypass All Audio FX
         action(w, "bypassAudioFx")->trigger();

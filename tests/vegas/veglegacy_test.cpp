@@ -409,7 +409,7 @@ int main(int argc, char** argv)
         const std::string out = writeVegasData(q, dfsHdr, &warn);
         const auto raw = rawOf(out, vid("swirl"), 0);
         if (check(!raw.keys.empty() && !swirl0.keys.empty(), "the Swirl has a key")) {
-            check(near(raw.keys[0].v[1], -0.5) && near(raw.keys[0].v[2], 0.5), "the centre is written as the offset from the middle");
+            check(near(raw.keys[0].v[1], -0.5) && near(raw.keys[0].v[2], 0.5), "the center is written as the offset from the middle");
             check(raw.keys[0].v[3] == swirl0.keys[0].v[3] && raw.keys[0].v[4] == swirl0.keys[0].v[3], "Proportional: the vertical size follows the horizontal");
             uint64_t bits = 0;
             std::memcpy(&bits, &raw.keys[0].v[5], 8);

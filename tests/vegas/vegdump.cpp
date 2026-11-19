@@ -129,7 +129,7 @@ int main(int argc, char** argv)
                             e.name.c_str());
                 printChain(e.fx, "      ");
                 for (const auto& k : e.panCrop)
-                    std::printf("      pan/crop t %.3f centre %.4f,%.4f size %.4f x %.4f rot %.2f curve %d\n", k.time, k.cx, k.cy, k.w, k.h, k.rotation, k.curve);
+                    std::printf("      pan/crop t %.3f center %.4f,%.4f size %.4f x %.4f rot %.2f curve %d\n", k.time, k.cx, k.cy, k.w, k.h, k.rotation, k.curve);
             }
         }
         for (const auto& m : p.markers) std::printf("%s %.3f +%.3f '%s'\n", m.region ? "region" : "marker", m.time, m.length, m.name.c_str());

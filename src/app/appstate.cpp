@@ -2162,6 +2162,85 @@ static bool continues(const Event& a, const Event& b, double fps)
     return true;
 }
 
+// VEGAS's Insert > Add Missing Stream for Selected Event: for each selected event whose media has a stream of the other
+// kind that is not on the timeline with it (a video event without its sound, a sound without its picture), that stream
+// as an event at the same place, playing the same part of the media in the same way, grouped with it. It goes on the
+// first track of its kind that is free there, else on a new one, as Add to Timeline places media.
+int AppState::addMissingStreams(const std::set<uint64_t>& ids)
+{
+    struct Want {
+        uint64_t event;
+        TrackType type;
+    };
+    std::vector<Want> wants;
+    for (uint64_t id : ids) {
+        const Track* tr = nullptr;
+        const Event* e = project_.findEvent(id, &tr);
+        if (!e || !tr || e->adjustment || (tr->type != TrackType::Video && tr->type != TrackType::Audio)) continue;
+        const MediaItem* m = project_.findMedia(e->mediaId);
+        if (!m || m->generated) continue;
+        const TrackType other = tr->type == TrackType::Video ? TrackType::Audio : TrackType::Video;
+        if (other == TrackType::Video ? !m->info.hasVideo : !m->info.hasAudio) continue;
+        // already there: an event of the same media on a track of the other kind, in the event's group (or, the event
+        // not being grouped, at the same place in the media)
+        bool have = false;
+        for (const Track& t : project_.tracks) {
+            if (t.type != other) continue;
+            for (const Event& o : t.events)
+                if (o.mediaId == e->mediaId &&
+                    ((e->group && o.group == e->group) || (std::fabs(o.start - e->start) < 1e-9 && std::fabs(o.offset - e->offset) < 1e-9)))
+                    have = true;
+        }
+        if (!have) wants.push_back({id, other});
+    }
+    if (wants.empty()) {
+        status("Add Missing Stream: the selected events' media have no stream that is not on the timeline with them.");
+        return 0;
+    }
+    edit("Add Missing Stream", [&](Project& p) {
+        for (const Want& w : wants) {
+            const Event* found = p.findEvent(w.event);
+            if (!found) continue;
+            const Event src = *found;           // (a track added below moves the events)
+            const uint64_t group = src.group ? src.group : p.newId();
+            Track* target = nullptr;
+            for (auto& t : p.tracks)
+                if (t.type == w.type && rangeFree(t, src.start, src.end())) {
+                    target = &t;
+                    break;
+                }
+            if (!target) {
+                Track t;
+                t.id = p.newId();
+                t.type = w.type;
+                if (w.type == TrackType::Audio) t.panType = "add";
+                const size_t at = w.type == TrackType::Video ? 0 : p.tracks.size();
+                p.tracks.insert(p.tracks.begin() + (std::ptrdiff_t)at, t);
+                target = &p.tracks[at];
+            }
+            Event e;
+            e.id = p.newId();
+            e.mediaId = src.mediaId;
+            e.start = src.start;
+            e.length = src.length;
+            e.offset = src.offset;
+            e.rate = src.rate;
+            e.loop = src.loop;
+            e.reverse = src.reverse;
+            e.name = src.name;
+            e.group = group;
+            setDefaultFadeCurves(e, w.type);
+            e.fadeIn = src.fadeIn;
+            e.fadeOut = src.fadeOut;
+            if (w.type == TrackType::Audio) e.keepPitch = prefs.preservePitch;
+            target->events.push_back(e);
+            target->sortEvents();
+            if (Event* orig = p.findEvent(w.event)) orig->group = group;
+        }
+    });
+    return (int)wants.size();
+}
+
 int AppState::healEvents(const std::set<uint64_t>& ids)
 {
     std::set<uint64_t> all = ids, groups;
@@ -2179,7 +2258,7 @@ int AppState::healEvents(const std::set<uint64_t>& ids)
                 if ((all.count(t.events[k].id) || all.count(t.events[k + 1].id)) && continues(t.events[k], t.events[k + 1], fps)) ++joins;
     }
     if (!joins) {
-        status("Event Heal: the selected events do not continue from a neighbouring event.");
+        status("Event Heal: the selected events do not continue from a neighboring event.");
         return 0;
     }
     std::set<uint64_t> keep = selection_;

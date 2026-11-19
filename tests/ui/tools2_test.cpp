@@ -300,7 +300,7 @@ void testResample(TimelineWidget* tl)
     buildProject();
     app.setSelection(std::set<uint64_t>());
     QAction* force = item("Edit/Switches/Force Resample");
-    check(force && !force->isEnabled(), "Force Resample is greyed with no video event selected");
+    check(force && !force->isEnabled(), "Force Resample is grayed with no video event selected");
     app.setSelection({ids.D});
     force = item("Edit/Switches/Force Resample");
     QAction* proj = item("Edit/Switches/Use Project Resample Mode");
@@ -598,7 +598,7 @@ void testRedEye(MainWindow& w)
     });
     app.setSelection({ids.D});
     QAction* act = item("Tools/Video/Red Eye Reduction...");
-    check(act && !act->isEnabled(), "Tools > Video > Red Eye Reduction is greyed for a video that is not a still");
+    check(act && !act->isEnabled(), "Tools > Video > Red Eye Reduction is grayed for a video that is not a still");
     app.setSelection({ev});
     act = item("Tools/Video/Red Eye Reduction...");
     check(act && act->isEnabled(), "... and works for a still picture's event");
@@ -617,7 +617,7 @@ void testRedEye(MainWindow& w)
     uitest::mouseDrag(v, c.toPoint(), (c + QPointF(30, 20)).toPoint(), 8);
     uitest::settle(50);
     const MediaItem* m = app.project().findMedia(pic);
-    check(m && m->redEye.size() == 1, "a drag puts a box round an eye", m ? strfmt("%d", (int)m->redEye.size()) : "");
+    check(m && m->redEye.size() == 1, "a drag puts a box around an eye", m ? strfmt("%d", (int)m->redEye.size()) : "");
     if (m && m->redEye.size() == 1) {
         const MediaItem::RedEyeArea a = m->redEye[0];
         check(std::fabs(a.x + a.w / 2 - 0.4) < 0.02 && std::fabs(a.y + a.h / 2 - 0.5) < 0.02, "drawn from its middle", strfmt("%.3f %.3f %.3f %.3f", a.x, a.y, a.w, a.h));
@@ -908,15 +908,15 @@ void testRightDrag(TimelineWidget* tl)
 }
 
 
-// ====================================================================== Insert > Add Missing Streams for Selected Event
+// ====================================================================== Insert > Add Missing Stream for Selected Event
 void testMissingStream(TimelineWidget* tl)
 {
     AppState& app = st();
     buildProject();
     // A on V1 plays only the picture of synth:1 (which has sound too)
     app.setSelection({ids.A});
-    QAction* a = item("Insert/Add Missing Streams for Selected Event");
-    check(a && a->isEnabled(), "Insert > Add Missing Streams for Selected Event");
+    QAction* a = item("Insert/Add Missing Stream for Selected Event");
+    check(a && a->isEnabled(), "Insert > Add Missing Stream for Selected Event");
     if (!a) return;
     const size_t tracks = app.project().tracks.size();
     a->trigger();
@@ -941,7 +941,7 @@ void testMissingStream(TimelineWidget* tl)
     app.setSelection({ids.C});
     E(ids.C);
     app.edit("Ungroup C", [](Project& p) { if (Event* e = p.findEvent(ids.C)) e->group = 0; });
-    item("Insert/Add Missing Streams for Selected Event")->trigger();
+    item("Insert/Add Missing Stream for Selected Event")->trigger();
     check(app.project().tracks.size() == tracks + 1 && app.project().tracks.back().type == TrackType::Audio, "where the audio tracks have no room: a new audio track",
           strfmt("%d tracks", (int)app.project().tracks.size()));
     (void)tl;

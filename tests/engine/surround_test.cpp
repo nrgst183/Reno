@@ -161,24 +161,24 @@ static void testLaw()
         check(only(gains(type, 1, 1, 1, sp), ChR), t + "front right corner is R alone");
         check(only(gains(type, -1, -1, 1, sp), ChLs), t + "rear left corner is Ls alone");
         check(only(gains(type, 1, -1, 1, sp), ChRs), t + "rear right corner is Rs alone");
-        check(only(gains(type, 0, 1, 1, sp), ChC), t + "front centre with Center 0.0 dB is C alone");
+        check(only(gains(type, 0, 1, 1, sp), ChC), t + "front center with Center 0.0 dB is C alone");
     }
     // Center is a gain on the centre channel: 0.0 dB leaves it, a cut or a boost scales it (VEGAS: "boost or attenuate")
     std::vector<float> g = gains("power", 0, 1, 0.5, sp);
     std::vector<float> boost = gains("power", 0, 1, 2.0, sp);
-    check(std::fabs(g[ChC] - 0.5f) < 1e-6f && std::fabs(boost[ChC] - 2.0f) < 1e-6f && g[ChL] < 1e-6f, "law: Center is a gain on the centre channel", fmt(g[ChC]) + " " + fmt(boost[ChC]));
+    check(std::fabs(g[ChC] - 0.5f) < 1e-6f && std::fabs(boost[ChC] - 2.0f) < 1e-6f && g[ChL] < 1e-6f, "law: Center is a gain on the center channel", fmt(g[ChC]) + " " + fmt(boost[ChC]));
     g = gains("power", -1, 1, 0.5, sp);
     check(only(g, ChL), "law: Center leaves the other speakers alone");
     // a muted centre speaker: a phantom centre between left and right, at -3 dB each
     SurroundPan mutedC;
     mutedC.speakerMutes = 1u << ChC;
     g = gains("power", 0, 1, 1, mutedC);
-    check(std::fabs(g[ChL] - 0.70711f) < 1e-4f && std::fabs(g[ChR] - 0.70711f) < 1e-4f && g[ChC] == 0.f, "law: a muted centre speaker gives a phantom centre at -3 dB",
+    check(std::fabs(g[ChL] - 0.70711f) < 1e-4f && std::fabs(g[ChR] - 0.70711f) < 1e-4f && g[ChC] == 0.f, "law: a muted center speaker gives a phantom center at -3 dB",
           fmt(g[ChL]) + " " + fmt(g[ChR]));
     g = gains("power", 0, 0, 1, mutedC);
     bool quarter = true;
     for (int k : {ChL, ChR, ChLs, ChRs}) quarter = quarter && std::fabs(g[k] - 0.5f) < 1e-5f;
-    check(quarter, "law: the middle of the room is all four corners at -6 dB (centre muted)");
+    check(quarter, "law: the middle of the room is all four corners at -6 dB (center muted)");
     // Add Channels is linear and adds to 1 between two speakers; Balance falls from the centre level to nothing and rises to 0 dB
     g = gains("add", -0.5, -1, 1, sp);
     check(std::fabs(g[ChLs] - 0.75f) < 1e-5f && std::fabs(g[ChRs] - 0.25f) < 1e-5f, "law: Add Channels pans linearly", fmt(g[ChLs]) + " " + fmt(g[ChRs]));
@@ -194,7 +194,7 @@ static void testLaw()
     g = gains("film", -1, 1, 1, sp);
     check(g[ChL] > 0.9f && g[ChLs] > 0.1f && g[ChLs] < 0.5f && g[ChR] < 1e-6f && g[ChC] < 1e-6f, "law: Film puts a little of the front left corner in the rear left",
           "L " + fmt(g[ChL]) + " Ls " + fmt(g[ChLs]));
-    check(only(gains("film", 0, 1, 1, sp), ChC), "law: Film panned to the centre speaker plays from it alone");
+    check(only(gains("film", 0, 1, 1, sp), ChC), "law: Film panned to the center speaker plays from it alone");
     g = gains("film", 0, 0, 1, sp);
     bool even = true;
     for (int k : {ChL, ChR, ChC, ChLs, ChRs}) even = even && std::fabs(g[k] - std::sqrt(0.2f)) < 1e-5f;
@@ -287,7 +287,7 @@ static void testMixer()
         Six s = renderSix(p, 0, n);
         double pw = 0;
         for (int k = 0; k < 6; ++k) pw += rms(s.c[k]) * rms(s.c[k]);
-        check(std::fabs(rms(s.c[ChLs]) - 0.25 / std::sqrt(2.0)) < 1e-3 && std::fabs(pw - 0.125) < 1e-3, "mixer: centred track is spread at constant power",
+        check(std::fabs(rms(s.c[ChLs]) - 0.25 / std::sqrt(2.0)) < 1e-3 && std::fabs(pw - 0.125) < 1e-3, "mixer: centered track is spread at constant power",
               "power " + fmt(pw));
     }
     // a stereo source keeps its sides apart in the middle and folds to one side at the edge
@@ -622,7 +622,7 @@ static void testMasterFx(const std::string& vst)
     std::string err;
     std::vector<AudioPluginDesc> d = describeAudioPluginFile(vst, &err);
     if (d.empty()) {
-        check(false, "master fx: the VST effect is recognised", err);
+        check(false, "master fx: the VST effect is recognized", err);
         return;
     }
     Project p = surroundProject();

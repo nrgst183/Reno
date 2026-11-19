@@ -88,12 +88,12 @@ int main(int argc, char** argv)
         }
         const double ct = now() - a;
         killer.join();
-        check(!c && ct < 0.5, "a read cancelled half way stops soon and gives nothing", std::to_string(ct * 1000) + " ms");
+        check(!c && ct < 0.5, "a read canceled half way stops soon and gives nothing", std::to_string(ct * 1000) + " ms");
         for (double tt : {t, t + 0.31, t - 2.2, t - 0.05, dur * 0.2}) {
             ImagePtr got = r->videoFrame(tt, W, H);
             auto fresh = openMedia(argv[1], &err);
             ImagePtr want = fresh->videoFrame(tt, W, H);
-            check(same(got, want), "after the cancelled read, a picture (forwards or back) is right", std::to_string(tt) + " s");
+            check(same(got, want), "after the canceled read, a picture (forwards or back) is right", std::to_string(tt) + " s");
         }
         // cancelled while skipping pictures, then a picture between two decoded ones
         stop = false;

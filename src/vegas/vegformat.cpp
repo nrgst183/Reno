@@ -789,7 +789,7 @@ std::string envelopeName(uint32_t type)
     case EnvVolume: return "volume";
     case EnvPan: return "pan";
     case EnvComposite: return "composite level (opacity)";
-    case EnvFadeToColor: return "fade to colour";
+    case EnvFadeToColor: return "fade to color";
     case EnvMute: return "mute";
     case EnvVelocity: return "velocity (speed)";
     case EnvPlugin: return "plug-in setting";

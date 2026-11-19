@@ -128,7 +128,7 @@ void sceneTests()
 void optionTests()
 {
     Preferences defaults;
-    check(defaults.rightMouseSelect, "the right-mouse selection preference defaults to VEGAS 18 behaviour");
+    check(defaults.rightMouseSelect, "the right-mouse selection preference defaults to VEGAS 18 behavior");
     TimelineOptions o;
     check(!o.showUnquantized, "Show Unquantized Event Edges is off by default");
     Playback playback;

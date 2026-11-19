@@ -143,7 +143,7 @@ static void lutTests()
         float a[3], b[3];
         straight(src, 20, 10, a);
         straight(o, 20, 10, b);
-        check(std::fabs(b[0] - (1 - a[0])) < 1e-3 && std::fabs(b[1] - (1 - a[1])) < 1e-3 && std::fabs(b[2] - (1 - a[2])) < 1e-3, "an inverting table inverts the colours", strfmt("%.3f %.3f %.3f -> %.3f %.3f %.3f", a[0], a[1], a[2], b[0], b[1], b[2]));
+        check(std::fabs(b[0] - (1 - a[0])) < 1e-3 && std::fabs(b[1] - (1 - a[1])) < 1e-3 && std::fabs(b[2] - (1 - a[2])) < 1e-3, "an inverting table inverts the colors", strfmt("%.3f %.3f %.3f -> %.3f %.3f %.3f", a[0], a[1], a[2], b[0], b[1], b[2]));
         const Buf half = runS(*d, {{"Gain", {0.5}}}, {{"LUTFilename", inv}}, src, 1.0);
         straight(half, 20, 10, b);
         check(std::fabs(b[0] - (a[0] + (1 - 2 * a[0]) * 0.5f)) < 1e-3, "Strength mixes the original and the table's result", strfmt("%.3f", b[0]));
@@ -161,7 +161,7 @@ static void lutTests()
         const Buf o = runS(*d, {}, {{"LUTFilename", dom}}, src, 1.0);
         float b[3];
         straight(o, 63, 0, b);
-        check(std::fabs(b[0] - 0.5f) < 1e-3, "a table with DOMAIN_MAX 2 treats the colour 1.0 as halfway", f4(b[0]));
+        check(std::fabs(b[0] - 0.5f) < 1e-3, "a table with DOMAIN_MAX 2 treats the color 1.0 as halfway", f4(b[0]));
         const std::string p1 = "/tmp/color_test_1d.cube";
         { std::ofstream o1(p1); o1 << "LUT_1D_SIZE 2\n0 0 0\n0.5 0.5 0.5\n"; }
         const Buf o2 = runS(*d, {}, {{"LUTFilename", p1}}, src, 1.0);
@@ -185,7 +185,7 @@ static void lutTests()
         float a[3], b[3];
         straight(half, 10, 3, a);
         straight(o, 10, 3, b);
-        check(std::fabs(o.at(10, 3)[3] - 0.5f) < 1e-6 && std::fabs(b[0] - (1 - a[0])) < 1e-3, "alpha is kept and the colour is worked on unpremultiplied");
+        check(std::fabs(o.at(10, 3)[3] - 0.5f) < 1e-6 && std::fabs(b[0] - (1 - a[0])) < 1e-3, "alpha is kept and the color is worked on unpremultiplied");
     }
 }
 
@@ -242,7 +242,7 @@ static void matchTests()
         const std::string v = presetValue(kMatch, "Noir", "internaldata");
         check(!v.empty() && presetValue(kMatch, "Teal and Orange", "Processlightness").size() > 0, "VEGAS's seven Color Match presets are in the built-in presets");
         const Buf o = runS(*d, {{"SourceCaptured", {1}}}, {{"internaldata", v}}, pic, 1.0);
-        check(colourful(o) < 0.35 * colourful(pic), "the Noir preset takes the colour out", strfmt("%.3f -> %.3f", colourful(pic), colourful(o)));
+        check(colourful(o) < 0.35 * colourful(pic), "the Noir preset takes the color out", strfmt("%.3f -> %.3f", colourful(pic), colourful(o)));
         const Buf half = runS(*d, {{"SourceCaptured", {1}}, {"Strength", {0.5}}}, {{"internaldata", v}}, pic, 1.0);
         check(colourful(half) < colourful(pic) && colourful(half) > colourful(o), "Strength 0.5 is half way", strfmt("%.3f", colourful(half)));
         check(maxDiff(runS(*d, {{"SourceCaptured", {1}}, {"Strength", {0}}}, {{"internaldata", v}}, pic, 1.0), pic) == 0, "Strength 0 bypasses the match");
@@ -256,7 +256,7 @@ static void matchTests()
         // a shift of the mean of a (towards red): the picture gets redder
         const std::string red = stats({50, 20, 30, 10, 0, 10, 50, 20, 0, 10, 0, 10});
         const Buf r = runS(*d, {{"SourceCaptured", {1}}, {"TargetCaptured", {1}}}, {{"internaldata", red}}, pic, 1.0);
-        check(meanOf(r, 0) > meanOf(pic, 0) + 0.03 && meanOf(r, 1) < meanOf(pic, 1), "moving the mean of a towards red makes the frame redder", strfmt("%.3f -> %.3f", meanOf(pic, 0), meanOf(r, 0)));
+        check(meanOf(r, 0) > meanOf(pic, 0) + 0.03 && meanOf(r, 1) < meanOf(pic, 1), "moving the mean of a toward red makes the frame redder", strfmt("%.3f -> %.3f", meanOf(pic, 0), meanOf(r, 0)));
     }
     {
         const std::string v = presetValue(kMatch, "Night Sky", "internaldata");
@@ -268,7 +268,7 @@ static void matchTests()
         // garbage statistics and a solid-colour source do nothing harmful
         check(maxDiff(runS(*d, {{"SourceCaptured", {1}}}, {{"internaldata", "!!!!"}}, pic, 1.0), pic) == 0, "unreadable statistics leave the frame as it is");
         const Buf o = runS(*d, {{"SourceCaptured", {1}}}, {{"internaldata", stats({50, 0, 0, 0, 0, 0})}}, pic, 1.0);
-        check(maxDiff(o, pic) == 0, "a solid colour source is not applied (VEGAS warns the same)");
+        check(maxDiff(o, pic) == 0, "a solid color source is not applied (VEGAS warns the same)");
         bool ok = true;
         for (float v : runS(*d, {{"SourceCaptured", {1}}}, {{"internaldata", presetValue(kMatch, "Noir", "internaldata")}}, flat(32, 16, 0.5f, 0.5f, 0.5f), 1.0).px) if (!std::isfinite(v)) ok = false;
         check(ok, "a flat frame gives no NaN");
@@ -302,7 +302,7 @@ static void gradeTests()
     at({{"Gamma_Y", {2}}});
     check(std::fabs(b[0] - std::sqrt(a[0])) < 1e-4, "Gamma 2 is a square root (brighter middles)", strfmt("%.3f -> %.3f", a[0], b[0]));
     at({{"SaturationAdjust", {0}}});
-    check(std::fabs(b[0] - b[1]) < 1e-4 && std::fabs(b[1] - b[2]) < 1e-4 && std::fabs(b[0] - luma(a[0], a[1], a[2])) < 1e-4, "Saturation 0 is grey of the same luma");
+    check(std::fabs(b[0] - b[1]) < 1e-4 && std::fabs(b[1] - b[2]) < 1e-4 && std::fabs(b[0] - luma(a[0], a[1], a[2])) < 1e-4, "Saturation 0 is gray of the same luma");
     at({{"HueAdjust", {120}}});
     {
         const Buf red = flat(4, 4, 1.f, 0.f, 0.f);

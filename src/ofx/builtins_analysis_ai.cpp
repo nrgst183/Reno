@@ -229,7 +229,7 @@ const Look kLooks[17] = {
     {"Expressionism",       0.014f, 1.50f, 1.35f, 0, 0.20f, 0.06f,  25.f, {0.00f, 0.02f, 0.10f}, {0.08f, 0.03f, -0.05f}, 0.f},
     {"Pop art",             0.004f, 2.10f, 1.40f, 4, 0.95f, 0.00f,   0.f, {0.00f, 0.00f, 0.00f}, {0.00f, 0.00f, 0.00f}, 0.f},
     {"Ukiyo-e",             0.008f, 0.75f, 1.05f, 6, 0.85f, 0.06f, -15.f, {0.00f, 0.03f, 0.09f}, {0.07f, 0.05f, 0.00f}, 0.f},
-    {"Watercolour",         0.016f, 0.85f, 0.85f, 0, 0.08f, 0.10f,   0.f, {0.04f, 0.04f, 0.06f}, {0.05f, 0.05f, 0.05f}, 0.f},
+    {"Watercolor",         0.016f, 0.85f, 0.85f, 0, 0.08f, 0.10f,   0.f, {0.04f, 0.04f, 0.06f}, {0.05f, 0.05f, 0.05f}, 0.f},
     {"Charcoal",            0.007f, 0.00f, 1.50f, 0, 0.70f, 0.14f,   0.f, {0.00f, 0.00f, 0.00f}, {0.04f, 0.04f, 0.03f}, 0.f},
     {"Oil painting",        0.008f, 1.15f, 1.12f, 0, 0.00f, 0.05f,   0.f, {0.00f, 0.00f, 0.02f}, {0.02f, 0.01f, 0.00f}, 0.f},
     {"Stained glass",       0.022f, 1.60f, 1.20f, 5, 0.90f, 0.02f,   0.f, {0.00f, 0.00f, 0.05f}, {0.04f, 0.03f, 0.00f}, 0.f},
@@ -401,7 +401,7 @@ void addAiEffects(std::vector<Def>& out)
         ps.push_back(custom("ModelNotFound", "Model not found", ""));
         ps.back().secret = true;
         out.push_back(make("de.magix:Colorization", "Colorization",
-                           "Colours a black and white picture. VEGAS uses an AI model for this; Reno guesses sky, foliage and warm tones from the picture's tones, place and detail and spreads them along its edges - plausible, not the AI's result",
+                           "Colors a black and white picture. VEGAS uses an AI model for this; Reno guesses sky, foliage and warm tones from the picture's tones, place and detail and spreads them along its edges - plausible, not the AI's result",
                            ps, colorization));
     }
     {
@@ -423,7 +423,7 @@ void addAiEffects(std::vector<Def>& out)
         for (size_t k = 2; k <= 4; ++k) ps[k].secret = true;                // (the colour means of the network's input: nothing to set)
         for (size_t k = 7; k < ps.size(); ++k) ps[k].secret = true;
         out.push_back(make("de.magix:StyleTransfer", "Style Transfer",
-                           "Paints the picture in the style of a painting. VEGAS uses 17 AI models for this; Reno has 17 painterly looks of its own (brush strokes, colour treatment, outlines, canvas) - not the same styles",
+                           "Paints the picture in the style of a painting. VEGAS uses 17 AI models for this; Reno has 17 painterly looks of its own (brush strokes, color treatment, outlines, canvas) - not the same styles",
                            ps, styleTransfer));
     }
 }

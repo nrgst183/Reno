@@ -153,7 +153,7 @@ int main(int argc, char** argv)
             return d ? strfmt("%d %d %d %d", d[2], d[1], d[0], d[3]) : std::string("none");
         };
         check(px("") == "100 50 25 128" && px("straight") == "100 50 25 128", "Alpha channel Undefined / Straight: as the reader gives it", px(""));
-        check(px("none") == "199 100 50 255", "None: the file's colours (100 / 128 x 255 = 199), opaque", px("none"));
+        check(px("none") == "199 100 50 255", "None: the file's colors (100 / 128 x 255 = 199), opaque", px("none"));
         check(px("premultiplied") == "128 100 50 128", "Premultiplied: the reader's multiplying undone (kept within alpha)", px("premultiplied"));
         h.alphaMode = "none";
         Project r;

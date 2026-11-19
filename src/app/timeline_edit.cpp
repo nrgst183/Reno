@@ -522,7 +522,8 @@ const std::vector<TimelineWidget::Impl::OptionKey>& TimelineWidget::Impl::option
         {"showFadeLengths", &TimelineOptions::showFadeLengths}, {"snapToAllEvents", &TimelineOptions::snapToAllEvents},
         {"showTakeInfo", &TimelineOptions::showTakeInfo}, {"showMediaMarkers", &TimelineOptions::showMediaMarkers},
         {"edgeFrames", &TimelineOptions::edgeFrames}, {"slipAllTakes", &TimelineOptions::slipAllTakes},
-        {"showMarkerLabels", &TimelineOptions::showMarkerLabels}, {"showEventLength", &TimelineOptions::showEventLength}};
+        {"showMarkerLabels", &TimelineOptions::showMarkerLabels}, {"showEventLength", &TimelineOptions::showEventLength},
+        {"showTrackKeys", &TimelineOptions::showTrackKeys}};
     return keys;
 }
 

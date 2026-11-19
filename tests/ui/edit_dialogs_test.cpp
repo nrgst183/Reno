@@ -161,7 +161,7 @@ int main(int argc, char** argv)
     {
         const PanCropKey k = ev(V)->panCrop.empty() ? PanCropKey() : ev(V)->panCrop[0];
         check(near(k.w, 0.5, 0.01) && near(k.h, 0.5, 0.01) && near(k.cx, 0.5, 0.01) && near(k.cy, 0.5, 0.01),
-              "pan/crop: dragging a corner sizes the box about its centre", num(k.w) + " x " + num(k.h));
+              "pan/crop: dragging a corner sizes the box about its center", num(k.w) + " x " + num(k.h));
     }
     // sizing one edge without the aspect lock (Shift inverts the lock)
     drag(view, at(view, 0.75, 0.5), at(view, 0.85, 0.5), Qt::ShiftModifier);
@@ -406,7 +406,7 @@ int main(int argc, char** argv)
         press(Qt::Key_C);
         press(Qt::Key_O);
         check(!btn("enableRotation")->isChecked() && !btn("lockAspect")->isChecked() && !btn("sizeAboutCenter")->isChecked() && btn("objectSpace")->isChecked(),
-              "track motion keys: Shift+F8, A, C and O switch rotation, lock aspect, scale about centre and object space");
+              "track motion keys: Shift+F8, A, C and O switch rotation, lock aspect, scale about center and object space");
         press(Qt::Key_F8, Qt::ShiftModifier);
         press(Qt::Key_A);
         press(Qt::Key_C);
@@ -728,7 +728,7 @@ int main(int argc, char** argv)
             check(md->itemText(md->findData("custom")) == "Custom display", "master display: the combo's first entry is Custom display");
             pick(hdr, "off");
             hdr->activated(hdr->currentIndex());
-            check(!md->isEnabled() && !custom->isEnabled(), "master display: greyed while HDR Mode is Off");
+            check(!md->isEnabled() && !custom->isEnabled(), "master display: grayed while HDR Mode is Off");
             pick(hdr, "hdr10");
             hdr->activated(hdr->currentIndex());
             check(md->isEnabled() && custom->isEnabled(), "master display: enabled with HDR10");

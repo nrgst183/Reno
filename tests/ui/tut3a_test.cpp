@@ -102,7 +102,7 @@ int main(int argc, char** argv)
         check(countNear(during, bar, blue, 6) > 6, "while an event is moved, the loop bar shows a blue line for the amount");
         check(countNear(during, bar, QColor(255, 255, 255), 3) > 20, "... and a white box with the amount");
         const QRect overlap(w.xAt(3.5) + 1, tr.top() + 1, std::max(4, w.xAt(4.0) - w.xAt(3.5) - 2), tr.height() - 2);
-        check(countNear(during, overlap, QColor(255, 255, 255), 3) > 20, "... and the overlap with the neighbour shows its length in a white box");
+        check(countNear(during, overlap, QColor(255, 255, 255), 3) > 20, "... and the overlap with the neighbor shows its length in a white box");
         check(std::fabs(ev(e2)->start - 3.5) < 1.5 / fps, "the event follows the pointer", std::to_string(ev(e2)->start));
         uitest::mouseRelease(&w, to);
         uitest::settle(50);

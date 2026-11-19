@@ -240,13 +240,13 @@ static void stabilizeTests()
             const Seq un = renderAll(*d, {}, {}, in, 1.0, &keyU);
             double mxu = 0;
             for (size_t q = 0; q < un.size(); ++q) mxu = std::max(mxu, compare(un[q], in[q]).mean);
-            check(mxu == 0.0, std::string(id) + ": not analysed yet: the picture passes through unchanged", strfmt("mean %.3f", mxu));
+            check(mxu == 0.0, std::string(id) + ": not analyzed yet: the picture passes through unchanged", strfmt("mean %.3f", mxu));
         }
         const Seq out = renderAll(*d, analysed, {}, in, 1.0, &keyA);
         {
             double mv = 0;
             for (size_t q = 0; q < out.size(); ++q) mv = std::max(mv, compare(out[q], in[q]).mean);
-            check(mv > 0.5, std::string(id) + ": analysed: the picture is moved", strfmt("mean %.2f levels", mv));
+            check(mv > 0.5, std::string(id) + ": analyzed: the picture is moved", strfmt("mean %.2f levels", mv));
         }
         const double j1 = jitter(out);
         check(j1 < 0.5 * j0, std::string(id) + ": the shaking is reduced by half or more", strfmt("input %.2f px/frame, output %.2f", j0, j1));
@@ -294,7 +294,7 @@ static void flickerTests()
         return hi - lo;
     };
     const double a = spread(in), b = spread(out);
-    check(b < 0.4 * a, "Flicker Control: alternating brightness is levelled", strfmt("spread %.4f -> %.4f", a, b));
+    check(b < 0.4 * a, "Flicker Control: alternating brightness is leveled", strfmt("spread %.4f -> %.4f", a, b));
     Seq steady(10, base);
     static int key2;
     const Seq so = renderAll(*d, {}, {}, steady, 1.0, &key2);
@@ -352,7 +352,7 @@ static void aiTests()
         chroma /= (double)(out.px.size() / 4);
         const float* sky = out.at(80, 8);
         const float* grass = out.at(80, 75);
-        check(chroma > 0.01, "Colorization: a grey picture gets colour", strfmt("mean chroma %.4f", chroma));
+        check(chroma > 0.01, "Colorization: a gray picture gets color", strfmt("mean chroma %.4f", chroma));
         check(sky[2] > sky[0], "Colorization: the sky is bluer than red", strfmt("%.2f %.2f %.2f", sky[0], sky[1], sky[2]));
         check(grass[1] > grass[2], "Colorization: the foliage is greener than blue", strfmt("%.2f %.2f %.2f", grass[0], grass[1], grass[2]));
     }
@@ -509,7 +509,7 @@ static void buttonTests()
         if (pb) inst->userPushButton(pb, 0.0);
         ofx::Param* has = inst->params.find("HasMotionData");
         if (!has && pb) has = inst->params.find("HasM20StabData");
-        if (has && pb) check(has->value[0] == 1.0, std::string(b.id) + ": " + b.press + " analyses (analysed flag set)");
+        if (has && pb) check(has->value[0] == 1.0, std::string(b.id) + ": " + b.press + " analyses (analyzed flag set)");
         if (b.clear) {
             ofx::Param* cb = inst->params.find(b.clear);
             if (cb) inst->userPushButton(cb, 0.0);

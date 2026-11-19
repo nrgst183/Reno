@@ -658,7 +658,7 @@ std::vector<Format> builtInFormats()
         f.key = "gif";
         f.name = "Animated GIF";
         f.ext = "gif";
-        f.blurb = "Not a VEGAS format: a looping GIF, 256 colours a picture (no sound). GIF counts time in hundredths of a second.";
+        f.blurb = "Not a VEGAS format: a looping GIF, 256 colors a picture (no sound). GIF counts time in hundredths of a second.";
         f.videoFamily = "gif";
         f.hasAudio = false;
         f.bitRate = false;
@@ -679,7 +679,7 @@ std::vector<Format> builtInFormats()
         f.key = "apng";
         f.name = "Animated PNG";
         f.ext = "apng";
-        f.blurb = "Not a VEGAS format: a looping animated PNG, every colour and transparency kept (no sound).";
+        f.blurb = "Not a VEGAS format: a looping animated PNG, every color and transparency kept (no sound).";
         f.videoFamily = "apng";
         f.hasAudio = false;
         f.bitRate = false;

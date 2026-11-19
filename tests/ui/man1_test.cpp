@@ -471,11 +471,11 @@ int main(int argc, char** argv)
             if (all > 0 && !plugins.empty()) {
                 fx->setFavorite(plugins.front().id, true);
                 fx->setCategory("favorites");
-                check(fx->listedPlugins() == 1, "Video FX: Favorites lists the favourite only", std::to_string(fx->listedPlugins()));
+                check(fx->listedPlugins() == 1, "Video FX: Favorites lists the favorite only", std::to_string(fx->listedPlugins()));
                 fx->setFavorite(plugins.front().id, false);
                 fx->setCategory("all");
             } else {
-                check(true, "Video FX: (no plug-ins to mark as favourites here)");
+                check(true, "Video FX: (no plug-ins to mark as favorites here)");
             }
         }
     }
@@ -512,11 +512,11 @@ int main(int argc, char** argv)
         uitest::settle(50);
         QList<QLineEdit*> edits = notes->findChildren<QLineEdit*>("noteText");
         if (!edits.isEmpty()) {
-            edits.last()->setText("Fix the colour");
+            edits.last()->setText("Fix the color");
             emit edits.last()->editingFinished();
             uitest::settle(50);
         }
-        check(QString::fromStdString(st().project().settings.comments).contains("Fix the colour"), "Project Notes: a note added and typed is kept in the project");
+        check(QString::fromStdString(st().project().settings.comments).contains("Fix the color"), "Project Notes: a note added and typed is kept in the project");
         uitest::shot(notes, gOut + "/project_notes.png");
     }
 
@@ -529,7 +529,7 @@ int main(int argc, char** argv)
         check(has("importFromProject", true) && has("importEdl", true) && has("importBwf", true) && has("exportArchive", true) && has("exportEdl", true),
               "File > Import / Export: Media from Project, EDL, Broadcast Wave, Archive");
         check(has("importAaf", false) && has("captureVideo", false) && has("extractCd", false) && has("uploadYoutube", false) && has("showMeHow", false),
-              "hardware and online items are there but greyed (AAF, Capture Video, Extract Audio from CD, upload, Show Me How)");
+              "hardware and online items are there but grayed (AAF, Capture Video, Extract Audio from CD, upload, Show Me How)");
         check(has("insertSubtitlesFile", true) && has("insertSubtitlesRegions", true) && has("generateLoudnessLog", true) && has("advancedSave", true),
               "Insert Subtitles, Generate Loudness Log, Advanced Save");
         QAction* met = action(&w, "metronome");

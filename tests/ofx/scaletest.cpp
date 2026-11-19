@@ -152,9 +152,9 @@ int main(int argc, char** argv)
                 check(fmt("%s: at %g the source bounds, render window and region of definition are the small size", dn, sc).c_str(),
                       L[2] == 0 && L[3] == 0 && L[4] == W / f && L[5] == H / f && L[8] == W / f && L[9] == H / f && L[10] == W / f && L[11] == H / f,
                       fmt("bounds %g,%g,%g,%g window to %g,%g rod to %g,%g", L[2], L[3], L[4], L[5], L[8], L[9], L[10], L[11]));
-                check(fmt("%s: at %g the effect gets full-size pixel settings (radius 100, centre 320,180) and scales them", dn, sc).c_str(),
+                check(fmt("%s: at %g the effect gets full-size pixel settings (radius 100, center 320,180) and scales them", dn, sc).c_str(),
                       L[12] == 100 && L[13] == 320 && L[14] == 180 && L[15] == 100 * sc && L[16] == 320 * sc && L[17] == 180 * sc,
-                      fmt("radius %g centre %g,%g; drew %g at %g,%g", L[12], L[13], L[14], L[15], L[16], L[17]));
+                      fmt("radius %g center %g,%g; drew %g at %g,%g", L[12], L[13], L[14], L[15], L[16], L[17]));
                 check(fmt("%s: at %g isIdentity was told the render scale too", dn, sc).c_str(), L[20] == sc, fmt("%g", L[20]));
             } else {
                 check(fmt("%s: at %g it is left at the project's size and scale 1", dn, sc).c_str(), small->w == W && small->h == H && L[0] == 1 && L[1] == 1 && L[8] == W,
@@ -171,7 +171,7 @@ int main(int argc, char** argv)
                       fmt("bounds to %g,%g window to %g,%g rod to %g,%g", L[4], L[5], L[8], L[9], L[10], L[11]));
                 check(fmt("%s: at %g its position setting (XY absolute) is scaled to the preview, a plain number is not", dn, sc).c_str(),
                       std::fabs(L[13] - 320 * sc) < 1e-9 && std::fabs(L[14] - 180 * sc) < 1e-9 && L[12] == 100,
-                      fmt("centre %g,%g radius %g", L[13], L[14], L[12]));
+                      fmt("center %g,%g radius %g", L[13], L[14], L[12]));
                 double pw = 0, ph = 0;
                 pw = inst->props.getDouble(kOfxImageEffectPropProjectSize, 0);
                 ph = inst->props.getDouble(kOfxImageEffectPropProjectSize, 1);
@@ -179,7 +179,7 @@ int main(int argc, char** argv)
                 ImagePtr again = render(1.0, &ms);
                 last(L);
                 check(fmt("%s: and a full-size render after it is as before", dn).c_str(), again && again->w == W && L[13] == 320 && L[16] == 320,
-                      fmt("centre %g drawn %g", L[13], L[16]));
+                      fmt("center %g drawn %g", L[13], L[16]));
             }
             if (wantScaled) {
                 const double d = diffToReduced(*small, *full, f, &mx);

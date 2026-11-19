@@ -1231,7 +1231,7 @@ Side runSide(const CompareOptions& opt, const std::string& source, const Effect&
         s.works = true;
         s.status = s.testsOk < s.tests ? "works, but some tests fail" : "works";
         if (filter && unchanged == rendered) s.suspect = "never changes the picture";
-        else if (context != kOfxImageEffectContextGenerator && blank == rendered) s.suspect = "always draws one flat colour";
+        else if (context != kOfxImageEffectContextGenerator && blank == rendered) s.suspect = "always draws one flat color";
         if (!s.suspect.empty()) s.status += ", but " + s.suspect;
         if (!problem.empty()) s.detail = "the process then ended badly: " + problem;
     }
@@ -1697,11 +1697,11 @@ int runVegasFxReport(const CompareOptions& optIn)
     section("Summary");
     line(strfmt("effects tried (an effect used as a filter, a generator or a transition counts for each): %d", (int)rows.size()));
     if (realCount) {
-        line(strfmt("VEGAS's own plug-in:   %d work, %d do not load, %d make no instance, %d crash, %d fail to render, %d draw nothing / never change the picture / make one flat colour",
+        line(strfmt("VEGAS's own plug-in:   %d work, %d do not load, %d make no instance, %d crash, %d fail to render, %d draw nothing / never change the picture / make one flat color",
                     realWorks, realLoadFail, realNoInst, realCrash, realRenderFail, realNothing));
         line(strfmt("no way to use at all:  %d (VEGAS's plug-in fails and Reno has no working built-in)", realOnlyFail));
     } else line("VEGAS's own plug-ins:  none found on this machine");
-    line(strfmt("Reno's built-in:       %d work, %d work but never change the picture (or only make one flat colour) in these tests, %d do not", builtinWorks, builtinSuspect, builtinFails));
+    line(strfmt("Reno's built-in:       %d work, %d work but never change the picture (or only make one flat color) in these tests, %d do not", builtinWorks, builtinSuspect, builtinFails));
     if (same + close + visible + very)
         line(strfmt("built-in against the real one: %d the same picture, %d close, %d differ visibly, %d very different", same, close, visible, very));
 

@@ -125,7 +125,7 @@ int main(int argc, char** argv)
             sep = y;
             break;
         }
-    check(sep > r.top() + r.height() / 3 && sep < r.bottom() - r.height() / 3, "stereo: a grey line splits the event into two rows", std::to_string(sep));
+    check(sep > r.top() + r.height() / 3 && sep < r.bottom() - r.height() / 3, "stereo: a gray line splits the event into two rows", std::to_string(sep));
     const int upper = inked(im, r.top() + (sep - r.top()) / 2 - 6, x0, x1, grey), lower = inked(im, sep + (r.bottom() - sep) / 2 - 6, x0, x1, grey);
     check(upper > (x1 - x0) / 2 && lower < (x1 - x0) / 10, "stereo: the left channel's tone in the top row, the silent right one below",
           std::to_string(upper) + " / " + std::to_string(lower));
@@ -140,7 +140,7 @@ int main(int argc, char** argv)
     // Combine (mono): one row, no line
     st().edit("Mono", [&](Project& p) { p.findEvent(ev)->channels = "combine"; });
     shot();
-    check(inked(im, sep, x0, x1, QColor(80, 80, 80)) > (x1 - x0) / 2, "Combine: one row, no grey line");
+    check(inked(im, sep, x0, x1, QColor(80, 80, 80)) > (x1 - x0) / 2, "Combine: one row, no gray line");
     st().edit("Both", [&](Project& p) { p.findEvent(ev)->channels = "both"; });
     shot();
 
@@ -178,7 +178,7 @@ int main(int argc, char** argv)
         const int xin = w.eventRectOf(ev).left() + (int)std::lround((1.5 - 0.5) / 3.0 * r.width());
         const QColor in = im.pixelColor(xin, sep + 4), outside = im.pixelColor(r.right() - 30, sep + 4);
         check(in.blue() > in.red() + 40 && in.lightness() < 170, "time selection: the event is blue inside it", in.name().toStdString());
-        check(outside == grey, "time selection: the event stays grey outside it", outside.name().toStdString());
+        check(outside == grey, "time selection: the event stays gray outside it", outside.name().toStdString());
     }
     // VEGAS: a click in the timeline outside the time selection ends it - the loop region stays (its bar, loop
     // playback), but the tracks are no longer blue; a click on the loop region's bar makes it the selection again

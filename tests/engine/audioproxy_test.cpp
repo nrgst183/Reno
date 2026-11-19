@@ -221,11 +221,11 @@ int main(int argc, char** argv)
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         stopAudioProxyBuilds(true, true);
         waitForAudioProxies(30);
-        check(!fileExists(lp) && !fileExists(lp + ".part") && stopped.load() == 1, "cancelled half way: nothing is left behind",
+        check(!fileExists(lp) && !fileExists(lp + ".part") && stopped.load() == 1, "canceled half way: nothing is left behind",
               strfmt("stopped %d", stopped.load()));
         readAll(longer, 0, 4800);
         waitForAudioProxies(5);
-        check(!fileExists(lp + ".part") && !fileExists(lp), "a cancelled one is not built again by itself (its sound is mixed)");
+        check(!fileExists(lp + ".part") && !fileExists(lp), "a canceled one is not built again by itself (its sound is mixed)");
         // forced (Rebuild Offline Nested Audio): built after all - and the build of the next one is not held up
         Project small = playing(tone, 0.5, 1.0);
         const std::string sp = pathJoin(dir, "small.reno");

@@ -229,7 +229,7 @@ public:
         tree_->setColumnWidth(0, 330);
         tree_->setColumnWidth(1, 190);
         root->addWidget(tree_, 1);
-        auto* note = new QLabel("\"Timeline\" keys act when the timeline has the focus (click it, or press Alt+0). Greyed lines are the usual keys for things Reno cannot do yet. "
+        auto* note = new QLabel("\"Timeline\" keys act when the timeline has the focus (click it, or press Alt+0). Grayed lines are the usual keys for things Reno cannot do yet. "
                                 "These are VEGAS's default keys: Options > Customize Keyboard changes them (and shows the keys in use).", this);
         note->setWordWrap(true);
         root->addWidget(note);

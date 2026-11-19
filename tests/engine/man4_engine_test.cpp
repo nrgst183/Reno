@@ -52,7 +52,7 @@ static void testCaptions(const std::string& out)
         return s;
     };
     check(rows(0.5) == "" && rows(1.5) == "14:1:First Row:Wh;15:1:Second Row:Wh;" && rows(2.5) == "", "pop-on: shown at its time, cleared by {EDM}", rows(1.5));
-    check(rows(3.5) == "10:8:Paint:Rd;", "paint-on: shown at once, in its colour and indent", rows(3.5));
+    check(rows(3.5) == "10:8:Paint:Rd;", "paint-on: shown at once, in its color and indent", rows(3.5));
     check(rows(5.5) == "10:8:Paint:Rd;14:0:One:Wh;15:0:Two:Wh;" || rows(5.5).find("14:0:One:Wh;15:0:Two:Wh;") != std::string::npos, "roll-up: lines move up", rows(5.5));
     check(rows(6.5).find("One") == std::string::npos && rows(6.5).find("14:0:Two:Wh;15:0:Three:Wh;") != std::string::npos, "roll-up of two rows: the oldest line goes", rows(6.5));
 
@@ -132,10 +132,10 @@ static void testColor()
 {
     auto enc = [](const char* cs, float v) { float c[3] = {v, v, v}; colorFromSceneLinear(c, cs); return c[0]; };
     auto dec = [](const char* cs, float v) { float c[3] = {v, v, v}; colorToSceneLinear(c, cs); return c[0]; };
-    check(std::fabs(enc("slog3", 0.18f) * 1023 - 420) < 1.0, "S-Log3: 18% grey is code 420", fmt(enc("slog3", 0.18f) * 1023));
-    check(std::fabs(enc("logc", 0.18f) - 0.391) < 0.005, "ARRI LogC (EI 800): 18% grey is 0.391", fmt(enc("logc", 0.18f)));
-    check(std::fabs(enc("acescc", 0.18f) - 0.4135) < 0.002 && std::fabs(enc("acescct", 0.18f) - 0.4135) < 0.002, "ACEScc / ACEScct: 18% grey is 0.4135");
-    check(std::fabs(enc("vlog", 0.18f) - 0.423) < 0.005, "Panasonic V-Log: 18% grey is 0.423", fmt(enc("vlog", 0.18f)));
+    check(std::fabs(enc("slog3", 0.18f) * 1023 - 420) < 1.0, "S-Log3: 18% gray is code 420", fmt(enc("slog3", 0.18f) * 1023));
+    check(std::fabs(enc("logc", 0.18f) - 0.391) < 0.005, "ARRI LogC (EI 800): 18% gray is 0.391", fmt(enc("logc", 0.18f)));
+    check(std::fabs(enc("acescc", 0.18f) - 0.4135) < 0.002 && std::fabs(enc("acescct", 0.18f) - 0.4135) < 0.002, "ACEScc / ACEScct: 18% gray is 0.4135");
+    check(std::fabs(enc("vlog", 0.18f) - 0.423) < 0.005, "Panasonic V-Log: 18% gray is 0.423", fmt(enc("vlog", 0.18f)));
     bool round = true;
     std::string worst;
     for (const char* cs : {"rec709", "srgb", "rec2020", "acescc", "acescct", "acesproxy", "adx10", "adx16", "slog1", "slog2_3200", "slog2_5500", "slog3", "logc", "clog",
@@ -149,7 +149,7 @@ static void testColor()
                 worst = std::string(cs) + " " + fmt(v) + " -> " + fmt(c[0]);
             }
         }
-    check(round, "every color space's curve and its inverse give the colour back", worst);
+    check(round, "every color space's curve and its inverse give the color back", worst);
     // the view transforms: black stays black, they rise with the light, highlights roll off below 1
     bool views = true;
     for (const auto& v : viewTransforms("1.0")) {
@@ -158,7 +158,7 @@ static void testColor()
         if (!(a <= 0.12f && b > a && c > b && d >= c && d <= 1.001f)) { views = false; worst = v.id; }
     }
     check(views, "every view transform: black dark, rising, highlights rolled off within the display", worst);
-    check(enc("rrt_srgb", 0.18f) < enc("srgb", 0.18f), "the ACES RRT is darker than plain sRGB at mid grey (as the manual says)", fmt(enc("rrt_srgb", 0.18f)));
+    check(enc("rrt_srgb", 0.18f) < enc("srgb", 0.18f), "the ACES RRT is darker than plain sRGB at mid gray (as the manual says)", fmt(enc("rrt_srgb", 0.18f)));
     check(colorSpaceLabel("slog3") == "Input - Sony - S-Log3 - S-Gamut3" && mediaColorSpaces("0.7").size() == 9 && viewTransforms("0.7").size() == 6 &&
               viewTransforms("1.0").size() == 23 && renderColorSpaces().front().label == "Default",
           "VEGAS's lists (ACES 0.7's and 1.0's)");
@@ -275,7 +275,7 @@ static void testPictures(const std::string& out)
     const int acesOut = grey(full, linear);
     check(eight >= 126 && eight <= 130 && std::abs(off - eight) <= 1, "full range with the View transform Off: as the 8-bit project", strfmt("%d / %d", eight, off));
     check(aces >= 0 && aces < eight - 10, "through the ACES RRT (sRGB): darker and more contrasty", strfmt("%d", aces));
-    check(slogGrey > aces, "a file marked S-Log3: its grey is brighter light (128 in S-Log3 is above 18%)", strfmt("%d", slogGrey));
+    check(slogGrey > aces, "a file marked S-Log3: its gray is brighter light (128 in S-Log3 is above 18%)", strfmt("%d", slogGrey));
     check(acesOut >= 0 && acesOut < aces, "a render template's ACES color space: the linear ACES values", strfmt("%d", acesOut));
     // the preview's way: interactive, at half size
     FrameOptions pv;
@@ -445,7 +445,7 @@ static void testRender(const std::string& out)
         std::vector<std::vector<float>> ch;
         const int n = ok ? readChannels(spec.enc.path, ch, 9600) : 0;
         check(n == 6 && tone(&ch[2][2400], 4800, 500) > 0.1 && tone(&ch[0][2400], 4800, 500) < 0.02,
-              "a 5.1 render has the six channels (a centre-only track in the centre channel)", strfmt("%d channels", n));
+              "a 5.1 render has the six channels (a center-only track in the center channel)", strfmt("%d channels", n));
         std::string log;
         readFile(spec.loudnessLog, log);
         check(log.find("Integrated:") != std::string::npos && log.find("EBU R 128") != std::string::npos && log.find("00:00:01.000") != std::string::npos &&
@@ -673,7 +673,7 @@ static void testModernEq()
     // Mid: a centred tone (the same on both) is cut; a tone in antiphase (all side) is not
     const double mid = eqGain({{0, 1}, {1, 5}, {2, 1000}, {3, -12}, {4, 1.0}, {5, 3}}, 1000, 0, 1.0, 1.0);
     const double midSide = eqGain({{0, 1}, {1, 5}, {2, 1000}, {3, -12}, {4, 1.0}, {5, 3}}, 1000, 0, 1.0, -1.0);
-    check(mid < 0.3 && midSide > 0.97, "routed to Mid, a band acts on the centre and not on the sides", fmt(mid) + " " + fmt(midSide));
+    check(mid < 0.3 && midSide > 0.97, "routed to Mid, a band acts on the center and not on the sides", fmt(mid) + " " + fmt(midSide));
     const double side = eqGain({{0, 1}, {1, 5}, {2, 1000}, {3, -12}, {4, 1.0}, {5, 4}}, 1000, 0, 1.0, 1.0);
     const double sideSide = eqGain({{0, 1}, {1, 5}, {2, 1000}, {3, -12}, {4, 1.0}, {5, 4}}, 1000, 0, 1.0, -1.0);
     check(side > 0.97 && sideSide < 0.3, "routed to Side, the opposite", fmt(side) + " " + fmt(sideSide));

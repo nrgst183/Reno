@@ -604,7 +604,7 @@ int main(int argc, char** argv)
         uitest::mouseDrag(&w, QPoint(pan.center().x(), pan.center().y()), QPoint(pan.center().x() + pan.width() / 4, pan.center().y()));
         check(near(st().project().tracks[2].pan, 0.5, 0.03), "the pan slider pans", num(st().project().tracks[2].pan));
         uitest::mouseDoubleClick(&w, QPoint(pan.center().x() + pan.width() / 4, pan.center().y()));
-        check(near(st().project().tracks[2].pan, 0.0), "double-click centres it");
+        check(near(st().project().tracks[2].pan, 0.0), "double-click centers it");
         // FX buttons
         fxCalls = 0;
         // the header's FX button shows once the headers are wide enough, as in VEGAS

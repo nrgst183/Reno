@@ -262,7 +262,7 @@ int main(int argc, char** argv)
         Project p = rig.generated(kV + "solidcolor", ps);
         ImagePtr img = rig.render(p);
         Px a = pixel(img, 10, 10), b = pixel(img, 150, 80);
-        check(near(a, 255, 128, 0) && near(b, 255, 128, 0) && a.a == 255, "Solid Color fills the frame with its colour", pxs(a) + " / " + pxs(b) + " " + rig.error(p));
+        check(near(a, 255, 128, 0) && near(b, 255, 128, 0) && a.a == 255, "Solid Color fills the frame with its color", pxs(a) + " / " + pxs(b) + " " + rig.error(p));
         Project d = rig.generated(kV + "solidcolor");
         img = rig.render(d);
         a = pixel(img, 80, 45);
@@ -303,7 +303,7 @@ int main(int argc, char** argv)
         Project e = rig.generated(kV + "colorgradient", ps);
         img = rig.render(e);
         Px c = pixel(img, 80, 45), o = pixel(img, 2, 2);
-        check(c.r < 10 && o.r > 245, "elliptical: Color 1 at the centre, Color 2 outside", pxs(c) + " / " + pxs(o));
+        check(c.r < 10 && o.r > 245, "elliptical: Color 1 at the center, Color 2 outside", pxs(c) + " / " + pxs(o));
     }
     {
         Json ps = Json::object();
@@ -315,7 +315,7 @@ int main(int argc, char** argv)
         Project p = rig.generated(kV + "checkerboard", ps);
         ImagePtr img = rig.render(p);
         Px a = pixel(img, 10, 10), b = pixel(img, 50, 10), c = pixel(img, 10, 60), d = pixel(img, 50, 60);
-        check(near(a, 255, 0, 0) && near(b, 0, 0, 255) && near(c, 0, 0, 255) && near(d, 255, 0, 0), "Checkerboard alternates its two colours across and down",
+        check(near(a, 255, 0, 0) && near(b, 0, 0, 255) && near(c, 0, 0, 255) && near(d, 255, 0, 0), "Checkerboard alternates its two colors across and down",
               pxs(a) + " " + pxs(b) + " " + pxs(c) + " " + pxs(d));
     }
     {
@@ -342,13 +342,13 @@ int main(int argc, char** argv)
         Project p = rig.generated(kV + "testpattern");
         ImagePtr img = rig.render(p);
         Px grey = pixel(img, 5, 20), blue = pixel(img, 155, 20);
-        check(near(grey, 180, 180, 180, 2) && near(blue, 16, 16, 180, 2), "Test Pattern: colour bars by default (VEGAS's OpenCL kernel: 180 grey on the left, 16/16/180 blue at the right edge)", pxs(grey) + " / " + pxs(blue));
+        check(near(grey, 180, 180, 180, 2) && near(blue, 16, 16, 180, 2), "Test Pattern: color bars by default (VEGAS's OpenCL kernel: 180 gray on the left, 16/16/180 blue at the right edge)", pxs(grey) + " / " + pxs(blue));
         Json ps = Json::object();
         ps["TestPatternType"] = val({4});
         Project r = rig.generated(kV + "testpattern", ps);
         img = rig.render(r);
         check(near(pixel(img, 20, 45), 25 + 4 * 204 / 128, 25 + 4 * 204 / 128, 25 + 4 * 204 / 128, 3) && near(pixel(img, 140, 45), 25 + 124 * 204 / 128, 25 + 124 * 204 / 128, 25 + 124 * 204 / 128, 3),
-              "Ramp: VEGAS's 25..229 grey steps across the middle", pxs(pixel(img, 20, 45)) + " / " + pxs(pixel(img, 140, 45)));
+              "Ramp: VEGAS's 25..229 gray steps across the middle", pxs(pixel(img, 20, 45)) + " / " + pxs(pixel(img, 140, 45)));
         ps["TestPatternType"] = val({5});
         Project sm = rig.generated(kV + "testpattern", ps);
         img = rig.render(sm);
@@ -379,7 +379,7 @@ int main(int argc, char** argv)
         img = rig.render(p);
         // 100 points at 90 lines: 22.5 px em; "HI" is 22 px wide, centred at (80, 45)
         Px c = pixel(img, 74, 45), off = pixel(img, 80, 10);
-        check(gRasterCalls > 0 && near(c, 255, 255, 255) && near(off, 0, 0, 255), "the text in Text color, centred, over the background", pxs(c) + " / " + pxs(off));
+        check(gRasterCalls > 0 && near(c, 255, 255, 255) && near(off, 0, 0, 255), "the text in Text color, centered, over the background", pxs(c) + " / " + pxs(off));
         check(std::fabs(gLastRequest.pixelSize - 22.5) < 0.01 && gLastRequest.font == "Verdana" && gLastRequest.text == "HI", "its size scales with the frame (100 points: a quarter of the height)",
               strfmt("%.2f px, %s", gLastRequest.pixelSize, gLastRequest.font.c_str()));
         // anchor: bottom left at (0.1, 0.1)
@@ -401,7 +401,7 @@ int main(int argc, char** argv)
         // the block spans x 69..91, y 34..56; the outline (10 at 720 lines: 1.25 px) just outside
         bool red = false;
         for (int x = 64; x < 70; ++x) { Px e = pixel(img, x, 45); if (e.r > 120 && e.g < 80) red = true; }
-        check(red, "an outline round the letters in its colour");
+        check(red, "an outline around the letters in its color");
         // VEGAS's rich text: font, size and style from it
         ps["Text"] = str("{\\rtf1\\ansi\\ansicpg1252\\deff0\\nouicompat\\deflang1033{\\fonttbl{\\f0\\fnil\\fcharset0 Impact;}}\r\n"
                          "{\\*\\generator Riched20 10.0.19041}\\viewkind4\\uc1 \r\n\\pard\\qc\\b\\f0\\fs96 Title\\par\r\n}\r\n");
@@ -476,7 +476,7 @@ int main(int argc, char** argv)
             ImagePtr a0 = rig.render(cr, 0.0), a5 = rig.render(cr, 2.0), a10 = rig.render(cr, 4.9);
             check(whites(a0, 0, 160) == 0 && whites(a10, 0, 160) == 0, "Credit Roll: nothing at the start (below the frame) or at the end (above it)",
                   strfmt("%d / %d", whites(a0, 0, 160), whites(a10, 0, 160)));
-            check(whites(a5, 0, 80) > 0 && whites(a5, 80, 160) > 0, "Credit Roll: in the middle of the roll the two columns are either side of the centre",
+            check(whites(a5, 0, 80) > 0 && whites(a5, 80, 160) > 0, "Credit Roll: in the middle of the roll the two columns are either side of the center",
                   strfmt("%d / %d", whites(a5, 0, 80), whites(a5, 80, 160)));
             ImagePtr a2 = rig.render(cr, 1.0);
             int lowest2 = -1, lowest5 = -1;
@@ -575,11 +575,11 @@ int main(int argc, char** argv)
         const std::string blue = "solid:200,100,50";     // b, g, r
         Project p = rig.filtered(blue, kV + "invert");
         Px a = pixel(rig.render(p), 80, 45);
-        check(near(a, 205, 155, 55), "Invert turns the colours over", pxs(a) + " " + rig.error(p));
+        check(near(a, 205, 155, 55), "Invert turns the colors over", pxs(a) + " " + rig.error(p));
         Project bw = rig.filtered(blue, kV + "blackandwhite");
         a = pixel(rig.render(bw), 80, 45);
         const int l = (50 + 100 + 200) / 3;       // VEGAS: the integer mean of the three levels
-        check(near(a, l, l, l, 1), "Black and White: the grey is the mean of the levels", pxs(a));
+        check(near(a, l, l, l, 1), "Black and White: the gray is the mean of the levels", pxs(a));
         Json ps = Json::object();
         ps["Brightness"] = val({0.2});
         Project br = rig.filtered(blue, kV + "brightnessandcontrast", ps);
@@ -589,12 +589,12 @@ int main(int argc, char** argv)
         ps["Saturation"] = val({0});
         Project hs = rig.filtered(blue, kV + "hsladjust", ps);
         a = pixel(rig.render(hs), 80, 45);
-        check(a.r == a.g && a.g == a.b, "HSL Adjust: saturation 0 greys", pxs(a));
+        check(a.r == a.g && a.g == a.b, "HSL Adjust: saturation 0 grays", pxs(a));
         ps = Json::object();
         ps["BlendingStrength"] = val({1});
         Project sp = rig.filtered(blue, kV + "sepia", ps);
         a = pixel(rig.render(sp), 80, 45);
-        check(a.r > a.b && a.g > a.b, "Sepia: warm greys", pxs(a));
+        check(a.r > a.b && a.g > a.b, "Sepia: warm grays", pxs(a));
         ps = Json::object();
         ps["Threshold"] = val({0.5});
         Project th = rig.filtered(blue, kV + "threshold", ps);
@@ -625,7 +625,7 @@ int main(int argc, char** argv)
         Project ck = rig.filtered("split:255,0,0,0,0,255", kV + "chromakeyer", ps);
         ImagePtr img = rig.render(ck);
         Px left = pixel(img, 20, 45), right = pixel(img, 140, 45);
-        check(near(left, 0, 0, 0) && near(right, 255, 0, 0), "Chroma Keyer: the key colour becomes transparent (black behind), the rest stays", pxs(left) + " / " + pxs(right));
+        check(near(left, 0, 0, 0) && near(right, 255, 0, 0), "Chroma Keyer: the key color becomes transparent (black behind), the rest stays", pxs(left) + " / " + pxs(right));
         // VEGAS's own numbers (its pictures of the default Blue Screen key): a grey keeps alpha 244, cyan 177 (blue kept: it is not
         // above green), magenta 232 with its blue removed; over black the colour is the premultiplied one
         {
@@ -666,7 +666,7 @@ int main(int argc, char** argv)
         img = rig.render(dr);
         left = pixel(img, 20, 45);
         right = pixel(img, 140, 45);
-        check(near(left, 255, 0, 0) && right.r == right.g && right.g == right.b, "its hue limit (VEGAS's Desaturate All but Reds): red kept, blue greyed",
+        check(near(left, 255, 0, 0) && right.r == right.g && right.g == right.b, "its hue limit (VEGAS's Desaturate All but Reds): red kept, blue grayed",
               pxs(left) + " / " + pxs(right));
         ps = Json::object();
         ps["Alpha"] = val({0});
@@ -685,7 +685,7 @@ int main(int argc, char** argv)
         ps["Mid"] = val({103.5, 1});
         Project cc = rig.filtered("solid:128,128,128", kV + "colorcorrector", ps);
         a = pixel(rig.render(cc), 80, 45);
-        check(a.r > a.g + 30 && a.r > a.b + 30, "Color Corrector: the Mid wheel towards red reddens a grey", pxs(a));
+        check(a.r > a.g + 30 && a.r > a.b + 30, "Color Corrector: the Mid wheel toward red reddens a gray", pxs(a));
         // Convolution Kernel: the identity changes nothing; Find Edges makes a flat picture black and finds the edge
         Project ck1 = rig.filtered(blue, kV + "convolutionkernel");
         a = pixel(rig.render(ck1), 80, 45);
@@ -705,7 +705,7 @@ int main(int argc, char** argv)
         ps["Center"] = val({0.4, 0.5});
         Project sz = rig.filtered("split:0,0,0,255,255,255", kV + "spherize", ps);
         img = rig.render(sz);
-        check(near(pixel(img, 85, 45), 0, 0, 0) && near(pixel(img, 150, 45), 255, 255, 255), "Spherize bulges (the edge pushed away from the centre)", pxs(pixel(img, 85, 45)));
+        check(near(pixel(img, 85, 45), 0, 0, 0) && near(pixel(img, 150, 45), 255, 255, 255), "Spherize bulges (the edge pushed away from the center)", pxs(pixel(img, 85, 45)));
         // with Proportional on (the default) the vertical scaling is the horizontal one, as VEGAS's kernel is fed: ScalingVertical changes nothing
         {
             Json pv = Json::object();
@@ -758,7 +758,7 @@ int main(int argc, char** argv)
         int dark = 0, light = 0;
         for (int y = 0; y < 90; ++y)
             for (int x = 0; x < 160; ++x) { const int v = pixel(img, x, y).r; dark += v < 40; light += v > 215; }
-        check(dark > 2000 && light > 2000, "Newsprint: grey becomes black dots on white", strfmt("%d dark, %d light", dark, light));
+        check(dark > 2000 && light > 2000, "Newsprint: gray becomes black dots on white", strfmt("%d dark, %d light", dark, light));
         // every effect renders with its defaults, and with every number set to nonsense
         for (const auto& info : ofx::builtinInfos()) {
             if (!info.filter) continue;
@@ -992,7 +992,7 @@ int main(int argc, char** argv)
         ps["Amount"] = val({-1}); ps["Center"] = val({0.5}); ps["Spread"] = val({2}); ps["Low"] = val({-1}); ps["High"] = val({-1});
         im = rig.render(rig.filtered("solid:30,60,200", kV + "saturationadjust", ps));
         a = pixel(im, 80, 45);
-        check(im && std::abs(a.r - a.b) < 40 && std::abs(a.r - a.g) < 40, "Saturation Adjust at -1 takes the colour away", pxs(a));
+        check(im && std::abs(a.r - a.b) < 40 && std::abs(a.r - a.g) < 40, "Saturation Adjust at -1 takes the color away", pxs(a));
         // Channel Blend: red from blue
         ps = Json::object();
         ps["BLUE weight B"] = val({0}); ps["BLUE weight G"] = val({0}); ps["BLUE weight R"] = val({1});
@@ -1004,7 +1004,7 @@ int main(int argc, char** argv)
         // Mask Generator: luminance as grey
         im = rig.render(rig.filtered("split:0,0,0,255,255,255", kV + "maskgenerator"));
         a = pixel(im, 20, 45); b = pixel(im, 140, 45);
-        check(im && a.r < 20 && b.r > 235 && std::abs(b.r - b.b) < 6, "Mask Generator makes a grey mask from brightness", pxs(a) + " / " + pxs(b));
+        check(im && a.r < 20 && b.r > 235 && std::abs(b.r - b.b) < 6, "Mask Generator makes a gray mask from brightness", pxs(a) + " / " + pxs(b));
         // Crop keeps a box and clears the rest
         ps = Json::object();
         ps["XScale"] = val({0.5}); ps["YScale"] = val({0.5});
@@ -1023,7 +1023,7 @@ int main(int argc, char** argv)
         im = rig.render(rig.filtered("split:0,0,0,255,255,255", kV + "tinyplanet", ps));
         {
             Px left = pixel(im, 20, 45), right = pixel(im, 140, 45);
-            check(im && right.r > left.r + 100, "Tiny Planet wraps the panorama round the middle (left and right of the planet show opposite halves)", pxs(left) + " / " + pxs(right));
+            check(im && right.r > left.r + 100, "Tiny Planet wraps the panorama around the middle (left and right of the planet show opposite halves)", pxs(left) + " / " + pxs(right));
         }
         // Timecode burns text in
         im = rig.render(rig.filtered("solid:0,0,0", kV + "timecode"), 1.0);

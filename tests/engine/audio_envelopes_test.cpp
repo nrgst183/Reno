@@ -490,7 +490,7 @@ int main(int argc, char** argv)
     if (!vst.empty()) {
         std::string err;
         std::vector<AudioPluginDesc> d = describeAudioPluginFile(vst, &err);
-        if (d.empty()) check(false, "the VST effect is recognised", err);
+        if (d.empty()) check(false, "the VST effect is recognized", err);
         else {
             FxSlot fs;
             fs.id = p.newId();

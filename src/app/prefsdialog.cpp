@@ -1271,7 +1271,7 @@ private:
                           [simulate] { QSettings().setValue("preview/simulateAspect", simulate->isChecked()); }, [simulate] { simulate->setChecked(false); }});
         QComboBox* bg = combo(b, "prefs/previewBackground", "previewBackground",
                               {{"Default", "default"}, {"Black", "black"}, {"White", "white"}, {"Checkerboard", "checkerboard"}});
-        bg->setToolTip("What the Video Preview shows where the picture is transparent (and round it)");
+        bg->setToolTip("What the Video Preview shows where the picture is transparent (and around it)");
         p.beside(bg, "Bac&kground color:");
         p.beside(colorButton(b, "prefs/fadeTop", "fadeTop"), "Track fade to&p:", "color");
         p.beside(colorButton(b, "prefs/fadeBottom", "fadeBottom"), "Track fade botto&m:", "color");
@@ -1306,7 +1306,7 @@ private:
                             "Effects already in the project are recreated when this changes. (reno_cli vegasfx compares the two.)");
         f->addRow("VEGAS &effects:", vegasFx);
         QComboBox* vegasEfx = combo(renoBody_, "prefs/vegasEfxSource", "vegasEfxSource",
-                                    {{"Reno's built-in versions", "builtin"}, {"The installed plug-ins (need VEGAS's licence)", "real"}});
+                                    {{"Reno's built-in versions", "builtin"}, {"The installed plug-ins (need VEGAS's license)", "real"}});
         vegasEfx->setToolTip("VEGAS's eFX audio effects (Limiter, Compressor, Reverb, TubeStage, Phaser, ChorusFlanger) are MAGIX plug-ins that only run fully inside VEGAS "
                              "(the Limiter, for one, does not limit elsewhere). Reno's built-in versions read the same settings and show the same controls, but sound different. "
                              "Effects already in the project are recreated when this changes.");
@@ -1323,7 +1323,7 @@ private:
                         "as VEGAS does. Much faster; they may look slightly different from the final render (sizes in pixels). "
                         "Off: such effects work at the full project size in previews too. Final renders always use the full size.");
         f->addRow(all);
-        f->addRow(note("New video tracks get the fade colours above (a track's own: its header's menu, Fade Colors).", renoBody_));
+        f->addRow(note("New video tracks get the fade colors above (a track's own: its header's menu, Fade Colors).", renoBody_));
     }
 
     void buildPreviewDevice()

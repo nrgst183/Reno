@@ -250,7 +250,7 @@ int main(int argc, char** argv)
         g = panGains("power", 1.0, 0.0);
         check(near(g.ll * g.ll + g.rr * g.rr, 1.0) && near(g.ll, g.rr), "Constant Power: equal power in the middle");
         g = panGains("power", 1.0, -0.4);
-        check(near(g.ll * g.ll + g.rr * g.rr, 1.0) && g.ll > g.rr, "Constant Power: the same power off centre");
+        check(near(g.ll * g.ll + g.rr * g.rr, 1.0) && g.ll > g.rr, "Constant Power: the same power off center");
 
         Project p;
         fresh(p);

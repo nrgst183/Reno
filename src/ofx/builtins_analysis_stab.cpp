@@ -808,7 +808,7 @@ void addStabilizeEffects(std::vector<Def>& out)
         ps.push_back(custom("TrackData", "Track data", ""));
         for (size_t k = hiddenFrom; k < ps.size(); ++k) ps[k].secret = true;
         Def d = make("de.magix:Stabilize", "Video Stabilization",
-                     "Steadies a shaky picture: the camera's path is followed from frame to frame and smoothed (or frozen), the picture moved to match and zoomed in to hide the edges. Reno analyses as it plays instead of in a separate Analyze Motion step",
+                     "Steadies a shaky picture: the camera's path is followed from frame to frame and smoothed (or frozen), the picture moved to match and zoomed in to hide the edges. Reno analyzes as it plays instead of in a separate Analyze Motion step",
                      ps, videoStabilization);
         d.changed = stabilizeChanged;
         d.temporal = true;
@@ -833,7 +833,7 @@ void addStabilizeEffects(std::vector<Def>& out)
         ps.push_back(boolean("CurrentRollingShutterCorrection", "Current rolling shutter correction", false));
         for (size_t k = hiddenFrom; k < ps.size(); ++k) ps[k].secret = true;
         Def d = make("com.vegascreativesoftware:Stabilize", "Stabilize Video",
-                     "Removes camera shake: the camera's path is followed and smoothed, the picture moved to match and zoomed in to hide the edges. Reno analyses as it plays instead of in a separate Analyze step",
+                     "Removes camera shake: the camera's path is followed and smoothed, the picture moved to match and zoomed in to hide the edges. Reno analyzes as it plays instead of in a separate Analyze step",
                      ps, stabilizeVideo);
         d.changed = stabilizeVideoChanged;
         d.temporal = true;

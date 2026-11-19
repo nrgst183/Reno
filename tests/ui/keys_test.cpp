@@ -363,7 +363,7 @@ int main(int argc, char** argv)
             tl->setFocus();
             press(Qt::Key_0, Qt::KeypadModifier);
             uitest::settle(150);
-            check(pb->playing() && st().cursor() < 3.0 && st().cursor() > 2.4, "Num 0 previews round the cursor (from half a second before it)", num(st().cursor()));
+            check(pb->playing() && st().cursor() < 3.0 && st().cursor() > 2.4, "Num 0 previews around the cursor (from half a second before it)", num(st().cursor()));
             for (int k = 0; k < 60 && pb->playing(); ++k) uitest::settle(25);
             check(!pb->playing() && near(st().cursor(), 3.0), "and stops after a second, back at the cursor", num(st().cursor()));
             // Ctrl+Shift+F12: dim
@@ -533,7 +533,7 @@ int main(int argc, char** argv)
         for (int k = 0; k < 4; ++k) tl->zoomIn();
         st().setCursor(9.0);
         press("\\");
-        check(near((tl->viewStartTime() + tl->viewEndTime()) * 0.5, 9.0, 0.05), "\\ centres the view on the cursor", num(tl->viewStartTime()) + " " + num(tl->viewEndTime()));
+        check(near((tl->viewStartTime() + tl->viewEndTime()) * 0.5, 9.0, 0.05), "\\ centers the view on the cursor", num(tl->viewStartTime()) + " " + num(tl->viewEndTime()));
         tl->zoomToFit();
         // Go To
         // VEGAS types the time in place: a box over the time display or the selection's end
@@ -593,6 +593,19 @@ int main(int argc, char** argv)
         check(near(st().cursor(), 16.0), "past the last: the end of the project");
         press("Ctrl+Left");
         check(near(st().cursor(), 13.0), "Ctrl+Left: previous marker");
+        // VEGAS's Time Select Right by Marker/Region: from the cursor to the next marker, and on from there
+        st().setLoop(0, 0);
+        st().setCursor(0.0);
+        press("Ctrl+Shift+Right");
+        check(near(st().loopStart, 0.0) && near(st().loopEnd, 3.0) && near(st().cursor(), 3.0), "Ctrl+Shift+Right time-selects to the next marker",
+              num(st().loopStart) + " " + num(st().loopEnd));
+        press("Ctrl+Shift+Right");
+        check(near(st().loopStart, 0.0) && near(st().loopEnd, 9.0), "and a second press reaches the one after", num(st().loopStart) + " " + num(st().loopEnd));
+        st().setLoop(11.0, 13.0);
+        st().setLoop(0, 0);
+        press("Shift+L");
+        check(near(st().loopStart, 11.0) && near(st().loopEnd, 13.0), "Shift+L selects the loop region again, as Shift+Q does", num(st().loopStart) + " " + num(st().loopEnd));
+        st().setLoop(0, 0);
         // with the mouse: click a tag, drag it, double-click to name it, right-click to delete it
         const uint64_t m1 = st().project().markers[0].id;
         QRect tag = tl->markerTagRect(m1);

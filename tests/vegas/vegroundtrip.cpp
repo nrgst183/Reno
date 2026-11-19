@@ -941,7 +941,7 @@ static Project madeInReno()
     MediaItem gen;
     gen.id = p.newId();
     gen.generated = true;
-    gen.name = "Solid colour";
+    gen.name = "Solid color";
     gen.info.hasVideo = true;
     gen.info.width = 1280;
     gen.info.height = 720;

@@ -224,7 +224,7 @@ void envelopeTests(TimelineWidget& w, const QString& out)
         st().setLoop(0, 0);
         bool enabled = true;
         menuPick(&w, w.envelopePointPos(vol, 5), "Flip Selected Points", QString(), nullptr, &enabled);
-        check(!enabled, "with no time selection Flip Selected Points is greyed");
+        check(!enabled, "with no time selection Flip Selected Points is grayed");
         st().edit("One point", [&](Project& p) {
             Envelope* e2 = AppState::findEnvelope(p, vol);
             e2->points.resize(1);

@@ -247,7 +247,7 @@ int main(int argc, char** argv)
             c = centreIn(top);
             drag(top, c, c + QPointF(0, 40));
             t = track(V2);
-            check(t->motion[0].z > 0.05 && near(t->motion[0].x, x0, 1e-6), "a drag down in the Top pane brings it towards the camera (Position Z)",
+            check(t->motion[0].z > 0.05 && near(t->motion[0].x, x0, 1e-6), "a drag down in the Top pane brings it toward the camera (Position Z)",
                   num(t->motion[0].z));
             const QImage nearer = pb->renderNow(1.0);
             check(meanDiff(flat, nearer) > 2, "and the preview shows it moved in 3D", num(meanDiff(flat, nearer)));

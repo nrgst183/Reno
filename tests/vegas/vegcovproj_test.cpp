@@ -250,13 +250,13 @@ int main(int argc, char** argv)
         Project back;
         std::string bytes;
         if (saveAndLoad(p, "fadecolour", back, &bytes) && check(back.tracks.size() == 1, "video track read back")) {
-            check(back.tracks[0].fadeTop == 0xFFFF8000u, "top fade colour read back", std::to_string(back.tracks[0].fadeTop));
-            check(back.tracks[0].fadeBottom == 0x800040FFu, "bottom fade colour read back", std::to_string(back.tracks[0].fadeBottom));
+            check(back.tracks[0].fadeTop == 0xFFFF8000u, "top fade color read back", std::to_string(back.tracks[0].fadeTop));
+            check(back.tracks[0].fadeBottom == 0x800040FFu, "bottom fade color read back", std::to_string(back.tracks[0].fadeBottom));
             size_t at = 0, sz = 0;
             if (findChunk(bytes, veg::G::VideoTrackData, at, sz)) {
                 check(std::fabs(f32(bytes, at + 0x30) - 0.0f) < 1e-6 && std::fabs(f32(bytes, at + 0x34) - 128 / 255.0f) < 1e-6 &&
                           std::fabs(f32(bytes, at + 0x38) - 1.0f) < 1e-6 && std::fabs(f32(bytes, at + 0x3c) - 1.0f) < 1e-6,
-                      "the top colour is stored blue, green, red, alpha");
+                      "the top color is stored blue, green, red, alpha");
             }
         }
     }
@@ -598,7 +598,7 @@ int main(int argc, char** argv)
         Project back;
         std::string bytes;
         if (saveAndLoad(p, "pancrop", back, &bytes)) {
-            check(back.videoFadeTop == 0xFF336699u && back.videoFadeBottom == 0xFFE61A1Au, "the video output's fade colours are read back",
+            check(back.videoFadeTop == 0xFF336699u && back.videoFadeBottom == 0xFFE61A1Au, "the video output's fade colors are read back",
                   std::to_string(back.videoFadeTop) + "," + std::to_string(back.videoFadeBottom));
             // the keys' bytes: the second key's rotation is +0.2 and its last double is the smoothness 0..1
             std::vector<size_t> at;

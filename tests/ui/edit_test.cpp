@@ -499,7 +499,7 @@ int main(int argc, char** argv)
         st().setCursor(12.0);
         kp(Qt::Key_Slash);
         check(near(ev(ids.e5)->end(), 12.5) && near(ev(ids.e6)->start, 11.5) && near(ev(ids.e6)->offset, 2.5),
-              "Num / turns the cut into a one-second cross-fade centred on it", num(ev(ids.e5)->end()) + " " + num(ev(ids.e6)->start));
+              "Num / turns the cut into a one-second cross-fade centered on it", num(ev(ids.e5)->end()) + " " + num(ev(ids.e6)->start));
         kp(Qt::Key_Slash, Qt::ControlModifier);
         check(near(ev(ids.e5)->end(), 12.0) && near(ev(ids.e6)->start, 12.0) && near(ev(ids.e6)->offset, 3.0), "Ctrl+Num / turns it back into a cut",
               num(ev(ids.e5)->end()) + " " + num(ev(ids.e6)->start));
@@ -745,6 +745,46 @@ int main(int argc, char** argv)
         press("Shift+F1");
         check(QWhatsThis::inWhatsThisMode(), "Shift+F1: What's This mode");
         QWhatsThis::leaveWhatsThisMode();
+    }
+
+    // ---------------------------------------------------------------- Insert > Add Missing Stream for Selected Event
+    {
+        std::string err;
+        const uint64_t clip = st().importMedia("synth:7", &err);
+        const std::vector<uint64_t> made = st().addMediaToTimeline(clip, 30.0);
+        uint64_t vid = 0, aud = 0;
+        for (uint64_t id : made) {
+            const Track* tr = nullptr;
+            if (st().project().findEvent(id, &tr) && tr) (tr->type == TrackType::Video ? vid : aud) = id;
+        }
+        check(vid && aud, "a clip with sound goes on the timeline as a picture and a sound");
+        st().edit("Trim", [&](Project& p) {
+            if (Event* e = p.findEvent(vid)) { e->offset = 1.5; e->length = 4.0; e->rate = 1.25; e->group = 0; }
+        });
+        st().selectOnly(aud);
+        press("Delete");
+        check(!st().project().findEvent(aud), "its sound is deleted");
+        st().selectOnly(vid);
+        QAction* add = w.vegasAction("addMissingStream");
+        check(add != nullptr, "Insert has Add Missing Stream for Selected Event");
+        const size_t events0 = [&] { size_t n = 0; for (const Track& t : st().project().tracks) n += t.events.size(); return n; }();
+        if (add) add->trigger();
+        const Event* v = ev(vid);
+        const Event* a = nullptr;
+        for (const Track& t : st().project().tracks)
+            if (t.type == TrackType::Audio)
+                for (const Event& e : t.events)
+                    if (e.mediaId == clip) a = &e;
+        check(a && v && near(a->start, v->start) && near(a->length, 4.0) && near(a->offset, 1.5) && near(a->rate, 1.25) && a->group && a->group == v->group,
+              "the sound comes back at the same place, playing the same part at the same rate, grouped with the picture",
+              a ? strfmt("%.3f + %.3f from %.3f at %.3f, group %llu / %llu", a->start, a->length, a->offset, a->rate, (unsigned long long)a->group,
+                         (unsigned long long)(v ? v->group : 0)) : std::string("no sound"));
+        check(st().undoName() == "Add Missing Stream", "one undo step named Add Missing Stream", st().undoName());
+        const size_t events1 = [&] { size_t n = 0; for (const Track& t : st().project().tracks) n += t.events.size(); return n; }();
+        if (add) add->trigger();
+        const size_t events2 = [&] { size_t n = 0; for (const Track& t : st().project().tracks) n += t.events.size(); return n; }();
+        check(events1 == events0 + 1 && events2 == events1, "with the sound there, it adds nothing more", strfmt("%d %d %d", (int)events0, (int)events1, (int)events2));
+        press("Ctrl+Z");
     }
 
     // ---------------------------------------------------------------- the shortcut list: every VEGAS key Reno does

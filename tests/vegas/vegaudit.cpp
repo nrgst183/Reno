@@ -269,7 +269,7 @@ void accounting(const std::string& proj, const Project& p, const veg::ChunkTree&
                 if (r.unreadParams) fact(proj, "video fx record with unreadable parameters", r.unreadParams);
                 if (r.bypass()) fact(proj, "video fx switched off (bypass)");
             } else {
-                std::string key = c.data.size() >= 0x38 && c.data.u32(0) == 0x38 ? c.data.guid(4) + " '" + c.data.text(0x38, c.data.u32(0x34)) + "'" : "(unrecognised record)";
+                std::string key = c.data.size() >= 0x38 && c.data.u32(0) == 0x38 ? c.data.guid(4) + " '" + c.data.text(0x38, c.data.u32(0x34)) + "'" : "(unrecognized record)";
                 // what Reno does with it: the XML (CoreGraphics) and the older (DirectX-era) records become built-in effects
                 std::string used;
                 veg::ManagedFxRecord mr;

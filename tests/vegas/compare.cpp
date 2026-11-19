@@ -481,7 +481,7 @@ static bool comparePair(const std::string& vegPath, const std::string& renoPath)
             const Json& pb = e2.get("panCrop");
             same("event pan/crop key count", pa.size() == pb.size(), strfmt("%s: importer %zu keys, VEGAS %zu", we.c_str(), pa.size(), pb.size()));
             for (size_t k = 0; k < pa.size() && k < pb.size(); ++k) {
-                const char* names[] = {"time", "centre x", "centre y", "width", "height", "rotation", "curve"};
+                const char* names[] = {"time", "center x", "center y", "width", "height", "rotation", "curve"};
                 for (int f = 0; f < 7; ++f)
                     num(std::string("event pan/crop ") + names[f], we + strfmt(" key %zu", k), pa.at(k).at(f).asDouble(), pb.at(k).at(f).asDouble(), f == 5 ? 1e-3 : 1e-4);
                 const double ra = pa.at(k).at(5).asDouble(), rb = pb.at(k).at(5).asDouble();

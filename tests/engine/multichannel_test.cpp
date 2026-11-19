@@ -192,7 +192,7 @@ static void testEngine(const std::string& file)
         eng.render(p, kRate, n, l.data(), r.data(), true);
         double others = 1;
         check(loudest(l.data(), n, &others) == 2 && loudest(r.data(), n) == 2 && others < 0.01 && std::fabs(tone(l.data(), n, kFreq[2]) - 0.4) < 0.01,
-              "engine: an event of channel 3 (C) plays the centre channel alone, on both sides", "others " + fmt(others));
+              "engine: an event of channel 3 (C) plays the center channel alone, on both sides", "others " + fmt(others));
     }
     {
         Project p = oneEvent(file, 0, 2, 2);
@@ -241,7 +241,7 @@ static void testEngine(const std::string& file)
         }
         eng.renderChannels(p, kRate, n, ptr, true);
         check(tone(c[ChC].data(), n, kFreq[3]) > 0.35 && tone(c[ChL].data(), n, kFreq[3]) < 1e-3,
-              "engine: in a 5.1 project an event of the LFE channel panned to the centre plays there");
+              "engine: in a 5.1 project an event of the LFE channel panned to the center plays there");
     }
     // the project file keeps the pick and the media's channel names
     {
@@ -298,7 +298,7 @@ static void testAc3(const std::string& file, const std::string& dir)
     }
     r->audioChannels(kRate / 2, n, kRate, 6, ptr);
     const double cc = tone(c[ChC].data(), n, kFreq[2]), ll = tone(c[ChL].data(), n, kFreq[2]);
-    check(cc > 0.3 && ll < 0.02, "ac3: the centre-only sound is on C", "C " + fmt(cc) + ", L " + fmt(ll));
+    check(cc > 0.3 && ll < 0.02, "ac3: the center-only sound is on C", "C " + fmt(cc) + ", L " + fmt(ll));
 }
 
 // ------------------------------------------------------------------ plug-ins on a 5.1 master
@@ -436,7 +436,7 @@ static void testPlugins(const std::string& vst3, const std::string& vst2)
     if (!vst2.empty()) {
         unsetenv("RENO_TESTVST_CHANNELS");
         const AudioPluginDesc d = findPlugin(vst2, "Reno Surround VST2");
-        check(!d.name.empty() && d.numInputs == 6 && d.numOutputs == 6, "vst2: the 6-in / 6-out test plug-in is recognised");
+        check(!d.name.empty() && d.numInputs == 6 && d.numOutputs == 6, "vst2: the 6-in / 6-out test plug-in is recognized");
         if (!d.name.empty()) {
             uint64_t slot = 0;
             Project p = masterProject(d, slot);

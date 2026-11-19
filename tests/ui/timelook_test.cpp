@@ -113,7 +113,7 @@ int main(int argc, char** argv)
         // the coloured strip down the left, in the track's colour, 24 pixels wide, with the menu button's three bars
         const QColor track1(89, 115, 168);
         const QColor strip = img.pixelColor(5, h1.bottom() - 4);
-        check(near(strip, track1), "the strip down the left of a header is in the track's colour", rgb(strip));
+        check(near(strip, track1), "the strip down the left of a header is in the track's color", rgb(strip));
         check(near(img.pixelColor(25, h1.bottom() - 4), track1) && !near(img.pixelColor(29, h1.bottom() - 4), track1, 8),
               "the strip is 24 pixels wide (after the 3 pixel margin)", rgb(img.pixelColor(25, h1.bottom() - 4)) + " / " + rgb(img.pixelColor(29, h1.bottom() - 4)));
         const QRect menu = w.headerPartRect(v1, TimelineWidget::PartMenu);
@@ -123,7 +123,7 @@ int main(int argc, char** argv)
         check(count(img, QRect(3, h1.top() + 25, 24, 20), QColor(255, 255, 255), 30) >= 8, "the track's number is written white in the strip under the button");
         // the selected track's header is light grey, the others dark
         const QColor sel = img.pixelColor(h1.left() + 40, h1.bottom() - 6), plain = img.pixelColor(h2.left() + 40, h2.bottom() - 6);
-        check(near(sel, QColor(130, 130, 130), 12), "the selected video track's header body is light grey", rgb(sel));
+        check(near(sel, QColor(130, 130, 130), 12), "the selected video track's header body is light gray", rgb(sel));
         check(qGray(plain.rgb()) < 80, "the other headers are dark", rgb(plain));
         // the name on the light header is dark
         const QRect nm = w.headerPartRect(v1, TimelineWidget::PartName);
@@ -157,7 +157,7 @@ int main(int argc, char** argv)
         // the old grey "FX M S" boxes are gone: no pixel of the old dim button grey (70,70,75) at the FX position
         const QRect fx = w.headerPartRect(v2, TimelineWidget::PartFx);
         check(count(img, fx, QColor(70, 70, 75), 2) < 10, "the FX button is not the old dim box", std::to_string(count(img, fx, QColor(70, 70, 75), 2)));
-        check(count(img, icon(v2, TimelineWidget::PartFx), QColor(150, 150, 150), 14) > 60, "the FX button is VEGAS's grey round icon");
+        check(count(img, icon(v2, TimelineWidget::PartFx), QColor(150, 150, 150), 14) > 60, "the FX button is VEGAS's gray round icon");
         (void)h3; (void)h4;
 
         // hit areas and functions are unchanged: a click on Mute or Solo toggles them

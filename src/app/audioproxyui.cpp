@@ -46,7 +46,7 @@ public:
         l->addWidget(text_);
         QObject::connect(cancel_, &QToolButton::clicked, this, [] {
             stopAudioProxyBuilds(false, true);
-            AppState::get().status("Building the audio proxy was cancelled.");
+            AppState::get().status("Building the audio proxy was canceled.");
         });
         hide();
     }

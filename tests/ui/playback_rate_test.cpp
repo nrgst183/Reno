@@ -205,7 +205,7 @@ int main(int argc, char** argv)
         hi = std::max(hi, (double)loop[k] * 20.0);
     }
     pb.pause();
-    check(lo > 3.98 && hi < 5.02 && hi - lo > 0.8, "backwards round a loop region: the sound stays inside it", strfmt("%.3f .. %.3f s", lo, hi));
+    check(lo > 3.98 && hi < 5.02 && hi - lo > 0.8, "backwards around a loop region: the sound stays inside it", strfmt("%.3f .. %.3f s", lo, hi));
     app.loopOn = false;
     app.setLoop(0, 0);
 
