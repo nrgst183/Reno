@@ -638,7 +638,9 @@ int main(int argc, char** argv)
         press("Ctrl+Alt+Shift+X");
         check(track(ids.v1)->solo && track(ids.v2)->solo && !track(ids.a2)->solo, "Ctrl+Alt+Shift+X solos the group only");
         tl->collapseTrackGroup(true);
-        check(tl->trackRect(ids.v2).height() == 0 && tl->trackRect(ids.v1).height() > 0, "Collapse shows the group as its first track");
+        // (VEGAS: a collapsed group is its header row alone)
+        check(tl->trackRect(ids.v2).height() == 0 && tl->trackRect(ids.v1).height() == 0 && tl->trackRect(ids.a1).height() > 0,
+              "Collapse shows the group as its header row alone");
         tl->collapseTrackGroup(false);
         check(tl->trackRect(ids.v2).height() > 0, "Expand shows it again");
         // Shift+F11: track list as narrow as it goes, and back

@@ -1568,11 +1568,12 @@ struct PreviewWidget::Impl {
     }
 
     static QString format(int w, int h, double fps) { return QString("%1x%2x32, %3p").arg(w).arg(h).arg(fps, 0, 'f', 3); }
+    double shownFps = 0;            // the frames a second the Display line shows (measured while playing; kept after)
 
     void showTime()
     {
         const AppState& app = AppState::get();
-        setReadoutText(frame, QString::number((qlonglong)app.project().frameAt(app.cursor())));
+        setReadoutText(frame, QLocale::system().toString((qlonglong)app.project().frameAt(app.cursor())));
     }
     void arrange();
     void showFormat()
@@ -1591,9 +1592,14 @@ struct PreviewWidget::Impl {
         // keep up.
         if (pb) pb->setPreviewSize(ps.width(), ps.height(), view->adjustForPlayback);
         const bool playingNow = pb && pb->playing();
-        const double shownFps = playingNow ? pb->previewFrameRate() : 0.0;
-        if (playingNow && !view->image().isNull()) setReadoutText(previewInfo, format(view->image().width(), view->image().height(), shownFps));
-        else setReadoutText(previewInfo, format(ps.width(), ps.height(), s.fps()));
+        if (playingNow) shownFps = pb->previewFrameRate();
+        const QSize rendered = playingNow && !view->image().isNull() ? view->image().size() : ps;
+        setReadoutText(previewInfo, format(rendered.width(), rendered.height(), s.fps()));
+        {
+            QPalette pp = previewInfo->palette();
+            pp.setColor(QPalette::WindowText, rendered.width() < s.width || rendered.height() < s.height ? QColor(240, 128, 128) : QColor(220, 220, 220));
+            previewInfo->setPalette(pp);
+        }
         if (playingNow || (pb && pb->droppedFrames() > 0))
             previewInfo->setToolTip(QString("The size the preview is rendered at, and the frames shown a second while playing (the project has %1): "
                                             "%2 frames dropped%3 - pictures not ready in time are not shown, the sound never waits for them")
@@ -1606,7 +1612,9 @@ struct PreviewWidget::Impl {
         if (s.viewTransform != "off")
             for (const ColorSpaceChoice& c : viewTransforms(s.acesVersion))
                 if (c.id == s.viewTransform) viewName = QString::fromStdString(c.label);
-        setReadoutText(display, t.isEmpty() ? QString("-") : QString("%1x%2x32").arg(t.width()).arg(t.height()) + (viewName.isEmpty() ? QString() : " " + viewName));
+        // (the rate shown: measured while playing, the last one after it stopped)
+        const QString rate = shownFps > 0 ? QString(", %1").arg(shownFps, 0, 'f', 3) : QString();
+        setReadoutText(display, t.isEmpty() ? QString("-") : QString("%1x%2x32").arg(t.width()).arg(t.height()) + rate + (viewName.isEmpty() ? QString() : " " + viewName));
         QPalette pal = display->palette();
         pal.setColor(QPalette::WindowText, !t.isEmpty() && t.width() < ps.width() ? QColor(240, 128, 128) : QColor(220, 220, 220));
         display->setPalette(pal);
@@ -1714,7 +1722,7 @@ void PreviewWidget::Impl::arrange()
         r->setPalette(lp);
     }
     const QColor dim = QColor(220, 220, 220);
-    for (QLabel* l : {project, previewInfo, frame}) {
+    for (QLabel* l : {project, frame}) {
         QPalette pal = l->palette();
         pal.setColor(QPalette::WindowText, dim);
         l->setPalette(pal);
@@ -1725,7 +1733,7 @@ void PreviewWidget::Impl::arrange()
         l->setPalette(pal);
     }
     auto* uv = new QVBoxLayout(under);
-    uv->setContentsMargins(3, 4, 8, 2);
+    uv->setContentsMargins(8, 4, 8, 2);
     uv->setSpacing(0);
     auto* transport = new QHBoxLayout();
     transport->setSpacing(0);
