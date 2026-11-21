@@ -39,7 +39,14 @@ TimelineWidget::Impl::Impl(TimelineWidget* w, Playback* pb) : q(w), playback(pb)
         headerW = clampHeaderW(s.value("timeline/headerWidth", kHeaderDefault).toInt());
         for (const QString& k : s.value("timeline/hiddenButtons/video").toStringList()) hiddenButtons[1].insert(k);
         for (const QString& k : s.value("timeline/hiddenButtons/audio").toStringList()) hiddenButtons[0].insert(k);
+        metersOn = s.value("timeline/trackMeters", true).toBool();
+        meterVertical = s.value("timeline/trackMetersVertical", true).toBool();
+        meterHold = s.value("timeline/trackMetersHold", true).toBool();
+        meterLo = clampd(s.value("timeline/trackMetersRange", -60.0).toDouble(), -120.0, -12.0);
     }
+    meterTimer = new QTimer(q);
+    meterTimer->setInterval(33);
+    QObject::connect(meterTimer, &QTimer::timeout, q, [this] { meterTick(); });
     zoomInButton = new BarButton(q, "zoomInButton", "Zoom In Time (Up)", [this] { zoomBy(1.5); }, [](QPainter& p, const QRectF& r) { drawPlusMinus(p, r, true); });
     zoomOutButton = new BarButton(q, "zoomOutButton", "Zoom Out Time (Down)", [this] { zoomBy(1.0 / 1.5); }, [](QPainter& p, const QRectF& r) { drawPlusMinus(p, r, false); });
     zoomToolButton = new BarButton(q, "zoomToolButton", "Zoom Tool: drag across the events to zoom to that stretch", [this] {
@@ -143,6 +150,7 @@ TimelineWidget::~TimelineWidget()
     QObject::disconnect(d->vbar, nullptr, this, nullptr);
     QObject::disconnect(d->nameEdit, nullptr, this, nullptr);
     QObject::disconnect(d->autoScroll, nullptr, this, nullptr);
+    QObject::disconnect(d->meterTimer, nullptr, this, nullptr);
     d->nameEdit->onCancel = nullptr;
     for (QObject* o : children())
         if (Filter* f = dynamic_cast<Filter*>(o)) {
@@ -391,8 +399,43 @@ QRect TimelineWidget::headerPartRect(uint64_t trackId, HeaderPart part) const
     case PartFade: return h.fade;
     case PartPhase: return h.phase;
     case PartBus: return h.bus;
+    case PartSendLabel: return h.sendLabel;
+    case PartSendValue: return h.sendValue;
+    case PartSend: return h.send;
+    case PartSendPrePost: return h.sendPrePost;
+    case PartFxArrow: return h.fxArrow;
+    case PartCompMode: return h.compMode;
+    case PartCompChild: return h.compChild;
+    case PartCompParent: return h.compParent;
+    case PartParentMotion: return h.parentMotion;
+    case PartParentComp: return h.parentComp;
+    case PartMeter: return h.meter;
+    case PartGroupLane: return h.groupLane;
+    case PartStrip: return h.strip;
     }
     return QRect();
+}
+
+QRect TimelineWidget::trackGroupRect(uint64_t trackId, int part) const
+{
+    const Project& p = AppState::get().project();
+    for (const Impl::GroupRow& g : d->groupRows)
+        for (size_t k = g.first; k <= g.last && k < p.tracks.size(); ++k)
+            if (p.tracks[k].id == trackId) {
+                const Impl::GroupRects r = d->groupRects(g);
+                return part == 1 ? r.toggle : part == 2 ? r.name : part == 3 ? r.mute : part == 4 ? r.solo : r.all;
+            }
+    return QRect();
+}
+
+void TimelineWidget::showTrackMeterLevels(uint64_t trackId, float left, float right)
+{
+    Impl::TrackMeter& m = d->trackMeters[trackId];
+    m.level[0] = left;
+    m.level[1] = right;
+    for (int c = 0; c < 2; ++c) m.hold[c] = std::max(m.hold[c], c ? right : left);
+    m.clip = m.clip || left > 1.0f || right > 1.0f;
+    update(d->headerColumn());
 }
 
 QRect TimelineWidget::eventRectOf(uint64_t eventId) const
@@ -621,6 +664,7 @@ void TimelineWidget::Impl::paintFromLayer(QPainter& p, const QRegion& region)
         p.drawImage(rr.topLeft(), layer, QRect((int)std::lround(rr.x() * dpr), (int)std::lround(rr.y() * dpr), (int)std::lround(rr.width() * dpr), (int)std::lround(rr.height() * dpr)));
         paintCursor(p, rr);
         paintCorners(p, rr);
+        paintMeters(p, rr);
         p.restore();
     }
     paintedCursor = app.cursor();

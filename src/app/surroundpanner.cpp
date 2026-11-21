@@ -1,6 +1,7 @@
 // VEGAS's Surround Panner: see surroundpanner.h.
 #include "surroundpanner.h"
 #include "toolwin.h"
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QGridLayout>
@@ -9,9 +10,11 @@
 #include <QKeyEvent>
 #include <QMenu>
 #include <QLabel>
+#include <QLocale>
+#include <QToolButton>
+#include <QWidgetAction>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPainterPath>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -75,7 +78,6 @@ const double kPi = 3.14159265358979323846;
 // Where the speakers stand in the room (x, y): L, R, C, LFE (drawn at the rear middle; 5.1 has no speaker there), Ls, Rs.
 const double kSpeakerX[6] = {-1, 1, 0, 0, -1, 1};
 const double kSpeakerY[6] = {1, 1, 1, -1, -1, -1};
-const char* kSpeakerName[6] = {"L", "R", "C", "LFE", "Ls", "Rs"};
 
 // Sets the pan point (x, y) in 'sp': the key at the cursor (created if missing) when it has keyframes, else the
 // point itself. 'motion' keeps one axis where it is.
@@ -96,7 +98,8 @@ QSize SurroundField::sizeHint() const { return compact_ ? QSize(44, 44) : QSize(
 
 QRectF SurroundField::room() const
 {
-    const double m = compact_ ? 4.0 : 26.0;
+    // the window's room fills the field, the speakers standing in its corners and at its front middle (as VEGAS's)
+    const double m = compact_ ? 4.0 : 10.0;
     const double side = std::max(10.0, std::min(width(), height()) - 2 * m);
     return QRectF((width() - side) / 2.0, (height() - side) / 2.0, side, side);
 }
@@ -131,6 +134,15 @@ QPointF SurroundField::pointPos() const
 
 QRectF SurroundField::speakerRect(int ch) const
 {
+    if (!compact_) {
+        // the window draws the five speakers (not the LFE, which has its own button) in the room's corners and at its
+        // front middle, facing in
+        if (ch == ChLFE) return QRectF();
+        const QPointF c = toWidget(kSpeakerX[ch], kSpeakerY[ch]);
+        const double s = 18.0, in = kSpeakerX[ch] == 0 ? 8.0 : 6.0;
+        const QPointF d(kSpeakerX[ch] < 0 ? in : kSpeakerX[ch] > 0 ? -in : 0, kSpeakerY[ch] > 0 ? in : -in);
+        return QRectF(c.x() + d.x() - s / 2, c.y() + d.y() - s / 2, s, s);
+    }
     const QPointF c = toWidget(kSpeakerX[ch], kSpeakerY[ch]);
     const double s = compact_ ? 6.0 : 22.0;
     const double dx = kSpeakerX[ch] < 0 ? -s * 0.55 : (kSpeakerX[ch] > 0 ? s * 0.55 : 0);
@@ -142,27 +154,172 @@ void SurroundField::paintEvent(QPaintEvent*)
 {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.fillRect(rect(), compact_ ? QColor(30, 30, 30) : gap());
     const SurroundPan* sp = get ? get() : nullptr;
+    if (compact_) paintCompact(p, sp);
+    else paintRoom(p, sp);
+}
+
+namespace {
+
+// The level a speaker gets, as VEGAS writes it over the speaker: "-Inf." or dB with one decimal (in the system's way of
+// writing numbers, as VEGAS does: "-7,4" with a decimal comma).
+QString levelText(float g)
+{
+    if (g <= 1e-5f) return QString("-Inf.");
+    double db = 20.0 * std::log10((double)g);
+    if (std::fabs(db) < 0.05) db = 0.0;
+    return QLocale().toString(db, 'f', 1);
+}
+
+// VEGAS's speaker: a small box and its cone, drawn facing down and turned to face 'to'.
+void drawSpeaker(QPainter& p, const QRectF& r, const QPointF& to, bool muted)
+{
+    const QPointF c = r.center();
+    const QPointF d = to - c;
+    const double angle = std::atan2(-d.x(), d.y()) * 180.0 / kPi;
+    p.save();
+    p.translate(c);
+    p.rotate(angle);
+    const double s = r.width() / 18.0;
+    p.scale(s, s);
+    p.setPen(Qt::NoPen);
+    p.setBrush(muted ? QColor(120, 120, 120) : QColor(240, 240, 240));
+    p.drawRect(QRectF(-3.5, -7, 7, 4));
+    const QPointF cone[4] = {QPointF(-3.5, -3), QPointF(3.5, -3), QPointF(7.5, 3.5), QPointF(-7.5, 3.5)};
+    p.drawPolygon(cone, 4);
+    p.restore();
+    if (muted) {
+        p.setPen(QPen(QColor(230, 70, 60), 2.0));
+        p.drawLine(r.topLeft() + QPointF(3, 3), r.bottomRight() - QPointF(3, 3));
+        p.drawLine(r.topRight() + QPointF(-3, 3), r.bottomLeft() + QPointF(3, -3));
+    }
+}
+
+}  // namespace
+
+// The window's room, as VEGAS 18 draws it: dark, the grid in dashed lines, a grey disc at each speaker with the level
+// it gets written in it, the pan point, the keyframes' path in small circles, and the pan type's name at the bottom.
+void SurroundField::paintRoom(QPainter& p, const SurroundPan* sp)
+{
+    p.fillRect(rect(), QColor(38, 38, 38));
+    const QRectF r = room();
+    if (!sp) {
+        p.setPen(text());
+        p.drawText(r, Qt::AlignCenter | Qt::TextWordWrap, "No Panner Selected");
+        return;
+    }
+    double x, y, c;
+    surroundPointAt(*sp, AppState::get().cursor(), x, y, c);
+    float g[6] = {0, 0, 0, 0, 0, 0};
+    const bool panned = sp->route == "surround";
+    if (panned) surroundGains(*sp, panType ? panType() : std::string(), x, y, c, g);
+    else {
+        if (sp->route == "front") g[ChL] = g[ChR] = 1;
+        else if (sp->route == "rear") g[ChLs] = g[ChRs] = 1;
+        else if (sp->route == "center") g[ChC] = 1;
+        else if (sp->route == "lfe") g[ChLFE] = 1;
+    }
+    for (int ch = 0; ch < 6; ++ch)
+        if ((sp->speakerMutes >> ch) & 1u) g[ch] = 0;
+    // the discs: a lighter ring outside, the darker middle, and an arc that grows with the level
+    const double R = r.width() * 0.25;
+    QStringList levels;     // L, R, C, Ls, Rs as written (for tests)
+    p.save();
+    p.setClipRect(r);
+    QFont f = font();
+    f.setPixelSize(10);
+    p.setFont(f);
+    for (int ch = 0; ch < 6; ++ch) {
+        if (ch == ChLFE) continue;
+        const QPointF o = toWidget(kSpeakerX[ch], kSpeakerY[ch]);
+        const double rad = ch == ChC ? R * 0.8 : R;
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(92, 92, 92));
+        p.drawEllipse(o, rad, rad);
+        p.setBrush(QColor(68, 68, 68));
+        p.drawEllipse(o, rad * 0.64, rad * 0.64);
+        const double share = std::min(1.0, std::max(0.0, (double)g[ch]));
+        if (share > 0.001) {
+            p.setPen(QPen(QColor(200, 200, 200), 1.0));
+            p.setBrush(Qt::NoBrush);
+            const double a = rad * (0.64 + 0.36 * share);
+            p.drawEllipse(o, a, a);
+        }
+        // the level, inside the disc toward the room's middle
+        const QPointF in(kSpeakerX[ch] == 0 ? 0 : (kSpeakerX[ch] < 0 ? 1 : -1), kSpeakerY[ch] > 0 ? 1 : -1);
+        const QPointF at = ch == ChC ? o + QPointF(0, rad * 0.45) : o + QPointF(in.x() * rad * 0.4, in.y() * rad * 0.36);
+        p.setPen(QColor(240, 240, 240));
+        p.drawText(QRectF(at.x() - 24, at.y() - 7, 48, 14), Qt::AlignCenter, levelText(g[ch]));
+        levels << levelText(g[ch]);
+    }
+    // the grid: where left and right (and front and rear) differ by 6 dB, 0 dB and -6 dB
+    p.setPen(QPen(QColor(110, 110, 110), 1, Qt::DashLine));
+    for (double gx : {-2.0 / 3.0, 0.0, 2.0 / 3.0}) p.drawLine(toWidget(gx, 1), toWidget(gx, -1));
+    for (double gy : {2.0 / 3.0, 0.2, -1.0 / 3.0}) p.drawLine(toWidget(-1, gy), toWidget(1, gy));
+    // the keyframes' path
+    if (sp->keys.size() > 1) {
+        p.setPen(QPen(QColor(240, 140, 40), 1.2));
+        p.setBrush(Qt::NoBrush);
+        const double span = sp->keys.back().time - sp->keys.front().time;
+        const int n = 40;
+        for (int i = 0; i <= n; ++i) {
+            double kx, ky, kc;
+            surroundPointAt(*sp, sp->keys.front().time + span * i / n, kx, ky, kc);
+            p.drawEllipse(toWidget(kx, ky), 2.2, 2.2);
+        }
+    }
+    p.restore();
+    for (int ch = 0; ch < 6; ++ch) {
+        if (ch == ChLFE) continue;
+        drawSpeaker(p, speakerRect(ch), r.center(), (sp->speakerMutes >> ch) & 1u);
+    }
+    const QPointF pt = toWidget(x, y);
+    if (panned) {
+        // the pan point: a red dot in a ring of small white dots
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 255, 255));
+        for (int k = 0; k < 10; ++k) {
+            const double a = k * kPi / 5.0;
+            p.drawEllipse(pt + QPointF(6.5 * std::cos(a), 6.5 * std::sin(a)), 1.2, 1.2);
+        }
+        p.setBrush(hasFocus() && selected_ ? QColor(240, 60, 50) : QColor(200, 50, 45));
+        p.setPen(QPen(QColor(255, 255, 255), 1.0));
+        p.drawEllipse(pt, 3.6, 3.6);
+    }
+    // the pan type (or where the sound goes, when it is not panned) at the bottom
+    QString name;
+    if (panned) {
+        const std::string type = panType ? panType() : std::string();
+        const std::string key = type.empty() ? std::string("balance0") : type;
+        for (const auto& t : surroundPanTypes())
+            if (t.first == key) name = qs(t.second);
+    } else {
+        name = sp->route == "front" ? "Front Only" : sp->route == "rear" ? "Rear Only" : sp->route == "center" ? "Center Only" : "LFE Only";
+    }
+    QFont nf = font();
+    nf.setPixelSize(11);
+    p.setFont(nf);
+    p.setPen(QColor(240, 240, 240));
+    p.drawText(QRectF(r.left(), r.bottom() - 20, r.width(), 16), Qt::AlignCenter, name);
+    setProperty("pointX", x);
+    setProperty("pointY", y);
+    setProperty("panTypeName", name);
+    setProperty("levels", levels);
+}
+
+// The small panner of track headers and mixer strips.
+void SurroundField::paintCompact(QPainter& p, const SurroundPan* sp)
+{
+    p.fillRect(rect(), QColor(30, 30, 30));
     const QRectF r = room();
     p.setPen(QPen(QColor(90, 90, 90), 1));
     p.setBrush(QColor(22, 22, 24));
     p.drawRect(r);
-    if (!sp) {
-        if (!compact_) {
-            p.setPen(text());
-            p.drawText(r, Qt::AlignCenter | Qt::TextWordWrap, "No Panner Selected");
-        }
-        return;
-    }
+    if (!sp) return;
     p.setBrush(Qt::NoBrush);
     p.setPen(QPen(QColor(60, 60, 64), 1));
     p.drawLine(QPointF(r.center().x(), r.top()), QPointF(r.center().x(), r.bottom()));
     p.drawLine(QPointF(r.left(), r.center().y()), QPointF(r.right(), r.center().y()));
-    if (!compact_) {
-        for (double k : {0.5, 1.0}) p.drawEllipse(r.center(), r.width() / 2 * k, r.height() / 2 * k);
-        p.drawEllipse(r.center(), r.width() / 2 * std::sqrt(2.0), r.height() / 2 * std::sqrt(2.0));
-    }
     double x, y, c;
     surroundPointAt(*sp, AppState::get().cursor(), x, y, c);
     float g[6] = {0, 0, 0, 0, 0, 0};
@@ -178,61 +335,20 @@ void SurroundField::paintEvent(QPaintEvent*)
         const QRectF s = speakerRect(ch);
         const bool muted = (sp->speakerMutes >> ch) & 1u;
         const double share = std::min(1.0, (double)g[ch]);
-        const QColor lit = QColor::fromRgbF(0.25 + 0.5 * share * 0.0, 0.25 + 0.55 * share, 0.27 + 0.6 * share);
-        p.setPen(QPen(muted ? QColor(120, 60, 60) : QColor(150, 150, 150), compact_ ? 0.8 : 1.2));
+        p.setPen(QPen(muted ? QColor(120, 60, 60) : QColor(150, 150, 150), 0.8));
         p.setBrush(muted ? QColor(50, 30, 30) : (share > 0.001 ? QColor(accent().red(), accent().green(), accent().blue(), 60 + (int)(190 * share)) : QColor(45, 45, 48)));
-        (void)lit;
         if (ch == ChLFE) p.drawEllipse(s.adjusted(1, 1, -1, -1));
         else p.drawRoundedRect(s, 2, 2);
-        if (!compact_) {
-            p.setPen(muted ? QColor(200, 110, 110) : text());
-            QFont f = font();
-            f.setPixelSize(9);
-            p.setFont(f);
-            p.drawText(s, Qt::AlignCenter, kSpeakerName[ch]);
-        }
         if (muted) {
-            p.setPen(QPen(QColor(230, 70, 60), compact_ ? 1.0 : 2.0));
+            p.setPen(QPen(QColor(230, 70, 60), 1.0));
             p.drawLine(s.topLeft(), s.bottomRight());
             p.drawLine(s.topRight(), s.bottomLeft());
         }
     }
-    if (!compact_ && sp->keys.size() > 1) {
-        QPainterPath path;
-        for (size_t i = 0; i < sp->keys.size(); ++i) {
-            const QPointF q = toWidget(sp->keys[i].x, sp->keys[i].y);
-            if (i == 0) path.moveTo(q);
-            else path.lineTo(q);
-        }
-        p.setPen(QPen(QColor(200, 170, 60, 160), 1, Qt::DashLine));
-        p.drawPath(path);
-        for (const auto& k : sp->keys) {
-            const QPointF q = toWidget(k.x, k.y);
-            p.fillRect(QRectF(q.x() - 2.5, q.y() - 2.5, 5, 5), QColor(220, 190, 70));
-        }
-    }
-    const QPointF pt = toWidget(x, y);
-    if (panned && !compact_) {
-        for (int ch = 0; ch < 6; ++ch) {
-            if (ch == ChLFE || g[ch] < 0.01f) continue;
-            p.setPen(QPen(QColor(18, 132, 214, (int)(40 + 160 * g[ch])), 1));
-            p.drawLine(pt, speakerRect(ch).center());
-        }
-    }
     if (panned) {
-        const double rad = compact_ ? 3.0 : 7.0;
-        p.setPen(QPen(QColor(255, 255, 255), compact_ ? 1.0 : 1.5));
-        p.setBrush(hasFocus() && selected_ && !compact_ ? QColor(255, 200, 60) : QColor(240, 120, 30));
-        p.drawEllipse(pt, rad, rad);
-    }
-    if (!compact_) {
-        QFont f = font();
-        f.setPixelSize(10);
-        p.setFont(f);
-        p.setPen(text());
-        p.drawText(QRectF(r.left() + 14, height() - 17, r.width() / 2 - 26, 15), Qt::AlignLeft | Qt::AlignVCenter,
-                   panned ? QString("X %1   Y %2").arg(x * 100, 0, 'f', 1).arg(y * 100, 0, 'f', 1)
-                          : QString(sp->route == "front" ? "Front Only" : sp->route == "rear" ? "Rear Only" : sp->route == "center" ? "Center Only" : "LFE Only"));
+        p.setPen(QPen(QColor(255, 255, 255), 1.0));
+        p.setBrush(QColor(240, 120, 30));
+        p.drawEllipse(toWidget(x, y), 3.0, 3.0);
     }
     setProperty("pointX", x);
     setProperty("pointY", y);
@@ -258,7 +374,7 @@ void SurroundField::mousePressEvent(QMouseEvent* e)
     const QPointF pos = e->position();
     if (!compact_)
         for (int ch = 0; ch < 6; ++ch)
-            if (speakerRect(ch).adjusted(-2, -2, 2, 2).contains(pos)) {
+            if (!speakerRect(ch).isNull() && speakerRect(ch).adjusted(-2, -2, 2, 2).contains(pos)) {
                 SurroundPan n = *sp;
                 n.speakerMutes ^= 1u << ch;
                 std::function<void(Project&, const SurroundPan&)> fn = set;
@@ -436,23 +552,115 @@ double sliderToGain(int v, double topDb)
     return std::pow(10.0, db / 20.0);
 }
 
+// The tool bar's pictures, drawn here in VEGAS's manner: the track (its number and a speaker), the Move tool (the
+// arrows of the motion allowed), and LFE.
+QIcon trackIcon(const QString& label)
+{
+    const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+    QPixmap pm(QSize(26, 18) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QFont f = p.font();
+    f.setPixelSize(11);
+    f.setBold(true);
+    p.setFont(f);
+    p.setPen(QColor(255, 255, 255));
+    p.drawText(QRectF(0, 0, 11, 12), Qt::AlignLeft | Qt::AlignTop, label);
+    p.fillRect(QRectF(10, 4, 16, 14), QColor(255, 255, 255));
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(40, 40, 40));
+    const QPointF cone[4] = {QPointF(16, 9), QPointF(16, 13), QPointF(21, 16), QPointF(21, 6)};
+    p.drawRect(QRectF(13, 9, 3, 4));
+    p.drawPolygon(cone, 4);
+    return QIcon(pm);
+}
+
+QIcon moveIcon(const std::string& motion)
+{
+    const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+    QPixmap pm(QSize(16, 16) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QColor ink(240, 240, 240);
+    p.setPen(QPen(ink, 1.6));
+    p.setBrush(ink);
+    const bool across = motion != "y", along = motion != "x";
+    if (across) {
+        p.drawLine(QPointF(2.5, 8), QPointF(13.5, 8));
+        const QPointF l[3] = {QPointF(1, 8), QPointF(4.5, 5), QPointF(4.5, 11)};
+        const QPointF r[3] = {QPointF(15, 8), QPointF(11.5, 5), QPointF(11.5, 11)};
+        p.drawPolygon(l, 3);
+        p.drawPolygon(r, 3);
+    }
+    if (along) {
+        p.drawLine(QPointF(8, 2.5), QPointF(8, 13.5));
+        const QPointF u[3] = {QPointF(8, 1), QPointF(5, 4.5), QPointF(11, 4.5)};
+        const QPointF d[3] = {QPointF(8, 15), QPointF(5, 11.5), QPointF(11, 11.5)};
+        p.drawPolygon(u, 3);
+        p.drawPolygon(d, 3);
+    }
+    return QIcon(pm);
+}
+
+QIcon lfeIcon()
+{
+    const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+    QPixmap pm(QSize(20, 16) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(240, 240, 240));
+    p.drawRoundedRect(QRectF(0.5, 3.5, 19, 9), 1.5, 1.5);
+    QFont f = p.font();
+    f.setPixelSize(8);
+    f.setBold(true);
+    p.setFont(f);
+    p.setPen(QColor(30, 30, 30));
+    p.drawText(QRectF(0, 3, 20, 10), Qt::AlignCenter, "LFE");
+    return QIcon(pm);
+}
+
+// VEGAS's fader rows under the room: the name in a sunken box, the fader, the value in a box.
+QLabel* boxedLabel(const QString& text, QWidget* parent)
+{
+    QLabel* l = new QLabel(text, parent);
+    l->setStyleSheet("QLabel { background: #2b2b2b; border: 1px solid #1e1e1e; border-right-color: #5a5a5a; border-bottom-color: #5a5a5a;"
+                     " padding: 0px 3px; color: #e6e6e6; }");
+    return l;
+}
+
 }  // namespace
 
 struct SurroundPannerWindow::Impl {
     SurroundPannerWindow* w = nullptr;
     uint64_t pinned = 0;
     bool stale = false;
+    // The tool bar: whose panner (its menu lists the others), the Move tool and LFE.
+    QToolButton* targetBtn = nullptr;
+    QToolButton* moveBtn = nullptr;
+    QToolButton* lfeBtn = nullptr;
+    QMenu* moveMenu = nullptr;
+    // What the menus set is kept in these (not shown: VEGAS 18 has no such boxes), so a setting changes the same way
+    // from a menu, a key or a script.
     QComboBox* target = nullptr;
     QComboBox* route = nullptr;
     QComboBox* panTypeBox = nullptr;
     QComboBox* motion = nullptr;
-    QLabel* message = nullptr;
-    SurroundField* field = nullptr;
-    LabeledSlider center, smooth, lfe;
     QCheckBox* lfeOn = nullptr;
     QPushButton* addKey = nullptr;
     QPushButton* delKey = nullptr;
     QPushButton* clearKeys = nullptr;
+    QLabel* message = nullptr;
+    SurroundField* field = nullptr;
+    LabeledSlider center, smooth, lfe;
+    QWidget* lfeRow = nullptr;          // the LFE send's level, on the Move tool's menu
+    QWidgetAction* lfeAction = nullptr; // (the window's, so clearing the menu keeps it)
     QWidget* controls = nullptr;
     std::unique_ptr<Listener> listener;
 
@@ -474,6 +682,18 @@ struct SurroundPannerWindow::Impl {
         });
     }
 
+    // The track's number (or the bus's letter) as the tool bar's first button shows it.
+    QString shownLabel() const
+    {
+        const Project& p = AppState::get().project();
+        const uint64_t id = shown();
+        for (size_t i = 0; i < p.tracks.size(); ++i)
+            if (p.tracks[i].id == id) return QString::number(i + 1);
+        for (size_t i = 0; i < p.buses.size(); ++i)
+            if (p.buses[i].id == id) return QString(QChar('A' + (int)(i % 26)));
+        return QString();
+    }
+
     void refresh()
     {
         const Project& p = AppState::get().project();
@@ -484,8 +704,8 @@ struct SurroundPannerWindow::Impl {
             target->addItem("(the current track)", QVariant::fromValue<qulonglong>(0));
             int n = 0;
             for (const auto& t : p.tracks) {
-                if (t.type != TrackType::Audio) continue;
                 ++n;
+                if (t.type != TrackType::Audio) continue;
                 target->addItem(QString("Track %1%2").arg(n).arg(t.name.empty() ? QString() : ": " + qs(t.name)), QVariant::fromValue<qulonglong>(t.id));
             }
             for (size_t i = 0; i < p.buses.size(); ++i)
@@ -496,17 +716,25 @@ struct SurroundPannerWindow::Impl {
         const SurroundPan* sp = pan();
         message->setVisible(!surround || !sp);
         message->setText(!surround ? "No Surround Project\n\nProject Properties > Audio > Master bus mode: 5.1 Surround"
-                                   : "No Panner Selected\n\nClick an audio track (or pick a track or bus above)");
+                                   : "No Panner Selected\n\nClick an audio track (or pick a track or bus on the first button's menu)");
         field->setVisible(surround && sp);
         controls->setEnabled(surround && sp);
+        for (QToolButton* b : {moveBtn, lfeBtn}) b->setEnabled(surround && sp);
+        targetBtn->setIcon(trackIcon(sp ? shownLabel() : QString()));
+        const int at = target->findData(QVariant::fromValue<qulonglong>(shown()));
+        targetBtn->setToolTip(sp && at >= 0 ? QString("The panner of %1 (click to show another track's or a bus's)").arg(target->itemText(at))
+                                            : QString("Pick the track or bus whose panner is shown"));
         if (sp) {
-            const QSignalBlocker b1(route), b2(motion), b3(center.slider), b4(smooth.slider), b5(lfe.slider), b6(lfeOn), b7(panTypeBox);
+            const QSignalBlocker b1(route), b2(motion), b3(center.slider), b4(smooth.slider), b5(lfe.slider), b6(lfeOn), b7(panTypeBox), b8(lfeBtn);
             {
                 const std::string type = surroundPanTypeOf(p, shown());
                 panTypeBox->setCurrentIndex(std::max(0, panTypeBox->findData(qs(type.empty() ? std::string("balance0") : type))));
             }
             route->setCurrentIndex(std::max(0, route->findData(qs(sp->route))));
             motion->setCurrentIndex(std::max(0, motion->findData(qs(sp->motion))));
+            moveBtn->setIcon(moveIcon(sp->motion));
+            moveBtn->setProperty("motion", qs(sp->motion));
+            lfeBtn->setChecked(sp->route == "lfe");
             double x, y, c;
             surroundPointAt(*sp, AppState::get().cursor(), x, y, c);
             center.slider->setValue(gainToSlider(c, kCenterTopDb));
@@ -527,27 +755,126 @@ struct SurroundPannerWindow::Impl {
         field->update();
     }
 
-    // The row at the top: whose panner is shown, where its sound goes, and its pan type.
-    void buildTargetRow(QVBoxLayout* v)
+    // The settings the menus work through (not shown: see above).
+    void buildState()
     {
-        QHBoxLayout* top = new QHBoxLayout();
         target = new QComboBox(w);
         target->setObjectName("surroundTarget");
-        target->setToolTip("Whose surround panner is shown: the current track, or a track or bus of your choice");
-        top->addWidget(target, 1);
         route = new QComboBox(w);
         route->setObjectName("surroundRoute");
         for (auto r : {std::make_pair("Surround Pan", "surround"), std::make_pair("Front Only", "front"), std::make_pair("Center Only", "center"),
                        std::make_pair("LFE Only", "lfe"), std::make_pair("Rear Only", "rear")})
             route->addItem(r.first, QString(r.second));
-        route->setToolTip("Where the sound goes: panned by the point, or straight to the front pair, the center, the LFE or the rear pair");
-        top->addWidget(route);
         panTypeBox = new QComboBox(w);
         panTypeBox->setObjectName("surroundPanType");
         for (const auto& t : surroundPanTypes()) panTypeBox->addItem(qs(t.second), qs(t.first));
-        panTypeBox->setToolTip("Pan Type: the panning law of this track or bus (also on the shortcut menu of the panner)");
-        top->addWidget(panTypeBox);
-        v->addLayout(top);
+        motion = new QComboBox(w);
+        motion->setObjectName("surroundMotion");
+        motion->addItem("Move Freely", QString("free"));
+        motion->addItem("Move Left/Right Only", QString("x"));
+        motion->addItem("Move Front/Back Only", QString("y"));
+        lfeOn = new QCheckBox("Enable &LFE", w);
+        lfeOn->setObjectName("surroundLfe");
+        addKey = new QPushButton("Add Keyframe", w);
+        addKey->setObjectName("surroundAddKey");
+        delKey = new QPushButton("Delete Keyframe", w);
+        delKey->setObjectName("surroundDeleteKey");
+        clearKeys = new QPushButton("Clear Keyframes", w);
+        clearKeys->setObjectName("surroundClearKeys");
+        for (QWidget* x : std::initializer_list<QWidget*>{target, route, panTypeBox, motion, lfeOn, addKey, delKey, clearKeys}) x->hide();
+    }
+
+    // VEGAS 18's tool bar: the track, the Move tool (with its menu) and LFE.
+    void buildToolbar(QVBoxLayout* v)
+    {
+        QWidget* bar = new QWidget(w);
+        bar->setObjectName("surroundToolbar");
+        bar->setAutoFillBackground(true);
+        QPalette bp = bar->palette();
+        bp.setColor(QPalette::Window, QColor(52, 52, 52));
+        bar->setPalette(bp);
+        // (the Move tool keeps the style's own drawing, for its arrow)
+        bar->setStyleSheet("QToolButton#surroundTargetButton, QToolButton#surroundLfeButton { background: transparent; border: 1px solid transparent;"
+                           " border-radius: 2px; padding: 1px; }"
+                           "QToolButton#surroundTargetButton:hover, QToolButton#surroundLfeButton:hover { background: rgba(255, 255, 255, 30); }"
+                           "QToolButton#surroundLfeButton:checked { background: #12b0ff; border-color: #12b0ff; }"
+                           "QToolButton#surroundTargetButton::menu-indicator { image: none; width: 0px; }");
+        QHBoxLayout* h = new QHBoxLayout(bar);
+        h->setContentsMargins(4, 2, 4, 2);
+        h->setSpacing(6);
+        targetBtn = new QToolButton(bar);
+        targetBtn->setObjectName("surroundTargetButton");
+        targetBtn->setIconSize(QSize(26, 18));
+        targetBtn->setPopupMode(QToolButton::InstantPopup);
+        QMenu* targets = new QMenu(targetBtn);
+        targets->setObjectName("surroundTargetMenu");
+        targetBtn->setMenu(targets);
+        QObject::connect(targets, &QMenu::aboutToShow, w, [this, targets] {
+            targets->clear();
+            for (int i = 0; i < target->count(); ++i) {
+                QAction* a = targets->addAction(target->itemText(i));
+                a->setCheckable(true);
+                a->setChecked(i == target->currentIndex());
+                QObject::connect(a, &QAction::triggered, w, [this, i] { target->setCurrentIndex(i); });
+            }
+        });
+        moveBtn = new QToolButton(bar);
+        moveBtn->setObjectName("surroundMoveTool");
+        moveBtn->setIconSize(QSize(16, 16));
+        moveBtn->setPopupMode(QToolButton::MenuButtonPopup);
+        moveBtn->setAutoRaise(true);
+        moveBtn->setToolTip("Move Freely, Move Left/Right Only, Move Front/Back Only (a click goes to the next); the arrow: the pan type, "
+                            "where the sound goes, the LFE send and the keyframes");
+        moveMenu = new QMenu(moveBtn);
+        moveMenu->setObjectName("surroundMoveMenu");
+        moveBtn->setMenu(moveMenu);
+        QObject::connect(moveMenu, &QMenu::aboutToShow, w, [this] { fillMoveMenu(moveMenu); });
+        lfeBtn = new QToolButton(bar);
+        lfeBtn->setObjectName("surroundLfeButton");
+        lfeBtn->setCheckable(true);
+        lfeBtn->setIcon(lfeIcon());
+        lfeBtn->setIconSize(QSize(20, 16));
+        lfeBtn->setToolTip("LFE: send this sound to the LFE channel only (click again for surround panning)");
+        h->addWidget(targetBtn);
+        h->addWidget(moveBtn);
+        h->addWidget(lfeBtn);
+        h->addStretch(1);
+        v->addWidget(bar);
+    }
+
+    // The Move tool's menu: the motion, then what VEGAS 18 keeps elsewhere (the pan type, on the room's shortcut menu;
+    // where the sound goes and the LFE send, on the track's panner; the keyframes, on the timeline).
+    void fillMoveMenu(QMenu* m)
+    {
+        m->clear();
+        auto radio = [&](QMenu* in, QComboBox* box, int i) {
+            QAction* a = in->addAction(box->itemText(i));
+            a->setCheckable(true);
+            a->setChecked(box->currentIndex() == i);
+            QObject::connect(a, &QAction::triggered, w, [box, i] { box->setCurrentIndex(i); });
+            return a;
+        };
+        for (int i = 0; i < motion->count(); ++i) radio(m, motion, i);
+        m->addSeparator();
+        QMenu* types = m->addMenu("Pan Type");
+        for (int i = 0; i < panTypeBox->count(); ++i) radio(types, panTypeBox, i);
+        QMenu* routes = m->addMenu("Route");
+        for (int i = 0; i < route->count(); ++i) radio(routes, route, i);
+        m->addSeparator();
+        QAction* send = m->addAction("Enable LFE");
+        send->setCheckable(true);
+        send->setChecked(lfeOn->isChecked());
+        QObject::connect(send, &QAction::triggered, w, [this](bool on) { lfeOn->setChecked(on); });
+        lfeRow->setEnabled(lfeOn->isChecked());
+        m->addAction(lfeAction);
+        m->addSeparator();
+        QObject::connect(m->addAction("Add Keyframe"), &QAction::triggered, addKey, &QPushButton::click);
+        QAction* del = m->addAction("Delete Keyframe");
+        del->setEnabled(delKey->isEnabled());
+        QObject::connect(del, &QAction::triggered, delKey, &QPushButton::click);
+        QAction* clear = m->addAction("Clear Keyframes");
+        clear->setEnabled(clearKeys->isEnabled());
+        QObject::connect(clear, &QAction::triggered, clearKeys, &QPushButton::click);
     }
 
     // The panner itself (or a message saying why there is none).
@@ -573,55 +900,45 @@ struct SurroundPannerWindow::Impl {
         v->addWidget(field, 4);
     }
 
-    // Under the panner: Center, Smoothness, LFE, Motion and the keyframe buttons.
+    // Under the panner: VEGAS's Center and Smoothness faders. (The LFE send's level is on the Move tool's menu.)
     void buildControls(QVBoxLayout* v)
     {
         controls = new QWidget(w);
         QGridLayout* g = new QGridLayout(controls);
-        g->setContentsMargins(0, 0, 0, 0);
+        g->setContentsMargins(4, 2, 4, 4);
         g->setHorizontalSpacing(6);
-        g->setVerticalSpacing(2);
+        g->setVerticalSpacing(4);
         auto slider = [&](LabeledSlider& s, const char* label, const char* name, int lo, int hi, int row) {
-            g->addWidget(new QLabel(label, controls), row, 0);
+            g->addWidget(boxedLabel(label, controls), row, 0);
             s.slider = new QSlider(Qt::Horizontal, controls);
             s.slider->setObjectName(name);
             s.slider->setRange(lo, hi);
             g->addWidget(s.slider, row, 1);
-            s.value = new QLabel(controls);
-            s.value->setMinimumWidth(56);
+            s.value = boxedLabel(QString(), controls);
+            s.value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            s.value->setMinimumWidth(52);
             g->addWidget(s.value, row, 2);
         };
         slider(center, "Center:", "surroundCenter", 0, 1000, 0);   // 0.0 dB (no gain) is where the fader sits by default
         slider(smooth, "Smoothness:", "surroundSmoothness", 0, 100, 1);
-        lfeOn = new QCheckBox("Enable &LFE", controls);
-        lfeOn->setObjectName("surroundLfe");
-        g->addWidget(lfeOn, 2, 0);
-        lfe.slider = new QSlider(Qt::Horizontal, controls);
+        g->setColumnStretch(1, 1);
+        v->addWidget(controls);
+        // the LFE send's level, shown on the Move tool's menu
+        lfeRow = new QWidget();
+        lfeRow->setObjectName("surroundLfeRow");
+        QHBoxLayout* lh = new QHBoxLayout(lfeRow);
+        lh->setContentsMargins(24, 2, 8, 2);
+        lh->addWidget(new QLabel("LFE level:", lfeRow));
+        lfe.slider = new QSlider(Qt::Horizontal, lfeRow);
         lfe.slider->setObjectName("surroundLfeLevel");
         lfe.slider->setRange(0, 1000);
-        g->addWidget(lfe.slider, 2, 1);
-        lfe.value = new QLabel(controls);
-        g->addWidget(lfe.value, 2, 2);
-        g->addWidget(new QLabel("Motion:", controls), 3, 0);
-        motion = new QComboBox(controls);
-        motion->setObjectName("surroundMotion");
-        motion->addItem("Move Freely (X or Y)", QString("free"));
-        motion->addItem("Move left/right only (X)", QString("x"));
-        motion->addItem("Move front/back only (Y)", QString("y"));
-        g->addWidget(motion, 3, 1, 1, 2);
-        QHBoxLayout* keys = new QHBoxLayout();
-        addKey = new QPushButton("Add Keyframe", controls);
-        addKey->setObjectName("surroundAddKey");
-        addKey->setToolTip("A Surround Pan keyframe at the cursor, where the point is now (moving the point then changes the keyframe at the cursor)");
-        delKey = new QPushButton("Delete Keyframe", controls);
-        delKey->setObjectName("surroundDeleteKey");
-        clearKeys = new QPushButton("Clear", controls);
-        clearKeys->setToolTip("Delete every keyframe (the point stays where it is at the cursor)");
-        keys->addWidget(addKey);
-        keys->addWidget(delKey);
-        keys->addWidget(clearKeys);
-        g->addLayout(keys, 4, 0, 1, 3);
-        v->addWidget(controls);
+        lfe.slider->setMinimumWidth(110);
+        lh->addWidget(lfe.slider, 1);
+        lfe.value = new QLabel(lfeRow);
+        lfe.value->setMinimumWidth(52);
+        lh->addWidget(lfe.value);
+        lfeAction = new QWidgetAction(w);
+        lfeAction->setDefaultWidget(lfeRow);
     }
 
     // What the row's and the controls' settings change.
@@ -688,6 +1005,14 @@ struct SurroundPannerWindow::Impl {
         QObject::connect(addKey, &QPushButton::clicked, w, [this] { addKeyframeAtCursor(); });
         QObject::connect(delKey, &QPushButton::clicked, w, [this] { deleteNearestKeyframe(); });
         QObject::connect(clearKeys, &QPushButton::clicked, w, [this] { clearKeyframes(); });
+        // the Move tool: a click goes on to the next motion (VEGAS: Move Freely, Left/Right Only, Front/Back Only)
+        QObject::connect(moveBtn, &QToolButton::clicked, w, [this] {
+            if (motion->count() > 0) motion->setCurrentIndex((motion->currentIndex() + 1) % motion->count());
+        });
+        QObject::connect(lfeBtn, &QToolButton::toggled, w, [this](bool on) {
+            route->setCurrentIndex(std::max(0, route->findData(QString(on ? "lfe" : "surround"))));
+        });
+        QObject::connect(lfeOn, &QCheckBox::toggled, w, [this](bool on) { lfeRow->setEnabled(on); });
     }
 
     // Add Keyframe: a keyframe at the cursor where the point is now (the first one takes the panner's point).
@@ -753,10 +1078,11 @@ SurroundPannerWindow::SurroundPannerWindow(QWidget* parent) : QWidget(parent), d
     pal.setColor(QPalette::WindowText, text());
     setPalette(pal);
     QVBoxLayout* v = new QVBoxLayout(this);
-    v->setContentsMargins(6, 6, 6, 6);
-    v->setSpacing(4);
+    v->setContentsMargins(0, 0, 0, 2);
+    v->setSpacing(2);
 
-    d->buildTargetRow(v);
+    d->buildState();
+    d->buildToolbar(v);
     d->buildField(v);
     d->buildControls(v);
     d->connectControls();

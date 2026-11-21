@@ -233,8 +233,8 @@ private:
 // (cursorFollowsPlayback).
 void stopPlayback(Playback* pb);
 
-// VEGAS's Project Media window: bins at the left (Project Media, bins from Create New Bin, smart bins that show a saved
-// search, media by type), the bin's
+// VEGAS's Project Media window: bins at the left (All Media, Media Bins from Create New Bin, By Type, Tags, Smart Bins
+// that show a saved search, Storyboard Bins), the bin's
 // media at the right as detailed list, list or thumbnails, a search box (names, tags, comments, types), Import Media,
 // Remove All Unused Media and Properties.
 // The right-click menu has Open in Trimmer, Add to Timeline, Select Timeline Events, Explore Containing Folder, Create
@@ -249,7 +249,7 @@ public:
     // (also for tests)
     void setView(int view);                 // 0 detailed, 1 list, 2 thumbnails (remembered)
     int view() const;
-    void showBin(const QString& key);       // "all", "bin:<path>", "smart:<name>", "type:video|audio|image|generated"
+    void showBin(const QString& key);       // "all", "bin:<path>", "smart:<name>", "type:video|audio|image|generated", "tag:<tag>", "storyboard:main"
     QString currentBin() const;
     void setSearch(const QString& text);
     std::vector<uint64_t> shownMedia() const;
@@ -265,6 +265,15 @@ public:
     // VEGAS's Add At Project Frame Rate, and Swap Media (a folder of files with the same names)
     void addAtProjectFrameRate(const std::vector<uint64_t>& ids);
     int swapMedia(const QString& folder);
+    // VEGAS's Media Tags panel under the list (Views > Media Tags; remembered), and the Main Timeline storyboard
+    // (Storyboard Bins > Main Timeline, showBin("storyboard:main")) with its Refresh Storyboard button
+    void setMediaTagsVisible(bool on);
+    bool mediaTagsVisible() const;
+    std::vector<uint64_t> storyboardEvents() const;
+    bool storyboardInSync() const;
+    void refreshStoryboard();
+    void setStoryboardAutoSync(bool on);
+    bool moveStoryboardCell(int from, int to);
 private:
     struct Impl;
     std::unique_ptr<Impl> d;
@@ -289,6 +298,27 @@ public:
     void setFavorite(const std::string& pluginId, bool on);
     void setCategory(const QString& key);
     int listedPlugins() const;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> d;
+};
+
+// VEGAS's Compositors window (View > Window > Compositors): the compositing plug-ins (VEGAS's Bump Map, Displacement
+// Map, Height Map and Layer Dimensionality, and others grouped as compositors) in folders (All, OFX, 32-bit floating
+// point, GPU Accelerated, VEGAS, Third Party), a search box, the picked one's presets as thumbnails and a description
+// line. Reno has no custom compositing mode, so a compositor dragged onto the timeline is added as a video effect.
+class CompositorsWindow : public QWidget {
+public:
+    explicit CompositorsWindow(QWidget* parent = nullptr);
+    ~CompositorsWindow() override;
+    // Double-click: the text a drag carries (kMimeVideoFx).
+    std::function<void(const std::string& data)> onActivated;
+    // (also for tests) the folder shown ("all", "ofx", "float", "gpu", "vegas", "thirdparty") and the plug-in picked
+    void setSearch(const QString& text);
+    QStringList listed(const QString& folder) const;    // the plug-ins' names in a folder
+    bool pick(const QString& name);
+    int presetCount() const;
+    QString description() const;
 private:
     struct Impl;
     std::unique_ptr<Impl> d;

@@ -497,7 +497,7 @@ int main(int argc, char** argv)
         app.setSelection(std::set<uint64_t>{dst});
         answer("selectivePasteDialog", [](QDialog* dlg) {
             for (QCheckBox* b : dlg->findChildren<QCheckBox*>())
-                b->setChecked(b->text() == "Fade In" || b->text() == "Fade Out");
+                b->setChecked(b->text() == "Pre transition length" || b->text() == "Post transition length");
         });
         check(trigger("Edit/Selectively Paste Event Attributes"), "Edit > Selectively Paste Event Attributes is there");
         d = app.project().findEvent(dst);

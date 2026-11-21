@@ -20,10 +20,22 @@ void TimelineWidget::Impl::layout()
 {
     ++headerGeneration;
     rows.clear();
+    groupRows.clear();
     int y = 0;
     const Project& p = app.project();
-    std::set<uint64_t> groupSeen;
     for (size_t k = 0; k < p.tracks.size(); ++k) {
+        const uint64_t g = p.tracks[k].trackGroup;
+        // (VEGAS: a track group's header row above its tracks; collapsed, the row alone)
+        if (g && (k == 0 || p.tracks[k - 1].trackGroup != g)) {
+            GroupRow gr;
+            gr.group = g;
+            gr.y = y;
+            gr.h = kGroupH;
+            gr.first = gr.last = k;
+            while (gr.last + 1 < p.tracks.size() && p.tracks[gr.last + 1].trackGroup == g) ++gr.last;
+            groupRows.push_back(gr);
+            y += gr.h;
+        }
         Row r;
         r.index = (int)k;
         r.id = p.tracks[k].id;
@@ -34,8 +46,7 @@ void TimelineWidget::Impl::layout()
             r.h *= 2;
             r.lm = buildLayers(p.tracks[k]);
         }
-        const uint64_t g = p.tracks[k].trackGroup;
-        if (g && !groupSeen.insert(g).second && collapsedGroups.count(g)) r.h = 0;
+        if (g && collapsedGroups.count(g)) r.h = 0;
         y += r.h;
         rows.push_back(r);
     }
@@ -88,6 +99,40 @@ int TimelineWidget::Impl::busRowAtY(double y) const
         if (y >= top && y < top + busRows[k].h) return (int)k;
     }
     return -1;
+}
+
+int TimelineWidget::Impl::groupRowAtY(double y) const
+{
+    for (size_t k = 0; k < groupRows.size(); ++k) {
+        const int top = groupTop(groupRows[k]);
+        if (y >= top && y < top + groupRows[k].h) return (int)k;
+    }
+    return -1;
+}
+
+// A track group's header row, as VEGAS 18's: the Collapse/Expand triangle at the left (over the grouping lane), the
+// name, and Mute / Solo Track Group where the tracks' Mute and Solo buttons are.
+TimelineWidget::Impl::GroupRects TimelineWidget::Impl::groupRects(const GroupRow& g) const
+{
+    GroupRects r;
+    const int y = groupTop(g);
+    const int br = headerW - kHeaderGap;
+    r.all = QRect(0, y, headerW, g.h);
+    r.toggle = QRect(kHeaderMargin, y + 3, 14, 14);
+    r.solo = QRect(br + 1 - 24, y + 2, 16, 16);
+    r.mute = r.solo.translated(-24, 0);
+    // (where the tracks' own buttons are when their meters run down the headers' right)
+    if (metersOn && meterVertical) {
+        bool audio = false;
+        const Project& p = app.project();
+        for (size_t k = g.first; k <= g.last && k < p.tracks.size(); ++k) audio = audio || p.tracks[k].type == TrackType::Audio;
+        if (audio) {
+            r.solo.translate(-16, 0);
+            r.mute.translate(-16, 0);
+        }
+    }
+    r.name = QRect(r.toggle.right() + 4, y + 2, std::max(0, r.mute.left() - 6 - (r.toggle.right() + 4)), g.h - 4);
+    return r;
 }
 
 int TimelineWidget::Impl::rowAtY(double y) const
@@ -159,10 +204,22 @@ TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::vegasHeaderRects(const R
 {
     HeaderRects h;
     const int y = rowTop(r);
+    const Track* tk = trackOf(r);
     h.all = QRect(0, y, headerW, r.h);
-    h.strip = QRect(kHeaderMargin, y + 1, kStripW, r.h - 1);
-    h.menu = QRect(kHeaderMargin + 3, y + 4, 17, 15);
-    const int bx = kHeaderMargin + kStripW + 1, br = headerW - kHeaderGap;
+    int br = headerW - kHeaderGap;
+    // a track in a group: the grouping lane down the left first; a compositing child: nested in its parents' headers
+    // (VEGAS 18 draws the child's colored strip inside the parent's), as far as leaves the body room
+    int ind = 0;
+    if (tk && tk->trackGroup) {
+        h.groupLane = QRect(kHeaderMargin, y, kGroupLaneW - 1, r.h);
+        ind += kGroupLaneW;
+    }
+    if (tk && r.video) ind += std::min(compositeDepth(*tk), 4) * kCompositeIndent;
+    ind = std::max(0, std::min(ind, br - kHeaderMargin - kStripW - 1 - 90));
+    h.indent = ind;
+    h.strip = QRect(kHeaderMargin + ind, y + 1, kStripW, r.h - 1);
+    h.menu = QRect(kHeaderMargin + ind + 3, y + 4, 17, 15);
+    const int bx = kHeaderMargin + ind + kStripW + 1;
     h.body = QRect(bx, y + 1, br - bx, r.h - 1);
     if (r.h < kMinTrackH + 4) {
         int l2 = br - 1;
@@ -170,6 +227,18 @@ TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::vegasHeaderRects(const R
         if (!buttonHidden(r.video, "mute")) { h.mute = QRect(l2 - 20, y + 4, 16, 16); l2 = h.mute.left(); }
         h.name = QRect(bx + 4, y + 3, std::max(0, l2 - 4 - (bx + 4)), 17);
         return h;
+    }
+    // the output meter of an audio track (VEGAS 18): down the header's right side, or (Vertical off) a row of its own
+    // under the name, which moves the rows below it down
+    int down = 0;
+    if (!r.video && metersOn) {
+        if (meterVertical) {
+            h.meter = QRect(br - 13, y + 2, 12, r.h - 4);
+            br -= 16;
+        } else if (r.h >= 60) {
+            h.meterVertical = false;
+            down = 14;
+        }
     }
     int left = br + 1;
     if (!buttonHidden(r.video, "solo")) { h.solo = QRect(left - 24, y + 4, 16, 16); left = h.solo.left(); }
@@ -181,7 +250,10 @@ TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::vegasHeaderRects(const R
     }
     if (left - 24 - (bx + 4) >= nameRoom) {
         if (!buttonHidden(r.video, "fx")) {
-            h.fx = QRect(left - 24, y + 4, 16, 16);
+            // (an audio track's FX button has its arrow beside it: FX Automation...)
+            const int arrow = r.video ? 0 : 8;
+            h.fx = QRect(left - 24 - arrow, y + 4, 16, 16);
+            if (arrow) h.fxArrow = QRect(h.fx.right() + 1, y + 4, arrow, 16);
             left = h.fx.left();
         }
         if (r.video && !buttonHidden(true, "motion") && left - 24 - (bx + 4) >= nameRoom) {
@@ -193,13 +265,24 @@ TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::vegasHeaderRects(const R
             left = h.autoBtn.left();
         }
     }
-    h.name = QRect(bx + 4, y + 3, std::max(0, left - 6 - (bx + 4)), 17);
+    int nameX = bx + 4;
+    // a compositing parent: Parent Motion and Parent Composite Mode before the name (VEGAS 18 manual p266)
+    if (r.video && tk && hasCompositeChildren(*tk) && left - 6 - (bx + 42) >= 24) {
+        h.parentMotion = QRect(bx + 3, y + 4, 16, 16);
+        h.parentComp = QRect(bx + 21, y + 4, 16, 16);
+        nameX = bx + 42;
+    }
+    h.name = QRect(nameX, y + 3, std::max(0, left - 6 - nameX), 17);
+    if (!h.meterVertical) {
+        h.meterCaption = QRect(bx + 8, y + 23, 22, 11);
+        h.meter = QRect(bx + 30, y + 24, std::max(10, br - 6 - (bx + 30)), 9);
+    }
     // (VEGAS: "Vol:  0,0 dB" / "Pan:  Center" / "Level:  100,0 %", then the slider; on a narrow header the values alone)
     const int capW = r.video ? 34 : 24, kMinSlider = 44;
     const bool captions = br - 20 - (bx + 8 + capW + 52) >= kMinSlider;
     const int valueX = captions ? bx + 8 + capW : bx + 10, sliderX = captions ? valueX + 52 : bx + 67;
-    if (r.h >= 46) {
-        const int ly = y + 27;
+    if (r.h >= 46 + down) {
+        const int ly = y + 27 + down;
         if (captions) h.levelCaption = QRect(bx + 8, ly, capW, 12);
         if (r.video && !captions) {
             h.level = QRect(bx + 19, ly, br - 20 - (bx + 19), 12);
@@ -208,17 +291,33 @@ TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::vegasHeaderRects(const R
             h.level = QRect(sliderX, ly, br - 20 - sliderX, 12);
         }
     }
-    if (!r.video && r.h >= 66) {
-        const int py = y + 49;
+    if (!r.video && r.h >= 66 + down) {
+        const int py = y + 49 + down;
         if (captions) h.panCaption = QRect(bx + 8, py, capW, 12);
         h.panValue = QRect(valueX, py, 50, 12);
         h.pan = QRect(sliderX, py, br - 20 - sliderX, 12);
     }
-    const Track* tk = trackOf(r);
     if (r.video && tk && tk->automation && r.h >= 66) h.fade = QRect(bx + 19, y + 49, br - 20 - (bx + 19), 12);
-    if (!r.video && r.h >= 90) {
-        h.phase = QRect(bx + 6, y + 69, 16, 16);
-        h.bus = QRect(bx + 28, y + 69, std::max(30, std::min(90, br - bx - 34 - (h.autoBtn.isEmpty() ? 22 : 0))), 16);
+    // the multipurpose send row (VEGAS 18, under Pan when the project has busses or assignable FX): the button that
+    // chooses which send it shows ("Bus A:"), its value where there is room, the slider, Pre/Post at the right
+    int ioY = y + 69 + down;
+    if (!r.video && tk && r.h >= 88 + down && !sendTargets().empty()) {
+        const int sy = y + 71 + down;
+        const bool wide = br - bx >= 200;
+        h.sendLabel = QRect(bx + 6, sy - 2, captions ? 42 : 36, 16);
+        h.sendPrePost = wide ? QRect(br - 6 - 48, sy - 2, 48, 16) : QRect(br - 4 - 30, sy - 2, 30, 16);
+        int sx = h.sendLabel.right() + 11;
+        if (captions) {
+            h.sendValue = QRect(h.sendLabel.right() + 5, sy, 46, 12);
+            sx = std::max(h.level.isEmpty() ? 0 : h.level.left(), h.sendValue.right() + 10);
+        }
+        h.send = QRect(sx, sy, h.sendPrePost.left() - 10 - sx, 12);
+        if (h.send.width() < 12) h.send = QRect();
+        ioY = y + 93 + down;
+    }
+    if (!r.video && r.h >= ioY - y + 21) {
+        h.phase = QRect(bx + 6, ioY, 16, 16);
+        h.bus = QRect(bx + 28, ioY, std::max(30, std::min(90, br - bx - 34 - (h.autoBtn.isEmpty() ? 22 : 0))), 16);
     }
     if (h.autoBtn.isEmpty() && r.video && !h.level.isEmpty() && !buttonHidden(true, "auto")) {
         h.autoBtn = QRect(bx + 1, h.level.top() - 2, 16, 16);
@@ -229,6 +328,22 @@ TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::vegasHeaderRects(const R
             h.level.setLeft(h.level.left() + 12);
         } else h.level.setLeft(h.level.left() + 6);
         if (!h.fade.isEmpty()) h.fade.setLeft(h.fade.left() + 6);
+    }
+    // a video track's compositing buttons at the right of its Level row (VEGAS 18 manual p349-351): Compositing Mode,
+    // Make Compositing Child, Make Compositing Parent; on a narrow header the mode alone, or none
+    if (r.video && !h.level.isEmpty()) {
+        const int step = 18, right = br - 1;
+        if (right - 3 * step - 10 - h.level.left() >= 30) {
+            h.compParent = QRect(right - step + 2, h.level.top() - 2, 16, 16);
+            h.compChild = h.compParent.translated(-step, 0);
+            h.compMode = h.compChild.translated(-step, 0);
+        } else if (right - step - 10 - h.level.left() >= 30) {
+            h.compMode = QRect(right - step + 2, h.level.top() - 2, 16, 16);
+        }
+        if (!h.compMode.isEmpty()) {
+            h.level.setRight(std::min(h.level.right(), h.compMode.left() - 10));
+            if (!h.fade.isEmpty()) h.fade.setRight(h.level.right());
+        }
     }
     if (h.autoBtn.isEmpty() && !buttonHidden(false, "auto") && !h.bus.isEmpty() && h.bus.right() + 22 < br) h.autoBtn = QRect(h.bus.right() + 6, h.bus.top(), 16, 16);
     return h;
@@ -1024,6 +1139,21 @@ Hit TimelineWidget::Impl::hitTest(const QPointF& pos) const
         }
     }
     if (h.row < 0) {
+        const int gi = groupRowAtY(y);
+        if (gi >= 0) {
+            const GroupRow& g = groupRows[(size_t)gi];
+            const Project& pr = app.project();
+            h.track = g.first < pr.tracks.size() ? pr.tracks[g.first].id : 0;
+            if (x >= headerW) {
+                h.part = Part::Lane;
+                return h;
+            }
+            const GroupRects gr = groupRects(g);
+            const QPoint p = pos.toPoint();
+            h.part = gr.mute.contains(p) ? Part::GroupMute : gr.solo.contains(p) ? Part::GroupSolo : gr.toggle.contains(p) ? Part::GroupToggle
+                   : gr.name.contains(p) ? Part::GroupName : Part::GroupRow;
+            return h;
+        }
         const int b = busRowAtY(y);
         if (b >= 0) {
             h.bus = busRows[(size_t)b].owner;
@@ -1051,6 +1181,17 @@ Hit TimelineWidget::Impl::hitTest(const QPointF& pos) const
         else if (!hr.autoBtn.isEmpty() && hr.autoBtn.contains(p)) h.part = Part::HeaderAuto;
         else if (!hr.phase.isEmpty() && hr.phase.contains(p)) h.part = Part::HeaderPhase;
         else if (!hr.bus.isEmpty() && hr.bus.contains(p)) h.part = Part::HeaderBus;
+        else if (!hr.fxArrow.isEmpty() && hr.fxArrow.contains(p)) h.part = Part::HeaderFxArrow;
+        else if (!hr.sendLabel.isEmpty() && hr.sendLabel.contains(p)) h.part = Part::HeaderSendLabel;
+        else if (!hr.sendPrePost.isEmpty() && hr.sendPrePost.contains(p)) h.part = Part::HeaderSendPrePost;
+        else if (!hr.send.isEmpty() && hr.send.adjusted(-7, -2, 7, 2).contains(p)) h.part = Part::HeaderSend;
+        else if (!hr.compMode.isEmpty() && hr.compMode.contains(p)) h.part = Part::HeaderCompMode;
+        else if (!hr.compChild.isEmpty() && hr.compChild.contains(p)) h.part = Part::HeaderCompChild;
+        else if (!hr.compParent.isEmpty() && hr.compParent.contains(p)) h.part = Part::HeaderCompParent;
+        else if (!hr.parentMotion.isEmpty() && hr.parentMotion.contains(p)) h.part = Part::HeaderParentMotion;
+        else if (!hr.parentComp.isEmpty() && hr.parentComp.contains(p)) h.part = Part::HeaderParentComp;
+        else if (!hr.meter.isEmpty() && hr.meter.adjusted(-1, -1, 1, 1).contains(p)) h.part = Part::HeaderMeter;
+        else if (!hr.groupLane.isEmpty() && hr.groupLane.contains(p)) h.part = Part::HeaderGroupLane;
         else if (!hr.fade.isEmpty() && hr.fade.adjusted(-7, -2, 7, 2).contains(p)) h.part = Part::HeaderFade;
         else if (hr.menu.contains(p)) h.part = Part::HeaderMenu;
         else if (hr.name.contains(p)) h.part = Part::HeaderName;

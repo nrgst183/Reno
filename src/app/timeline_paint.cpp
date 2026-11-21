@@ -258,7 +258,7 @@ TimelineWidget::Impl::Overlays TimelineWidget::Impl::currentOverlays() const
         o.band = QRectF(drag.pressPos, drag.lastPos).normalized().adjusted(-2, -2, 2, 2).toAlignedRect();
     else if (drag.kind == Drag::ZoomRange && drag.started)
         o.band = QRectF(drag.pressPos, drag.lastPos).normalized().adjusted(-2, -2, 2, 2).united(QRectF(headerW, kTopH, std::max(0, lanesRight() - headerW), std::max(0, lanesBottom() - kTopH))).toAlignedRect();
-    if (drag.kind == Drag::Level || drag.kind == Drag::Pan || drag.kind == Drag::Fade || drag.kind == Drag::SurroundPoint) o.sliderTrack = drag.hit.track;
+    if (drag.kind == Drag::Level || drag.kind == Drag::Pan || drag.kind == Drag::Fade || drag.kind == Drag::SurroundPoint || drag.kind == Drag::Send) o.sliderTrack = drag.hit.track;
     o.gapHeld = drag.kind == Drag::HeaderWidth;
     o.dragEnv = drag.env;
     o.front = frontEnv;
@@ -395,6 +395,7 @@ void TimelineWidget::Impl::changed(int changes)
         lastLoopA = app.loopStart;
         lastLoopB = app.loopEnd;
     }
+    if (changes & kPlayback) startMeters();
     if ((changes & kProject) && edgeSel.event && !edgeValid()) edgeSel = EdgeSel();
     if (changes & (kProject | kFile)) indexValid = false;
     if (changes & (kProject | kSelection | kFxParams | kCatalog | kPrefs | kFile)) ++headerGeneration;
@@ -710,6 +711,7 @@ void TimelineWidget::Impl::paint(QPainter& p, const QRect& clip)
     ensureIndex(true);
     paintLanes(p, clip);
     paintHeaders(p, clip);
+    paintMeters(p, clip);
     paintRuler(p, clip);
     drawMoveLabel(p);
     paintCursor(p, clip);
@@ -2050,7 +2052,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
     const Project& pr = app.project();
     for (const Row& r : rows) {
         const int y = rowTop(r);
-        if (y + r.h <= c.top() || y > c.bottom()) continue;
+        if (r.h <= 0 || y + r.h <= c.top() || y > c.bottom()) continue;
         p.fillRect(QRect(c.left(), y, c.width(), r.h - 1), kLane);
         p.fillRect(QRect(c.left(), y + r.h - 1, c.width(), 1), kLine);
         if (r.lm) paintLayerLanes(p, r, y, c);
@@ -2061,6 +2063,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         p.fillRect(QRect(c.left(), y, c.width(), b.h - 1), kBusLane);
         p.fillRect(QRect(c.left(), y + b.h - 1, c.width(), 1), kLine);
     }
+    paintGroupRows(p, c, true);
     const int tracksBottom = kTopH + contentH - kBelow - scrollY;
     dense = countDense();
     paintGrid(p, c, tracksBottom);
@@ -2071,7 +2074,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
     std::vector<Hidden> hidden;  // hiddenEvents
     for (const Row& r : rows) {
         const int y = rowTop(r);
-        if (y + r.h <= c.top() || y > c.bottom()) continue;
+        if (r.h <= 0 || y + r.h <= c.top() || y > c.bottom()) continue;
         const Track& tr = pr.tracks[(size_t)r.index];
         const double from = timeAtF(c.left() - 20.0), to = timeAtF(c.right() + 20.0);
         const std::pair<size_t, size_t> range = eventRange((size_t)r.index, from, to);
@@ -2142,6 +2145,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         p.drawText(lanesRect().adjusted(20, 20, -20, -20), Qt::AlignCenter, "Drag media here to start, or right-click to insert a track.");
     }
     paintDrop(p, c, tracksBottom);
+    paintVoidGhosts(p, c);
     if (snapLine >= 0) {
         QColor sc = kSnapLine;
         for (const QString& x : vprefs::list("prefs/snapColors"))
@@ -2167,6 +2171,34 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         p.setPen(QPen(QColor(255, 255, 255, 220), 1.0, Qt::DotLine));
         p.setBrush(Qt::NoBrush);
         p.drawRect(z);
+    }
+    p.restore();
+}
+
+// Events being dragged below the last track: an outline for each where it will go, in a strip per new track (the video
+// tracks' first), drawn as a drop of media there is.
+void TimelineWidget::Impl::paintVoidGhosts(QPainter& p, const QRect& c)
+{
+    if (drag.voidGhosts.empty()) return;
+    int videoLanes = 0;
+    for (const Ghost& g : drag.voidGhosts)
+        if (g.video) videoLanes = std::max(videoLanes, (int)g.track + 1);
+    const int top = voidTop() + 3;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    for (const Ghost& g : drag.voidGhosts) {
+        const int lane = (g.video ? 0 : videoLanes) + (int)g.track;
+        QRectF r(xAtF(g.start), top + lane * 18.0, std::max(3.0, g.length * pps), 16.0);
+        r = QRectF(QPointF(std::max(r.left(), c.left() - 8.0), r.top()), QPointF(std::min(r.right(), c.right() + 8.0), r.bottom()));
+        if (r.width() <= 0) continue;
+        p.setPen(QPen(kDrop, 1.6, Qt::DashLine));
+        p.setBrush(QColor(255, 196, 61, 44));
+        p.drawRect(r);
+        if (r.width() > 110) {
+            p.setFont(smallFont);
+            p.setPen(QColor(250, 240, 210));
+            p.drawText(r.adjusted(6, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft, g.video ? QString("New Video Track") : QString("New Audio Track"));
+        }
     }
     p.restore();
 }

@@ -743,6 +743,7 @@ void TimelineWidget::Impl::setPointer(const Hit& h, Qt::KeyboardModifiers mods)
     case Part::FadeOut:
     case Part::HeaderLevel:
     case Part::HeaderPan:
+    case Part::HeaderSend:
     case Part::RegionEndTag: shape = Qt::SizeHorCursor; break;
     case Part::EventFx:
     case Part::EventCrop:
@@ -755,6 +756,17 @@ void TimelineWidget::Impl::setPointer(const Hit& h, Qt::KeyboardModifiers mods)
     case Part::HeaderSolo:
     case Part::HeaderFx:
     case Part::HeaderMotion:
+    case Part::HeaderSendLabel:
+    case Part::HeaderSendPrePost:
+    case Part::HeaderFxArrow:
+    case Part::HeaderCompMode:
+    case Part::HeaderCompChild:
+    case Part::HeaderCompParent:
+    case Part::HeaderParentMotion:
+    case Part::HeaderParentComp:
+    case Part::GroupToggle:
+    case Part::GroupMute:
+    case Part::GroupSolo:
     case Part::HeaderMenu:
     case Part::TrackKey:
     case Part::MarkerTag: shape = Qt::PointingHandCursor; break;
@@ -816,9 +828,20 @@ static void moversTracksAndIds(const Project& p, const std::vector<Mover>& mover
     }
 }
 
+// Events let go below the last track: the last update again, this time making their new tracks (in the same undo step
+// as the move).
+void TimelineWidget::Impl::commitVoidMove(const DragState& was)
+{
+    const DragState keep = drag;
+    drag = was;
+    updateMove(was.lastPos, was.lastMods, true);
+    drag = keep;
+}
+
 // A move (or Ctrl+drag copy) let go: one undo step, the edit remembered. Without a drag, the click's selection change.
 void TimelineWidget::Impl::finishMove(const DragState& was)
 {
+    if (was.started && was.toVoid) commitVoidMove(was);
     if (was.started) {
         app.endDrag(was.copies.empty() ? "Move Events" : "Copy Events");
         if (!was.ripple && !was.movers.empty()) {
@@ -1006,6 +1029,9 @@ void TimelineWidget::Impl::release(QMouseEvent* ev)
     case Drag::SurroundPoint:
         if (was.started) app.endDrag("Surround Pan Position");
         break;
+    case Drag::Send:
+        if (was.started) app.endDrag("Send Level");
+        break;
     case Drag::Scrub:
         scrubSoundDone(was.resumePlayback);
         if (was.resumePlayback && playback) playback->play();
@@ -1033,8 +1059,9 @@ void TimelineWidget::Impl::release(QMouseEvent* ev)
 QRegion TimelineWidget::Impl::dragVisualsOf(const DragState& d) const
 {
     QRegion r;
-    if (d.kind == Drag::Level || d.kind == Drag::Pan || d.kind == Drag::Fade || d.kind == Drag::SurroundPoint)
+    if (d.kind == Drag::Level || d.kind == Drag::Pan || d.kind == Drag::Fade || d.kind == Drag::SurroundPoint || d.kind == Drag::Send)
         if (const Row* row = rowOf(d.hit.track)) r |= QRect(0, rowTop(*row), headerW, row->h);
+    if (!d.voidGhosts.empty()) r |= QRect(headerW, kTopH, viewW(), std::max(0, lanesBottom() - kTopH));
     if (d.kind == Drag::HeaderWidth) r |= QRect(headerW - kHeaderGap, kTopH, kHeaderGap, std::max(0, lanesBottom() - kTopH));
     // the gain handles drawn lit while their gain was dragged (a drag that left the gain as it was changes nothing in
     // the project, so nothing else repaints them)
@@ -1080,6 +1107,7 @@ void TimelineWidget::Impl::releaseRight(QMouseEvent* ev)
     QAction* got = q->rightDragMenu ? q->rightDragMenu(&m) : m.exec(ev->globalPosition().toPoint());
     rightMenuAt = QDateTime::currentMSecsSinceEpoch();
     if (got == moveHere) {
+        if (was.toVoid) commitVoidMove(was);
         app.endDrag("Move Events");
         return;
     }
@@ -1182,7 +1210,8 @@ bool TimelineWidget::Impl::cancelMouseDrag()
 
 void TimelineWidget::Impl::autoScrollTick()
 {
-    if (drag.kind == Drag::None || drag.kind == Drag::Level || drag.kind == Drag::Pan || drag.kind == Drag::Fade || drag.kind == Drag::SurroundPoint || drag.kind == Drag::RubberBand ||
+    if (drag.kind == Drag::None || drag.kind == Drag::Level || drag.kind == Drag::Pan || drag.kind == Drag::Fade || drag.kind == Drag::SurroundPoint || drag.kind == Drag::Send ||
+        drag.kind == Drag::RubberBand ||
         drag.kind == Drag::ZoomRange || drag.kind == Drag::EventGain ||
         drag.kind == Drag::EnvBand || drag.kind == Drag::EnvSegment) {
         autoScroll->stop();
@@ -1248,6 +1277,7 @@ void TimelineWidget::Impl::doubleClick(QMouseEvent* ev)
     case Part::HeaderPan:
         app.edit("Track Pan", [&](Project& p) { if (Track* t = p.findTrack(id)) t->pan = 0.0; });
         break;
+    case Part::HeaderSend: setSendLevel(id, 1.0, false); break;
     case Part::HeaderSurround:
         setCurrentTrack(id);
         if (q->onOpenSurround) q->onOpenSurround(id);

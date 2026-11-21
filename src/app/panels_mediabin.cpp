@@ -1,5 +1,6 @@
 // The Project Media window.
 #include "panels_internal.h"
+#include "panels_storyboard.h"
 #include "vprefs.h"
 #include "audiotools.h"
 #include "../engine/colormgmt.h"
@@ -458,11 +459,52 @@ QIcon mediaBarIcon(int which)
     return QIcon(pm);
 }
 
+// The bins tree's pictures, as VEGAS's: a yellow folder, and All Media's stack of clips.
+QIcon binIcon(bool allMedia)
+{
+    static QIcon folder, all;
+    QIcon& ic = allMedia ? all : folder;
+    if (!ic.isNull()) return ic;
+    QPixmap pm(16, 16);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    if (allMedia) {
+        p.setPen(QPen(QColor(40, 40, 40), 1));
+        for (int k = 2; k >= 0; --k) {
+            p.setBrush(k ? QColor(200, 200, 200) : QColor(245, 245, 245));
+            p.drawRect(QRectF(1.5 + k * 2, 5.5 - k * 2, 10, 9));
+        }
+        p.setBrush(QColor(80, 80, 80));
+        p.setPen(Qt::NoPen);
+        p.drawRect(QRectF(3, 8, 7, 5));
+    } else {
+        QPainterPath back;
+        back.moveTo(1.5, 3.5);
+        back.lineTo(6.0, 3.5);
+        back.lineTo(7.5, 5.0);
+        back.lineTo(14.5, 5.0);
+        back.lineTo(14.5, 13.5);
+        back.lineTo(1.5, 13.5);
+        back.closeSubpath();
+        p.setPen(QPen(QColor(150, 115, 30), 1));
+        p.setBrush(QColor(222, 178, 70));
+        p.drawPath(back);
+        p.setBrush(QColor(247, 211, 110));
+        p.drawRect(QRectF(1.5, 6.5, 13.0, 7.0));
+    }
+    p.end();
+    ic = QIcon(pm);
+    return ic;
+}
+
 }  // namespace
 
 namespace {
 
-const int kRoleBinKey = Qt::UserRole + 10;     // a bins-tree row: "all", "bin:<path>", "smart:<name>", "type:<kind>"
+// A bins-tree row: "all" (All Media), "bin:<path>", "smart:<name>", "type:<kind>", "tag:<tag>", "storyboard:main", or one of
+// the folders "bins" (Media Bins), "types" (By Type), "tags", "smart" (Smart Bins), "storyboards" (Storyboard Bins).
+const int kRoleBinKey = Qt::UserRole + 10;
 
 class MediaTiles : public QListWidget {
 public:
@@ -529,7 +571,9 @@ protected:
     }
 };
 
-// The bins: Project Media (everything), bins made with Create New Bin, smart bins (saved searches), and media by type.
+// The bins, as VEGAS 18's: All Media (everything), Media Bins (those made with Create New Bin), By Type, Tags (one bin per
+// media tag), Smart Bins (saved searches) and Storyboard Bins (the Main Timeline storyboard). Media dropped on a bin
+// goes into it; on a tag's bin it gets the tag; on All Media or Media Bins it leaves its bin.
 class BinTree : public QTreeWidget {
 public:
     explicit BinTree(QWidget* parent) : QTreeWidget(parent)
@@ -546,7 +590,7 @@ protected:
         QTreeWidgetItem* it = itemAt(pos);
         if (!it) return QString();
         const QString k = it->data(0, kRoleBinKey).toString();
-        return k == "all" || k.startsWith("bin:") ? k : QString();
+        return k == "all" || k == "bins" || k.startsWith("bin:") || k.startsWith("tag:") ? k : QString();
     }
     void dragEnterEvent(QDragEnterEvent* e) override
     {
@@ -869,6 +913,15 @@ struct MediaBin::Impl {
     std::unique_ptr<ThumbWorker> worker;
     std::unique_ptr<ListenerHandle> listener;
     QIcon generatedIcon, offlineIcon, pendingIcon;
+    StoryboardView* storyboard = nullptr;
+    MediaTagsPanel* tags = nullptr;
+    QToolButton* storyRefresh = nullptr;
+    QAction* tagsAction = nullptr;
+    bool showTags = false;
+    std::set<QString> expanded;
+    bool binsMade = false;
+
+    bool storyboardShown() const { return binKey == "storyboard:main"; }
 
     ~Impl()
     {
@@ -887,7 +940,11 @@ struct MediaBin::Impl {
     std::vector<uint64_t> selectedIds() const
     {
         std::vector<uint64_t> ids;
-        if (view == 2) {
+        if (storyboardShown()) {
+            for (uint64_t ev : storyboard->selectedEvents())
+                if (const Event* e = AppState::get().project().findEvent(ev))
+                    if (std::find(ids.begin(), ids.end(), e->mediaId) == ids.end()) ids.push_back(e->mediaId);
+        } else if (view == 2) {
             for (QListWidgetItem* it : tiles->selectedItems()) ids.push_back(it->data(kRoleId).toULongLong());
         } else {
             for (QTreeWidgetItem* it : tree->selectedItems()) ids.push_back(it->data(0, kRoleId).toULongLong());
@@ -908,6 +965,10 @@ struct MediaBin::Impl {
         if (!matchesSearch(m, search->text())) return false;
         if (binKey == "all") return true;
         if (binKey.startsWith("bin:")) return qs(m.bin) == binKey.mid(4);
+        if (binKey.startsWith("tag:")) {
+            const std::string tag = binKey.mid(4).toStdString();
+            return std::find(m.tags.begin(), m.tags.end(), tag) != m.tags.end();
+        }
         if (binKey.startsWith("smart:")) {
             const std::string name = binKey.mid(6).toStdString();
             for (const auto& sb : p.smartBins)
@@ -945,10 +1006,25 @@ struct MediaBin::Impl {
     {
         const Project& p = AppState::get().project();
         QSignalBlocker block(bins);
+        if (binsMade) {
+            expanded.clear();
+            for (QTreeWidgetItemIterator it(bins); *it; ++it)
+                if ((*it)->isExpanded()) expanded.insert((*it)->data(0, kRoleBinKey).toString());
+        } else {
+            expanded = {"bins", "tags", "storyboards"};
+            binsMade = true;
+        }
         bins->clear();
-        auto* root = new QTreeWidgetItem(bins, QStringList() << "Project Media");
-        root->setData(0, kRoleBinKey, "all");
-        root->setToolTip(0, "All the project's media; drop media here to take it out of its bin");
+        auto top = [&](const char* text, const char* key, bool all = false) {
+            auto* item = new QTreeWidgetItem(bins, QStringList() << text);
+            item->setData(0, kRoleBinKey, QString(key));
+            item->setIcon(0, binIcon(all));
+            return item;
+        };
+        QTreeWidgetItem* allMedia = top("All Media", "all", true);
+        allMedia->setToolTip(0, "All the project's media; drop media here to take it out of its bin");
+        QTreeWidgetItem* mediaBins = top("Media Bins", "bins");
+        mediaBins->setToolTip(0, "The bins made with Create New Bin; drop media here to take it out of its bin");
         std::map<std::string, QTreeWidgetItem*> made;
         std::vector<std::string> all = p.mediaBins;
         for (const auto& m : p.media)
@@ -958,32 +1034,56 @@ struct MediaBin::Impl {
             auto it = made.find(path);
             if (it != made.end()) return it->second;
             const size_t slash = path.find_last_of('/');
-            QTreeWidgetItem* parent = slash == std::string::npos ? root : binItem(path.substr(0, slash));
+            QTreeWidgetItem* parent = slash == std::string::npos ? mediaBins : binItem(path.substr(0, slash));
             auto* item = new QTreeWidgetItem(parent, QStringList() << qs(slash == std::string::npos ? path : path.substr(slash + 1)));
             item->setData(0, kRoleBinKey, "bin:" + qs(path));
-            item->setIcon(0, owner->style()->standardIcon(QStyle::SP_DirIcon));
+            item->setIcon(0, binIcon(false));
             made[path] = item;
             return item;
         };
         for (const auto& b : all) binItem(b);
-        for (const auto& sb : p.smartBins) {
-            auto* item = new QTreeWidgetItem(root, QStringList() << qs(sb.first));
-            item->setData(0, kRoleBinKey, "smart:" + qs(sb.first));
-            item->setToolTip(0, QString("A smart bin: the media that match \"%1\"").arg(qs(sb.second)));
-            item->setIcon(0, owner->style()->standardIcon(QStyle::SP_FileDialogContentsView));
-        }
-        auto* types = new QTreeWidgetItem(root, QStringList() << "By Type");
-        types->setData(0, kRoleBinKey, "all");
+        QTreeWidgetItem* types = top("By Type", "types");
         for (const char* t : {"Video", "Audio", "Images", "Generated Media"}) {
             auto* item = new QTreeWidgetItem(types, QStringList() << t);
             const QString k = QString(t) == "Images" ? "type:image" : QString(t) == "Generated Media" ? "type:generated" : "type:" + QString(t).toLower();
             item->setData(0, kRoleBinKey, k);
+            item->setIcon(0, binIcon(false));
         }
-        bins->expandItem(root);
-        QTreeWidgetItem* pick = root;
-        for (QTreeWidgetItemIterator it(bins); *it; ++it)
-            if ((*it)->data(0, kRoleBinKey).toString() == binKey && *it != types) pick = *it;
-        if (pick == root) binKey = "all";
+        // a bin for each tag the media have, in alphabetical order
+        QTreeWidgetItem* tagFolder = top("Tags", "tags");
+        tagFolder->setToolTip(0, "A bin for each media tag (the Media Tags panel: Views > Media Tags)");
+        std::vector<std::string> tagNames;
+        for (const auto& m : p.media)
+            for (const auto& t : m.tags)
+                if (std::find(tagNames.begin(), tagNames.end(), t) == tagNames.end()) tagNames.push_back(t);
+        std::sort(tagNames.begin(), tagNames.end(), [](const std::string& a, const std::string& b) { return qs(a).compare(qs(b), Qt::CaseInsensitive) < 0; });
+        for (const auto& t : tagNames) {
+            auto* item = new QTreeWidgetItem(tagFolder, QStringList() << qs(t));
+            item->setData(0, kRoleBinKey, "tag:" + qs(t));
+            item->setIcon(0, binIcon(false));
+        }
+        QTreeWidgetItem* smart = top("Smart Bins", "smart");
+        for (const auto& sb : p.smartBins) {
+            auto* item = new QTreeWidgetItem(smart, QStringList() << qs(sb.first));
+            item->setData(0, kRoleBinKey, "smart:" + qs(sb.first));
+            item->setToolTip(0, QString("A smart bin: the media that match \"%1\"").arg(qs(sb.second)));
+            item->setIcon(0, binIcon(false));
+        }
+        QTreeWidgetItem* boards = top("Storyboard Bins", "storyboards");
+        auto* mainBoard = new QTreeWidgetItem(boards, QStringList() << "Main Timeline");
+        mainBoard->setData(0, kRoleBinKey, QString("storyboard:main"));
+        mainBoard->setIcon(0, binIcon(false));
+        mainBoard->setToolTip(0, "The timeline's events in order; Alt+drag a cell to move its event");
+        QTreeWidgetItem* pick = nullptr;
+        for (QTreeWidgetItemIterator it(bins); *it; ++it) {
+            const QString k = (*it)->data(0, kRoleBinKey).toString();
+            if (expanded.count(k) && (*it)->childCount()) (*it)->setExpanded(true);
+            if (!pick && k == binKey) pick = *it;
+        }
+        if (!pick) {
+            pick = allMedia;
+            binKey = "all";
+        }
         for (QTreeWidgetItem* up = pick->parent(); up; up = up->parent()) up->setExpanded(true);
         bins->setCurrentItem(pick);
     }
@@ -1065,15 +1165,27 @@ struct MediaBin::Impl {
         tree->setUpdatesEnabled(true);
         tree->verticalScrollBar()->setValue(scroll);
         countLabel->setText(QString("%1 of %2").arg(count).arg(p.media.size()));
+        applyVisibility();
+        if (tags) tags->setMedia(selectedIds());
         updateButtons();
+    }
+
+    // The list, the thumbnails or the storyboard, and the Media Tags panel under the list.
+    void applyVisibility()
+    {
+        const bool board = storyboardShown();
+        tree->setVisible(!board && view != 2);
+        tiles->setVisible(!board && view == 2);
+        if (storyboard) storyboard->setVisible(board);
+        if (storyRefresh) storyRefresh->setVisible(board);
+        if (tags) tags->setVisible(showTags && !board);
     }
 
     void setView(int v)
     {
         view = std::max(0, std::min(2, v));
         QSettings().setValue("media/view", view);
-        tree->setVisible(view != 2);
-        tiles->setVisible(view == 2);
+        applyVisibility();
         tree->setIconSize(view == 1 ? QSize(28, 16) : kThumb);
         for (int c = 1; c < tree->columnCount(); ++c) tree->setColumnHidden(c, view == 1);
         tree->setHeaderHidden(view == 1);
@@ -1183,6 +1295,15 @@ struct MediaBin::Impl {
 
     void moveToBin(const QString& key, const std::vector<uint64_t>& ids)
     {
+        if (key.startsWith("tag:")) {
+            const std::string tag = key.mid(4).toStdString();
+            AppState::get().edit("Add Media Tag", [tag, ids](Project& p) {
+                for (uint64_t id : ids)
+                    if (MediaItem* m = p.findMedia(id))
+                        if (std::find(m->tags.begin(), m->tags.end(), tag) == m->tags.end()) m->tags.push_back(tag);
+            });
+            return;
+        }
         const std::string bin = key.startsWith("bin:") ? key.mid(4).toStdString() : std::string();
         AppState::get().edit(bin.empty() ? "Remove from Bin" : "Move to Bin", [bin, ids](Project& p) {
             for (uint64_t id : ids)
@@ -1597,7 +1718,8 @@ struct MediaBin::Impl {
     {
         QMenu menu(bins);
         menu.setObjectName("binMenu");
-        menu.addAction("Create New Bin", [this] { newBin(); });
+        // (Reno has only the Main Timeline storyboard: bins go into Media Bins or the bin picked)
+        menu.addAction("Create New Bin", [this] { newBin(); })->setEnabled(binKey == "all" || binKey == "bins" || binKey.startsWith("bin:"));
         menu.addAction("Save as Smart Bin...", [this] { saveSmartBin(); })->setEnabled(!search->text().trimmed().isEmpty());
         menu.addSeparator();
         const bool own = binKey.startsWith("bin:") || binKey.startsWith("smart:");
@@ -1666,6 +1788,12 @@ MediaBin::MediaBin(QWidget* parent) : QWidget(parent), d(new Impl())
     views->addAction("List", [impl] { impl->setView(1); });
     views->addAction("Details", [impl] { impl->setView(0); });
     views->addAction("Thumbnails", [impl] { impl->setView(2); });
+    d->showTags = QSettings().value("media/showTags", false).toBool();
+    d->tagsAction = views->addAction("Media Tags");
+    d->tagsAction->setObjectName("mediaTagsToggle");
+    d->tagsAction->setCheckable(true);
+    d->tagsAction->setChecked(d->showTags);
+    QObject::connect(d->tagsAction, &QAction::toggled, [this](bool on) { setMediaTagsVisible(on); });
     d->viewButton->setMenu(views);
     d->search = new QLineEdit(this);
     d->search->setObjectName("mediaSearch");
@@ -1712,7 +1840,26 @@ MediaBin::MediaBin(QWidget* parent) : QWidget(parent), d(new Impl())
     QObject::connect(play, &QToolButton::clicked, [impl] { impl->previewSelected(); });
     QObject::connect(stop, &QToolButton::clicked, [impl] { if (previewMedia) previewMedia(impl->previewing, QString(), false); });
     QObject::connect(d->autoPreview, &QToolButton::toggled, [](bool on) { QSettings().setValue("media/autoPreview", on); });
-    for (QWidget* w : std::initializer_list<QWidget*>{d->importButton, importMore, d->addButton, d->removeButton, d->removeUnused, swap, d->properties, play, stop, d->autoPreview, d->viewButton})
+    // Refresh Storyboard (shown with a storyboard), its arrow: Automatically synchronize Main Timeline storyboard
+    d->storyRefresh = new QToolButton(this);
+    d->storyRefresh->setObjectName("refreshStoryboard");
+    d->storyRefresh->setText(QString::fromUtf8("\u21BB"));
+    d->storyRefresh->setToolTip("Refresh Storyboard: make the Main Timeline storyboard show the timeline as it is now");
+    d->storyRefresh->setPopupMode(QToolButton::MenuButtonPopup);
+    d->storyRefresh->setAutoRaise(true);
+    {
+        QMenu* m = new QMenu(d->storyRefresh);
+        m->setObjectName("refreshStoryboardMenu");
+        QAction* autoSync = m->addAction("Automatically synchronize Main Timeline storyboard");
+        autoSync->setObjectName("storyboardAutoSync");
+        autoSync->setCheckable(true);
+        autoSync->setChecked(QSettings().value("media/storyboardAutoSync", false).toBool());
+        QObject::connect(autoSync, &QAction::toggled, [impl](bool on) { impl->storyboard->setAutoSync(on); });
+        d->storyRefresh->setMenu(m);
+    }
+    QObject::connect(d->storyRefresh, &QToolButton::clicked, [impl] { impl->storyboard->refresh(); });
+    for (QWidget* w : std::initializer_list<QWidget*>{d->importButton, importMore, d->addButton, d->removeButton, d->removeUnused, swap, d->properties, play, stop, d->autoPreview, d->viewButton,
+                                                      d->storyRefresh})
         buttons->addWidget(w);
     buttons->addWidget(d->search, 1);
     buttons->addWidget(d->countLabel);
@@ -1746,8 +1893,15 @@ MediaBin::MediaBin(QWidget* parent) : QWidget(parent), d(new Impl())
     d->tiles = new MediaTiles(lists);
     d->tiles->setObjectName("mediaThumbnails");
     d->tiles->setContextMenuPolicy(Qt::CustomContextMenu);
-    lv->addWidget(d->tree);
-    lv->addWidget(d->tiles);
+    lv->addWidget(d->tree, 1);
+    lv->addWidget(d->tiles, 1);
+    d->storyboard = new StoryboardView(lists);
+    d->storyboard->onSelectionChanged = [impl] { impl->updateButtons(); };
+    lv->addWidget(d->storyboard, 1);
+    d->tags = new MediaTagsPanel(lists);
+    d->tags->watchKeys(d->tree);
+    d->tags->watchKeys(d->tiles);
+    lv->addWidget(d->tags);
     split->addWidget(d->bins);
     split->addWidget(lists);
     split->setStretchFactor(0, 0);
@@ -1779,10 +1933,16 @@ MediaBin::MediaBin(QWidget* parent) : QWidget(parent), d(new Impl())
         if (ids.size() == 1) impl->showProperties(ids.front());
     });
     QObject::connect(d->search, &QLineEdit::textChanged, [impl](const QString&) { impl->refresh(); });
-    QObject::connect(d->tree, &QTreeWidget::itemSelectionChanged, [impl] { impl->updateButtons(); });
+    QObject::connect(d->tree, &QTreeWidget::itemSelectionChanged, [impl] {
+        impl->updateButtons();
+        impl->tags->setMedia(impl->selectedIds());
+    });
     QObject::connect(d->tree, &QTreeWidget::itemSelectionChanged, [impl] { if (impl->autoPreview && impl->autoPreview->isChecked()) impl->previewSelected(); });
     QObject::connect(d->tiles, &QListWidget::itemSelectionChanged, [impl] { if (impl->autoPreview && impl->autoPreview->isChecked()) impl->previewSelected(); });
-    QObject::connect(d->tiles, &QListWidget::itemSelectionChanged, [impl] { impl->updateButtons(); });
+    QObject::connect(d->tiles, &QListWidget::itemSelectionChanged, [impl] {
+        impl->updateButtons();
+        impl->tags->setMedia(impl->selectedIds());
+    });
     auto activate = [impl](uint64_t id) {
         const MediaItem* m = AppState::get().project().findMedia(id);
         if (openInTrimmer && m && !m->generated && vprefs::on("prefs/dblClickTrimmer")) { openInTrimmer(id, qs(m->path)); return; }
@@ -1879,6 +2039,31 @@ void MediaBin::selectMedia(const std::vector<uint64_t>& ids)
             if (d->tiles->item(k)->data(kRoleId).toULongLong() == id) d->tiles->item(k)->setSelected(true);
     }
 }
+
+void MediaBin::setMediaTagsVisible(bool on)
+{
+    d->showTags = on;
+    QSettings().setValue("media/showTags", on);
+    if (d->tagsAction && d->tagsAction->isChecked() != on) {
+        QSignalBlocker b(d->tagsAction);
+        d->tagsAction->setChecked(on);
+    }
+    d->applyVisibility();
+}
+bool MediaBin::mediaTagsVisible() const { return d->showTags; }
+std::vector<uint64_t> MediaBin::storyboardEvents() const { return d->storyboard->events(); }
+bool MediaBin::storyboardInSync() const { return d->storyboard->inSync(); }
+void MediaBin::refreshStoryboard() { d->storyboard->refresh(); }
+void MediaBin::setStoryboardAutoSync(bool on)
+{
+    d->storyboard->setAutoSync(on);
+    if (QMenu* m = d->storyRefresh->menu())
+        if (QAction* a = m->findChild<QAction*>("storyboardAutoSync")) {
+            QSignalBlocker b(a);
+            a->setChecked(on);
+        }
+}
+bool MediaBin::moveStoryboardCell(int from, int to) { return d->storyboard->moveCell(from, to); }
 
 void MediaBin::addAtProjectFrameRate(const std::vector<uint64_t>& ids) { d->addAtProjectFrameRate(ids); }
 int MediaBin::swapMedia(const QString& folder) { return folder.isEmpty() ? 0 : d->swapMedia(folder); }

@@ -10,25 +10,31 @@
 #include "panels.h"
 #include "playback.h"
 #include "vprefs.h"
+#include "panels_glyph.h"
 #include <QApplication>
 #include <QClipboard>
 #include <QFileDialog>
 #include <QImage>
 #include <set>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDrag>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QTimer>
-#include <QToolButton>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <chrono>
@@ -334,6 +340,406 @@ private:
     QPointF press_;
     double anchor_ = 0;
 };
+
+// The pictures on the Trimmer's buttons. The transport's own (play, pause, ...) are the Video Preview's (drawGlyph);
+// the others are drawn here, in VEGAS 18's colors: blue for what puts media on the timeline, yellow for markers,
+// green for regions, red for clearing.
+enum class TrimIcon {
+    Loop, PlayFromStart, Play, Pause, Stop, PrevFrame, NextFrame, Menu,
+    SortHistory, RemoveCurrent, ClearHistory, ExternalMonitor,
+    MarkIn, MarkOut, AddFromCursor, AddUpToCursor, FitToFill, Overwrite, CreateSubclip, InsertMarker, InsertRegion, SaveMarkers
+};
+
+const QColor kAddBlue(122, 183, 208), kMarkYellow(190, 173, 99), kRegionGreen(124, 196, 132), kClearRed(226, 120, 130);
+const QColor kOutline(28, 28, 28), kOff(104, 104, 104);
+
+bool standardIcon(TrimIcon i, Glyph* g)
+{
+    switch (i) {
+    case TrimIcon::Loop: *g = Glyph::Loop; return true;
+    case TrimIcon::PlayFromStart: *g = Glyph::PlayFromStart; return true;
+    case TrimIcon::Play: *g = Glyph::Play; return true;
+    case TrimIcon::Pause: *g = Glyph::Pause; return true;
+    case TrimIcon::Stop: *g = Glyph::Stop; return true;
+    case TrimIcon::PrevFrame: *g = Glyph::PrevFrame; return true;
+    case TrimIcon::NextFrame: *g = Glyph::NextFrame; return true;
+    case TrimIcon::Menu: *g = Glyph::Menu; return true;
+    default: return false;
+    }
+}
+
+// VEGAS's media frame (the Add and Fit buttons): a box whose sides are pinched in, like a strip of film.
+QPainterPath mediaFrame(double cx, double cy)
+{
+    QPainterPath f;
+    f.moveTo(cx - 7.5, cy - 5.5);
+    f.lineTo(cx + 7.5, cy - 5.5);
+    f.lineTo(cx + 6.0, cy - 3.5);
+    f.lineTo(cx + 6.0, cy + 3.5);
+    f.lineTo(cx + 7.5, cy + 5.5);
+    f.lineTo(cx - 7.5, cy + 5.5);
+    f.lineTo(cx - 6.0, cy + 3.5);
+    f.lineTo(cx - 6.0, cy - 3.5);
+    f.closeSubpath();
+    return f;
+}
+
+// A marker flag (a square with a point hanging from its left side), as on the Trimmer's marker bar.
+QPainterPath markerFlag(double l, double t, double s)
+{
+    QPainterPath f;
+    f.moveTo(l, t);
+    f.lineTo(l + s, t);
+    f.lineTo(l + s, t + s * 0.75);
+    f.lineTo(l + s * 0.3, t + s * 0.75);
+    f.lineTo(l, t + s);
+    f.closeSubpath();
+    return f;
+}
+
+void drawTrimIcon(QPainter& p, TrimIcon icon, const QRectF& r, bool enabled)
+{
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const double cx = r.center().x(), cy = r.center().y();
+    const QColor light = enabled ? QColor(238, 238, 238) : kOff;
+    auto fillOutlined = [&](const QPainterPath& path, const QColor& c) {
+        p.setPen(QPen(kOutline, 1.0));
+        p.setBrush(enabled ? c : kOff);
+        p.drawPath(path);
+    };
+    auto arrow = [&](double x0, double x1, double y, const QColor& c) {   // a line ending in a head (x1 the tip)
+        const double dir = x1 > x0 ? 1 : -1;
+        p.setPen(QPen(c, 1.6));
+        p.drawLine(QPointF(x0, y), QPointF(x1 - dir * 2.5, y));
+        p.setPen(Qt::NoPen);
+        p.setBrush(c);
+        QPainterPath h;
+        h.moveTo(x1, y);
+        h.lineTo(x1 - dir * 3.5, y - 3.0);
+        h.lineTo(x1 - dir * 3.5, y + 3.0);
+        h.closeSubpath();
+        p.drawPath(h);
+    };
+    const QColor ink(25, 25, 25);
+    switch (icon) {
+    case TrimIcon::SortHistory: {
+        QFont f = p.font();
+        f.setPixelSize(8);
+        f.setBold(true);
+        p.setFont(f);
+        p.setPen(light);
+        p.drawText(QRectF(cx - 9, cy - 8, 18, 9), Qt::AlignCenter, "ABC");
+        p.setPen(Qt::NoPen);
+        p.setBrush(light);
+        QPainterPath h;
+        h.moveTo(cx - 3.5, cy + 2.0);
+        h.lineTo(cx + 3.5, cy + 2.0);
+        h.lineTo(cx, cy + 6.5);
+        h.closeSubpath();
+        p.drawPath(h);
+        break;
+    }
+    case TrimIcon::RemoveCurrent: {
+        p.setPen(QPen(kOutline, 1.0));
+        p.setBrush(light);
+        p.drawRect(QRectF(cx - 5.5, cy - 7.0, 12.0, 13.0));
+        p.setPen(QPen(ink, 1.2));
+        for (int k = 0; k < 3; ++k) p.drawLine(QPointF(cx + 0.5, cy - 4.0 + k * 3.0), QPointF(cx + 4.5, cy - 4.0 + k * 3.0));
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawRect(QRectF(cx - 3.5, cy - 5.0, 3.0, 3.5));
+        p.setPen(QPen(enabled ? kClearRed : kOff, 2.0));
+        p.drawLine(QPointF(cx - 7.5, cy + 2.0), QPointF(cx - 2.5, cy + 7.0));
+        p.drawLine(QPointF(cx - 7.5, cy + 7.0), QPointF(cx - 2.5, cy + 2.0));
+        break;
+    }
+    case TrimIcon::ClearHistory: {
+        QPen pen(enabled ? kClearRed : kOff, 2.4);
+        pen.setCapStyle(Qt::FlatCap);
+        p.setPen(pen);
+        p.drawLine(QPointF(cx - 6, cy - 6), QPointF(cx + 6, cy + 6));
+        p.drawLine(QPointF(cx - 6, cy + 6), QPointF(cx + 6, cy - 6));
+        break;
+    }
+    case TrimIcon::ExternalMonitor: {
+        const QColor screen = enabled ? kAddBlue : QColor(70, 70, 70);
+        for (int k = 0; k < 2; ++k) {
+            const double ox = k == 0 ? 1.5 : -3.5, oy = k == 0 ? -6.5 : -2.0;
+            p.setPen(QPen(kOutline, 1.0));
+            p.setBrush(light);
+            p.drawRect(QRectF(cx + ox - 1.0, cy + oy, 9.5, 7.5));
+            p.setPen(Qt::NoPen);
+            p.setBrush(screen);
+            p.drawRect(QRectF(cx + ox + 0.5, cy + oy + 1.5, 6.5, 4.5));
+            p.setBrush(light);
+            p.drawRect(QRectF(cx + ox - 2.0, cy + oy + 7.5, 11.5, 1.6));
+        }
+        break;
+    }
+    case TrimIcon::MarkIn:
+    case TrimIcon::MarkOut: {
+        QPainterPath t;
+        const bool in = icon == TrimIcon::MarkIn;
+        t.moveTo(cx - 5.5, cy - 5.5);
+        t.lineTo(cx + 5.5, cy - 5.5);
+        t.lineTo(in ? cx - 5.5 : cx + 5.5, cy + 5.5);
+        t.closeSubpath();
+        fillOutlined(t, kMarkYellow);
+        break;
+    }
+    case TrimIcon::AddFromCursor:
+    case TrimIcon::AddUpToCursor:
+    case TrimIcon::FitToFill:
+    case TrimIcon::Overwrite:
+    case TrimIcon::CreateSubclip: {
+        fillOutlined(mediaFrame(cx, cy), kAddBlue);
+        const QColor mark = enabled ? ink : QColor(60, 60, 60);
+        if (icon == TrimIcon::AddFromCursor) {
+            p.setPen(QPen(mark, 1.4));
+            p.drawLine(QPointF(cx - 4.0, cy - 3.0), QPointF(cx - 4.0, cy + 3.0));
+            arrow(cx - 3.5, cx + 4.5, cy, mark);
+        } else if (icon == TrimIcon::AddUpToCursor) {
+            p.setPen(QPen(mark, 1.4));
+            p.drawLine(QPointF(cx + 4.0, cy - 3.0), QPointF(cx + 4.0, cy + 3.0));
+            arrow(cx - 4.5, cx + 3.3, cy, mark);
+        } else if (icon == TrimIcon::FitToFill) {
+            arrow(cx, cx - 4.5, cy, mark);
+            arrow(cx, cx + 4.5, cy, mark);
+        } else if (icon == TrimIcon::Overwrite) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(mark);
+            QPainterPath h;
+            h.moveTo(cx - 3.5, cy - 3.0);
+            h.lineTo(cx + 3.5, cy - 3.0);
+            h.lineTo(cx, cy + 1.0);
+            h.closeSubpath();
+            p.drawPath(h);
+            p.drawRect(QRectF(cx - 4.0, cy + 2.0, 8.0, 1.6));
+        } else {
+            p.setPen(QPen(mark, 1.6));
+            p.drawLine(QPointF(cx - 3.5, cy), QPointF(cx + 3.5, cy));
+            p.drawLine(QPointF(cx, cy - 3.5), QPointF(cx, cy + 3.5));
+        }
+        break;
+    }
+    case TrimIcon::InsertMarker: fillOutlined(markerFlag(cx - 6.0, cy - 6.5, 12.0), kMarkYellow); break;
+    case TrimIcon::InsertRegion: {
+        QPainterPath g;
+        g.moveTo(cx - 7.0, cy - 6.5);
+        g.lineTo(cx + 7.0, cy - 6.5);
+        g.lineTo(cx + 7.0, cy + 6.5);
+        g.lineTo(cx + 4.5, cy + 3.5);
+        g.lineTo(cx + 4.5, cy - 2.5);
+        g.lineTo(cx - 4.5, cy - 2.5);
+        g.lineTo(cx - 4.5, cy + 3.5);
+        g.lineTo(cx - 7.0, cy + 6.5);
+        g.closeSubpath();
+        fillOutlined(g, kRegionGreen);
+        break;
+    }
+    case TrimIcon::SaveMarkers: {
+        QPainterPath disk;
+        disk.addRect(QRectF(cx - 7.0, cy - 4.0, 11.0, 11.0));
+        disk.addRect(QRectF(cx - 4.5, cy - 4.0, 6.0, 3.5));
+        disk.addRect(QRectF(cx - 4.5, cy + 2.5, 6.0, 4.5));
+        disk.setFillRule(Qt::OddEvenFill);
+        fillOutlined(disk, QColor(150, 202, 240));
+        fillOutlined(markerFlag(cx + 0.5, cy - 7.5, 7.0), kMarkYellow);
+        break;
+    }
+    default: break;
+    }
+    p.restore();
+}
+
+// A button of the Trimmer's bars: flat, as the Video Preview's (GlyphButton), with one of the pictures above.
+class TrimButton : public QAbstractButton {
+public:
+    TrimButton(TrimIcon icon, const char* name, const QString& tip, QWidget* parent) : QAbstractButton(parent), icon_(icon)
+    {
+        setObjectName(name);
+        setFixedSize(24, 22);
+        setFocusPolicy(Qt::NoFocus);
+        setToolTip(tip);
+        setAccessibleName(tip);
+    }
+    TrimIcon icon() const { return icon_; }
+    void setPlaying(bool on)
+    {
+        if (playing_ == on) return;
+        playing_ = on;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const QRectF r = QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5);
+        QColor bg(0, 0, 0, 0), edge(0, 0, 0, 0);
+        if (isChecked()) bg = edge = QColor(18, 176, 255);
+        else if (isDown()) bg = edge = QColor(46, 143, 214);
+        else if (underMouse() && isEnabled()) {
+            bg = QColor(90, 90, 90);
+            edge = QColor(110, 110, 110);
+        }
+        p.setPen(QPen(edge, 1.0));
+        p.setBrush(bg);
+        p.drawRect(r);
+        Glyph g;
+        if (standardIcon(icon_, &g)) {
+            QColor fg = isEnabled() ? QColor(238, 238, 238) : kOff;
+            if (g == Glyph::Play && playing_) fg = QColor(120, 220, 140);
+            if (isEnabled())
+                for (const QPointF& o : {QPointF(-1, 0), QPointF(1, 0), QPointF(0, -1), QPointF(0, 1)}) drawGlyph(p, g, r.translated(o), kOutline);
+            drawGlyph(p, g, r, fg);
+        } else {
+            drawTrimIcon(p, icon_, r, isEnabled());
+        }
+    }
+    void enterEvent(QEnterEvent*) override { update(); }
+    void leaveEvent(QEvent*) override { update(); }
+
+private:
+    TrimIcon icon_;
+    bool playing_ = false;
+};
+
+// One of the three time boxes under the transport (VEGAS: selection start, end and length, each after a small
+// picture; with no selection the first shows the cursor and the length is the file's, dimmed). A double-click types a
+// time into it.
+class TrimReadout : public QLabel {
+public:
+    enum Kind { Start, End, Length };
+    TrimReadout(Kind k, const char* name, const QString& tip, QWidget* parent) : QLabel(parent), kind(k)
+    {
+        setObjectName(name);
+        setToolTip(tip);
+        setIndent(22);
+        setMinimumWidth(112);
+        setFixedHeight(20);
+        setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    }
+    Kind kind;
+    bool showsCursor = false;   // Start with no selection: the cursor's picture
+    bool dim = false;
+    std::function<void(const QString&)> onEdit;
+    void setShown(const QString& t, bool dimmed)
+    {
+        if (t == text() && dimmed == dim) return;
+        dim = dimmed;
+        QPalette pal = palette();
+        pal.setColor(QPalette::WindowText, dimmed ? QColor(128, 128, 128) : QColor(220, 220, 220));
+        setPalette(pal);
+        setText(t);
+    }
+    QLineEdit* editor() const { return edit_; }
+
+protected:
+    void paintEvent(QPaintEvent* e) override
+    {
+        QLabel::paintEvent(e);
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const double cx = 9.0, cy = height() / 2.0;
+        p.setPen(QPen(kOutline, 1.0));
+        if (kind == Start && showsCursor) {
+            // the cursor's head: a white tab with a stem
+            p.setBrush(QColor(238, 238, 238));
+            p.drawRoundedRect(QRectF(cx - 3.5, cy - 7.0, 7.0, 8.0), 1.5, 1.5);
+            p.drawRect(QRectF(cx - 1.0, cy + 1.0, 2.0, 6.0));
+            p.setPen(Qt::NoPen);
+            p.setBrush(kOutline);
+            p.drawRect(QRectF(cx - 1.5, cy - 5.0, 1.0, 2.5));
+            p.drawRect(QRectF(cx + 0.5, cy - 5.0, 1.0, 2.5));
+        } else if (kind == Start || kind == End) {
+            QPainterPath t;
+            t.moveTo(cx - 5.0, cy - 5.0);
+            t.lineTo(cx + 5.0, cy - 5.0);
+            t.lineTo(kind == Start ? cx - 5.0 : cx + 5.0, cy + 5.0);
+            t.closeSubpath();
+            p.setBrush(kMarkYellow);
+            p.drawPath(t);
+        } else {
+            // the selection's length: yellow in-out ends over a white bracket
+            p.setBrush(kMarkYellow);
+            p.drawRect(QRectF(cx - 7.0, cy - 6.0, 14.0, 9.0));
+            QPainterPath b;
+            b.moveTo(cx - 6.0, cy + 5.5);
+            b.lineTo(cx - 6.0, cy + 1.5);
+            b.lineTo(cx - 2.5, cy - 3.5);
+            b.lineTo(cx + 2.5, cy - 3.5);
+            b.lineTo(cx + 6.0, cy + 1.5);
+            b.lineTo(cx + 6.0, cy + 5.5);
+            b.closeSubpath();
+            p.setPen(QPen(QColor(238, 238, 238), 1.5));
+            p.setBrush(QColor(70, 70, 70));
+            p.drawPath(b);
+        }
+    }
+    void mouseDoubleClickEvent(QMouseEvent*) override
+    {
+        if (!onEdit || edit_) return;
+        edit_ = new QLineEdit(this);
+        edit_->setObjectName("trimmerTimeEdit");
+        edit_->setGeometry(indent() - 3, 0, width() - indent() + 3, height());
+        edit_->setText(text());
+        edit_->selectAll();
+        edit_->show();
+        edit_->setFocus();
+        QObject::connect(edit_, &QLineEdit::editingFinished, this, [this] {
+            QLineEdit* e = edit_;
+            if (!e) return;
+            edit_ = nullptr;     // (hiding it takes the focus away, which finishes the editing again)
+            const QString t = e->text();
+            e->hide();
+            e->deleteLater();
+            if (onEdit) onEdit(t);
+        });
+    }
+
+private:
+    QLineEdit* edit_ = nullptr;
+};
+
+// A time typed into a box: hh:mm:ss:ff (or fewer fields, from the right: ss:ff, mm:ss:ff; ';' ',' '.' work too), or
+// plain seconds. -1 if it can't be read.
+double parseTrimmerTime(const QString& text, double fps)
+{
+    const QString t = text.trimmed();
+    if (t.isEmpty()) return -1;
+    const QStringList parts = t.split(QRegularExpression("[:;,]"));
+    bool ok = false;
+    if (parts.size() == 1) {
+        const double s = t.toDouble(&ok);
+        return ok && s >= 0 ? s : -1;
+    }
+    if (parts.size() > 4) return -1;
+    double v[4] = {0, 0, 0, 0};
+    for (int k = 0; k < parts.size(); ++k) {
+        v[4 - parts.size() + k] = parts[k].toDouble(&ok);
+        if (!ok || v[4 - parts.size() + k] < 0) return -1;
+    }
+    const double nominal = std::round(fps > 0 ? fps : 30.0);
+    return v[0] * 3600 + v[1] * 60 + v[2] + v[3] / nominal;
+}
+
+// The transport's buttons in VEGAS's order (key, menu text): Edit Visible Button Set chooses which are on the bar, the
+// hamburger menu lists the others.
+struct TransportEntry {
+    const char* key;
+    const char* text;
+};
+const TransportEntry kTransport[] = {
+    {"loop", "Loop Playback"}, {"playFromStart", "Play From Start"}, {"play", "Play"}, {"pause", "Pause"}, {"stop", "Stop"},
+    {"previousFrame", "Previous Frame"}, {"nextFrame", "Next Frame"}, {"markIn", "Mark In"}, {"markOut", "Mark Out"},
+    {"addFromCursor", "Add to Timeline from Cursor"}, {"addUpToCursor", "Add to Timeline up to Cursor"}, {"fitToFill", "Fit to Fill"},
+    {"overwrite", "Enable Timeline Overwrite"}, {"createSubclip", "Create Subclip"}, {"insertMarker", "Insert Marker"},
+    {"insertRegion", "Insert Region"}, {"saveMarkers", "Save Markers/Regions"}};
+// As VEGAS has it at first (the manual's "Trimmer Transport Tool Bar").
+const char* const kDefaultTransport[] = {"play", "pause", "stop", "addFromCursor", "fitToFill"};
 }  // namespace
 
 struct TrimmerWindow::Impl {
@@ -341,8 +747,23 @@ struct TrimmerWindow::Impl {
     QComboBox* history = nullptr;
     TrimPicture* picture = nullptr;
     TrimStrip* strip = nullptr;
-    QToolButton *play = nullptr, *loop = nullptr;
-    QLabel *cursorLbl = nullptr, *inLbl = nullptr, *outLbl = nullptr, *lenLbl = nullptr, *streamLbl = nullptr;
+    TrimButton *play = nullptr, *loop = nullptr;
+    // the transport's buttons by key (kTransport), the bar they are on and its hamburger
+    std::vector<std::pair<QString, TrimButton*>> transport;
+    QStringList transportSet;
+    QWidget* transportBar = nullptr;
+    TrimButton* transportMenu = nullptr;
+    TrimButton* externalMonitorBtn = nullptr;
+    std::function<void(bool)> externalMonitorHook;
+    std::function<void()> subclipHook;
+    TrimButton* button(const char* key) const
+    {
+        for (const auto& b : transport)
+            if (b.first == key) return b.second;
+        return nullptr;
+    }
+    TrimReadout *startBox = nullptr, *endBox = nullptr, *lengthBox = nullptr;
+    QLabel* streamLbl = nullptr;
     int streams = 0;
     int stripSize = 0;
     Alive alive = makeAlive();
@@ -362,7 +783,7 @@ struct TrimmerWindow::Impl {
     QLabel* marksLbl = nullptr;
     bool overwrite = QSettings().value("trimmer/overwrite", false).toBool();
     bool hoverScrub = QSettings().value("trimmer/hoverScrub", true).toBool();
-    QToolButton* overwriteBtn = nullptr;
+    TrimButton* overwriteBtn = nullptr;
     void overwriteUnder(const std::vector<uint64_t>& made)
     {
         AppState& app = AppState::get();
@@ -422,6 +843,7 @@ struct TrimmerWindow::Impl {
     std::atomic<int64_t> handed{0};
     int rate = 48000;
     double playFrom = 0, playTo = 0;
+    double returnTo = 0;    // where the cursor was when Play was pressed: Stop goes back there
     std::chrono::steady_clock::time_point clock0;
     QTimer* timer = nullptr;
     bool fillingHistory = false;
@@ -438,17 +860,21 @@ struct TrimmerWindow::Impl {
     void projectChanged(int changes);
     void updateLabels()
     {
-        cursorLbl->setText(qs(timecode(pos, fps)));
-        inLbl->setText(selection() ? qs(timecode(in, fps)) : QString("--"));
-        outLbl->setText(selection() ? qs(timecode(out, fps)) : QString("--"));
-        lenLbl->setText(qs(timecode(selection() ? out - in : dur, fps)));
+        // as VEGAS: with a selection its start, end and length; without, the cursor and the file's length (dimmed)
+        const bool open = !path.isEmpty();
+        startBox->showsCursor = !selection();
+        startBox->setShown(open || selection() ? qs(timecode(selection() ? in : pos, fps)) : QString(), false);
+        startBox->update();
+        endBox->setShown(selection() ? qs(timecode(out, fps)) : QString(), false);
+        lengthBox->setShown(open ? qs(timecode(selection() ? out - in : dur, fps)) : QString(), !selection());
         strip->cursor = pos;
         strip->in = in;
         strip->out = out;
         strip->update();
         const bool both = info.hasVideo && info.hasAudio;
         const int st = both ? streams : 0;
-        streamLbl->setText(!both ? QString() : st == 1 ? QString("Video only") : st == 2 ? QString("Audio only") : QString("Video and audio"));
+        // (a few words left of the time boxes: which stream the Add commands take when it isn't both, and markers not saved)
+        streamLbl->setText(!both ? QString() : st == 1 ? QString("Video only") : st == 2 ? QString("Audio only") : QString());
         picture->dimmed = st == 2;
         strip->dimWave = st == 1;
         picture->update();
@@ -456,10 +882,25 @@ struct TrimmerWindow::Impl {
         strip->fileMarks = info.markers;
         int nm = 0, nr = 0;
         for (const MediaItem::Marker& m : marks) (m.length > 0 ? nr : nm)++;
-        marksLbl->setText(marks.empty() ? QString() : QString("%1 marker%2, %3 region%4%5").arg(nm).arg(nm == 1 ? "" : "s").arg(nr).arg(nr == 1 ? "" : "s")
-                                                                             .arg(marksSaved ? QString() : QString(" (not saved: S)")));
-        play->setText(playing ? QString::fromUtf8("■") : QString::fromUtf8("▶"));
-        play->setToolTip(playing ? "Stop (Space)" : "Play (Space)");
+        marksLbl->setText(marks.empty() || marksSaved ? QString() : QString("Not saved"));
+        marksLbl->setToolTip(QString("The Trimmer's markers (M) and regions (R): %1 marker%2, %3 region%4%5").arg(nm).arg(nm == 1 ? "" : "s").arg(nr)
+                                 .arg(nr == 1 ? "" : "s").arg(marksSaved ? QString() : QString(", not saved yet (S saves them with the media)")));
+        play->setPlaying(playing);
+        updateButtons();
+    }
+    // What the buttons can do now (the playing ones always look ready, as in VEGAS): the Add and marker buttons need a
+    // file, Fit to Fill a time selection on the timeline too, Save Markers/Regions markers not yet saved.
+    void updateButtons()
+    {
+        const bool open = !path.isEmpty() && dur > 0;
+        auto enable = [](QWidget* w, bool on) {
+            if (w && w->isEnabled() != on) w->setEnabled(on);
+        };
+        for (const char* k : {"addFromCursor", "addUpToCursor", "insertMarker", "insertRegion"}) enable(button(k), open);
+        enable(button("fitToFill"), open && AppState::get().timeSel());
+        enable(button("saveMarkers"), open && !marksSaved);
+        enable(button("createSubclip"), open && selection() && subclipHook != nullptr);
+        enable(externalMonitorBtn, externalMonitorHook != nullptr);
     }
 
     void requestFrame()
@@ -667,19 +1108,8 @@ struct TrimmerWindow::Impl {
     }
 };
 
-// A button of the Trimmer's bars.
-static QToolButton* trimmerButton(QWidget* parentW, const char* name, const QString& text, const QString& tip)
-{
-    auto* b = new QToolButton(parentW);
-    b->setObjectName(name);
-    b->setText(text);
-    b->setToolTip(tip);
-    b->setFocusPolicy(Qt::NoFocus);
-    b->setAutoRaise(true);
-    return b;
-}
-
-// The bar on top: the history of files opened, Add, Add Up To, Fit to Fill, Overwrite, Sort, Remove and Clear.
+// The bar on top, as in VEGAS 18: the Trimmer history (the files opened), then Sort Trimmer History, Remove Current
+// Media from Trimmer History, Clear Trimmer History and Trimmer on External Monitor.
 QWidget* TrimmerWindow::buildToolBar()
 {
     QWidget* top = new QWidget(this);
@@ -690,36 +1120,26 @@ QWidget* TrimmerWindow::buildToolBar()
     top->setFixedHeight(29);
     auto* th = new QHBoxLayout(top);
     th->setContentsMargins(4, 2, 4, 2);
-    th->setSpacing(3);
+    th->setSpacing(1);
     d->history = new QComboBox(top);
     d->history->setObjectName("trimmerHistory");
     d->history->setToolTip("Trimmer history: the files opened in the Trimmer");
     d->history->setFocusPolicy(Qt::NoFocus);
     d->history->setMinimumWidth(160);
     th->addWidget(d->history, 1);
-    QToolButton* add = trimmerButton(top, "trimmerAdd", "Add", "Add to Timeline from Cursor (A): the selection, or the whole file, at the timeline's cursor");
-    QToolButton* addEnd = trimmerButton(top, "trimmerAddEnd", "Add Up To", "Add to Timeline up to Cursor (Shift+A): so that it ends at the timeline's cursor");
-    QToolButton* clear = trimmerButton(top, "trimmerClearHistory", "Clear", "Clear Trimmer History (Ctrl+Shift+H)");
-    QToolButton* fit = trimmerButton(top, "trimmerFitToFill", "Fit to Fill", "Fit to Fill: the selection (or the whole file) stretched to fill the timeline's time selection");
-    d->overwriteBtn = trimmerButton(top, "trimmerOverwrite", "Overwrite", "Enable Timeline Overwrite: what is added replaces what is on the track there");
-    d->overwriteBtn->setCheckable(true);
-    d->overwriteBtn->setChecked(d->overwrite);
-    QToolButton* sortBtn = trimmerButton(top, "trimmerSortHistory", "Sort", "Sort Trimmer History (H; Ctrl+click: Z to A)");
-    QToolButton* removeBtn = trimmerButton(top, "trimmerRemoveCurrent", "Remove", "Remove Current Media from Trimmer History (Ctrl+H)");
-    th->addWidget(add);
-    th->addWidget(addEnd);
-    th->addWidget(fit);
-    th->addWidget(d->overwriteBtn);
-    th->addWidget(sortBtn);
-    th->addWidget(removeBtn);
-    th->addWidget(clear);
-    QObject::connect(fit, &QToolButton::clicked, this, [this] { fitToFill(); });
-    QObject::connect(d->overwriteBtn, &QToolButton::toggled, this, [this](bool on) { setTimelineOverwrite(on); });
-    QObject::connect(sortBtn, &QToolButton::clicked, this, [this] { sortHistory((QApplication::keyboardModifiers() & Qt::ControlModifier) != 0); });
-    QObject::connect(removeBtn, &QToolButton::clicked, this, [this] { removeCurrentFromHistory(); });
-    QObject::connect(add, &QToolButton::clicked, this, [this] { addToTimeline(false); });
-    QObject::connect(addEnd, &QToolButton::clicked, this, [this] { addToTimeline(true); });
-    QObject::connect(clear, &QToolButton::clicked, this, [this] { clearHistory(); });
+    th->addSpacing(4);
+    auto* sortBtn = new TrimButton(TrimIcon::SortHistory, "trimmerSortHistory", "Sort Trimmer History (H; Ctrl+click: Z to A)", top);
+    auto* removeBtn = new TrimButton(TrimIcon::RemoveCurrent, "trimmerRemoveCurrent", "Remove Current Media from Trimmer History (Ctrl+H)", top);
+    auto* clear = new TrimButton(TrimIcon::ClearHistory, "trimmerClearHistory", "Clear Trimmer History (Ctrl+Shift+H)", top);
+    d->externalMonitorBtn = new TrimButton(TrimIcon::ExternalMonitor, "trimmerExternalMonitor", "Trimmer on External Monitor", top);
+    d->externalMonitorBtn->setCheckable(true);
+    for (QWidget* b : {(QWidget*)sortBtn, (QWidget*)removeBtn, (QWidget*)clear, (QWidget*)d->externalMonitorBtn}) th->addWidget(b);
+    QObject::connect(sortBtn, &QAbstractButton::clicked, this, [this] { sortHistory((QApplication::keyboardModifiers() & Qt::ControlModifier) != 0); });
+    QObject::connect(removeBtn, &QAbstractButton::clicked, this, [this] { removeCurrentFromHistory(); });
+    QObject::connect(clear, &QAbstractButton::clicked, this, [this] { clearHistory(); });
+    QObject::connect(d->externalMonitorBtn, &QAbstractButton::toggled, this, [this](bool on) {
+        if (d->externalMonitorHook) d->externalMonitorHook(on);
+    });
     QObject::connect(d->history, QOverload<int>::of(&QComboBox::activated), this, [this](int i) {
         if (d->fillingHistory || i < 0) return;
         const QString p = d->history->itemData(i).toString();
@@ -728,56 +1148,237 @@ QWidget* TrimmerWindow::buildToolBar()
     return top;
 }
 
-// The bar at the bottom: play, loop, frame steps, in and out, and the times of the cursor and the selection.
+// Under the strip, as in VEGAS 18: the Trimmer Transport tool bar in the middle (the buttons Edit Visible Button Set
+// chooses, then the hamburger with the others), and below it the three time boxes.
 QWidget* TrimmerWindow::buildTransportBar()
 {
-    QWidget* tr = new QWidget(this);
-    tr->setFixedHeight(28);
-    auto* h = new QHBoxLayout(tr);
-    h->setContentsMargins(4, 2, 4, 2);
-    h->setSpacing(2);
-    d->play = trimmerButton(tr, "trimmerPlay", QString::fromUtf8("▶"), "Play (Space)");
-    d->loop = trimmerButton(tr, "trimmerLoop", QString::fromUtf8("↻"), "Loop Playback");
-    d->loop->setCheckable(true);
-    QToolButton* prev = trimmerButton(tr, "trimmerPrevFrame", QString::fromUtf8("◀|"), "Previous Frame (Left)");
-    QToolButton* next = trimmerButton(tr, "trimmerNextFrame", QString::fromUtf8("|▶"), "Next Frame (Right)");
-    QToolButton* markIn = trimmerButton(tr, "trimmerIn", "[", "Set In Point (I)");
-    QToolButton* markOut = trimmerButton(tr, "trimmerOut", "]", "Set Out Point (O)");
-    for (QToolButton* b : {d->play, d->loop, prev, next, markIn, markOut}) h->addWidget(b);
-    h->addSpacing(8);
-    auto label = [&](const char* name, const QString& tip) {
-        QLabel* l = new QLabel(tr);
-        l->setObjectName(name);
-        l->setToolTip(tip);
-        l->setMinimumWidth(70);
-        return l;
+    QWidget* under = new QWidget(this);
+    under->setAutoFillBackground(true);
+    QPalette up = under->palette();
+    up.setColor(QPalette::Window, tool());
+    under->setPalette(up);
+    auto* v = new QVBoxLayout(under);
+    v->setContentsMargins(4, 6, 4, 5);
+    v->setSpacing(7);
+
+    d->transportBar = new QWidget(under);
+    d->transportBar->setObjectName("trimmerTransport");
+    v->addWidget(d->transportBar);
+    struct Made {
+        const char* key;
+        TrimIcon icon;
+        const char* name;
+        const char* tip;
     };
-    d->cursorLbl = label("trimmerCursor", "The Trimmer's cursor");
-    d->inLbl = label("trimmerInTime", "Start of the selection");
-    d->outLbl = label("trimmerOutTime", "End of the selection");
-    d->lenLbl = label("trimmerLength", "Length of the selection (or of the file)");
-    d->streamLbl = label("trimmerStreams", "What the Add commands put on the timeline (Tab changes it)");
-    d->streamLbl->setMinimumWidth(0);
-    d->marksLbl = label("trimmerMarkers", "The Trimmer's markers (M) and regions (R); S saves them with the media");
-    d->marksLbl->setMinimumWidth(0);
-    h->addWidget(d->cursorLbl);
-    h->addWidget(d->streamLbl);
-    h->addSpacing(8);
-    h->addWidget(d->marksLbl);
+    const Made made[] = {
+        {"loop", TrimIcon::Loop, "trimmerLoop", "Loop Playback"},
+        {"playFromStart", TrimIcon::PlayFromStart, "trimmerPlayFromStart", "Play From Start"},
+        {"play", TrimIcon::Play, "trimmerPlay", "Play (Space)"},
+        {"pause", TrimIcon::Pause, "trimmerPause", "Pause"},
+        {"stop", TrimIcon::Stop, "trimmerStop", "Stop (Space while playing)"},
+        {"previousFrame", TrimIcon::PrevFrame, "trimmerPrevFrame", "Previous Frame (Left)"},
+        {"nextFrame", TrimIcon::NextFrame, "trimmerNextFrame", "Next Frame (Right)"},
+        {"markIn", TrimIcon::MarkIn, "trimmerIn", "Marks the beginning of the Trimmer selection. (I)"},
+        {"markOut", TrimIcon::MarkOut, "trimmerOut", "Marks the end of the Trimmer selection. (O)"},
+        {"addFromCursor", TrimIcon::AddFromCursor, "trimmerAdd",
+         "Add to Timeline from Cursor (A): creates a new event on the timeline using the Trimmer selection, beginning at the cursor position"},
+        {"addUpToCursor", TrimIcon::AddUpToCursor, "trimmerAddEnd",
+         "Add to Timeline up to Cursor (Shift+A): creates a new event on the timeline using the Trimmer selection, ending at the cursor position"},
+        {"fitToFill", TrimIcon::FitToFill, "trimmerFitToFill",
+         "Fit to Fill: adds the Trimmer selection to the timeline, stretching or compressing it as needed to fill the timeline selection"},
+        {"overwrite", TrimIcon::Overwrite, "trimmerOverwrite",
+         "Enable Timeline Overwrite: replaces the contents of the timeline when creating events from the Trimmer"},
+        {"createSubclip", TrimIcon::CreateSubclip, "trimmerCreateSubclip", "Create Subclip: a new clip in Project Media from the Trimmer selection"},
+        {"insertMarker", TrimIcon::InsertMarker, "trimmerInsertMarker", "Insert Marker (M)"},
+        {"insertRegion", TrimIcon::InsertRegion, "trimmerInsertRegion", "Insert Region (R)"},
+        {"saveMarkers", TrimIcon::SaveMarkers, "trimmerSaveMarkers", "Save Markers/Regions (S): keeps the Trimmer's markers and regions with the media"},
+    };
+    for (const Made& m : made) {
+        auto* b = new TrimButton(m.icon, m.name, m.tip, d->transportBar);
+        d->transport.push_back(std::make_pair(QString(m.key), b));
+    }
+    d->play = d->button("play");
+    d->loop = d->button("loop");
+    d->loop->setCheckable(true);
+    d->overwriteBtn = d->button("overwrite");
+    d->overwriteBtn->setCheckable(true);
+    d->overwriteBtn->setChecked(d->overwrite);
+    d->transportMenu = new TrimButton(TrimIcon::Menu, "trimmerTransportMenu", "More buttons; Edit Visible Button Set...", d->transportBar);
+    auto on = [this](const char* key, std::function<void()> fn) { QObject::connect(d->button(key), &QAbstractButton::clicked, this, [fn] { fn(); }); };
+    QObject::connect(d->loop, &QAbstractButton::toggled, this, [this](bool b) { setLoop(b); });
+    on("playFromStart", [this] { playFromStart(); });
+    on("play", [this] { play(); });
+    on("pause", [this] { pause(); });
+    on("stop", [this] { stop(); });
+    on("previousFrame", [this] { stepFrames(-1); });
+    on("nextFrame", [this] { stepFrames(1); });
+    on("markIn", [this] { markIn(); });
+    on("markOut", [this] { markOut(); });
+    on("addFromCursor", [this] { addToTimeline(false); });
+    on("addUpToCursor", [this] { addToTimeline(true); });
+    on("fitToFill", [this] { fitToFill(); });
+    QObject::connect(d->overwriteBtn, &QAbstractButton::toggled, this, [this](bool b) { setTimelineOverwrite(b); });
+    on("createSubclip", [this] {
+        if (d->subclipHook) d->subclipHook();
+    });
+    on("insertMarker", [this] { insertMarker(); });
+    on("insertRegion", [this] { insertRegion(); });
+    on("saveMarkers", [this] { saveMarkers(); });
+    QObject::connect(d->transportMenu, &QAbstractButton::clicked, this, [this] {
+        QMenu* m = transportMenu();
+        m->exec(d->transportMenu->mapToGlobal(QPoint(0, d->transportMenu->height())));
+        m->deleteLater();
+    });
+    QStringList set = QSettings().value("trimmer/transportButtons").toStringList();
+    if (!QSettings().contains("trimmer/transportButtons"))
+        for (const char* k : kDefaultTransport) set << k;
+    d->transportSet = set;
+    arrangeTransport();
+
+    // the times: selection start (or the cursor), end and length
+    auto* times = new QHBoxLayout();
+    times->setSpacing(10);
+    QWidget* info = new QWidget(under);
+    auto* ih = new QHBoxLayout(info);
+    ih->setContentsMargins(0, 0, 0, 0);
+    ih->setSpacing(8);
+    d->streamLbl = new QLabel(info);
+    d->streamLbl->setObjectName("trimmerStreams");
+    d->streamLbl->setToolTip("What the Add commands put on the timeline (Tab changes it)");
+    d->marksLbl = new QLabel(info);
+    d->marksLbl->setObjectName("trimmerMarkers");
+    d->marksLbl->setToolTip("The Trimmer's markers (M) and regions (R); S saves them with the media");
+    for (QLabel* l : {d->streamLbl, d->marksLbl}) {
+        QPalette lp = l->palette();
+        lp.setColor(QPalette::WindowText, QColor(150, 150, 150));
+        l->setPalette(lp);
+        ih->addWidget(l);
+    }
+    ih->addStretch(1);
+    info->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);    // (the boxes stay in the middle)
+    times->addWidget(info, 1);
+    d->startBox = new TrimReadout(TrimReadout::Start, "trimmerInTime", "Start of the selection (the cursor when nothing is selected); double-click to type a time", under);
+    d->endBox = new TrimReadout(TrimReadout::End, "trimmerOutTime", "End of the selection; double-click to type a time", under);
+    d->lengthBox = new TrimReadout(TrimReadout::Length, "trimmerLength", "Length of the selection (dimmed: of the whole file); double-click to type a length", under);
+    for (TrimReadout* r : {d->startBox, d->endBox, d->lengthBox}) times->addWidget(r);
+    QWidget* right = new QWidget(under);
+    times->addWidget(right, 1);
+    v->addLayout(times);
+    Impl* impl = d.get();
+    d->startBox->onEdit = [this, impl](const QString& t) {
+        const double s = parseTrimmerTime(t, impl->fps);
+        if (s < 0) return impl->updateLabels();
+        if (impl->selection()) setSelection(s, std::max(s, impl->out));
+        else setPosition(s);
+    };
+    d->endBox->onEdit = [this, impl](const QString& t) {
+        const double s = parseTrimmerTime(t, impl->fps);
+        if (s < 0) return impl->updateLabels();
+        setSelection(impl->selection() ? std::min(impl->in, s) : std::min(impl->pos, s), s);
+    };
+    d->lengthBox->onEdit = [this, impl](const QString& t) {
+        const double s = parseTrimmerTime(t, impl->fps);
+        if (s < 0) return impl->updateLabels();
+        const double a = impl->selection() ? impl->in : impl->pos;
+        setSelection(a, a + s);
+    };
+    return under;
+}
+
+// Puts the buttons of the visible set on the transport bar, in VEGAS's order, centered, with the hamburger last.
+void TrimmerWindow::arrangeTransport()
+{
+    delete d->transportBar->layout();
+    auto* h = new QHBoxLayout(d->transportBar);
+    h->setContentsMargins(0, 0, 0, 0);
+    h->setSpacing(0);
     h->addStretch(1);
-    h->addWidget(new QLabel("In:", tr));
-    h->addWidget(d->inLbl);
-    h->addWidget(new QLabel("Out:", tr));
-    h->addWidget(d->outLbl);
-    h->addWidget(new QLabel("Length:", tr));
-    h->addWidget(d->lenLbl);
-    QObject::connect(d->play, &QToolButton::clicked, this, [this] { playing() ? stop() : play(); });
-    QObject::connect(d->loop, &QToolButton::toggled, this, [this](bool on) { setLoop(on); });
-    QObject::connect(prev, &QToolButton::clicked, this, [this] { stepFrames(-1); });
-    QObject::connect(next, &QToolButton::clicked, this, [this] { stepFrames(1); });
-    QObject::connect(markIn, &QToolButton::clicked, this, [this] { this->markIn(); });
-    QObject::connect(markOut, &QToolButton::clicked, this, [this] { this->markOut(); });
-    return tr;
+    for (const auto& b : d->transport) {
+        const bool shown = d->transportSet.contains(b.first);
+        b.second->setVisible(shown);
+        if (shown) h->addWidget(b.second);
+    }
+    h->addWidget(d->transportMenu);
+    h->addStretch(1);
+}
+
+QStringList TrimmerWindow::visibleTransportButtons() const { return d->transportSet; }
+
+void TrimmerWindow::setVisibleTransportButtons(const QStringList& set)
+{
+    d->transportSet.clear();
+    for (const TransportEntry& e : kTransport)
+        if (set.contains(e.key)) d->transportSet << e.key;
+    QSettings().setValue("trimmer/transportButtons", d->transportSet);
+    arrangeTransport();
+}
+
+// The hamburger's menu: the buttons not on the bar (as commands; Loop Playback and Enable Timeline Overwrite as
+// checks), then Edit Visible Button Set.
+QMenu* TrimmerWindow::transportMenu()
+{
+    auto* m = new QMenu(this);
+    m->setObjectName("trimmerTransportMenu");
+    for (const TransportEntry& e : kTransport) {
+        if (d->transportSet.contains(e.key)) continue;
+        TrimButton* b = d->button(e.key);
+        QAction* a = m->addAction(e.text);
+        a->setObjectName(QString("trimmerMenu_") + e.key);
+        a->setEnabled(b->isEnabled());
+        a->setCheckable(b->isCheckable());
+        a->setChecked(b->isChecked());
+        QObject::connect(a, &QAction::triggered, b, [b] { b->click(); });
+    }
+    m->addSeparator();
+    QAction* edit = m->addAction("Edit Visible Button Set...");
+    edit->setObjectName("trimmerMenu_editSet");
+    QObject::connect(edit, &QAction::triggered, this, [this] { editVisibleTransportButtons(); });
+    return m;
+}
+
+// Edit Visible Button Set: a check box for each of the transport's buttons.
+void TrimmerWindow::editVisibleTransportButtons()
+{
+    QDialog dlg(this);
+    dlg.setObjectName("trimmerButtonSet");
+    dlg.setWindowTitle("Edit Visible Button Set");
+    auto* v = new QVBoxLayout(&dlg);
+    std::vector<std::pair<QString, QCheckBox*>> boxes;
+    for (const TransportEntry& e : kTransport) {
+        auto* c = new QCheckBox(e.text, &dlg);
+        c->setObjectName(QString("button_") + e.key);
+        c->setChecked(d->transportSet.contains(e.key));
+        v->addWidget(c);
+        boxes.push_back(std::make_pair(QString(e.key), c));
+    }
+    auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    v->addWidget(bb);
+    QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    if (dlg.exec() != QDialog::Accepted) return;
+    QStringList set;
+    for (const auto& b : boxes)
+        if (b.second->isChecked()) set << b.first;
+    setVisibleTransportButtons(set);
+}
+
+void TrimmerWindow::setExternalMonitorHook(std::function<void(bool on)> fn)
+{
+    d->externalMonitorHook = std::move(fn);
+    if (!d->externalMonitorHook) setExternalMonitorShown(false);
+    d->updateButtons();
+}
+
+void TrimmerWindow::setExternalMonitorShown(bool on)
+{
+    const QSignalBlocker block(d->externalMonitorBtn);
+    d->externalMonitorBtn->setChecked(on);
+}
+
+void TrimmerWindow::setCreateSubclipHook(std::function<void()> fn)
+{
+    d->subclipHook = std::move(fn);
+    d->updateButtons();
 }
 
 // The strip's right-click menu ('mark': the marker clicked on, -1 none).
@@ -853,6 +1454,7 @@ void TrimmerWindow::showStripMenu(const QPoint& at, int mark)
 // saved with it).
 void TrimmerWindow::Impl::projectChanged(int changes)
 {
+    updateButtons();    // (Fit to Fill follows the timeline's time selection)
     if (!(changes & kProject) || !mediaId) return;
     const MediaItem* m = AppState::get().project().findMedia(mediaId);
     if (!m) {
@@ -1209,11 +1811,34 @@ void TrimmerWindow::setVideoInPreview(bool on)
 
 bool TrimmerWindow::videoInPreview() const { return d->toPreview; }
 
-void TrimmerWindow::play() { d->startPlaying(); }
+void TrimmerWindow::play()
+{
+    if (!d->playing) d->returnTo = d->pos;
+    d->startPlaying();
+}
+
+void TrimmerWindow::playFromStart()
+{
+    if (d->playing) d->stopPlaying();
+    d->returnTo = d->pos;
+    d->pos = d->selection() ? d->in : 0.0;
+    d->startPlaying();
+}
+
+void TrimmerWindow::pause()
+{
+    d->stopPlaying();
+    d->updateLabels();
+}
 
 void TrimmerWindow::stop()
 {
+    const bool was = d->playing;
     d->stopPlaying();
+    if (was) {
+        d->pos = std::min(d->dur, std::max(0.0, d->returnTo));
+        d->requestFrame();
+    }
     d->updateLabels();
 }
 

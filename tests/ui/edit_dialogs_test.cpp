@@ -438,7 +438,7 @@ int main(int argc, char** argv)
         uitest::settle();
         const double tspan = tstrip->property("span").toDouble();
         auto kx = [&](double secs) { return 10 + (int)std::lround(secs / tspan * (tstrip->width() - 20)); };
-        const int ky = 18 + (tstrip->height() - 18) / 2;
+        const int ky = tstrip->property("keyY").toInt();     // (the Position row of the key strip)
         drag(tstrip, QPoint(kx(1.0), ky), QPoint(kx(2.0), ky), Qt::AltModifier);
         t = track(VT);
         std::string got;

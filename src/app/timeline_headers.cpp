@@ -327,6 +327,202 @@ static int fittingPixelSize(const QFont& base, bool bold, const QString& sizing,
     return lastPx;
 }
 
+// The grouping lane down the left of a track group's headers (VEGAS 18's is this khaki)
+static const QColor kGroupLane(124, 120, 80);
+
+// The small round buttons of VEGAS 18's compositing controls: Compositing Mode (and a parent's Parent Composite Mode),
+// two overlapping rings; Make Compositing Child, a ring with a smaller one tucked in at its bottom right; Make
+// Compositing Parent, the same at its top left. Greyed out where the command does not apply.
+enum class CompIcon { Mode, Child, Parent };
+static void drawCompButton(QPainter& p, const QRect& r, CompIcon icon, bool on, bool enabled, bool hot)
+{
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    if (!enabled) p.setOpacity(0.35);
+    const QRectF b = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5);
+    QColor fill = on ? QColor(150, 196, 150) : QColor(150, 150, 150);
+    if (hot && enabled) fill = fill.lighter(118);
+    p.setPen(QPen(on ? QColor(255, 255, 255) : QColor(30, 30, 30), on ? 1.4 : 1.0));
+    p.setBrush(fill);
+    p.drawEllipse(b);
+    const QPointF c = b.center();
+    const QColor ink(28, 28, 28);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(ink, 1.2));
+    switch (icon) {
+    case CompIcon::Mode:
+        p.drawEllipse(QPointF(c.x() - 1.8, c.y()), 3.2, 3.2);
+        p.drawEllipse(QPointF(c.x() + 1.8, c.y()), 3.2, 3.2);
+        break;
+    case CompIcon::Child:
+    case CompIcon::Parent: {
+        const double d = icon == CompIcon::Child ? 1.0 : -1.0;
+        p.drawEllipse(QPointF(c.x() - d * 1.2, c.y() - d * 1.2), 3.6, 3.6);
+        p.setBrush(ink);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(c.x() + d * 2.6, c.y() + d * 2.6), 2.0, 2.0);
+        break;
+    }
+    }
+    p.restore();
+}
+
+// The little "group" mark on a track group header's Mute / Solo button: three short lines at its bottom left.
+static void drawGroupMark(QPainter& p, const QRect& r)
+{
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.fillRect(QRect(r.left() - 1, r.bottom() - 6, 6, 7), QColor(28, 28, 28));
+    for (int k = 0; k < 3; ++k) p.fillRect(QRect(r.left(), r.bottom() - 5 + k * 2, 4, 1), QColor(235, 235, 235));
+    p.restore();
+}
+
+// A track's output meter (VEGAS 18's in the audio track header): two bars, left and right, lit from silence (meterLo)
+// to the level, green, yellow over -9 dB and red over -3 dB; the held peak as a line; its value as a number (on red
+// once the sound has clipped); a dB scale over the dark part. Vertical: the number above the bars; across: at the
+// right. 'm' null: the meter as it is with no sound.
+void TimelineWidget::Impl::drawMeter(QPainter& p, const QRect& r, bool vertical, const TrackMeter* m) const
+{
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    const int readout = vertical ? 10 : 26;
+    const QRect bars = vertical ? r.adjusted(0, readout, 0, 0) : r.adjusted(0, 0, -readout, 0);
+    const QRect num = vertical ? QRect(r.left() - 3, r.top(), r.width() + 6, readout - 1) : QRect(bars.right() + 3, r.top() - 1, readout - 3, r.height() + 2);
+    p.fillRect(bars, QColor(18, 18, 18));
+    const int len = vertical ? bars.height() - 2 : bars.width() - 2;
+    if (len <= 2) {
+        p.restore();
+        return;
+    }
+    auto frac = [&](double db) { return clampd((db - meterLo) / -meterLo, 0.0, 1.0); };
+    auto dbOf = [](float v) { return v > 1e-6f ? 20.0 * std::log10((double)v) : -200.0; };
+    const int thick = std::max(1, ((vertical ? bars.width() : bars.height()) - 3) / 2);
+    for (int c = 0; c < 2; ++c) {
+        // a bar's part from 'a' to 'b' (fractions of the length) in a color
+        auto part = [&](double a, double b, const QColor& col) {
+            if (b <= a) return;
+            const int pa = (int)std::lround(a * len), pb = (int)std::lround(b * len);
+            if (pb <= pa) return;
+            if (vertical) p.fillRect(QRect(bars.left() + 1 + c * (thick + 1), bars.bottom() - pb, thick, pb - pa), col);
+            else p.fillRect(QRect(bars.left() + 1 + pa, bars.top() + 1 + c * (thick + 1), pb - pa, thick), col);
+        };
+        const double lv = m ? frac(dbOf(m->level[c])) : 0.0;
+        const double y9 = frac(-9.0), y3 = frac(-3.0);
+        part(0.0, std::min(lv, y9), QColor(40, 205, 60));
+        part(y9, std::min(lv, y3), QColor(230, 210, 40));
+        part(y3, lv, QColor(235, 55, 40));
+        if (m && m->hold[c] > 1e-6f) {
+            const double hv = frac(dbOf(m->hold[c]));
+            const QColor hc = hv >= y3 ? QColor(255, 90, 70) : QColor(230, 230, 230);
+            part(std::max(0.0, hv - 1.0 / len), hv, hc);
+        }
+    }
+    // the scale: a mark every 6 dB (3 where the meter is long enough), numbered where there is room
+    {
+        QFont f = smallFont;
+        f.setPixelSize(vertical ? 7 : 8);
+        p.setFont(f);
+        const QFontMetrics fm(f);
+        const double stepPx = len * 6.0 / -meterLo;
+        const int step = stepPx >= (vertical ? 18 : 30) ? 3 : stepPx >= (vertical ? 9 : 15) ? 6 : 12;
+        int lastEdge = -1000;
+        for (int db = step; db < (int)-meterLo; db += step) {
+            const int at = (int)std::lround(frac(-db) * len);
+            const QString t = QString::number(db);
+            p.setPen(QColor(150, 150, 150));
+            if (vertical) {
+                const int y = bars.bottom() - at;
+                if (std::abs(y - lastEdge) < fm.height() - 2) continue;
+                lastEdge = y;
+                p.drawText(QRect(bars.left(), y - fm.height() / 2, bars.width(), fm.height()), Qt::AlignRight | Qt::AlignVCenter, t);
+            } else {
+                const int x = bars.left() + 1 + at;
+                const int w = fm.horizontalAdvance(t);
+                if (x - w / 2 < lastEdge + 3 || x - w / 2 < bars.left() || x + w / 2 > bars.right()) continue;
+                lastEdge = x + w / 2;
+                p.drawText(QRect(x - w / 2 - 1, bars.top(), w + 2, bars.height()), Qt::AlignCenter, t);
+            }
+        }
+    }
+    // the held peak's value
+    if (m && std::max(m->hold[0], m->hold[1]) > 1e-6f) {
+        const double db = dbOf(std::max(m->hold[0], m->hold[1]));
+        QFont f = smallFont;
+        f.setPixelSize(vertical ? 8 : 9);
+        p.setFont(f);
+        if (m->clip) p.fillRect(num, QColor(200, 30, 30));
+        p.setPen(m->clip ? QColor(255, 255, 255) : kText);
+        p.drawText(num, (vertical ? Qt::AlignHCenter : Qt::AlignRight) | Qt::AlignVCenter, QString::number(db, 'f', 1));
+    }
+    p.restore();
+}
+
+// The rows of track groups (VEGAS 18 manual p214): in the track list, the Collapse/Expand triangle over the grouping
+// lane, the name, Mute and Solo Track Group; in the timeline ('lanes'), an empty strip, or for a collapsed group dark
+// gray bars where its tracks' events are.
+void TimelineWidget::Impl::paintGroupRows(QPainter& p, const QRect& clip, bool lanes)
+{
+    if (groupRows.empty()) return;
+    const Project& pr = app.project();
+    const QRect area = lanes ? lanesRect() : headerColumn();
+    const QRect c = area.intersected(clip);
+    if (c.isEmpty()) return;
+    p.save();
+    p.setClipRect(c);
+    for (const GroupRow& g : groupRows) {
+        const int y = groupTop(g);
+        if (y > c.bottom() || y + g.h < c.top()) continue;
+        const bool collapsed = collapsedGroups.count(g.group) != 0;
+        if (lanes) {
+            p.fillRect(QRect(c.left(), y, c.width(), g.h - 1), QColor(40, 40, 42));
+            p.fillRect(QRect(c.left(), y + g.h - 1, c.width(), 1), kLine);
+            if (!collapsed) continue;
+            const double from = timeAtF(c.left() - 2.0), to = timeAtF(c.right() + 2.0);
+            for (size_t k = g.first; k <= g.last && k < pr.tracks.size(); ++k) {
+                const std::pair<size_t, size_t> range = eventRange(k, from, to);
+                const auto& ev = pr.tracks[k].events;
+                for (size_t e = range.first; e < range.second; ++e) {
+                    if (ev[e].end() < from || ev[e].start > to) continue;
+                    const double x0 = std::floor(xAtF(ev[e].start)), x1 = std::floor(xAtF(ev[e].end()));
+                    p.fillRect(QRectF(x0, y + 4, std::max(1.0, x1 - x0), g.h - 9), QColor(78, 78, 80));
+                }
+            }
+            continue;
+        }
+        const GroupRects r = groupRects(g);
+        const bool hot = hover.track && (hover.part == Part::GroupRow || hover.part == Part::GroupToggle || hover.part == Part::GroupName ||
+                                         hover.part == Part::GroupMute || hover.part == Part::GroupSolo) &&
+                         g.first < pr.tracks.size() && pr.tracks[g.first].id == hover.track;
+        p.fillRect(QRect(0, y, headerW - kHeaderGap, g.h), QColor(52, 52, 54));
+        p.fillRect(QRect(0, y + g.h - 1, headerW - kHeaderGap, 1), kLine);
+        // the triangle: down while expanded, right while collapsed
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(hot && hover.part == Part::GroupToggle ? QColor(255, 255, 255) : QColor(225, 225, 225));
+        const QPointF tc = QRectF(r.toggle).center();
+        QPolygonF tri;
+        if (collapsed) tri << QPointF(tc.x() - 2.5, tc.y() - 4.0) << QPointF(tc.x() - 2.5, tc.y() + 4.0) << QPointF(tc.x() + 2.5, tc.y());
+        else tri << QPointF(tc.x() - 4.0, tc.y() - 2.0) << QPointF(tc.x() + 4.0, tc.y() - 2.0) << QPointF(tc.x(), tc.y() + 3.0);
+        p.drawPolygon(tri);
+        p.restore();
+        // (a track group has no name of its own in the project yet: VEGAS's default name is shown)
+        p.setFont(q->font());
+        p.setPen(QColor(226, 214, 150));
+        p.drawText(r.name, Qt::AlignVCenter | Qt::AlignLeft, QFontMetrics(q->font()).elidedText(QString("Track Group"), Qt::ElideRight, r.name.width()));
+        bool allMuted = true, allSolo = true;
+        for (size_t k = g.first; k <= g.last && k < pr.tracks.size(); ++k) {
+            allMuted = allMuted && pr.tracks[k].mute;
+            allSolo = allSolo && pr.tracks[k].solo;
+        }
+        drawHeaderButton(p, r.mute, Icon::Mute, allMuted, hot && hover.part == Part::GroupMute, QColor());
+        drawGroupMark(p, r.mute);
+        drawHeaderButton(p, r.solo, Icon::Solo, allSolo, hot && hover.part == Part::GroupSolo, QColor());
+        drawGroupMark(p, r.solo);
+    }
+    p.restore();
+}
+
 void TimelineWidget::Impl::paintHeaders(QPainter& p, const QRect& clip)
 {
     const QRect c = QRect(0, kTopH, headerW, std::max(0, lanesBottom() - kTopH)).intersected(clip);
@@ -349,7 +545,22 @@ void TimelineWidget::Impl::paintHeaders(QPainter& p, const QRect& clip)
         const QColor tc = trackColor(tr, r.index);
         p.fillRect(h.body, current ? kHeaderCurrent : kHeaderBg);
         p.fillRect(h.strip, tc);
-        if (tr.trackGroup) p.fillRect(QRect(h.all.right() - 3, h.all.top(), 3, h.all.height()), defaultTrackColor((int)(tr.trackGroup % 8)).lighter(120));
+        // the grouping lane; a compositing child's parents' colors down its left, its header nested in theirs
+        if (!h.groupLane.isEmpty()) p.fillRect(h.groupLane, kGroupLane);
+        if (r.video && h.indent > (h.groupLane.isEmpty() ? 0 : kGroupLaneW)) {
+            std::vector<const Track*> parents;
+            compositeDepth(tr, &parents);
+            int x = kHeaderMargin + (h.groupLane.isEmpty() ? 0 : kGroupLaneW);
+            for (const Track* pt : parents) {
+                const int w = std::min(kCompositeIndent, h.strip.left() - x);
+                if (w <= 0) break;
+                int pi = 0;
+                for (size_t k = 0; k < pr.tracks.size(); ++k)
+                    if (&pr.tracks[k] == pt) pi = (int)k;
+                p.fillRect(QRect(x, h.all.top(), w, h.all.height()), trackColor(*pt, pi));
+                x += w;
+            }
+        }
         {
             const bool menuHot = hot && hover.part == Part::HeaderMenu;
             if (menuHot) p.fillRect(h.menu, QColor(255, 255, 255, 50));
@@ -400,6 +611,36 @@ void TimelineWidget::Impl::paintHeaders(QPainter& p, const QRect& clip)
             if (!app.fx.error(s.id).empty()) bad = true;
         if (!h.motion.isEmpty()) drawHeaderButton(p, h.motion, Icon::Motion, !tr.motion.empty(), hot && hover.part == Part::HeaderMotion, QColor(24, 24, 24));
         if (!h.fx.isEmpty()) drawHeaderButton(p, h.fx, Icon::Fx, !tr.fx.empty(), hot && hover.part == Part::HeaderFx, bad ? QColor(150, 20, 10) : QColor(24, 24, 24));
+        if (!h.fxArrow.isEmpty()) {
+            if (hot && hover.part == Part::HeaderFxArrow) p.fillRect(h.fxArrow.adjusted(0, 2, 0, -2), QColor(255, 255, 255, 40));
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(Qt::NoPen);
+            p.setBrush(current ? QColor(30, 30, 30) : QColor(220, 220, 220));
+            const QPointF ac(h.fxArrow.center().x() + 0.5, h.fxArrow.center().y() + 1.0);
+            p.drawPolygon(QPolygonF() << QPointF(ac.x() - 3.0, ac.y() - 1.5) << QPointF(ac.x() + 3.0, ac.y() - 1.5) << QPointF(ac.x(), ac.y() + 2.0));
+            p.restore();
+        }
+        if (!h.parentMotion.isEmpty())
+            drawHeaderButton(p, h.parentMotion, Icon::Motion, !tr.parentMotion.empty(), hot && hover.part == Part::HeaderParentMotion, QColor(24, 24, 24));
+        if (!h.parentComp.isEmpty())
+            drawCompButton(p, h.parentComp, CompIcon::Mode, tr.parentComposite != "srcalpha", true, hot && hover.part == Part::HeaderParentComp);
+        if (!h.compMode.isEmpty()) drawCompButton(p, h.compMode, CompIcon::Mode, tr.composite != "srcalpha", true, hot && hover.part == Part::HeaderCompMode);
+        if (!h.compChild.isEmpty() || !h.compParent.isEmpty()) {
+            // (Make Compositing Child needs a video track above at its level or deeper; Make Compositing Parent, a child)
+            std::vector<const Track*> parents;
+            const int depth = compositeDepth(tr, &parents);
+            int above = -1;
+            bool seen = false;
+            for (const Track& o : pr.tracks) {
+                if (o.type != TrackType::Video) continue;
+                if (o.id == tr.id) { seen = true; break; }
+                above = compositeDepth(o);
+            }
+            const bool canChild = seen && above >= 0 && depth <= above;
+            if (!h.compChild.isEmpty()) drawCompButton(p, h.compChild, CompIcon::Child, false, canChild, hot && hover.part == Part::HeaderCompChild);
+            if (!h.compParent.isEmpty()) drawCompButton(p, h.compParent, CompIcon::Parent, false, depth > 0, hot && hover.part == Part::HeaderCompParent);
+        }
         if (!h.autoBtn.isEmpty()) {
             p.save();
             p.setRenderHint(QPainter::Antialiasing, true);
@@ -449,6 +690,55 @@ void TimelineWidget::Impl::paintHeaders(QPainter& p, const QRect& clip)
             if (!h.panCaption.isEmpty()) p.drawText(h.panCaption, Qt::AlignVCenter | Qt::AlignLeft, QString("Pan:"));
             p.drawText(h.panValue, Qt::AlignVCenter | Qt::AlignLeft, panText(pv));
         }
+        if (!h.sendLabel.isEmpty())
+            if (const Bus* sb = sendShown(tr)) {
+                double sl = 0.0;
+                bool pre = !sb->assignable;
+                for (const Send& s : tr.sends)
+                    if (s.bus == sb->id) {
+                        sl = s.level;
+                        pre = s.preFader;
+                    }
+                p.setFont(smallFont);
+                const QString name = QString::fromStdString(sb->name) + ":";
+                drawTextButton(p, h.sendLabel, QFontMetrics(smallFont).elidedText(name, Qt::ElideRight, h.sendLabel.width() - 4), false, QColor(),
+                               hot && hover.part == Part::HeaderSendLabel);
+                if (!h.sendValue.isEmpty()) {
+                    p.setPen(text);
+                    p.drawText(h.sendValue, Qt::AlignVCenter | Qt::AlignLeft, sendLevelText(sl));
+                }
+                if (!h.send.isEmpty())
+                    drawSlider(p, h.send, volumeToSlider(sl), false, (hot && hover.part == Part::HeaderSend) || (drag.kind == Drag::Send && drag.hit.track == r.id), current);
+                // Pre/Post: the send taken before or after the track's fader, with VEGAS's circling-arrow mark where
+                // the button is wide enough
+                const QRect pp = h.sendPrePost;
+                p.save();
+                p.setRenderHint(QPainter::Antialiasing, true);
+                p.setPen(QPen(hot && hover.part == Part::HeaderSendPrePost ? QColor(200, 200, 204) : QColor(22, 22, 24), 1.0));
+                p.setBrush(QColor(38, 38, 40));
+                p.drawRoundedRect(QRectF(pp).adjusted(0.5, 0.5, -0.5, -0.5), 3.0, 3.0);
+                QRect tr2 = pp;
+                if (pp.width() >= 40) {
+                    const QPointF ic(pp.left() + 9.5, pp.center().y() + 0.5);
+                    p.setBrush(Qt::NoBrush);
+                    p.setPen(QPen(pre ? QColor(236, 160, 60) : QColor(90, 200, 90), 1.6));
+                    p.drawArc(QRectF(ic.x() - 4.5, ic.y() - 4.5, 9.0, 9.0), 60 * 16, 290 * 16);
+                    p.setPen(QPen(QColor(235, 235, 235), 1.2));
+                    p.drawEllipse(ic, 1.6, 1.6);
+                    tr2.setLeft(pp.left() + 18);
+                }
+                p.restore();
+                p.setPen(QColor(226, 226, 230));
+                p.drawText(tr2, Qt::AlignCenter, pre ? QString("Pre") : QString("Post"));
+            }
+        if (!h.meter.isEmpty()) {
+            if (!h.meterCaption.isEmpty()) {
+                p.setFont(smallFont);
+                p.setPen(text);
+                p.drawText(h.meterCaption, Qt::AlignVCenter | Qt::AlignLeft, QString("Out"));
+            }
+            drawMeter(p, h.meter, h.meterVertical, nullptr);
+        }
         if (!h.fade.isEmpty()) {
             const bool fadeHot = (hot && hover.part == Part::HeaderFade) || (drag.kind == Drag::Fade && drag.hit.track == r.id);
             const double fv = shownAutomation(tr, "fadecolor");
@@ -470,6 +760,7 @@ void TimelineWidget::Impl::paintHeaders(QPainter& p, const QRect& clip)
         }
         });
     }
+    paintGroupRows(p, clip, false);
     // When the track list has the keyboard (a click on a header; Tab goes back), the current track's header is outlined,
     // as a focused item in a list is, rather than the whole column.
     if (trackListFocus && q->hasFocus())
@@ -678,6 +969,30 @@ QString TimelineWidget::Impl::tipAt(const QPointF& pos) const
     case Part::HeaderFade: return QString("Fade to color (automation)");
     case Part::HeaderPhase: return QString("Invert Track Phase");
     case Part::HeaderBus: return QString("Bus: where the track's sound goes");
+    case Part::HeaderSendLabel: return QString("Choose the bus or assignable FX the slider sends to");
+    case Part::HeaderSend:
+        if (const Track* t = findTrackConst(h.track))
+            if (const Bus* b = sendShown(*t)) {
+                double level = 0;
+                for (const Send& s : t->sends)
+                    if (s.bus == b->id) level = s.level;
+                return QString("%1: %2").arg(QString::fromStdString(b->name), sendLevelText(level));
+            }
+        return QString();
+    case Part::HeaderSendPrePost: return QString("Pre/Post: the send is taken before or after the track's volume fader");
+    case Part::HeaderFxArrow: return QString("FX Automation");
+    case Part::HeaderCompMode: return QString("Compositing Mode");
+    case Part::HeaderCompChild: return QString("Make Compositing Child");
+    case Part::HeaderCompParent: return QString("Make Compositing Parent");
+    case Part::HeaderParentMotion: return QString("Parent Motion");
+    case Part::HeaderParentComp: return QString("Parent Composite Mode");
+    case Part::HeaderMeter: return QString("Track output meter (right-click for its settings)");
+    case Part::HeaderGroupLane: return QString("Track group: click to select its tracks");
+    case Part::GroupToggle: return QString("Collapse/Expand Track Group");
+    case Part::GroupMute: return QString("Mute Track Group");
+    case Part::GroupSolo: return QString("Solo Track Group");
+    case Part::GroupRow:
+    case Part::GroupName: return QString("Track group: click to select its tracks");
     case Part::HeaderSolo: return QString("Solo (X)");
     case Part::HeaderMotion: return QString("Track Motion");
     case Part::TrackKey: return QString("Track Motion keyframe: drag to move it, double-click for Track Motion, right-click for its type");

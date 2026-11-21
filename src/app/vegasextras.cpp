@@ -34,6 +34,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QRadioButton>
@@ -42,6 +43,9 @@
 #include <QSpinBox>
 #include <QTextStream>
 #include <QTimer>
+#include <QTreeWidget>
+#include <QHeaderView>
+#include <QLocale>
 #include <QToolBar>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -951,63 +955,134 @@ private:
     QDateTime started_, lastMinute_, lastHour_;
 };
 
-// The Restore Backup dialog: the backups (newest first), Current Project Only, Restore Selected (with "Open in new
-// instance of Reno"), Delete Selected.
+}  // namespace
+
+// What the Restore Backup list calls a backup of each kind (VEGAS's names: minor are the timed backups every so many
+// minutes, major every so many hours, critical the daily ones).
+static QString backupTypeName(const QString& kind)
+{
+    if (kind == "minutes") return "Minor backup";
+    if (kind == "hours") return "Major backup";
+    if (kind == "daily") return "Critical backup";
+    if (kind == "realtime") return "Real-time backup";
+    return kind;
+}
+
+// The Restore Backup dialog (Advanced Save Utility > Restore...), dark like VEGAS 18's, at its pixel positions
+// (550 x 299 inside the frame): All Backups / Current Project Only, the backups newest first (name, type, time),
+// "Open in new instance of Reno" and Cancel, Delete Selected, Restore Selected. A backup opened in a new instance is
+// opened by another Reno program, so the project open here stays as it is.
 void restoreBackupDialog(MainWindow* w)
 {
     QDialog d(w);
     d.setObjectName("restoreBackupDialog");
     d.setWindowTitle("Restore Backup");
-    d.resize(560, 380);
-    QVBoxLayout* v = new QVBoxLayout(&d);
-    QListWidget* list = new QListWidget(&d);
+    makeDialogDark(&d);
+    QFont fnt = d.font();
+    fnt.setPixelSize(12);
+    d.setFont(fnt);
+    d.setFixedSize(550, 299);
+    QPalette pal = d.palette();
+    pal.setColor(QPalette::Window, QColor(0x46, 0x46, 0x46));
+    pal.setColor(QPalette::Base, QColor(0x2d, 0x2d, 0x2d));
+    pal.setColor(QPalette::Button, QColor(0x37, 0x37, 0x37));
+    for (QPalette::ColorRole r : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText}) {
+        pal.setColor(QPalette::Active, r, QColor(230, 230, 230));
+        pal.setColor(QPalette::Inactive, r, QColor(230, 230, 230));
+        pal.setColor(QPalette::Disabled, r, QColor(118, 118, 118));
+    }
+    d.setPalette(pal);
+    d.setStyleSheet("QDialog#restoreBackupDialog { background: #464646; }"
+                    "QPushButton { background: #373737; border: none; color: #e6e6e6; }"
+                    "QPushButton:hover:enabled { background: #505050; }"
+                    "QPushButton:checkable:!checked { background: #373737; }"
+                    "QPushButton:checked { background: #7bb5ff; color: #ffffff; }"
+                    "QPushButton:disabled { color: #767676; }"
+                    "QTreeWidget { background: #2d2d2d; border: none; color: #e6e6e6; }"
+                    "QTreeWidget::item { background: #373737; height: 13px; }"
+                    "QTreeWidget::item:selected { background: #4b5f7d; }"
+                    "QHeaderView { background: #464646; }"
+                    "QHeaderView::section { background: #464646; color: #e6e6e6; border: none; font-weight: bold; padding-left: 3px; }");
+
+    QPushButton* allBtn = new QPushButton("All Backups", &d);
+    allBtn->setObjectName("allBackups");
+    allBtn->setGeometry(9, 8, 129, 22);
+    QPushButton* currentBtn = new QPushButton("Current Project Only", &d);
+    currentBtn->setObjectName("currentProjectOnly");
+    currentBtn->setGeometry(146, 8, 131, 22);
+    for (QPushButton* b : {allBtn, currentBtn}) {
+        b->setCheckable(true);
+        b->setAutoExclusive(true);
+    }
+    allBtn->setChecked(true);
+
+    QTreeWidget* list = new QTreeWidget(&d);
     list->setObjectName("backupList");
-    QCheckBox* current = new QCheckBox("Current Project Only", &d);
-    current->setObjectName("currentProjectOnly");
-    auto fill = [list, current] {
+    list->setGeometry(8, 40, 534, 194);
+    list->setHeaderLabels({"Backup Name", "Backup Type", "Time of Backup"});
+    list->setRootIsDecorated(false);
+    list->setUniformRowHeights(true);
+    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    list->header()->setSectionsMovable(false);
+    list->header()->setMinimumHeight(20);
+    list->header()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    list->setColumnWidth(0, 252);
+    list->setColumnWidth(1, 132);
+    QFont boldFont = fnt;
+    boldFont.setBold(true);
+    auto fill = [list, currentBtn, boldFont] {
         list->clear();
-        for (const QString& f : backupFiles(current->isChecked())) {
+        for (const QString& f : backupFiles(currentBtn->isChecked())) {
             const QFileInfo fi(f);
-            QListWidgetItem* it = new QListWidgetItem(QString("%1   (%2, %3)").arg(fi.fileName(), fi.dir().dirName(), fi.lastModified().toString("yyyy-MM-dd HH:mm:ss")), list);
-            it->setData(Qt::UserRole, f);
+            const QDateTime when = fi.lastModified();
+            QTreeWidgetItem* it = new QTreeWidgetItem(list, {fi.completeBaseName(), backupTypeName(fi.dir().dirName()),
+                                                             QLocale().toString(when.date(), QLocale::ShortFormat) + " " + when.toString("HH:mm:ss")});
+            it->setFont(0, boldFont);
+            it->setData(0, Qt::UserRole, f);
         }
+        if (list->topLevelItemCount() > 0) list->setCurrentItem(list->topLevelItem(0));
     };
-    QObject::connect(current, &QCheckBox::toggled, &d, [fill](bool) { fill(); });
+    QObject::connect(currentBtn, &QPushButton::toggled, &d, [fill](bool) { fill(); });
     fill();
-    v->addWidget(list, 1);
-    v->addWidget(current);
+
     QCheckBox* newInstance = new QCheckBox("Open in new instance of Reno", &d);
     newInstance->setObjectName("openNewInstance");
-    v->addWidget(newInstance);
-    QHBoxLayout* h = new QHBoxLayout();
-    QPushButton* restore = new QPushButton("Restore Selected", &d);
-    restore->setObjectName("restoreSelected");
+    newInstance->setGeometry(9, 241, 300, 16);
+    QPushButton* cancel = new QPushButton("Cancel", &d);
+    cancel->setObjectName("cancel");
+    cancel->setGeometry(134, 270, 128, 25);
     QPushButton* del = new QPushButton("Delete Selected", &d);
     del->setObjectName("deleteSelected");
-    QPushButton* close = new QPushButton("Close", &d);
-    h->addWidget(restore);
-    h->addWidget(del);
-    h->addStretch(1);
-    h->addWidget(close);
-    v->addLayout(h);
-    QObject::connect(close, &QPushButton::clicked, &d, &QDialog::reject);
-    QObject::connect(del, &QPushButton::clicked, &d, [list, fill] {
-        if (!list->currentItem()) return;
-        QFile::remove(list->currentItem()->data(Qt::UserRole).toString());
+    del->setGeometry(271, 270, 128, 25);
+    QPushButton* restore = new QPushButton("Restore Selected", &d);
+    restore->setObjectName("restoreSelected");
+    restore->setGeometry(410, 270, 128, 25);
+    restore->setDefault(true);
+    QObject::connect(cancel, &QPushButton::clicked, &d, &QDialog::reject);
+    QObject::connect(del, &QPushButton::clicked, &d, [&d, list, fill] {
+        const QList<QTreeWidgetItem*> sel = list->selectedItems();
+        if (sel.isEmpty()) return;
+        if (QMessageBox::question(&d, "Restore Backup", sel.size() == 1 ? QString("Delete the backup %1?").arg(sel.first()->text(0))
+                                                                        : QString("Delete these %1 backups?").arg(sel.size())) != QMessageBox::Yes)
+            return;
+        for (QTreeWidgetItem* it : sel) QFile::remove(it->data(0, Qt::UserRole).toString());
         fill();
     });
     QObject::connect(restore, &QPushButton::clicked, &d, [&d, w, list, newInstance] {
         if (!list->currentItem()) return;
-        const QString f = list->currentItem()->data(Qt::UserRole).toString();
+        const QString f = list->currentItem()->data(0, Qt::UserRole).toString();
         d.accept();
         if (newInstance->isChecked()) {
-            QDesktopServices::openUrl(QUrl::fromLocalFile(f));
+            if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), {QDir::toNativeSeparators(f)}))
+                AppState::get().status("Another Reno could not be started to open the backup.");
             return;
         }
         w->openProject(f);
     });
     d.exec();
 }
+
+namespace {
 
 // VEGAS 18's Advanced Save Utility: Live Save, timed and real-time backups, and where the backups go. It is laid out at
 // VEGAS's own pixel positions: its window is 649 x 412 with its frame, and the positions are the capture's less the

@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QGuiApplication>
+#include <QPainter>
 #include <QScreen>
 #include <QTimer>
 #include <QThread>
@@ -1737,6 +1738,8 @@ static uint64_t stampMix(uint64_t h, uint64_t v)
 uint64_t Playback::frameStamp() const
 {
     uint64_t h = stampMix(0x5EED, app_.revision());
+    // (the multicamera grid is not an ordinary frame: frames kept before it was turned on are not shown with it)
+    if (multicam_.load()) h = stampMix(h, 0x3C4A);
     h = stampMix(h, app_.fx.videoRevision());
     h = stampMix(h, (app_.bypassAllFx ? 1u : 0u) | (app_.muteAllVideo ? 2u : 0u) | (fullQuality_ ? 4u : 0u) | ((uint64_t)(quality_.load() + 1) << 3));
     h = stampMix(h, videoProxyGeneration());
@@ -2091,6 +2094,20 @@ QImage Playback::renderFrame(const Project& p, double t, int64_t frame, uint64_t
     ms = 0;
     rendered = false;
     if (approximated) *approximated = false;
+    // Multicamera editing: the takes' grid, made every time (never kept with the ordinary frames)
+    if (multicam_.load()) {
+        const MulticamView view = multicamAt(p, t);
+        if (view.valid() && !app_.muteAllVideo) {
+            if (setCursor) ram_.setCursor(frame);
+            const auto t0 = std::chrono::steady_clock::now();
+            QImage grid = multicamFrame(p, view, t, scale, draft, cancel, quick, approximated);
+            ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            rendered = true;
+            ++rendered_;
+            if (cancel && cancel->load()) return QImage();
+            return grid;
+        }
+    }
     QImage image;
     {
         std::lock_guard<std::mutex> lk(videoMutex_);
@@ -2138,6 +2155,107 @@ QImage Playback::renderFrame(const Project& p, double t, int64_t frame, uint64_t
         while (cache_.size() > kCacheFrames) cache_.pop_front();
     }
     return image;
+}
+
+Playback::MulticamView Playback::multicamAt(const Project& p, double t)
+{
+    MulticamView v;
+    for (const Track& tr : p.tracks) {
+        if (tr.type != TrackType::Video || tr.mute) continue;
+        const Event* pick = nullptr;
+        for (const Event& e : tr.events)
+            if (!e.takes.empty() && !e.mute && e.start <= t + 1e-9 && e.end() > t + 1e-9 && (!pick || e.start >= pick->start)) pick = &e;
+        if (!pick) continue;
+        const std::vector<Take> takes = AppState::takesOf(*pick);
+        v.eventId = pick->id;
+        v.active = std::max(0, std::min(pick->activeTake, (int)takes.size() - 1));
+        int n = 1;
+        while (n * n < (int)takes.size()) ++n;
+        v.columns = n;
+        for (size_t k = 0; k < takes.size(); ++k) {
+            const MediaItem* m = p.findMedia(takes[k].mediaId);
+            MulticamTile tile;
+            tile.number = (int)k + 1;
+            tile.empty = !m || !m->info.hasVideo;
+            tile.name = tile.empty ? std::string("(no camera)") : !takes[k].name.empty() ? takes[k].name : m->name;
+            v.tiles.push_back(tile);
+        }
+        return v;
+    }
+    return v;
+}
+
+void Playback::setMulticam(bool on)
+{
+    if (multicam_.exchange(on) == on) return;
+    {
+        std::lock_guard<std::mutex> lk(videoMutex_);
+        cache_.clear();
+        ready_.clear();
+    }
+    requestFrame();
+}
+
+// Each take is rendered on its own as a project of one event playing that take's media (so generated media and
+// nested projects work as anywhere else), at the tile's size, then put in its place in the grid.
+QImage Playback::multicamFrame(const Project& p, const MulticamView& view, double t, double scale, bool draft, const std::atomic<bool>* cancel,
+                               bool quick, bool* approximated)
+{
+    const double s = scale > 0 && scale < 1.0 ? scale : 1.0;
+    const int W = std::max(1, (int)std::lround(p.settings.width * s)), H = std::max(1, (int)std::lround(p.settings.height * s));
+    QImage out(W, H, QImage::Format_RGB32);
+    out.fill(Qt::black);
+    const Event* src = nullptr;
+    for (const Track& tr : p.tracks)
+        for (const Event& e : tr.events)
+            if (e.id == view.eventId) src = &e;
+    if (!src) return out;
+    const std::vector<Take> takes = AppState::takesOf(*src);
+    FrameOptions fo;
+    fo.skipEffects = true;
+    fo.quality = quality_;
+    fo.scale = std::max(0.01, s / view.columns);
+    fo.draft = draft;
+    fo.cancel = cancel;
+    QPainter painter(&out);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, !draft);
+    MediaReadHintsScope hints(cancel, quick);
+    for (size_t k = 0; k < takes.size() && k < view.tiles.size(); ++k) {
+        if (view.tiles[k].empty) continue;
+        if (cancel && cancel->load()) break;
+        const MediaItem* m = p.findMedia(takes[k].mediaId);
+        if (!m) continue;
+        Project q;
+        q.settings = p.settings;
+        q.media.push_back(*m);
+        Track tr;
+        tr.id = 1;
+        tr.type = TrackType::Video;
+        Event e;
+        // an id of its own for each take, so each keeps its own reader
+        e.id = src->id ^ (0x6D43000000000000ull + ((uint64_t)k << 40));
+        e.mediaId = m->id;
+        e.start = src->start;
+        e.length = src->length;
+        e.offset = takes[k].offset;
+        e.rate = src->rate;
+        e.reverse = takes[k].reverse;
+        e.undersample = src->undersample;
+        e.resample = src->resample;
+        e.name = takes[k].name;
+        tr.events.push_back(e);
+        q.tracks.push_back(tr);
+        ImagePtr img = video_.render(q, t, fo);
+        if (!img) continue;
+        double x, y, w, h;
+        view.tileRect((int)k, x, y, w, h);
+        const QRect cell((int)std::lround(x * W), (int)std::lround(y * H), (int)std::lround((x + w) * W) - (int)std::lround(x * W),
+                         (int)std::lround((y + h) * H) - (int)std::lround(y * H));
+        painter.drawImage(cell, toQImage(*img));
+    }
+    painter.end();
+    if (approximated) *approximated = hints.approximated();
+    return out;
 }
 
 // Decoding ahead (see prewarmThreads_): takes the soonest event about to start that nobody has read ahead for, and has its

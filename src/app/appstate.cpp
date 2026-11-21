@@ -2095,18 +2095,22 @@ bool AppState::pasteEventAttributes(const std::set<uint64_t>& ids, int attrs)
                 for (const Envelope& env : src.envelopes)
                     if (env.kind != "fx") e->envelopes.push_back(env);
             }
-            if (attrs & AttrFadeIn) {
-                e->fadeIn = std::min(src.fadeIn, e->length);
+            if (attrs & AttrFadeIn) e->fadeIn = std::min(src.fadeIn, e->length);
+            if (attrs & AttrFadeOut) e->fadeOut = std::min(src.fadeOut, e->length);
+            if (attrs & AttrPreType) {
                 e->fadeInCurve = src.fadeInCurve;
+                e->fadeInRecipCurve = src.fadeInRecipCurve;
+                if (isVideo) {
+                    e->transition = src.transition;
+                    if (!e->transition.kind.empty()) e->transition.id = p.newId();
+                }
             }
-            if (attrs & AttrFadeOut) {
-                e->fadeOut = std::min(src.fadeOut, e->length);
-                e->fadeOutCurve = src.fadeOutCurve;
-            }
+            if (attrs & AttrPostType) e->fadeOutCurve = src.fadeOutCurve;
             if (attrs & AttrLevel) e->gain = src.gain;
             if (attrs & AttrRate) {
                 e->rate = src.rate;
                 e->reverse = src.reverse;
+                if (isVideo) e->undersample = src.undersample;
             }
             if (attrs & AttrSwitches) {
                 e->mute = src.mute;

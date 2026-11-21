@@ -661,16 +661,104 @@ void MediaExplorer::showDetails(const QString& file)
     d->summary->setText(text);
 }
 
-// VEGAS's Edit Details: events, markers, regions or media as a table. A click selects a row and moves the cursor there.
+// Edit Details' Save Preset (a floppy disk) and Delete Preset (a red cross) icons, drawn as the plug-in window's are.
+static QIcon detailsPresetIcon(bool save)
+{
+    QPixmap pm(40, 40);
+    pm.setDevicePixelRatio(2.0);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    if (save) {
+        p.setPen(QPen(QColor(14, 52, 100), 1.0));
+        p.setBrush(QColor(38, 112, 190));
+        p.drawRoundedRect(QRectF(2.5, 2.5, 15, 15), 1.5, 1.5);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(236, 240, 246));
+        p.drawRect(QRectF(5, 3.5, 10, 5.5));
+        p.setBrush(QColor(26, 64, 120));
+        p.drawRect(QRectF(11.2, 4.4, 2.2, 3.6));
+        p.setBrush(QColor(232, 236, 244));
+        p.drawRect(QRectF(5, 11.5, 10, 5));
+    } else {
+        p.setPen(QPen(QColor(222, 84, 84), 2.2, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(4.5, 4.5), QPointF(15.5, 15.5));
+        p.drawLine(QPointF(15.5, 4.5), QPointF(4.5, 15.5));
+    }
+    return QIcon(pm);
+}
+
+// VEGAS's Edit Details: the project's events, markers, regions, commands or CD layout as a table. A click selects a row
+// and moves the cursor there. The Events views have VEGAS 18's columns; the check box columns switch the event.
 struct EditDetails::Impl {
+    // the columns of the Events and Selected Events views
+    enum EventColumn {
+        ColTrack, ColStart, ColEnd, ColLength, ColTakes, ColTakeName, ColTakeStart, ColTimecodeIn, ColTimecodeOut, ColFilePath,
+        ColTapeName, ColSelect, ColMute, ColLoop, ColLock, ColNormalize, ColSnapOffset
+    };
+    static bool isBoxColumn(int c) { return c >= ColSelect && c <= ColNormalize; }
+
     QComboBox* show = nullptr;
+    QComboBox* preset = nullptr;
     QTreeWidget* table = nullptr;
     std::unique_ptr<ListenerHandle> listener;
     LazyRefresh* lazy = nullptr;  // refilled once per event loop pass, and not while hidden
     bool filling = false;
-    struct RowSig { uint64_t id = 0; int track = 0; bool video = false; double start = 0, length = 0, fadeIn = 0, fadeOut = 0; bool mute = false; uint64_t mediaId = 0; size_t nameHash = 0; };
+    // what an Events row shows, to rewrite only the rows that changed
+    struct RowSig {
+        uint64_t id = 0;
+        int track = 0;
+        bool video = false;
+        double start = 0, length = 0, offset = 0, rate = 1, snapOffset = 0;
+        size_t takes = 0;
+        bool selected = false, mute = false, loop = false, locked = false, normalize = false;
+        uint64_t mediaId = 0;
+        size_t nameHash = 0;
+        bool sameAs(const RowSig& o) const
+        {
+            return id == o.id && track == o.track && video == o.video && start == o.start && length == o.length && offset == o.offset && rate == o.rate &&
+                   snapOffset == o.snapOffset && takes == o.takes && selected == o.selected && mute == o.mute && loop == o.loop && locked == o.locked &&
+                   normalize == o.normalize && mediaId == o.mediaId && nameHash == o.nameHash;
+        }
+    };
     std::vector<RowSig> rowSigs;
     QString rowsKey;
+    int sizedFor = -1;     // the view the column widths were set for
+
+    static RowSig sigOf(const Event& e, int track, bool video, bool selected)
+    {
+        RowSig r;
+        r.id = e.id; r.track = track; r.video = video; r.start = e.start; r.length = e.length; r.offset = e.offset; r.rate = e.rate;
+        r.snapOffset = e.snapOffset; r.takes = e.takes.size(); r.selected = selected; r.mute = e.mute; r.loop = e.loop; r.locked = e.locked;
+        r.normalize = e.normalize; r.mediaId = e.mediaId; r.nameHash = std::hash<std::string>()(e.name);
+        return r;
+    }
+
+    // An Events row. Times are in the ruler's format; Take Start and the timecodes are where in its media the event
+    // plays (a file's own timecode is not read, so they count from the file's start).
+    static void setEventRow(QTreeWidgetItem* it, const Project& p, const Event& e, int track, bool selected)
+    {
+        auto len = [&p](double seconds) { return qs(formatTime(p.settings, seconds, p.settings.rulerFormat)); };
+        const MediaItem* m = p.findMedia(e.mediaId);
+        it->setText(ColTrack, QString::number(track));
+        it->setText(ColStart, qs(rulerTime(p, e.start)));
+        it->setText(ColEnd, qs(rulerTime(p, e.end())));
+        it->setText(ColLength, len(e.length));
+        it->setText(ColTakes, QString::number(e.takes.size() + 1));
+        it->setText(ColTakeName, qs(!e.name.empty() ? e.name : m ? m->name : std::string()));
+        it->setText(ColTakeStart, len(e.offset));
+        it->setText(ColTimecodeIn, len(e.offset));
+        it->setText(ColTimecodeOut, len(e.offset + e.length * std::abs(e.rate)));
+        it->setText(ColFilePath, m ? QDir::toNativeSeparators(qs(m->path.empty() ? m->name : m->path)) : QString());
+        it->setText(ColTapeName, QString());
+        it->setCheckState(ColSelect, selected ? Qt::Checked : Qt::Unchecked);
+        it->setCheckState(ColMute, e.mute ? Qt::Checked : Qt::Unchecked);
+        it->setCheckState(ColLoop, e.loop ? Qt::Checked : Qt::Unchecked);
+        it->setCheckState(ColLock, e.locked ? Qt::Checked : Qt::Unchecked);
+        it->setCheckState(ColNormalize, e.normalize ? Qt::Checked : Qt::Unchecked);
+        it->setText(ColSnapOffset, len(e.snapOffset));
+        it->setData(1, Qt::UserRole, e.start);
+    }
 
     void fill()
     {
@@ -691,12 +779,7 @@ struct EditDetails::Impl {
             int n = 0;
             for (const Track& tr : p.tracks) {
                 ++n;
-                for (const Event& e : static_cast<const Track&>(tr).events) {
-                    RowSig r;
-                    r.id = e.id; r.track = n; r.video = tr.type == TrackType::Video; r.start = e.start; r.length = e.length;
-                    r.fadeIn = e.fadeIn; r.fadeOut = e.fadeOut; r.mute = e.mute; r.mediaId = e.mediaId; r.nameHash = std::hash<std::string>()(e.name);
-                    now.push_back(r);
-                }
+                for (const Event& e : static_cast<const Track&>(tr).events) now.push_back(sigOf(e, n, tr.type == TrackType::Video, app.selection().count(e.id) > 0));
             }
             uint64_t mediaHash = 1469598103934665603ull;
             for (const MediaItem& m : p.media) mediaHash = (mediaHash ^ std::hash<std::string>()(m.path + "|" + m.name)) * 1099511628211ull + m.id;
@@ -705,28 +788,11 @@ struct EditDetails::Impl {
             for (size_t i = 0; same && i < now.size(); ++i) same = rowSigs[i].id == now[i].id && rowSigs[i].track == now[i].track && rowSigs[i].video == now[i].video;
             if (same) {
                 size_t i = 0;
-                int row = 0;
                 for (const Track& tr : p.tracks)
                     for (const Event& e : static_cast<const Track&>(tr).events) {
-                        const RowSig& a = rowSigs[i];
-                        const RowSig& b = now[i];
-                        ++i;
-                        const int r = row++;
-                        if (a.start == b.start && a.length == b.length && a.fadeIn == b.fadeIn && a.fadeOut == b.fadeOut && a.mute == b.mute &&
-                            a.mediaId == b.mediaId && a.nameHash == b.nameHash)
-                            continue;
-                        QTreeWidgetItem* it = table->topLevelItem(r);
-                        if (!it) continue;
-                        const MediaItem* m = p.findMedia(e.mediaId);
-                        it->setText(1, t(e.start));
-                        it->setText(2, t(e.end()));
-                        it->setText(3, len(e.length));
-                        it->setText(4, qs(e.name));
-                        it->setText(5, m ? qs(m->path.empty() ? m->name : m->path) : QString());
-                        it->setText(6, len(e.fadeIn));
-                        it->setText(7, len(e.fadeOut));
-                        it->setText(8, e.mute ? "Yes" : "No");
-                        it->setData(1, Qt::UserRole, e.start);
+                        const size_t r = i++;
+                        if (rowSigs[r].sameAs(now[r])) continue;
+                        if (QTreeWidgetItem* it = table->topLevelItem((int)r)) setEventRow(it, p, e, now[r].track, now[r].selected);
                     }
                 rowSigs = std::move(now);
                 filling = false;
@@ -743,19 +809,20 @@ struct EditDetails::Impl {
         auto editable = [](QTreeWidgetItem* it) { it->setFlags(it->flags() | Qt::ItemIsEditable); };
         QStringList heads;
         if (what == Events || what == SelectedEvents) {
-            heads << "Track" << "Start" << "End" << "Length" << "Name" << "Media" << "Fade In" << "Fade Out" << "Muted";
+            heads << "Track" << "Start" << "End" << "Length" << "Number of Takes" << "Active Take Name" << "Take Start" << "Timecode In"
+                  << "Timecode Out" << "File Path" << "Tape Name" << "Select" << "Mute" << "Loop" << "Lock" << "Normalize" << "Snap Offset";
             int n = 0;
             for (const Track& tr : p.tracks) {
                 ++n;
                 for (const Event& e : tr.events) {
                     if (what == SelectedEvents && !app.selection().count(e.id)) continue;
-                    const MediaItem* m = p.findMedia(e.mediaId);
-                    auto* it = new QTreeWidgetItem(table, QStringList() << QString("%1 %2").arg(n).arg(tr.type == TrackType::Video ? "Video" : "Audio") << t(e.start)
-                                                                         << t(e.end()) << len(e.length) << qs(e.name) << (m ? qs(m->path.empty() ? m->name : m->path) : QString())
-                                                                         << len(e.fadeIn) << len(e.fadeOut) << (e.mute ? "Yes" : "No"));
-                    editable(it);
+                    auto* it = new QTreeWidgetItem(table);
+                    it->setFlags(it->flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
+                    for (int c : {(int)ColTrack, (int)ColStart, (int)ColEnd, (int)ColLength, (int)ColTakes, (int)ColTakeStart, (int)ColTimecodeIn,
+                                  (int)ColTimecodeOut, (int)ColSnapOffset})
+                        it->setTextAlignment(c, Qt::AlignRight | Qt::AlignVCenter);
+                    setEventRow(it, p, e, n, app.selection().count(e.id) > 0);
                     it->setData(0, Qt::UserRole, QString("e%1").arg(e.id));
-                    it->setData(1, Qt::UserRole, e.start);
                 }
             }
         } else if (what == Commands) {
@@ -819,17 +886,18 @@ struct EditDetails::Impl {
                 it->setData(0, Qt::UserRole, QString("m%1").arg(m.id));
                 it->setData(1, Qt::UserRole, m.time);
             }
-        } else {
-            heads << "Name" << "File" << "Length" << "Used";
-            for (const MediaItem& m : p.media) {
-                int used = 0;
-                for (const Track& tr : p.tracks)
-                    for (const Event& e : tr.events) used += e.mediaId == m.id ? 1 : 0;
-                auto* it = new QTreeWidgetItem(table, QStringList() << qs(m.name) << qs(m.path) << t(m.info.duration) << QString::number(used));
-                it->setData(0, Qt::UserRole, QString("x%1").arg(m.id));
-            }
         }
         table->setHeaderLabels(heads);
+        if (what != sizedFor) {
+            // first shown: VEGAS's widths for the Events columns (narrow check box columns)
+            sizedFor = what;
+            for (int c = 0; c < heads.size(); ++c) {
+                int wd = 100;
+                if (what == Events || what == SelectedEvents)
+                    wd = c == ColTrack ? 50 : c == ColTakeName || c == ColFilePath ? 170 : c == ColTakes ? 112 : isBoxColumn(c) ? 72 : 92;
+                table->setColumnWidth(c, wd);
+            }
+        }
         for (int r = 0; r < table->topLevelItemCount(); ++r)
             if (table->topLevelItem(r)->data(0, Qt::UserRole).toString() == keepId) table->setCurrentItem(table->topLevelItem(r));
         filling = false;
@@ -852,37 +920,65 @@ struct EditDetails::Impl {
             const Event* e = p.findEvent(eid);
             if (e) {
                 const double minLen = 1.0 / std::max(1.0, st.fps());
+                const bool on = text == "yes";      // a check box column
                 switch (column) {
-                case 1:
+                case ColStart:
                     if ((ok = position(&v))) app.edit("Event Start", [&](Project& x) { if (Event* o = x.findEvent(eid)) o->start = v; });
                     break;
-                case 2:
+                case ColEnd:
                     if ((ok = position(&v) && v > e->start + minLen * 0.5))
                         app.edit("Event Length", [&](Project& x) { if (Event* o = x.findEvent(eid)) { o->length = v - o->start; o->fadeIn = std::min(o->fadeIn, o->length); o->fadeOut = std::min(o->fadeOut, o->length); } });
                     break;
-                case 3:
+                case ColLength:
                     if ((ok = length(&v) && v >= minLen * 0.5))
                         app.edit("Event Length", [&](Project& x) { if (Event* o = x.findEvent(eid)) { o->length = v; o->fadeIn = std::min(o->fadeIn, v); o->fadeOut = std::min(o->fadeOut, v); } });
                     break;
-                case 4: {
+                case ColTakeName: {
                     const std::string name = text.trimmed().toStdString();
+                    const MediaItem* m = p.findMedia(e->mediaId);
                     ok = true;
-                    if (name != e->name) app.edit("Rename Event", [&](Project& x) { if (Event* o = x.findEvent(eid)) o->name = name; });
+                    if (name != e->name && !(e->name.empty() && m && name == m->name))
+                        app.edit("Rename Event", [&](Project& x) { if (Event* o = x.findEvent(eid)) o->name = name; });
                     break;
                 }
-                case 6:
-                case 7:
-                    if ((ok = length(&v))) {
-                        v = std::min(v, e->length);
-                        const bool in = column == 6;
-                        app.edit(in ? "Fade In" : "Fade Out", [&](Project& x) { if (Event* o = x.findEvent(eid)) (in ? o->fadeIn : o->fadeOut) = v; });
-                    }
+                case ColTakeStart:
+                    if ((ok = length(&v)) && std::abs(v - e->offset) > 1e-9)
+                        app.edit("Take Start", [&](Project& x) { if (Event* o = x.findEvent(eid)) o->offset = v; });
                     break;
-                case 8: {
-                    const QString t = text.trimmed().toLower();
-                    const bool yes = t == "yes" || t == "y" || t == "1" || t == "true" || t == "on";
-                    const bool no = t == "no" || t == "n" || t == "0" || t == "false" || t == "off";
-                    if ((ok = yes || no) && yes != e->mute) app.edit(yes ? "Mute Event" : "Unmute Event", [&](Project& x) { if (Event* o = x.findEvent(eid)) o->mute = yes; });
+                case ColSnapOffset:
+                    if ((ok = length(&v) && v <= e->length + 1e-9) && std::abs(v - e->snapOffset) > 1e-9)
+                        app.edit("Snap Offset Change", [&](Project& x) { if (Event* o = x.findEvent(eid)) o->snapOffset = v; });
+                    break;
+                case ColSelect: {
+                    ok = true;
+                    std::set<uint64_t> sel = app.selection();
+                    if (on) sel.insert(eid);
+                    else sel.erase(eid);
+                    if (sel != app.selection()) app.setSelection(sel);
+                    break;
+                }
+                case ColMute:
+                    ok = true;
+                    if (on != e->mute) app.edit(on ? "Mute Event" : "Unmute Event", [&](Project& x) { if (Event* o = x.findEvent(eid)) o->mute = on; });
+                    break;
+                case ColLoop:
+                    ok = true;
+                    if (on != e->loop) app.edit("Loop", [&](Project& x) { if (Event* o = x.findEvent(eid)) o->loop = on; });
+                    break;
+                case ColLock:
+                    ok = true;
+                    if (on != e->locked) app.edit(on ? "Lock Event" : "Unlock Event", [&](Project& x) { if (Event* o = x.findEvent(eid)) o->locked = on; });
+                    break;
+                case ColNormalize: {
+                    const Track* t = nullptr;
+                    p.findEvent(eid, &t);
+                    if (t && t->type != TrackType::Video) {
+                        ok = true;
+                        if (on != e->normalize) app.setNormalize({eid}, on);
+                    } else {
+                        app.status("Normalize is for audio events.");
+                        ok = true;
+                    }
                     break;
                 }
                 default: break;
@@ -948,7 +1044,33 @@ struct EditDetails::Impl {
         editedRows.clear();
         if (!ok) {
             if (!text.trimmed().isEmpty() && column != 0) app.status("Edit Details: \"" + text.toStdString() + "\" cannot go there.");
+            rowsKey.clear();
             fill();
+        } else if (id.startsWith('e')) {
+            rewriteEventRow(id);
+        }
+    }
+
+    // An event's row shown again as the event now is (after an edit that changed nothing, the cell still shows what
+    // was typed or clicked).
+    void rewriteEventRow(const QString& id)
+    {
+        const AppState& app = AppState::get();
+        const Project& p = app.project();
+        const uint64_t eid = id.mid(1).toULongLong();
+        int n = 0;
+        for (const Track& tr : p.tracks) {
+            ++n;
+            for (const Event& e : tr.events) {
+                if (e.id != eid) continue;
+                for (int r = 0; r < table->topLevelItemCount(); ++r)
+                    if (table->topLevelItem(r)->data(0, Qt::UserRole).toString() == id) {
+                        filling = true;
+                        setEventRow(table->topLevelItem(r), p, e, n, app.selection().count(eid) > 0);
+                        filling = false;
+                    }
+                return;
+            }
         }
     }
     QStringList editedRows;  // the rows selected when a cell was changed: a command typed in goes to all of them
@@ -968,15 +1090,33 @@ EditDetails::EditDetails(QWidget* parent) : QWidget(parent), d(new Impl())
     h->addWidget(new QLabel("Show:", bar));
     d->show = new QComboBox(bar);
     d->show->setObjectName("detailsShow");
+    d->show->addItem("Audio CD Track List", (int)AudioCdTrackList);
+    d->show->addItem("Commands", (int)Commands);
     d->show->addItem("Events", (int)Events);
-    d->show->addItem("Selected Events", (int)SelectedEvents);
     d->show->addItem("Markers", (int)Markers);
     d->show->addItem("Regions", (int)Regions);
-    d->show->addItem("Media", (int)Media);
-    d->show->addItem("Commands", (int)Commands);
-    d->show->addItem("Audio CD Track List", (int)AudioCdTrackList);
-    h->addWidget(d->show);
-    h->addStretch(1);
+    d->show->addItem("Selected Events", (int)SelectedEvents);
+    d->show->setCurrentIndex(d->show->findData((int)Events));
+    h->addWidget(d->show, 1);
+    // the view's presets: what is shown and the columns' order and widths, by name (Save and Delete beside them)
+    d->preset = new QComboBox(bar);
+    d->preset->setObjectName("detailsPreset");
+    d->preset->setEditable(true);
+    d->preset->setInsertPolicy(QComboBox::NoInsert);
+    h->addWidget(d->preset, 2);
+    auto iconButton = [bar](const QIcon& icon, const QString& tip, const char* name) {
+        QToolButton* b = new QToolButton(bar);
+        b->setObjectName(name);
+        b->setIcon(icon);
+        b->setIconSize(QSize(16, 16));
+        b->setAutoRaise(true);
+        b->setToolTip(tip);
+        return b;
+    };
+    QToolButton* savePreset = iconButton(detailsPresetIcon(true), "Save Preset", "detailsPresetSave");
+    QToolButton* deletePreset = iconButton(detailsPresetIcon(false), "Delete Preset", "detailsPresetDelete");
+    h->addWidget(savePreset);
+    h->addWidget(deletePreset);
     v->addWidget(bar);
     d->table = new QTreeWidget(this);
     d->table->setObjectName("detailsTable");
@@ -988,7 +1128,9 @@ EditDetails::EditDetails(QWidget* parent) : QWidget(parent), d(new Impl())
     Impl* impl = d.get();
     QObject::connect(d->table, &QTreeWidget::itemChanged, this, [this, impl](QTreeWidgetItem* it, int column) {
         if (impl->filling || !it) return;
-        const QString id = it->data(0, Qt::UserRole).toString(), text = it->text(column);
+        const QString id = it->data(0, Qt::UserRole).toString();
+        // the Events views' check box columns: whether the box is ticked
+        const QString text = id.startsWith('e') && Impl::isBoxColumn(column) ? QString(it->checkState(column) == Qt::Checked ? "yes" : "no") : it->text(column);
         QStringList rows;
         for (QTreeWidgetItem* s : impl->table->selectedItems()) rows << s->data(0, Qt::UserRole).toString();
         QTimer::singleShot(0, this, [impl, id, column, text, rows] {
@@ -1026,6 +1168,51 @@ EditDetails::EditDetails(QWidget* parent) : QWidget(parent), d(new Impl())
         });
     }
     QObject::connect(d->show, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [impl](int) { impl->fill(); });
+    // presets, kept in the settings as editDetails/presets/<name>/show and /columns
+    auto listPresets = [impl] {
+        const QString keep = impl->preset->currentText();
+        QSettings s;
+        s.beginGroup("editDetails/presets");
+        QStringList names = s.childGroups();
+        s.endGroup();
+        names.sort(Qt::CaseInsensitive);
+        impl->preset->blockSignals(true);
+        impl->preset->clear();
+        impl->preset->addItems(names);
+        impl->preset->setEditText(keep);
+        impl->preset->blockSignals(false);
+    };
+    listPresets();
+    impl->preset->setEditText(QString());
+    QObject::connect(impl->preset, QOverload<int>::of(&QComboBox::activated), this, [this, impl](int index) {
+        const QString name = impl->preset->itemText(index);
+        QSettings s;
+        const QString key = "editDetails/presets/" + name;
+        if (!s.contains(key + "/show")) return;
+        setShow((Show)s.value(key + "/show").toInt());
+        impl->table->header()->restoreState(s.value(key + "/columns").toByteArray());
+    });
+    QObject::connect(savePreset, &QToolButton::clicked, this, [impl, listPresets] {
+        QString name = impl->preset->currentText().trimmed();
+        name.replace('/', '-').replace('\\', '-');
+        if (name.isEmpty()) {
+            AppState::get().status("Type a name for the preset first.");
+            return;
+        }
+        QSettings s;
+        const QString key = "editDetails/presets/" + name;
+        s.setValue(key + "/show", impl->show->currentData().toInt());
+        s.setValue(key + "/columns", impl->table->header()->saveState());
+        impl->preset->setEditText(name);
+        listPresets();
+    });
+    QObject::connect(deletePreset, &QToolButton::clicked, this, [impl, listPresets] {
+        const QString name = impl->preset->currentText().trimmed();
+        if (name.isEmpty()) return;
+        QSettings().remove("editDetails/presets/" + name);
+        impl->preset->setEditText(QString());
+        listPresets();
+    });
     QObject::connect(d->table, &QTreeWidget::currentItemChanged, this, [impl](QTreeWidgetItem* it) {
         if (impl->filling || !it) return;
         AppState& app = AppState::get();
@@ -1045,7 +1232,7 @@ EditDetails::~EditDetails() {}
 
 void EditDetails::setShow(Show what)
 {
-    d->show->setCurrentIndex(std::max(0, d->show->findData((int)what)));
+    d->show->setCurrentIndex(d->show->findData((int)what) >= 0 ? d->show->findData((int)what) : d->show->findData((int)Events));
     d->fill();
 }
 

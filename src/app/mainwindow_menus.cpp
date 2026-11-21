@@ -1320,7 +1320,10 @@ void MainWindow::updateVegasCommands()
     }
 }
 
-// Edit > Selectively Paste Event Attributes: which of the copied event's attributes go onto the selected events.
+// Edit > Selectively Paste Event Attributes: which of the copied event's attributes go onto the selected events. As
+// VEGAS's: its sentence at the top, a box for each attribute (none ticked), Select All and Clear All at the right, OK
+// and Cancel at the bottom right. The video items show when a video event was copied, the pitch shift when an audio
+// event was (VEGAS 18's list, with the transitions as VEGAS 23 splits them).
 void MainWindow::selectivePasteDialog()
 {
     AppState& app = AppState::get();
@@ -1330,25 +1333,52 @@ void MainWindow::selectivePasteDialog()
     QDialog dlg(this);
     dlg.setObjectName("selectivePasteDialog");
     dlg.setWindowTitle("Selectively Paste Event Attributes");
-    QVBoxLayout* v = new QVBoxLayout(&dlg);
-    v->addWidget(new QLabel(QString("Paste from \"%1\":").arg(QString::fromStdString(src->name.empty() ? std::string("the copied event") : src->name)), &dlg));
-    const struct { int attr; const char* text; } items[] = {
-        {AppState::AttrFx, "Event FX"}, {AppState::AttrPanCrop, "Pan/Crop (video)"}, {AppState::AttrEnvelopes, "Envelopes"},
-        {AppState::AttrFadeIn, "Fade In"}, {AppState::AttrFadeOut, "Fade Out"}, {AppState::AttrLevel, "Opacity / Volume"},
-        {AppState::AttrRate, "Playback Rate and Reverse"}, {AppState::AttrSwitches, "Switches"},
-        {AppState::AttrPitch, "Pitch, Time Stretch and Channels (audio)"}};
+    QLabel* text = new QLabel("Select the attribute(s) that you want to paste into the target event. Attributes whose check boxes are "
+                              "not selected below will not be pasted into the target event.", &dlg);
+    text->setObjectName("selectivePasteText");
+    text->setWordWrap(true);
+    text->setGeometry(12, 18, 488, std::max(34, text->heightForWidth(488)));
+    struct Item { int attr; const char* text; };
+    std::vector<Item> items{{AppState::AttrSwitches, "Event switches"}};
+    if (app.clipboardHas(false)) items.push_back({AppState::AttrPitch, "Audio event pitch shift"});
+    if (app.clipboardHas(true)) {
+        items.push_back({AppState::AttrRate, "Video event playback rate and undersample rate"});
+        items.push_back({AppState::AttrFx, "Video event effects and effect keyframes"});
+        items.push_back({AppState::AttrPanCrop, "Video event pan/crop settings"});
+        items.push_back({AppState::AttrEnvelopes, "Video event velocity envelopes"});
+    }
+    for (const Item& it : std::initializer_list<Item>{{AppState::AttrPreType, "Pre transition type"}, {AppState::AttrPostType, "Post transition type"},
+                                                       {AppState::AttrFadeIn, "Pre transition length"}, {AppState::AttrFadeOut, "Post transition length"}})
+        items.push_back(it);
     std::vector<std::pair<QCheckBox*, int>> boxes;
-    for (const auto& it : items) {
+    int y = std::max(70, text->geometry().bottom() + 18);
+    const int top = y;
+    for (const Item& it : items) {
         QCheckBox* b = new QCheckBox(it.text, &dlg);
         b->setObjectName(QString("attr%1").arg(it.attr));
-        b->setChecked(true);
-        v->addWidget(b);
+        b->setGeometry(40, y, 330, 16);
+        y += 15;
         boxes.push_back({b, it.attr});
     }
-    QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    v->addWidget(bb);
+    QPushButton* all = new QPushButton("Select All", &dlg);
+    all->setObjectName("selectAll");
+    all->setGeometry(398, top, 103, 25);
+    QPushButton* none = new QPushButton("Clear All", &dlg);
+    none->setObjectName("clearAll");
+    none->setGeometry(398, top + 33, 103, 25);
+    QObject::connect(all, &QPushButton::clicked, &dlg, [&boxes] { for (auto& b : boxes) b.first->setChecked(true); });
+    QObject::connect(none, &QPushButton::clicked, &dlg, [&boxes] { for (auto& b : boxes) b.first->setChecked(false); });
+    const int bottom = std::max(y + 44, 318);
+    QPushButton* ok = new QPushButton("OK", &dlg);
+    ok->setObjectName("ok");
+    ok->setDefault(true);
+    ok->setGeometry(314, bottom - 40, 87, 25);
+    QPushButton* cancel = new QPushButton("Cancel", &dlg);
+    cancel->setObjectName("cancel");
+    cancel->setGeometry(414, bottom - 40, 87, 25);
+    QObject::connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
+    QObject::connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+    dlg.setFixedSize(511, bottom);
     if (dlg.exec() != QDialog::Accepted) return;
     int attrs = 0;
     for (auto& b : boxes) if (b.first->isChecked()) attrs |= b.second;

@@ -4,7 +4,10 @@
 #pragma once
 #include "appstate.h"
 #include "../engine/recording.h"
+#include <QList>
+#include <QPair>
 #include <QString>
+#include <QStringList>
 #include <functional>
 class QMenu;
 #include <cstdio>
@@ -58,6 +61,10 @@ struct InputDeviceInfo {
 };
 std::vector<InputDeviceInfo> inputDevices();
 void setInputDevicesForTest(const std::vector<InputDeviceInfo>* list);     // null: the real ones
+
+// VEGAS's Recorded Files dialog (after recording, while "Prompt to keep files after recording" is on): the files to
+// keep, as (index in 'files', path now), renamed ones under their new names.
+QList<QPair<int, QString>> recordedFilesDialog(const QStringList& files);
 
 // VEGAS's Record Input menu of a track (or an input bus, with withTrackItems false): the sound card input (each device
 // with Mono and Stereo, and the channel or pair), for a track also the input busses and Input Monitoring (Off, On, Auto).

@@ -1,15 +1,19 @@
 // VEGAS's Surround Panner window (View > Window > Surround Panner, Ctrl+Alt+3) and the small panner in track headers
 // and Mixing Console strips of a 5.1 project (Project Properties > Audio > Master bus mode).
 //
-// The window shows the panner of the current audio track (or a bus chosen in its list): the room from above with the
-// five speakers, the LFE and the pan point. Drag the point (Shift: along the line through the middle, Alt: around a
-// circle, Alt+Shift: around the largest circle, Ctrl: finer); with it selected, arrows, Page Up/Down, the wheel and
-// the keypad move it. Click a speaker to mute it for this sound. See SurroundPan in src/engine/project.h for what the
-// other controls do.
+// The window is laid out as VEGAS 18's: a tool bar (the track whose panner is shown, with the other tracks and buses on
+// its menu; the Move tool, a click going through Move Freely, Move Left/Right Only and Move Front/Back Only, its arrow
+// holding those, the pan type, where the sound goes, the LFE send and the keyframe commands; the LFE button), the room
+// from above with the five speakers, each speaker's level in dB, the pan point and the pan type's name, and the Center
+// and Smoothness faders. Drag the point (Shift: along the line through the middle, Alt: around a circle, Alt+Shift:
+// around the largest circle, Ctrl: finer); with it selected, arrows, Page Up/Down, the wheel and the keypad move it.
+// Click a speaker to mute it for this sound. See SurroundPan in src/engine/project.h for what the other controls do.
 #pragma once
 #include "appstate.h"
 #include <QWidget>
 #include <memory>
+
+class QPainter;
 
 namespace reno {
 namespace app {
@@ -45,6 +49,8 @@ protected:
     void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
+    void paintCompact(QPainter& p, const SurroundPan* sp);
+    void paintRoom(QPainter& p, const SurroundPan* sp);
     QRectF room() const;
     QPointF toWidget(double x, double y) const;
     void toRoom(const QPointF& w, double& x, double& y) const;

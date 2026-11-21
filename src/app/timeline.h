@@ -250,9 +250,18 @@ public:
     QRect trackRect(uint64_t trackId) const;
     QRect headerRect(uint64_t trackId) const;
     enum HeaderPart { PartMenu, PartName, PartMotion, PartFx, PartMute, PartSolo, PartLevel, PartPan, PartArm, PartSurround,
-                      PartAuto, PartFade, PartPhase, PartBus };
+                      PartAuto, PartFade, PartPhase, PartBus,
+                      // the multipurpose send row; the FX button's arrow; the compositing buttons; the output meter; the
+                      // grouping lane; the colored strip (moved in by the lane and by compositing parents)
+                      PartSendLabel, PartSendValue, PartSend, PartSendPrePost, PartFxArrow, PartCompMode, PartCompChild, PartCompParent,
+                      PartParentMotion, PartParentComp, PartMeter, PartGroupLane, PartStrip };
     QRect eventRectOf(uint64_t eventId) const;
     QRect headerPartRect(uint64_t trackId, HeaderPart part) const;
+    // The header row of the track group 'trackId' is in (empty: none): 0 the whole row, 1 its Collapse/Expand triangle,
+    // 2 its name, 3 Mute Track Group, 4 Solo Track Group.
+    QRect trackGroupRect(uint64_t trackId, int part) const;
+    // Tests: what an audio track's output meter shows, as if Playback had published these peaks (0..1, left and right).
+    void showTrackMeterLevels(uint64_t trackId, float left, float right);
     QRect eventButtonRect(uint64_t eventId, bool panCrop) const;
     QRect eventMenuRect(uint64_t eventId) const;
     // The hamburger menus without showing them; the event header (its title bar, empty if it has none); the Edit

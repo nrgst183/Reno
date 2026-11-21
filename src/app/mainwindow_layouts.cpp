@@ -68,7 +68,7 @@ void MainWindow::applyLayout(BuiltinLayout which)
     QDockWidget *media = named("dockMedia"), *preview = named("dockPreview"), *master = named("dockMaster"), *mixer = mixerDock_;
     // the windows that share the tab group at the left, in tab order
     std::vector<QDockWidget*> group;
-    for (const char* n : {"dockMedia", "dockExplorer", "dockVideoFx", "dockAudioFx", "dockGenerators", "dockTransitions", "dockNotes", "dockMixer",
+    for (const char* n : {"dockMedia", "dockExplorer", "dockVideoFx", "dockAudioFx", "dockGenerators", "dockTransitions", "dockCompositors", "dockNotes", "dockMixer",
                           "dockScopes", "dockDetails"})
         if (QDockWidget* d = named(n)) group.push_back(d);
     // (any window added later that is not in the list goes there too)

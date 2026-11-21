@@ -1275,6 +1275,10 @@ private:
         p.beside(bg, "Bac&kground color:");
         p.beside(colorButton(b, "prefs/fadeTop", "fadeTop"), "Track fade to&p:", "color");
         p.beside(colorButton(b, "prefs/fadeBottom", "fadeBottom"), "Track fade botto&m:", "color");
+        // multicamera editing: what the preview's grid of takes shows (panels_preview.cpp reads these)
+        p.button(check(b, "Display take names", "prefs/multicamTakeNames", "multicamTakeNames"), "Display take names");
+        p.button(check(b, "Display take numbers", "prefs/multicamTakeNumbers", "multicamTakeNumbers"), "Display take numbers");
+        p.beside(colorButton(b, "prefs/multicamIndicator", "multicamIndicator"), "Active take indicator:", "color");
         p.finish();
 
         // Reno's own settings for this tab

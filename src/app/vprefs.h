@@ -75,6 +75,9 @@ inline const std::map<QString, QVariant>& defaults()
         {"prefs/previewSizeAllFx", true},
         {"prefs/autoProxy4k", true},                // Automatically create video proxies for greater than 4K resolution media
         {"prefs/previewBackground", QString("default")},    // Background color: default, black, white, checkerboard, or #rrggbb
+        {"prefs/multicamTakeNames", true},          // Video: multicamera editing's grid of takes shows their names
+        {"prefs/multicamTakeNumbers", true},        // and numbers
+        {"prefs/multicamIndicator", QString("#40e0e0")},    // and the active take's outline color
         {"prefs/fadeTop", QString("#ffffff")},      // Default track fade colors: Track fade top
         {"prefs/fadeBottom", QString("#000000")},   // Track fade bottom
         {"prefs/pdDevice", QString("graphics")},    // graphics (Windows Graphics Card), or none

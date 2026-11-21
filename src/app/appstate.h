@@ -344,20 +344,29 @@ public:
     // (for commands that were cancelled, e.g. Apply Non-Real-Time Event FX).
     void discardUndoTo(size_t count, bool dirty);
     void clearEditHistory();        // Edit > Clear Edit History
-    // What Paste Event Attributes copies (Selectively Paste ticks them).
+    // What Paste Event Attributes copies (Selectively Paste ticks them; VEGAS's names in the comments).
     enum EventAttr {
-        AttrFx = 1,             // effects (Event FX)
-        AttrPanCrop = 2,        // Event Pan/Crop (video)
-        AttrEnvelopes = 4,      // envelopes
-        AttrFadeIn = 8,         // fade-in length and curve
-        AttrFadeOut = 16,       // fade-out length and curve
-        AttrLevel = 32,         // opacity (video) or volume (audio)
-        AttrRate = 64,          // playback rate, reverse
-        AttrSwitches = 128,     // mute, loop, maintain aspect ratio, reduce flicker, invert phase, normalize
-        AttrPitch = 256,        // audio: pitch, stretch settings, channels
-        AttrAll = 511
+        AttrFx = 1,             // Video event effects and effect keyframes
+        AttrPanCrop = 2,        // Video event pan/crop settings
+        AttrEnvelopes = 4,      // Video event velocity envelopes (and the event's other envelopes)
+        AttrFadeIn = 8,         // Pre transition length: the fade-in's length
+        AttrFadeOut = 16,       // Post transition length: the fade-out's length
+        AttrLevel = 32,         // opacity (video) or volume (audio); pasted only with everything else
+        AttrRate = 64,          // Video event playback rate and undersample rate (and reverse)
+        AttrSwitches = 128,     // Event switches: mute, loop, maintain aspect ratio, reduce flicker, invert phase, normalize
+        AttrPitch = 256,        // Audio event pitch shift: pitch, stretch settings, channels
+        AttrPreType = 512,      // Pre transition type: the fade-in's curve and the transition used where the event overlaps
+        AttrPostType = 1024,    // Post transition type: the fade-out's curve
+        AttrAll = 2047
     };
     const Event* clipboardEvent() const;    // first event copied (null if none)
+    // Whether a video (or a non-video) event was copied: which attributes Selectively Paste offers.
+    bool clipboardHas(bool video) const
+    {
+        for (const ClipItem& c : clipboard_)
+            if ((c.type == TrackType::Video) == video) return true;
+        return false;
+    }
     // Paste Event Attributes (all) / Selectively Paste: clipboard event's attributes onto these events (what suits
     // each). False if nothing pasted.
     bool pasteEventAttributes(const std::set<uint64_t>& ids, int attrs);

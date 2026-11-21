@@ -24,6 +24,8 @@
 #include "../ofx/vegas_ext.h"
 #include "../audiofx/vegasfx_pack2.h"
 #include "strconv.h"
+#include "timeline.h"
+#include "../engine/timefmt.h"
 #include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QApplication>
@@ -3163,16 +3165,103 @@ private:
 }
 
 // ------------------------------------------------------------------------------------------ the window
-// .......................................................................................... the keyframe strip
+// .......................................................................................... the keyframe controller
+// The keyframe controller's button pictures, drawn in VEGAS's manner: blue arrows and grey keyframe diamonds.
+enum class KeyPic { Sync, First, Prev, Next, Last, Add, Delete };
+
+QIcon keyPicIcon(KeyPic which, const QPalette& pal)
+{
+    QIcon icon;
+    for (int mode = 0; mode < 2; ++mode) {
+        QPixmap pm(32, 32);
+        pm.setDevicePixelRatio(2.0);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        const QColor off = pal.color(QPalette::Disabled, QPalette::ButtonText);
+        const QColor ink = mode ? off : pal.color(QPalette::Active, QPalette::ButtonText);
+        const QColor blue = mode ? off : QColor(110, 170, 240), key = mode ? off : QColor(196, 196, 202);
+        auto diamond = [&](const QPointF& c, double r) {
+            const QPointF d[4] = {QPointF(c.x(), c.y() - r), QPointF(c.x() + r, c.y()), QPointF(c.x(), c.y() + r), QPointF(c.x() - r, c.y())};
+            p.setPen(QPen(QColor(30, 30, 34), 0.8));
+            p.setBrush(key);
+            p.drawPolygon(d, 4);
+        };
+        // an arrow along y = 8 from x0 to x1 (the head at x1)
+        auto arrow = [&](double x0, double x1) {
+            const double dir = x1 > x0 ? 1 : -1;
+            p.setPen(QPen(blue, 2.0, Qt::SolidLine, Qt::FlatCap));
+            p.drawLine(QPointF(x0, 8), QPointF(x1 - dir * 2.5, 8));
+            const QPointF head[3] = {QPointF(x1, 8), QPointF(x1 - dir * 4, 4.2), QPointF(x1 - dir * 4, 11.8)};
+            p.setPen(Qt::NoPen);
+            p.setBrush(blue);
+            p.drawPolygon(head, 3);
+        };
+        switch (which) {
+        case KeyPic::Sync: {
+            // the cursor (a flag on a line) with a small lock at its foot
+            p.setPen(QPen(ink, 1.2));
+            p.drawLine(QPointF(6, 3), QPointF(6, 14));
+            p.setPen(Qt::NoPen);
+            p.setBrush(ink);
+            const QPointF f[5] = {QPointF(3, 1), QPointF(9, 1), QPointF(9, 4), QPointF(6, 6.5), QPointF(3, 4)};
+            p.drawPolygon(f, 5);
+            p.setPen(QPen(ink, 1.1));
+            p.setBrush(Qt::NoBrush);
+            p.drawArc(QRectF(9.5, 7.5, 4, 5), 0, 180 * 16);
+            p.setPen(Qt::NoPen);
+            p.setBrush(mode ? off : QColor(230, 196, 80));
+            p.drawRect(QRectF(8.8, 10, 5.6, 4.6));
+            break;
+        }
+        case KeyPic::First:
+            diamond(QPointF(4.5, 8), 3.5);
+            arrow(14.5, 8.5);
+            break;
+        case KeyPic::Prev:
+            arrow(14, 4);
+            break;
+        case KeyPic::Next:
+            arrow(2, 12);
+            break;
+        case KeyPic::Last:
+            diamond(QPointF(11.5, 8), 3.5);
+            arrow(1.5, 7.5);
+            break;
+        case KeyPic::Add:
+        case KeyPic::Delete:
+            diamond(QPointF(7, 9), 5);
+            if (which == KeyPic::Add) {
+                p.setPen(QPen(mode ? off : QColor(90, 220, 110), 1.8));
+                p.drawLine(QPointF(10.5, 3.5), QPointF(15, 3.5));
+                p.drawLine(QPointF(12.75, 1.2), QPointF(12.75, 5.8));
+            } else {
+                p.setPen(QPen(mode ? off : QColor(240, 80, 80), 1.8));
+                p.drawLine(QPointF(10.5, 1.5), QPointF(14.5, 5.5));
+                p.drawLine(QPointF(14.5, 1.5), QPointF(10.5, 5.5));
+            }
+            break;
+        }
+        icon.addPixmap(pm, mode ? QIcon::Disabled : QIcon::Normal);
+    }
+    return icon;
+}
+
 // VEGAS's keyframe controller under an OpenFX effect's controls (the Animate button): a small timeline as long as what
 // the effect is on (an event's effects: the event; a transition: the overlap; a track's or the output's: the project),
-// with a row of keyframes for the whole effect, one per group of settings and one per setting that can change over time.
+// with a row for the whole effect (named after it, with a triangle that folds its rows away), one per group of
+// settings and one per setting that can change over time. It has two views, as VEGAS 18's Lanes / Curves button:
+//  - Lanes: the effect's and the groups' rows show their keyframes as diamonds; a setting's row draws its value over
+//    time as a line, with its keyframes as dots on it.
+//  - Curves: every setting's value over time drawn over the whole area, each in a colour of its own (the dot beside its
+//    name); the picked setting's line is drawn thick with its keyframes as points that are dragged to change the
+//    value there (up and down) or the time (sideways). A click near another line picks that setting.
 // A click puts the cursor there; a keyframe is picked with a click and dragged to another time (on a group's or the
 // effect's row, all keyframes at that time move together); a double-click on a row adds a keyframe (the value the
 // setting has there); the right-click menu sets how the value goes on to the next keyframe (Linear, Fast, Slow, Smooth,
-// Sharp, Hold) or deletes it; Delete deletes the picked one. The buttons under it go to the first / previous / next /
-// last keyframe and add or delete one at the cursor. Each change is one undo step. Times are the effect's frames (from
-// the event's start for event effects).
+// Sharp, Hold) or deletes it; Delete deletes the picked one. The ruler is in the project's time format and can be
+// zoomed (the + and - beside the scroll bar under it). Each change is one undo step. Times are the effect's frames
+// (from the event's start for event effects).
 class KeyStrip : public QWidget {
 public:
     std::function<ofx::Instance*()> live;
@@ -3180,34 +3269,97 @@ public:
     std::function<void(double)> seek;
     std::function<double()> span;
     std::function<double()> rate;
+    // the effect's name (the top row), a time in frames as the ruler writes it
+    std::function<QString()> effectName;
+    std::function<QString(double)> timeText;
+    // the shown part of the time changed (zoom or scroll)
+    std::function<void()> onView;
     uint64_t slotId = 0;
 
     struct Row {
         QString label;
         int depth = 0;
+        bool header = false;                // the effect's or a group's row (folds the rows under it)
         std::vector<ofx::Param*> params;
         std::map<double, int> keys;         // time -> curve (-1: settings with different curves there)
+        // a setting's row: its values at sampleAt() (one line per part of the value), the range they are drawn in,
+        // its colour in the Curves view and its keyframes' values
+        std::vector<std::vector<double>> line;
+        double lo = 0, hi = 1;
+        bool whole = false;
+        int colour = 0;
+        std::map<double, std::vector<double>> keyValues;
     };
 
     explicit KeyStrip(QWidget* parent) : QWidget(parent)
     {
         setObjectName("fxKeyStrip");
+        setProperty("curvesView", false);
         setMouseTracking(true);
         setFocusPolicy(Qt::ClickFocus);
         setMinimumHeight(kRuler + 3 * kRowH + 2);
     }
 
     const std::vector<Row>& rows() const { return rows_; }
+    const std::vector<int>& visibleRows() const { return vis_; }
+    const std::vector<double>& sampleAt() const { return sampleAt_; }
     int selectedRow() const { return selRow_; }
     double selectedTime() const { return selTime_; }
     void select(int row, double time) { selRow_ = row; selTime_ = time; update(); }
+    bool curvesView() const { return curves_; }
+    void setCurvesView(bool on)
+    {
+        if (curves_ == on) return;
+        curves_ = on;
+        setProperty("curvesView", on);
+        dragging_ = false;
+        if (on && (selRow_ < 0 || selRow_ >= (int)rows_.size() || rows_[(size_t)selRow_].header)) {
+            const int a = activeRow();
+            if (a >= 0) { selRow_ = a; selTime_ = -1; }
+        }
+        fitHeight();
+        update();
+    }
+    // Folds or unfolds a header row (the effect's or a group's).
+    void setFolded(int row, bool folded)
+    {
+        if (row < 0 || row >= (int)rows_.size() || !rows_[(size_t)row].header) return;
+        const QString k = foldKey(rows_[(size_t)row]);
+        if (folded) folded_.insert(k);
+        else folded_.erase(k);
+        layoutRows();
+    }
+    bool folded(int row) const { return row >= 0 && row < (int)rows_.size() && folded_.count(foldKey(rows_[(size_t)row])) != 0; }
+
+    // Zoom: 1 shows the whole span; more shows a part of it, from viewFrom().
+    double zoom() const { return zoom_; }
+    double spanLen() const { return std::max(1.0, span ? span() : 1.0); }
+    double viewLen() const { return std::max(1.0, spanLen() / zoom_); }
+    double viewFrom() const { return std::min(std::max(0.0, viewStart_), std::max(0.0, spanLen() - viewLen())); }
+    void setView(double zoom, double from)
+    {
+        zoom_ = std::min(std::max(1.0, zoom), std::max(1.0, spanLen() / 8.0));
+        viewStart_ = from;
+        viewStart_ = viewFrom();
+        refresh();
+        if (onView) onView();
+    }
+    // Zooms in or out (factor > 1: in) about the cursor when it is in view, else the middle.
+    void zoomBy(double factor)
+    {
+        const double t = now ? now() : -1;
+        const double centre = t >= viewFrom() && t <= viewFrom() + viewLen() ? t : viewFrom() + viewLen() / 2;
+        const double share = (centre - viewFrom()) / viewLen();
+        const double z = std::min(std::max(1.0, zoom_ * factor), std::max(1.0, spanLen() / 8.0));
+        setView(z, centre - share * (spanLen() / z));
+    }
 
     void refresh()
     {
         ofx::Instance* inst = live ? live() : nullptr;
         if (!inst) {
             rows_.clear();
-            update();
+            layoutRows();
             return;
         }
         std::unique_lock<std::recursive_mutex> lk(inst->mutex, std::try_to_lock);
@@ -3217,12 +3369,15 @@ public:
         }
         std::vector<Row> rows;
         Row all;
-        all.label = "All settings";
+        all.label = effectName ? effectName() : QString();
+        if (all.label.isEmpty()) all.label = "Effect";
+        all.header = true;
         std::vector<std::string> groupNames;
         std::map<std::string, Row> groups;
         std::vector<Row> loose;
         std::map<std::string, std::vector<Row>> inGroup;
         std::map<std::string, std::string> groupLabel;
+        int colour = 0;
         for (const auto& up : inst->params.params) {
             ofx::Param* p = up.get();
             if (p->kind == ofx::ParamKind::Group) groupLabel[p->name] = p->label();
@@ -3233,6 +3388,7 @@ public:
             r.label = qs(p->label());
             r.depth = 2;
             r.params.push_back(p);
+            r.colour = colour++;
             for (const auto& k : p->keys) r.keys[k.first] = p->keyCurve(k.first);
             all.params.push_back(p);
             const std::string parent = p->parent();
@@ -3260,6 +3416,7 @@ public:
             Row gr;
             gr.label = qs(groupLabel.count(g) && !groupLabel[g].empty() ? groupLabel[g] : g);
             gr.depth = 1;
+            gr.header = true;
             for (const Row& r : inGroup[g]) {
                 merge(gr, r);
                 gr.params.push_back(r.params[0]);
@@ -3268,12 +3425,13 @@ public:
             for (const Row& r : inGroup[g]) rows.push_back(r);
         }
         if (all.params.empty()) rows.clear();
+        sample(rows);
         lk.unlock();
         rows_ = rows;
-        if (selRow_ >= (int)rows_.size() || (selRow_ >= 0 && !rows_[(size_t)selRow_].keys.count(selTime_))) selRow_ = -1;
-        setMinimumHeight(kRuler + (int)std::max<size_t>(rows_.size(), 1) * kRowH + 2);
-        updateGeometry();
-        update();
+        if (selRow_ >= (int)rows_.size()) selRow_ = -1;
+        if (selRow_ < 0 || !rows_[(size_t)selRow_].keys.count(selTime_)) selTime_ = -1;
+        if (curves_ && selRow_ < 0) selRow_ = activeRow();
+        layoutRows();
     }
 
     std::vector<double> allTimes() const
@@ -3305,7 +3463,7 @@ public:
         if (!inst || row < 0 || row >= (int)rows_.size()) return;
         const std::vector<ofx::Param*> ps = rows_[(size_t)row].params;
         AppState::get().fxEditStep(slotId, "Delete Keyframe", [&] { for (ofx::Param* p : ps) inst->userDeleteKey(p, time); });
-        if (selRow_ == row && selTime_ == time) selRow_ = -1;
+        if (selRow_ == row && selTime_ == time) selTime_ = -1;
         refresh();
     }
 
@@ -3329,99 +3487,369 @@ public:
         refresh();
     }
 
+    // Sets part 'comp' of the value of the keyframe of setting row 'row' at 'time' (inside an open edit).
+    void setKeyValue(int row, double time, int comp, double value)
+    {
+        ofx::Instance* inst = live ? live() : nullptr;
+        if (!inst || row < 0 || row >= (int)rows_.size() || rows_[(size_t)row].header || rows_[(size_t)row].params.empty()) return;
+        ofx::Param* p = rows_[(size_t)row].params[0];
+        std::vector<double> v;
+        {
+            std::lock_guard<std::recursive_mutex> lk(inst->mutex);
+            auto it = p->keys.find(time);
+            if (it == p->keys.end()) return;
+            v = it->second;
+        }
+        if (comp < 0 || comp >= (int)v.size()) return;
+        v[(size_t)comp] = value;
+        inst->userSetValue(p, v, time, true);
+    }
+
     double xOf(double frames) const
     {
-        const double len = std::max(1.0, span ? span() : 1.0);
-        return kLabelW + 6 + (width() - kLabelW - 12) * (frames / len);
+        return kLabelW + 6 + (width() - kLabelW - 12) * ((frames - viewFrom()) / viewLen());
     }
     double timeAt(double x) const
     {
-        const double len = std::max(1.0, span ? span() : 1.0);
-        double t = (x - kLabelW - 6) / std::max(1.0, (double)(width() - kLabelW - 12)) * len;
+        double t = viewFrom() + (x - kLabelW - 6) / std::max(1.0, (double)(width() - kLabelW - 12)) * viewLen();
         t = std::floor(t + 0.5);
-        return std::min(len, std::max(0.0, t));
+        return std::min(spanLen(), std::max(0.0, t));
     }
+    // The row (index in rows()) at height y: -2 on the ruler, -1 under the rows.
     int rowAt(double y) const
     {
         if (y < kRuler) return -2;
         const int r = (int)((y - kRuler) / kRowH);
-        return r < (int)rows_.size() ? r : -1;
+        return r < (int)vis_.size() ? vis_[(size_t)r] : -1;
     }
-    QPoint keyPoint(int row, double frames) const { return QPoint((int)std::lround(xOf(frames)), kRuler + row * kRowH + kRowH / 2); }
+    // Where row 'row' is drawn (its place among the rows shown), -1 if folded away.
+    int placeOf(int row) const
+    {
+        for (size_t k = 0; k < vis_.size(); ++k)
+            if (vis_[k] == row) return (int)k;
+        return -1;
+    }
+    QPoint keyPoint(int row, double frames) const { return QPoint((int)std::lround(xOf(frames)), kRuler + placeOf(row) * kRowH + kRowH / 2); }
+
+    // The Curves view's graph: its top and bottom, a value's height there and back.
+    double graphTop() const { return kRuler + 8.0; }
+    double graphBottom() const { return std::max(graphTop() + 20, (double)height() - 8.0); }
+    double graphY(const Row& r, double v) const { return graphBottom() - (v - r.lo) / (r.hi - r.lo) * (graphBottom() - graphTop()); }
+    double graphValue(const Row& r, double y) const
+    {
+        double v = r.lo + (graphBottom() - y) / (graphBottom() - graphTop()) * (r.hi - r.lo);
+        v = std::min(r.hi, std::max(r.lo, v));
+        return r.whole ? std::floor(v + 0.5) : v;
+    }
+    // Where a setting's keyframe (part 'comp') is drawn in the Curves view.
+    QPointF curvePoint(int row, double time, int comp) const
+    {
+        const Row& r = rows_[(size_t)row];
+        auto it = r.keyValues.find(time);
+        const double v = it != r.keyValues.end() && comp < (int)it->second.size() ? it->second[(size_t)comp] : 0.0;
+        return QPointF(xOf(time), graphY(r, v));
+    }
+    // The setting whose line the Curves view draws thick: the picked row if it is a setting's, else the first setting
+    // under the picked header (or the first of all).
+    int activeRow() const
+    {
+        const int from = selRow_ >= 0 && selRow_ < (int)rows_.size() ? selRow_ : 0;
+        for (int r = from; r < (int)rows_.size(); ++r)
+            if (!rows_[(size_t)r].header) return r;
+        for (int r = 0; r < (int)rows_.size(); ++r)
+            if (!rows_[(size_t)r].header) return r;
+        return -1;
+    }
+
+    static QColor paramColour(int k)
+    {
+        static const QColor colours[] = {QColor(236, 36, 36), QColor(36, 140, 140), QColor(104, 150, 40), QColor(104, 60, 176),
+                                         QColor(226, 140, 30), QColor(60, 120, 226), QColor(200, 60, 170), QColor(150, 150, 60)};
+        return colours[(size_t)k % 8];
+    }
 
     static constexpr int kRuler = 18, kRowH = 18, kLabelW = 150;
 
 protected:
+    static QString foldKey(const Row& r) { return QString::number(r.depth) + ":" + r.label; }
+
+    // The rows shown (not folded away) and the height they need.
+    void layoutRows()
+    {
+        vis_.clear();
+        int hideDeeper = INT_MAX;
+        for (size_t k = 0; k < rows_.size(); ++k) {
+            const Row& r = rows_[k];
+            if (r.depth <= hideDeeper) hideDeeper = INT_MAX;
+            if (r.depth > hideDeeper) continue;
+            vis_.push_back((int)k);
+            if (r.header && folded_.count(foldKey(r))) hideDeeper = r.depth;
+        }
+        if (selRow_ >= 0 && placeOf(selRow_) < 0 && !curves_) selRow_ = -1;
+        // (the names of the rows shown, for tests and accessibility)
+        QStringList names;
+        for (int r : vis_) names << rows_[(size_t)r].label;
+        setProperty("rowLabels", names);
+        fitHeight();
+        update();
+    }
+    void fitHeight()
+    {
+        int h = kRuler + (int)std::max<size_t>(vis_.size(), 1) * kRowH + 2;
+        if (curves_) h = std::max(h, kRuler + 90);
+        setMinimumHeight(h);
+        updateGeometry();
+    }
+
+    // Each setting's value over the part of the time shown (every frame, or at most 1200 points, and at each keyframe),
+    // and the range to draw it in: the setting's display range (else its limits) widened to take in its values.
+    void sample(std::vector<Row>& rows)
+    {
+        const double from = viewFrom(), len = viewLen();
+        const int n = (int)std::min(1200.0, std::ceil(len) + 1);
+        std::set<double> at;
+        for (int k = 0; k < n; ++k) at.insert(n > 1 ? from + len * k / (n - 1) : from);
+        for (const Row& r : rows)
+            if (!r.header)
+                for (const auto& k : r.keys)
+                    if (k.first >= from && k.first <= from + len) at.insert(k.first);
+        sampleAt_.assign(at.begin(), at.end());
+        auto finite = [](double x) { return std::isfinite(x) && std::fabs(x) < 1e290; };
+        for (Row& r : rows) {
+            if (r.header || r.params.empty()) continue;
+            ofx::Param* p = r.params[0];
+            const int dim = std::min(p->dim, 4);
+            r.whole = p->isWhole();
+            r.line.assign((size_t)dim, std::vector<double>());
+            double vlo = 1e300, vhi = -1e300;
+            for (double t : sampleAt_) {
+                std::vector<double> v = p->valueAt(t);
+                v.resize((size_t)dim, 0.0);
+                for (int c = 0; c < dim; ++c) {
+                    r.line[(size_t)c].push_back(v[(size_t)c]);
+                    vlo = std::min(vlo, v[(size_t)c]);
+                    vhi = std::max(vhi, v[(size_t)c]);
+                }
+            }
+            for (const auto& k : p->keys) {
+                r.keyValues[k.first] = k.second;
+                for (int c = 0; c < dim && c < (int)k.second.size(); ++c) {
+                    vlo = std::min(vlo, k.second[(size_t)c]);
+                    vhi = std::max(vhi, k.second[(size_t)c]);
+                }
+            }
+            const auto& pr = p->props;
+            double lo = pr.getDouble(kOfxParamPropDisplayMin, 0, -1.0e300), hi = pr.getDouble(kOfxParamPropDisplayMax, 0, 1.0e300);
+            if (!finite(lo)) lo = pr.getDouble(kOfxParamPropMin, 0, -1.0e300);
+            if (!finite(hi)) hi = pr.getDouble(kOfxParamPropMax, 0, 1.0e300);
+            if (p->kind == ofx::ParamKind::Bool) { lo = 0; hi = 1; }
+            if (p->kind == ofx::ParamKind::Choice) { lo = 0; hi = std::max(1.0, (double)p->choices().size() - 1); }
+            if (vlo <= vhi) {
+                if (!finite(lo) || vlo < lo) lo = vlo;
+                if (!finite(hi) || vhi > hi) hi = vhi;
+            }
+            if (!finite(lo) || !finite(hi)) { lo = 0; hi = 1; }
+            if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+            r.lo = lo;
+            r.hi = hi;
+        }
+    }
+
+    void paintRuler(QPainter& p, const QPalette& pal)
+    {
+        p.fillRect(QRect(0, 0, width(), kRuler), pal.color(QPalette::Window).darker(115));
+        // (VEGAS's ruler: light grey with dark marks, in either theme)
+        p.fillRect(QRect(kLabelW, 0, width() - kLabelW, kRuler), QColor(150, 150, 154));
+        QFont f = font();
+        f.setPointSizeF(std::max(6.5, f.pointSizeF() - 1.5));
+        p.setFont(f);
+        const double fps = rate ? std::max(1.0, rate()) : 30.0, pxPerFrame = (width() - kLabelW - 12) / viewLen();
+        auto text = [&](double frames) {
+            if (timeText) return timeText(frames);
+            const double sec = frames / fps;
+            return QString("%1:%2").arg((int)sec / 60).arg((int)sec % 60, 2, 10, QChar('0'));
+        };
+        const int labelW = QFontMetrics(f).horizontalAdvance(text(spanLen())) + 14;
+        // marks a whole number of frames apart: frames, then parts of a second, seconds, minutes
+        const int64_t n = std::max<int64_t>(1, std::llround(fps));
+        const int64_t steps[] = {1, 2, 5, 10, std::max<int64_t>(1, n / 2), n, 2 * n, 5 * n, 10 * n, 15 * n, 30 * n, 60 * n, 120 * n, 300 * n, 600 * n, 1800 * n, 3600 * n};
+        int64_t step = steps[sizeof(steps) / sizeof(steps[0]) - 1];
+        for (int64_t s : steps)
+            if (s * pxPerFrame >= labelW) { step = s; break; }
+        int64_t minor = step % 5 == 0 && step / 5 * pxPerFrame >= 5 ? step / 5 : step % 2 == 0 && step / 2 * pxPerFrame >= 5 ? step / 2 : step;
+        p.save();
+        p.setClipRect(QRect(kLabelW + 1, 0, width() - kLabelW - 1, kRuler));
+        p.setPen(QColor(24, 24, 26));
+        const int64_t first = (int64_t)std::floor(viewFrom() / minor) * minor;
+        for (int64_t t = first; (double)t <= viewFrom() + viewLen() + 1e-9; t += minor) {
+            if (t < 0) continue;
+            const int x = (int)std::lround(xOf((double)t));
+            const bool major = t % step == 0;
+            p.drawLine(x, kRuler - (major ? 8 : 4), x, kRuler - 1);
+            if (major) p.drawText(QRect(x + 3, 0, labelW, kRuler - 4), Qt::AlignLeft | Qt::AlignVCenter, text((double)t));
+        }
+        p.restore();
+    }
+
+    void paintLabels(QPainter& p, const QPalette& pal)
+    {
+        const QColor text = pal.color(QPalette::Text);
+        for (size_t i = 0; i < vis_.size(); ++i) {
+            const int r = vis_[i];
+            const Row& row = rows_[(size_t)r];
+            const int y = kRuler + (int)i * kRowH;
+            const bool sel = r == selRow_ && (selTime_ < 0 || curves_);
+            const QRect cell(0, y, kLabelW, kRowH);
+            p.fillRect(cell, row.header ? pal.color(QPalette::Window) : pal.color(QPalette::Window).lighter(112));
+            const int indent = row.header ? 4 + row.depth * 10 : 12 + row.depth * 6;
+            if (!row.header) p.fillRect(QRect(indent - 4, y, kLabelW - indent + 4, kRowH), sel ? pal.color(QPalette::Highlight) : pal.color(QPalette::Button));
+            else if (sel) p.fillRect(cell, pal.color(QPalette::Highlight));
+            p.setPen(QPen(pal.color(QPalette::Window).darker(130), 1));
+            p.drawLine(0, y + kRowH - 1, kLabelW, y + kRowH - 1);
+            int tx = indent;
+            if (row.header) {
+                // the fold triangle
+                const bool shut = folded_.count(foldKey(row)) != 0;
+                const double cx = indent + 4, cy = y + kRowH / 2.0;
+                QPolygonF tri;
+                if (shut) tri << QPointF(cx - 2.5, cy - 4) << QPointF(cx + 2.5, cy) << QPointF(cx - 2.5, cy + 4);
+                else tri << QPointF(cx - 4, cy - 2.5) << QPointF(cx + 4, cy - 2.5) << QPointF(cx, cy + 2.5);
+                p.setPen(Qt::NoPen);
+                p.setBrush(sel ? pal.color(QPalette::HighlightedText) : text);
+                p.drawPolygon(tri);
+                p.setBrush(Qt::NoBrush);
+                tx = indent + 13;
+            }
+            const int dotW = curves_ && !row.header ? 16 : 0;
+            p.setPen(sel ? pal.color(QPalette::HighlightedText) : text);
+            QFont rf = font();
+            p.setFont(rf);
+            const int w = kLabelW - tx - 4 - dotW;
+            p.drawText(QRect(tx, y, w, kRowH), Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(rf).elidedText(row.label, Qt::ElideRight, w));
+            if (dotW) {
+                p.setPen(QPen(QColor(20, 20, 20), 1));
+                p.setBrush(paramColour(row.colour));
+                p.drawEllipse(QPointF(kLabelW - 11, y + kRowH / 2.0), 5, 5);
+                p.setBrush(Qt::NoBrush);
+            }
+        }
+    }
+
+    static QPolygonF diamond(const QPointF& c, double s)
+    {
+        QPolygonF d;
+        d << QPointF(c.x(), c.y() - s) << QPointF(c.x() + s, c.y()) << QPointF(c.x(), c.y() + s) << QPointF(c.x() - s, c.y());
+        return d;
+    }
+
+    void paintLanes(QPainter& p, const QPalette& pal)
+    {
+        const QRect lanes(kLabelW + 1, kRuler, width() - kLabelW - 1, height() - kRuler);
+        p.save();
+        p.setClipRect(lanes);
+        for (size_t i = 0; i < vis_.size(); ++i) {
+            const int r = vis_[i];
+            const Row& row = rows_[(size_t)r];
+            const int y = kRuler + (int)i * kRowH;
+            p.fillRect(QRect(kLabelW, y, width() - kLabelW, kRowH), row.header ? pal.color(QPalette::Base) : pal.color(QPalette::Base).lighter(118));
+            p.setPen(QPen(pal.color(QPalette::Base).darker(140), 1));
+            p.drawLine(kLabelW, y + kRowH - 1, width(), y + kRowH - 1);
+            if (row.header) {
+                for (const auto& k : row.keys) {
+                    const QPointF c(xOf(k.first), y + kRowH / 2.0);
+                    const bool sel = r == selRow_ && k.first == selTime_;
+                    p.setPen(QPen(sel ? QColor(255, 170, 40) : QColor(20, 20, 20), sel ? 2.0 : 1.0));
+                    p.setBrush(k.second == -1 ? QColor(150, 150, 150) : QColor(196, 196, 200));
+                    p.drawPolygon(diamond(c, 5.0));
+                }
+                continue;
+            }
+            // the setting's value over time, drawn inside its row
+            const double top = y + 3.0, bottom = y + kRowH - 4.0;
+            auto yOf = [&](double v) { return bottom - (v - row.lo) / (row.hi - row.lo) * (bottom - top); };
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(150, 150, 150), 1.0));
+            for (const std::vector<double>& line : row.line) {
+                QPolygonF poly;
+                for (size_t k = 0; k < line.size() && k < sampleAt_.size(); ++k) poly << QPointF(xOf(sampleAt_[k]), yOf(line[k]));
+                p.drawPolyline(poly);
+            }
+            for (const auto& k : row.keys) {
+                const bool sel = r == selRow_ && k.first == selTime_;
+                auto it = row.keyValues.find(k.first);
+                const double v = it != row.keyValues.end() && !it->second.empty() ? it->second[0] : (row.lo + row.hi) / 2;
+                p.setPen(QPen(sel ? QColor(255, 170, 40) : QColor(20, 20, 20), sel ? 2.0 : 1.0));
+                p.setBrush(QColor(200, 200, 204));
+                p.drawEllipse(QPointF(xOf(k.first), yOf(v)), 3.5, 3.5);
+            }
+        }
+        p.restore();
+    }
+
+    void paintCurves(QPainter& p, const QPalette& pal)
+    {
+        const QRect graph(kLabelW + 1, kRuler, width() - kLabelW - 1, height() - kRuler);
+        p.fillRect(graph, pal.color(QPalette::Base).lighter(112));
+        p.save();
+        p.setClipRect(graph);
+        const int active = activeRow();
+        auto drawLine = [&](const Row& row, double w) {
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(paramColour(row.colour), w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            for (const std::vector<double>& line : row.line) {
+                QPolygonF poly;
+                for (size_t k = 0; k < line.size() && k < sampleAt_.size(); ++k) poly << QPointF(xOf(sampleAt_[k]), graphY(row, line[k]));
+                p.drawPolyline(poly);
+            }
+        };
+        for (size_t r = 0; r < rows_.size(); ++r)
+            if (!rows_[r].header && (int)r != active) drawLine(rows_[r], 1.0);
+        if (active >= 0) {
+            const Row& row = rows_[(size_t)active];
+            drawLine(row, 3.0);
+            for (const auto& k : row.keyValues)
+                for (size_t c = 0; c < k.second.size() && c < row.line.size(); ++c) {
+                    const bool sel = active == selRow_ && k.first == selTime_;
+                    p.setPen(QPen(sel ? QColor(255, 170, 40) : QColor(20, 20, 20), sel ? 2.0 : 1.0));
+                    p.setBrush(QColor(250, 250, 250));
+                    p.drawEllipse(curvePoint(active, k.first, (int)c), 4.5, 4.5);
+                }
+        }
+        p.restore();
+    }
+
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         const QPalette pal = palette();
         p.fillRect(rect(), pal.color(QPalette::Base));
-        const QColor text = pal.color(QPalette::Text), dim = pal.color(QPalette::Disabled, QPalette::Text);
-        const double len = std::max(1.0, span ? span() : 1.0), fps = rate ? std::max(1.0, rate()) : 30.0;
-        p.fillRect(QRect(0, 0, width(), kRuler), pal.color(QPalette::Window).darker(115));
-        p.setPen(dim);
-        QFont f = font();
-        f.setPointSizeF(std::max(6.5, f.pointSizeF() - 1.5));
-        p.setFont(f);
-        const double pxPerSec = (width() - kLabelW - 12) / (len / fps);
-        double step = 1.0;
-        while (pxPerSec * step < 46 && step < 3600) step *= step < 10 ? 2.0 : 3.0;
-        for (double sec = 0; sec * fps <= len + 1e-9; sec += step) {
-            const int x = (int)std::lround(xOf(sec * fps));
-            p.drawLine(x, kRuler - 5, x, kRuler - 1);
-            p.drawText(QRect(x + 2, 0, 60, kRuler - 2), Qt::AlignLeft | Qt::AlignVCenter, QString("%1:%2").arg((int)sec / 60).arg((int)sec % 60, 2, 10, QChar('0')));
-        }
-        for (size_t r = 0; r < rows_.size(); ++r) {
-            const Row& row = rows_[r];
-            const int y = kRuler + (int)r * kRowH;
-            if (r % 2) p.fillRect(QRect(0, y, width(), kRowH), pal.color(QPalette::AlternateBase));
-            p.setPen(row.depth == 2 ? dim : text);
-            QFont rf = font();
-            rf.setBold(row.depth < 2);
-            p.setFont(rf);
-            p.drawText(QRect(6 + row.depth * 10, y, kLabelW - 10 - row.depth * 10, kRowH), Qt::AlignLeft | Qt::AlignVCenter,
-                       QFontMetrics(rf).elidedText(row.label, Qt::ElideRight, kLabelW - 10 - row.depth * 10));
-            p.setPen(QPen(pal.color(QPalette::Mid), 1));
-            p.drawLine(QPointF(xOf(0), y + kRowH / 2.0), QPointF(xOf(len), y + kRowH / 2.0));
-            for (const auto& k : row.keys) {
-                const QPoint c = keyPoint((int)r, k.first);
-                const bool sel = (int)r == selRow_ && k.first == selTime_;
-                QPolygonF d;
-                const double s = row.depth == 2 ? 4.5 : 5.5;
-                d << QPointF(c.x(), c.y() - s) << QPointF(c.x() + s, c.y()) << QPointF(c.x(), c.y() + s) << QPointF(c.x() - s, c.y());
-                p.setPen(QPen(sel ? QColor(255, 170, 40) : QColor(20, 20, 20), sel ? 2.0 : 1.0));
-                p.setBrush(curveColour(k.second));
-                p.drawPolygon(d);
-            }
-        }
+        p.fillRect(QRect(0, kRuler, kLabelW, height() - kRuler), pal.color(QPalette::Window).darker(108));
+        paintRuler(p, pal);
+        if (curves_) paintCurves(p, pal);
+        else paintLanes(p, pal);
+        paintLabels(p, pal);
         if (rows_.empty()) {
-            p.setPen(dim);
+            p.setPen(pal.color(QPalette::Disabled, QPalette::Text));
             p.drawText(rect().adjusted(8, kRuler, -8, 0), Qt::AlignLeft | Qt::AlignVCenter, "This effect has no settings that can change over time.");
         }
         p.setPen(pal.color(QPalette::Mid));
         p.drawLine(kLabelW, 0, kLabelW, height());
         if (now) {
             const double t = now();
-            if (t >= 0 && t <= len + 1e-9) {
-                const int x = (int)std::lround(xOf(t));
+            if (t >= viewFrom() - 1e-9 && t <= viewFrom() + viewLen() + 1e-9) {
+                const double x = std::round(xOf(t)) + 0.5;
                 p.setPen(QPen(QColor(230, 230, 230), 1));
-                p.drawLine(x, 0, x, height());
+                p.drawLine(QPointF(x, kRuler), QPointF(x, height()));
+                // the cursor's flag on the ruler
+                QPolygonF flag;
+                flag << QPointF(x - 4.5, 2) << QPointF(x + 4.5, 2) << QPointF(x + 4.5, kRuler - 7) << QPointF(x, kRuler - 2) << QPointF(x - 4.5, kRuler - 7);
+                p.setPen(QPen(QColor(30, 30, 30), 1));
+                p.setBrush(QColor(245, 245, 245));
+                p.drawPolygon(flag);
+                p.setPen(QPen(QColor(30, 30, 30), 1));
+                p.drawLine(QPointF(x, 4), QPointF(x, kRuler - 8));
             }
-        }
-    }
-
-    static QColor curveColour(int curve)
-    {
-        switch (curve) {
-        case ofx::Param::KeyFast: return QColor(110, 200, 110);
-        case ofx::Param::KeySlow: return QColor(110, 160, 230);
-        case ofx::Param::KeySmooth: return QColor(230, 210, 90);
-        case ofx::Param::KeySharp: return QColor(200, 120, 220);
-        case ofx::Param::KeyHold: return QColor(225, 90, 80);
-        case -1: return QColor(150, 150, 150);
-        default: return QColor(235, 235, 235);
         }
     }
 
@@ -3435,13 +3863,59 @@ protected:
         }
         return best;
     }
+    // The Curves view: the active setting's keyframe point near 'pos' (its time; *comp: the part of the value), or -1.
+    double curveKeyUnder(const QPointF& pos, int* comp) const
+    {
+        const int a = activeRow();
+        if (a < 0) return -1;
+        double best = -1, bestD = 7.0;
+        for (const auto& k : rows_[(size_t)a].keyValues)
+            for (size_t c = 0; c < k.second.size() && c < rows_[(size_t)a].line.size(); ++c) {
+                const QPointF d = curvePoint(a, k.first, (int)c) - pos;
+                const double dist = std::hypot(d.x(), d.y());
+                if (dist <= bestD) { bestD = dist; best = k.first; if (comp) *comp = (int)c; }
+            }
+        return best;
+    }
+    // The Curves view: the setting whose line passes near 'pos', or -1.
+    int curveUnder(const QPointF& pos) const
+    {
+        int best = -1;
+        double bestD = 5.0;
+        for (size_t r = 0; r < rows_.size(); ++r) {
+            const Row& row = rows_[r];
+            if (row.header) continue;
+            for (const std::vector<double>& line : row.line)
+                for (size_t k = 0; k + 1 < line.size() && k + 1 < sampleAt_.size(); ++k) {
+                    const double x0 = xOf(sampleAt_[k]), x1 = xOf(sampleAt_[k + 1]);
+                    if (pos.x() < x0 - 0.5 || pos.x() > x1 + 0.5) continue;
+                    const double share = x1 > x0 ? (pos.x() - x0) / (x1 - x0) : 0.0;
+                    const double y = graphY(row, line[k] + (line[k + 1] - line[k]) * std::min(1.0, std::max(0.0, share)));
+                    const double d = std::fabs(y - pos.y());
+                    if (d <= bestD) { bestD = d; best = (int)r; }
+                }
+        }
+        return best;
+    }
 
     void mousePressEvent(QMouseEvent* e) override
     {
         const QPointF pos = e->position();
         if (pos.x() < kLabelW) {
             const int r = rowAt(pos.y());
-            if (r >= 0) { selRow_ = r; selTime_ = -1; update(); }
+            if (r < 0) return;
+            const Row& row = rows_[(size_t)r];
+            if (row.header && e->button() == Qt::LeftButton && pos.x() < 4 + row.depth * 10 + 12) {
+                setFolded(r, !folded(r));
+                return;
+            }
+            selRow_ = r;
+            selTime_ = -1;
+            update();
+            return;
+        }
+        if (curves_) {
+            curvePress(e);
             return;
         }
         const int r = rowAt(pos.y());
@@ -3460,7 +3934,9 @@ protected:
             selRow_ = r;
             selTime_ = k;
             dragging_ = true;
+            dragCurve_ = false;
             dragFrom_ = dragNow_ = k;
+            pressX_ = pos.x();
             AppState::get().beginFxEdit(slotId);
             if (seek) seek(k);
         } else {
@@ -3471,37 +3947,88 @@ protected:
         update();
     }
 
+    void curvePress(QMouseEvent* e)
+    {
+        const QPointF pos = e->position();
+        int comp = 0;
+        const double k = curveKeyUnder(pos, &comp);
+        const int a = activeRow();
+        if (e->button() == Qt::RightButton) {
+            if (k >= 0) {
+                selRow_ = a;
+                selTime_ = k;
+                update();
+                keyMenu(a, k, e->globalPosition().toPoint());
+            }
+            return;
+        }
+        if (e->button() != Qt::LeftButton) return;
+        if (k >= 0) {
+            selRow_ = a;
+            selTime_ = k;
+            dragging_ = true;
+            dragCurve_ = true;
+            dragComp_ = comp;
+            dragFrom_ = dragNow_ = k;
+            pressX_ = pos.x();
+            AppState::get().beginFxEdit(slotId);
+            if (seek) seek(k);
+            update();
+            return;
+        }
+        const int r = curveUnder(pos);
+        if (r >= 0) selRow_ = r;
+        selTime_ = -1;
+        if (seek) seek(timeAt(pos.x()));
+        update();
+    }
+
     void mouseMoveEvent(QMouseEvent* e) override
     {
         if (!dragging_) {
+            if (curves_) {
+                setCursor(e->position().x() >= kLabelW && curveKeyUnder(e->position(), nullptr) >= 0 ? Qt::SizeAllCursor : Qt::ArrowCursor);
+                return;
+            }
             const int r = rowAt(e->position().y());
             setCursor(keyUnder(r, e->position().x()) >= 0 ? Qt::SizeHorCursor : Qt::ArrowCursor);
             return;
         }
-        const double t = timeAt(e->position().x());
-        if (t == dragNow_) return;
+        // the time moves by as much as the mouse did (a keyframe is not pulled to the frame under the mouse first)
+        const double t = std::min(spanLen(), std::max(0.0, dragFrom_ + timeAt(e->position().x()) - timeAt(pressX_)));
+        const bool row = selRow_ >= 0 && selRow_ < (int)rows_.size();
         // not onto another keyframe of the same row: that one would be lost
-        if (selRow_ >= 0 && selRow_ < (int)rows_.size() && rows_[(size_t)selRow_].keys.count(t)) return;
-        moveKeys(selRow_, dragNow_, t);
-        dragNow_ = t;
-        selTime_ = t;
+        if (t != dragNow_ && row && !rows_[(size_t)selRow_].keys.count(t)) {
+            moveKeys(selRow_, dragNow_, t);
+            dragNow_ = t;
+        }
+        if (dragCurve_ && row) setKeyValue(selRow_, dragNow_, dragComp_, graphValue(rows_[(size_t)selRow_], e->position().y()));
+        const double at = dragNow_;
+        selTime_ = at;
         refresh();
-        selTime_ = t;
-        if (seek) seek(t);
+        selTime_ = at;
+        if (seek) seek(at);
     }
 
     void mouseReleaseEvent(QMouseEvent*) override
     {
         if (!dragging_) return;
         dragging_ = false;
-        AppState::get().endFxEdit(slotId, "Move Keyframe");
+        AppState::get().endFxEdit(slotId, dragCurve_ && dragNow_ == dragFrom_ ? "Keyframe Value" : "Move Keyframe");
         refresh();
     }
 
     void mouseDoubleClickEvent(QMouseEvent* e) override
     {
+        if (e->position().x() < kLabelW) return;
+        if (curves_) {
+            const int a = activeRow();
+            if (a < 0 || curveKeyUnder(e->position(), nullptr) >= 0) return;
+            addKeys(a, timeAt(e->position().x()));
+            return;
+        }
         const int r = rowAt(e->position().y());
-        if (r < 0 || e->position().x() < kLabelW) return;
+        if (r < 0) return;
         if (keyUnder(r, e->position().x()) >= 0) return;
         addKeys(r, timeAt(e->position().x()));
     }
@@ -3513,6 +4040,18 @@ protected:
             return;
         }
         QWidget::keyPressEvent(e);
+    }
+
+    void wheelEvent(QWheelEvent* e) override
+    {
+        // Ctrl+wheel zooms the time, as on the timeline; a plain wheel scrolls the rows
+        if (e->modifiers() & Qt::ControlModifier) {
+            const int dy = e->angleDelta().y();
+            if (dy) zoomBy(dy > 0 ? 1.25 : 0.8);
+            e->accept();
+            return;
+        }
+        QWidget::wheelEvent(e);
     }
 
     void keyMenu(int row, double time, const QPoint& at)
@@ -3540,16 +4079,26 @@ public:
 
 private:
     std::vector<Row> rows_;
+    std::vector<int> vis_;
+    std::vector<double> sampleAt_;
+    std::set<QString> folded_;
     int selRow_ = -1;
     double selTime_ = -1;
-    bool dragging_ = false;
-    double dragFrom_ = 0, dragNow_ = 0;
+    bool dragging_ = false, dragCurve_ = false, curves_ = false;
+    int dragComp_ = 0;
+    double dragFrom_ = 0, dragNow_ = 0, pressX_ = 0;
+    double zoom_ = 1, viewStart_ = 0;
 };
 
+// The keyframe controller: the strip, the scroll bar and zoom buttons under it, and VEGAS 18's row of buttons: Sync
+// Cursor, First / Previous / Next / Last Keyframe, Create and Delete Keyframe, the cursor's time (in the project's time
+// format) and the Lanes / Curves switch.
 class KeyPanel : public QWidget {
 public:
     KeyStrip* strip = nullptr;
-    QToolButton *first = nullptr, *prev = nullptr, *add = nullptr, *del = nullptr, *next = nullptr, *last = nullptr;
+    QToolButton *sync = nullptr, *first = nullptr, *prev = nullptr, *add = nullptr, *del = nullptr, *next = nullptr, *last = nullptr;
+    QToolButton *lanes = nullptr, *curves = nullptr, *zoomIn = nullptr, *zoomOut = nullptr;
+    QScrollBar* hscroll = nullptr;
     QLabel* where = nullptr;
 
     explicit KeyPanel(QWidget* parent) : QWidget(parent)
@@ -3564,23 +4113,77 @@ public:
         sa->setWidgetResizable(true);
         sa->setWidget(strip);
         sa->setFrameShape(QFrame::StyledPanel);
+        sa->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         sa->setMinimumHeight(KeyStrip::kRuler + 4 * KeyStrip::kRowH + 4);
+        scroll_ = sa;
         v->addWidget(sa, 1);
-        QHBoxLayout* h = new QHBoxLayout();
-        h->setSpacing(1);
         const QPalette pal = palette();
-        first = smallButton(this, glyphIcon(Glyph::First, pal), "First keyframe", "fxKeyFirst");
-        prev = smallButton(this, glyphIcon(Glyph::Left, pal), "Previous keyframe", "fxKeyPrev");
-        add = smallButton(this, glyphIcon(Glyph::Add, pal), "Create keyframe at the cursor (for the picked row's settings)", "fxKeyAdd");
-        del = smallButton(this, glyphIcon(Glyph::Remove, pal), "Delete the picked keyframe", "fxKeyDelete");
-        next = smallButton(this, glyphIcon(Glyph::Right, pal), "Next keyframe", "fxKeyNext");
-        last = smallButton(this, glyphIcon(Glyph::Last, pal), "Last keyframe", "fxKeyLast");
-        for (QToolButton* b : {first, prev, add, del, next, last}) h->addWidget(b);
+
+        // the time's scroll bar (under the lanes) with VEGAS's zoom buttons
+        QHBoxLayout* sb = new QHBoxLayout();
+        sb->setSpacing(1);
+        sb->setContentsMargins(KeyStrip::kLabelW, 0, 0, 0);
+        hscroll = new QScrollBar(Qt::Horizontal, this);
+        hscroll->setObjectName("fxKeyHScroll");
+        hscroll->setRange(0, 0);
+        sb->addWidget(hscroll, 1);
+        zoomIn = smallButton(this, glyphIcon(Glyph::Add, pal), "Zoom in (Ctrl+wheel)", "fxKeyZoomIn");
+        zoomOut = smallButton(this, glyphIcon(Glyph::Remove, pal), "Zoom out (Ctrl+wheel)", "fxKeyZoomOut");
+        zoomOut->setIcon(minusIcon(pal));
+        for (QToolButton* b : {zoomIn, zoomOut}) {
+            b->setIconSize(QSize(10, 10));
+            b->setFixedSize(16, 16);
+            sb->addWidget(b);
+        }
+        v->addLayout(sb);
+
+        QHBoxLayout* h = new QHBoxLayout();
+        h->setSpacing(2);
+        h->setContentsMargins(6, 2, 6, 2);
+        sync = smallButton(this, keyPicIcon(KeyPic::Sync, pal), "Sync Cursor: the cursor here and the timeline's cursor move together", "fxKeySync");
+        sync->setCheckable(true);
+        sync->setChecked(true);
+        first = smallButton(this, keyPicIcon(KeyPic::First, pal), "First Keyframe", "fxKeyFirst");
+        prev = smallButton(this, keyPicIcon(KeyPic::Prev, pal), "Previous Keyframe", "fxKeyPrev");
+        next = smallButton(this, keyPicIcon(KeyPic::Next, pal), "Next Keyframe", "fxKeyNext");
+        last = smallButton(this, keyPicIcon(KeyPic::Last, pal), "Last Keyframe", "fxKeyLast");
+        add = smallButton(this, keyPicIcon(KeyPic::Add, pal), "Create Keyframe at the cursor (for the picked row's settings)", "fxKeyAdd");
+        del = smallButton(this, keyPicIcon(KeyPic::Delete, pal), "Delete Keyframe (the picked one, else the one at the cursor)", "fxKeyDelete");
+        h->addWidget(sync);
+        h->addSpacing(8);
+        for (QToolButton* b : {first, prev, next, last, add, del}) h->addWidget(b);
+        h->addSpacing(10);
         where = new QLabel(this);
         where->setObjectName("fxKeyTime");
-        h->addSpacing(8);
-        h->addWidget(where, 1);
+        where->setToolTip("The keyframe controller's cursor");
+        where->setMinimumWidth(84);
+        where->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        where->setStyleSheet("QLabel#fxKeyTime { border: 1px solid palette(mid); background: palette(base); padding: 1px 5px; }");
+        h->addWidget(where);
+        h->addStretch(1);
+        lanes = new QToolButton(this);
+        lanes->setObjectName("fxKeyLanes");
+        lanes->setText("Lanes");
+        lanes->setToolTip("Lanes: a row of keyframes for the effect, each group of settings and each setting");
+        curves = new QToolButton(this);
+        curves->setObjectName("fxKeyCurves");
+        curves->setText("Curves");
+        curves->setToolTip("Curves: the settings' values over time, with keyframes to drag up and down");
+        for (QToolButton* b : {lanes, curves}) {
+            b->setCheckable(true);
+            b->setAutoExclusive(true);
+            b->setFocusPolicy(Qt::NoFocus);
+            b->setMinimumWidth(64);
+            h->addWidget(b);
+        }
+        h->setSpacing(2);
+        const bool curvesOn = QSettings().value("fxWindow/keyCurves", false).toBool();
+        (curvesOn ? curves : lanes)->setChecked(true);
+        setCurves(curvesOn);
         v->addLayout(h);
+
+        QObject::connect(lanes, &QToolButton::toggled, this, [this](bool on) { if (on) setCurves(false); });
+        QObject::connect(curves, &QToolButton::toggled, this, [this](bool on) { if (on) setCurves(true); });
         QObject::connect(first, &QToolButton::clicked, this, [this] { go(-2); });
         QObject::connect(prev, &QToolButton::clicked, this, [this] { go(-1); });
         QObject::connect(next, &QToolButton::clicked, this, [this] { go(1); });
@@ -3598,6 +4201,33 @@ public:
             }
             if (r >= 0 && r < (int)strip->rows().size() && strip->rows()[(size_t)r].keys.count(t)) strip->deleteKeys(r, t);
         });
+        QObject::connect(zoomIn, &QToolButton::clicked, this, [this] { strip->zoomBy(2.0); });
+        QObject::connect(zoomOut, &QToolButton::clicked, this, [this] { strip->zoomBy(0.5); });
+        QObject::connect(hscroll, &QScrollBar::valueChanged, this, [this](int value) {
+            if (settingScroll_) return;
+            strip->setView(strip->zoom(), value);
+        });
+        strip->onView = [this] { syncScroll(); };
+    }
+
+    void setCurves(bool on)
+    {
+        QSettings().setValue("fxWindow/keyCurves", on);
+        strip->setCurvesView(on);
+        // the curves want room to rise and fall
+        scroll_->setMinimumHeight(on ? 150 : KeyStrip::kRuler + 4 * KeyStrip::kRowH + 4);
+    }
+
+    void syncScroll()
+    {
+        settingScroll_ = true;
+        const double len = strip->spanLen(), shown = strip->viewLen();
+        hscroll->setRange(0, (int)std::max(0.0, std::floor(len - shown + 0.5)));
+        hscroll->setPageStep(std::max(1, (int)std::lround(shown)));
+        hscroll->setSingleStep(std::max(1, (int)std::lround(shown / 10)));
+        hscroll->setValue((int)std::lround(strip->viewFrom()));
+        settingScroll_ = false;
+        zoomOut->setEnabled(strip->zoom() > 1.0);
     }
 
     void go(int how)
@@ -3619,13 +4249,30 @@ public:
     void refresh()
     {
         strip->refresh();
-        if (strip->now && strip->rate) {
-            const double f = strip->now(), fps = std::max(1.0, strip->rate());
-            const double sec = f / fps;
-            where->setText(QString("%1:%2.%3  (frame %4)").arg((int)sec / 60).arg((int)sec % 60, 2, 10, QChar('0'))
-                               .arg((int)std::lround((sec - std::floor(sec)) * 1000), 3, 10, QChar('0')).arg((long long)std::lround(f)));
+        syncScroll();
+        if (strip->now) {
+            const double f = strip->now();
+            if (strip->timeText) where->setText(strip->timeText(f));
+            else if (strip->rate) where->setText(QString::number(f / std::max(1.0, strip->rate()), 'f', 3));
         }
     }
+
+private:
+    static QIcon minusIcon(const QPalette& pal)
+    {
+        QPixmap pm(32, 32);
+        pm.setDevicePixelRatio(2.0);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        QPen pen(pal.color(QPalette::Active, QPalette::ButtonText), 1.6);
+        pen.setCapStyle(Qt::RoundCap);
+        p.setPen(pen);
+        p.drawLine(QPointF(3.5, 8), QPointF(12.5, 8));
+        return QIcon(pm);
+    }
+    QScrollArea* scroll_ = nullptr;
+    bool settingScroll_ = false;
 };
 
 struct FxWindow::Impl {
@@ -3661,6 +4308,9 @@ struct FxWindow::Impl {
     QToolButton* adjustLenBtn = nullptr;
     QToolButton* progressBtn = nullptr;
     KeyPanel* keys = nullptr;
+    // the keyframe controller's Sync Cursor: on, its cursor is the timeline's; off, it has its own (in the effect's frames)
+    bool syncCursor = true;
+    double ownFrames = 0;
     mutable FxChain single;
     QMenu* addMenu = nullptr;
     std::vector<VideoFxEntry> menuVideo;
@@ -3738,6 +4388,8 @@ struct FxWindow::Impl {
     // event for an event's effects, from the start of the project otherwise.
     double fxTime() const
     {
+        // Sync Cursor off: the keyframe controller's own cursor
+        if (!syncCursor && keys && keys->isVisible()) return std::min(std::max(0.0, ownFrames), keySpan());
         const Project& p = app.project();
         const double fps = p.settings.fps();
         double t = p.frameTime(p.frameAt(app.cursor()));
@@ -3750,6 +4402,12 @@ struct FxWindow::Impl {
 
     void seekFx(double frames)
     {
+        if (!syncCursor && keys && keys->isVisible()) {
+            ownFrames = std::min(std::max(0.0, frames), keySpan());
+            if (panel) panel->refresh(true);
+            keys->refresh();
+            return;
+        }
         const Project& p = app.project();
         double t = frames / p.settings.fps();
         if (target.kind == FxTarget::Event)
@@ -5033,6 +5691,25 @@ public:
         ks->seek = [this](double frames) { seekFx(frames); };
         ks->span = [this] { return keySpan(); };
         ks->rate = [this] { return app.project().settings.fps(); };
+        ks->effectName = [this] {
+            const FxSlot* s = slot(picked);
+            return s ? qs(fxSlotLabel(*s)) : QString();
+        };
+        // the time as the project writes it: from the event's start for an event's effects (as VEGAS's), else as the
+        // timeline's ruler
+        ks->timeText = [this](double frames) {
+            const Project& p = app.project();
+            const double secs = frames / std::max(1.0, p.settings.fps());
+            if (target.kind == FxTarget::Event) return qs(formatTime(p.settings, secs, p.settings.rulerFormat));
+            return qs(rulerTime(p, secs));
+        };
+        QObject::connect(keys->sync, &QToolButton::toggled, q, [this](bool on) {
+            if (!on) ownFrames = fxTime();
+            // (back on: the controller's cursor goes to the timeline's, as in Pan/Crop)
+            syncCursor = on;
+            if (panel) panel->refresh(true);
+            keys->refresh();
+        });
         QObject::connect(animateBtn, &QToolButton::toggled, q, [this](bool on) {
             QSettings().setValue("fxWindow/animate", on);
             syncKeys();

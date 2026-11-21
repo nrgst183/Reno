@@ -585,6 +585,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"View", "Transitions", "Alt+7", S::Window, "the picked transition's presets as animated thumbnails; drag one onto an overlap"},
         {"View", "Video FX", "Alt+8", S::Window, "video effects and Filter Packages, with the picked effect's presets as thumbnails; drag one onto an event or track"},
         {"View", "Media Generators", "Alt+9", S::Window, "with each generator's presets as thumbnails; drag one onto the timeline"},
+        {"View", "Compositors", "", S::Window, "the compositing plug-ins (Bump Map, Displacement Map, Height Map, Layer Dimensionality) in folders, with their presets as thumbnails; drag one onto an event or track (Reno adds it as a video effect)"},
         {"View", "Plug-In Manager", "Ctrl+Alt+1", S::Window, "every plug-in found, in folders (favorites, video FX, transitions, generators, VST / VST3 / DirectX, not working) with the scan result; drag them onto the timeline"},
         {"View", "Video Scopes", "Ctrl+Alt+2", S::Window, "vectorscope, waveform (Composite or Luminance, in IRE), RGB parade, histogram (Luminance, Red, Green, Blue, Alpha, Luminance/R/G/B, Lightness/a/b, with the mean and standard deviation); the value under the pointer; Settings: 7.5 IRE Setup, Studio RGB (16 to 235)"},
         {"View", "Surround Panner", "Ctrl+Alt+3", S::Window, "5.1 projects (Project Properties > Audio > Master bus mode): the current track's or bus's surround panner (pan point, Center, Smoothness, Enable LFE, speaker mutes, keyframes)"},
@@ -694,7 +695,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Playback", "Dynamic RAM Preview", "Shift+B", S::Window, "renders the time selection's frames into memory (up to Preferences > Video > Dynamic RAM Preview max) and plays them looped"},
         {"Playback", "Selective Prerender", "Shift+M", S::Window, "renders the time selection to a file that plays instead until something there changes (Tools > Clean Up Prerendered Video deletes them)"},
         {"Playback", "Enable Multicamera Editing", "Ctrl+Shift+D", S::Window, "Tools > Multicamera > Create Multicamera Track makes the track: each camera is a take"},
-        {"Playback", "Multicamera: Choose Camera", "1 ... 9", S::Window, "stopped: the event at the cursor shows that camera; playing: cuts there (the preview shows one camera, not VEGAS's grid)"},
+        {"Playback", "Multicamera: Choose Camera", "1 ... 9", S::Window, "stopped: the event at the cursor shows that camera; playing: cuts there (the preview shows every camera in a grid; a click on one chooses it, Ctrl+click cross-fades)"},
         {"Playback", "Multicamera: Cross-fade to Camera", "Ctrl+1 ... Ctrl+9", S::Window, "a cut with a cross-fade (as long as Preferences > Editing say)"},
         {"Playback", "Dim Master Bus Output", "Ctrl+Shift+F12", S::Window, "turns what is heard down by 20 dB, and back"},
         {"Playback", "External Monitor Preview", "Alt+Shift+4", S::Window, "the preview full screen on another display (View > External Monitor Display chooses it); again, or Esc, closes it"},
@@ -2928,6 +2929,12 @@ void MainWindow::buildDocks()
             return b;
         });
     }
+    // VEGAS's Compositors window: compositing plug-ins (Reno adds one to the timeline as a video effect)
+    QDockWidget* compositors = dock("Compositors", "dockCompositors", [this](QWidget* parent) -> QWidget* {
+        CompositorsWindow* c = new CompositorsWindow(parent);
+        c->onActivated = [this](const std::string& data) { browserActivated(FxBrowser::VideoFx, data); };
+        return c;
+    });
     QDockWidget* notes = dock("Project Notes", "dockNotes", [this](QWidget* parent) { return makeNotesPanel(parent); });
     mixerDock_ = dock("Mixing Console", "dockMixer", [this](QWidget* parent) -> QWidget* {
         MixerWindow* mixer = new MixerWindow(playback_.get(), parent);
@@ -2948,7 +2955,7 @@ void MainWindow::buildDocks()
         {byName["dockTransitions"], "showTransitions", "Alt+7"}, {byName["dockVideoFx"], "showVideoFx", "Alt+8"},
         {byName["dockGenerators"], "showGenerators", "Alt+9"}, {mixerDock_, "showMixer", "Ctrl+Alt+5"}, {scopes, "showScopes", "Ctrl+Alt+2"},
         {explorer, "showExplorer", "Alt+1"}, {details, "showDetails", "Ctrl+Alt+4"},
-        {byName["dockAudioFx"], "showAudioFx", ""}};
+        {byName["dockAudioFx"], "showAudioFx", ""}, {compositors, "showCompositors", ""}};
     for (const auto& e : entries) {
         QAction* toggle = e.dock->toggleViewAction();
         if (*e.key) toggle->setText(QString("%1\t%2").arg(e.dock->windowTitle(), e.key));

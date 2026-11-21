@@ -1,5 +1,6 @@
 // Mouse handling of the timeline: hit testing, dragging, shuffle, automation controls and the marker tool.
 #include "timeline_internal.h"
+#include "editdialogs.h"
 
 namespace reno {
 namespace app {
@@ -117,7 +118,8 @@ void TimelineWidget::Impl::selectTracksForPress(const Hit& h, Qt::KeyboardModifi
     bool keepCurrent = false;
     const bool control = h.part == Part::HeaderMute || h.part == Part::HeaderSolo || h.part == Part::HeaderLevel || h.part == Part::HeaderPan ||
                          h.part == Part::HeaderFade || h.part == Part::HeaderAuto || h.part == Part::HeaderPhase || h.part == Part::HeaderBus ||
-                         h.part == Part::HeaderFx;
+                         h.part == Part::HeaderFx || h.part == Part::HeaderSendLabel || h.part == Part::HeaderSend || h.part == Part::HeaderSendPrePost ||
+                         h.part == Part::HeaderFxArrow || h.part == Part::HeaderMeter;
     if (control && h.track && selectedTracks().count(h.track) && selectedTracks().size() > 1) {
         trackListFocus = true;
         keepCurrent = true;
@@ -450,6 +452,53 @@ bool TimelineWidget::Impl::pressHeader(const Hit& h, const QPointF& pos, bool ct
             if (const Track* t = trackOf(*r))
                 if (t->surround.route == "surround") drag.kind = Drag::SurroundPoint;
         break;
+    case Part::HeaderSend:
+        beginSendSlider(h, pos);
+        break;
+    case Part::HeaderSendPrePost:
+        toggleSendPrePost(h.track);
+        break;
+    case Part::HeaderCompChild:
+    case Part::HeaderCompParent:
+        if (const Track* t = findTrackConst(h.track)) {
+            // (as the header menu's commands: a child needs a video track above it at its level or deeper)
+            const int depth = compositeDepth(*t);
+            int above = -1;
+            for (const Track& o : app.project().tracks) {
+                if (o.type != TrackType::Video) continue;
+                if (o.id == t->id) break;
+                above = compositeDepth(o);
+            }
+            if (h.part == Part::HeaderCompChild && above >= 0 && depth <= above) shiftCompositeLevel(h.track, 1, "Make Compositing Child");
+            else if (h.part == Part::HeaderCompParent && depth > 0) shiftCompositeLevel(h.track, -1, "Make Compositing Parent");
+        }
+        break;
+    case Part::HeaderParentMotion:
+        drag = DragState();
+        openParentMotion(q, playback, h.track);
+        return true;
+    case Part::HeaderGroupLane:
+        if (const Track* t = findTrackConst(h.track)) selectGroupTracks(t->trackGroup);
+        break;
+    case Part::HeaderSendLabel:
+    case Part::HeaderFxArrow:
+    case Part::HeaderCompMode:
+    case Part::HeaderParentComp: {
+        // a button with a menu under it
+        const Row* r = rowOf(h.track);
+        if (!r) return false;
+        const HeaderRects hr = headerRects(*r);
+        QMenu m(q);
+        QRect under;
+        if (h.part == Part::HeaderSendLabel) { sendMenu(m, h.track); under = hr.sendLabel; }
+        else if (h.part == Part::HeaderFxArrow) { fxArrowMenu(m, h.track); under = QRect(hr.fx.topLeft(), hr.fxArrow.bottomRight()); }
+        else if (h.part == Part::HeaderCompMode) { compositeModeMenu(m, h.track, false); under = hr.compMode; }
+        else { compositeModeMenu(m, h.track, true); under = hr.parentComp; }
+        drag = DragState();
+        q->update();
+        m.exec(q->mapToGlobal(under.bottomLeft() + QPoint(0, 2)));
+        return true;
+    }
     default:
         break;
     }
@@ -540,13 +589,30 @@ void TimelineWidget::Impl::press(QMouseEvent* ev)
     case Part::HeaderPhase:
     case Part::HeaderBus:
     case Part::HeaderSurround:
+    case Part::HeaderSendLabel:
+    case Part::HeaderSend:
+    case Part::HeaderSendPrePost:
+    case Part::HeaderFxArrow:
+    case Part::HeaderCompMode:
+    case Part::HeaderCompChild:
+    case Part::HeaderCompParent:
+    case Part::HeaderParentMotion:
+    case Part::HeaderParentComp:
+    case Part::HeaderGroupLane:
         if (pressHeader(h, pos, ctrl)) return;
+        break;
+    case Part::GroupRow:
+    case Part::GroupToggle:
+    case Part::GroupName:
+    case Part::GroupMute:
+    case Part::GroupSolo:
+        pressGroup(h);
         break;
     default:
         break;
     }
     const bool dragsView = drag.kind != Drag::None && drag.kind != Drag::Level && drag.kind != Drag::Pan && drag.kind != Drag::Fade &&
-                           drag.kind != Drag::HeaderWidth && drag.kind != Drag::SurroundPoint;
+                           drag.kind != Drag::HeaderWidth && drag.kind != Drag::SurroundPoint && drag.kind != Drag::Send;
     if (dragsView) autoScroll->start();
     overlaysChanged();
 }
@@ -930,6 +996,16 @@ void TimelineWidget::Impl::trackHamburger(QMenu& menu, uint64_t id)
         const bool inv = t->invertPhase;
         toggleItem(menu, "Invert Track Phase", inv, [this, id, inv] {
             app.edit("Invert Phase", [&](Project& p) { if (Track* o = p.findTrack(id)) o->invertPhase = !inv; });
+        });
+        // (the output meters, switched off from their own menu, come back from here)
+        toggleItem(menu, "Show Meters", metersOn, [this] {
+            metersOn = !metersOn;
+            meterPainted.clear();
+            saveMeterOptions();
+            layout();
+            updateBars();
+            q->update();
+            startMeters();
         });
     }
     add(menu, "Track FX", openFxOf);
@@ -1432,7 +1508,15 @@ bool TimelineWidget::Impl::beginMove()
     return true;
 }
 
-void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers mods)
+int TimelineWidget::Impl::voidTop() const
+{
+    int bottom = kTopH - scrollY;
+    for (const Row& r : rows) bottom = std::max(bottom, rowTop(r) + r.h);
+    for (const BusRow& b : busRows) bottom = std::max(bottom, busTop(b) + b.h);
+    return bottom;
+}
+
+void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers mods, bool commit)
 {
     const std::vector<Mover> movers = drag.movers;
     const std::vector<int> kindTracks = drag.kindTracks;
@@ -1479,6 +1563,15 @@ void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers 
             shift = std::min(shift, (int)kindTracks.size() - 1 - m.ordinal);
         }
     }
+    // VEGAS: dragged into the empty area below the last track, the grabbed event goes onto a new track of its kind, the
+    // events moving with it keep their places relative to it (on tracks further down where those are, else on new
+    // tracks of their own kind; events of the other kind go down as many tracks of theirs)
+    const bool toVoid = g.ordinal >= 0 && !kindTracks.empty() && !rows.empty() && pos.y() >= voidTop() && pos.y() < lanesBottom() &&
+                        pos.x() >= headerW && pos.x() < lanesRight();
+    if (toVoid) shift = (int)kindTracks.size() - g.ordinal;
+    drag.toVoid = toVoid;
+    const bool hadGhosts = !drag.voidGhosts.empty();
+    std::vector<Ghost> ghosts;
     const bool ripple = drag.ripple && shift == 0, quantize = opt.quantize;
     const Followers followers = drag.followers;
     const std::vector<DragState::EnvFollow> envFollow = shift == 0 ? drag.envFollow : std::vector<DragState::EnvFollow>();
@@ -1517,11 +1610,35 @@ void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers 
         // event of every step was quadratic: seconds a step with thousands of events dragged down a track)
         std::vector<std::pair<size_t, Event>> carried;
         std::map<Track*, std::set<uint64_t>> leaving;
+        // below the last track: each kind's tracks in order ([1] video), and the events for new tracks of the kind
+        // (which new track: 0 the first)
+        std::vector<size_t> byKind[2];
+        std::vector<std::pair<int, Event>> fresh[2];
+        if (toVoid)
+            for (size_t k = 0; k < p.tracks.size(); ++k) byKind[p.tracks[k].type == TrackType::Video ? 1 : 0].push_back(k);
         for (const Mover& m : movers) {
             Track* from = nullptr;
             Event* e = p.findEvent(m.id, &from);
             if (!e || !from) continue;
             e->start = std::max(0.0, quantize ? p.quantize(m.start + delta) : m.start + delta);
+            if (toVoid) {
+                const int kind = from->type == TrackType::Video ? 1 : 0;
+                const std::vector<size_t>& list = byKind[kind];
+                int ord = m.ordinal;
+                if (ord < 0)
+                    for (size_t o = 0; o < list.size(); ++o)
+                        if (list[o] == (size_t)m.track) ord = (int)o;
+                if (ord < 0) continue;
+                const int to = ord + shift;
+                if (to < (int)list.size()) {
+                    if (&p.tracks[list[(size_t)to]] != from) carried.emplace_back(list[(size_t)to], *e);
+                    else continue;
+                } else {
+                    fresh[kind].emplace_back(to - (int)list.size(), *e);
+                }
+                leaving[from].insert(m.id);
+                continue;
+            }
             if (m.ordinal >= 0 && shift != 0) {
                 const int to = kindTracks[(size_t)(m.ordinal + shift)];
                 if ((size_t)to < p.tracks.size() && &p.tracks[(size_t)to] != from) {
@@ -1533,10 +1650,51 @@ void TimelineWidget::Impl::updateMove(const QPointF& pos, Qt::KeyboardModifiers 
         for (auto& l : leaving)
             l.first->events.erase(std::remove_if(l.first->events.begin(), l.first->events.end(), [&](const Event& e) { return l.second.count(e.id) != 0; }), l.first->events.end());
         for (auto& c : carried) p.tracks[c.first].events.push_back(std::move(c.second));
+        if (commit) {
+            // the new tracks, made as Insert Audio / Video Track makes them: a video track after the last video track, an
+            // audio track after the last track
+            for (int kind : {1, 0}) {
+                int count = 0;
+                for (const auto& f : fresh[kind]) count = std::max(count, f.first + 1);
+                std::vector<uint64_t> made;
+                for (int n = 0; n < count; ++n) {
+                    Track t;
+                    t.id = p.newId();
+                    t.type = kind ? TrackType::Video : TrackType::Audio;
+                    if (!kind) t.panType = "add";
+                    if (app.onNewTrack) app.onNewTrack(p, t);
+                    size_t at = p.tracks.size();
+                    if (kind) {
+                        at = 0;
+                        for (size_t k = 0; k < p.tracks.size(); ++k)
+                            if (p.tracks[k].type == TrackType::Video) at = k + 1;
+                    }
+                    made.push_back(t.id);
+                    p.tracks.insert(p.tracks.begin() + (std::ptrdiff_t)at, std::move(t));
+                }
+                for (auto& f : fresh[kind])
+                    if (Track* t = p.findTrack(made[(size_t)f.first])) t->events.push_back(std::move(f.second));
+            }
+        } else {
+            for (int kind : {1, 0})
+                for (const auto& f : fresh[kind]) {
+                    Ghost gh;
+                    gh.track = (uint64_t)f.first;
+                    gh.video = kind == 1;
+                    gh.atEnd = true;
+                    gh.start = f.second.start;
+                    gh.length = f.second.length;
+                    ghosts.push_back(gh);
+                }
+        }
         std::set<uint64_t> moving;
         for (const Mover& m : movers) moving.insert(m.id);
         followSyncLinks(p, links, moving);
     });
+    if (!ghosts.empty() || hadGhosts) {
+        drag.voidGhosts = ghosts;
+        q->update(QRect(headerW, std::max(kTopH, voidTop()), viewW(), std::max(0, lanesBottom() - std::max(kTopH, voidTop()))));
+    }
     if (!copies.empty()) {
         // the copies are the selection, as in VEGAS
         std::set<uint64_t> made;
@@ -1801,6 +1959,7 @@ void TimelineWidget::Impl::dragTo(const QPointF& pos, Qt::KeyboardModifiers mods
     case Drag::Pan:
     case Drag::Fade: updateSlider(pos, mods); break;
     case Drag::SurroundPoint: updateSurroundPoint(pos); break;
+    case Drag::Send: updateSendSlider(pos, mods); break;
     case Drag::Marker:
     case Drag::RegionStart:
     case Drag::RegionEnd:

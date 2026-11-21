@@ -175,6 +175,19 @@ void MainWindow::setUpTrimmer(Tools* t)
     addToolWindow(t->trimmerDock, "showTrimmer", "Alt+2");
     t->trimmer->onWillPlay = [pb] { pb->pause(); };
     t->trimmer->onPreviewPicture = [this](const QImage& img) { if (preview_) preview_->showPicture(img); };
+    // the Trimmer's Create Subclip button: as Project Media's "Create Subclip from Trimmer Selection..."
+    t->trimmer->setCreateSubclipHook([this] {
+        uint64_t media = 0;
+        double in = 0, out = 0;
+        const MediaItem* m = nullptr;
+        if (!trimmerSelection || !trimmerSelection(media, in, out) || !(out > in) || !(m = AppState::get().project().findMedia(media))) {
+            QMessageBox::information(this, "Create Subclip", "Select a part of a project media file in the Trimmer first (I and O, or drag across its strip).");
+            return;
+        }
+        bool ok = false;
+        const QString n = QInputDialog::getText(this, "Create Subclip", "Name:", QLineEdit::Normal, QString::fromStdString(m->name) + " Subclip", &ok).trimmed();
+        if (ok) createSubclip(media, in, out, n.toStdString());
+    });
     openInTrimmer = [this, t](uint64_t mediaId, const QString& path) {
         showDock(t->trimmerDock);
         if (mediaId) t->trimmer->openMedia(mediaId);

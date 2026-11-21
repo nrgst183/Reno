@@ -656,14 +656,12 @@ int main(int argc, char** argv)
             check(near(app.project().findEvent(e0)->length, 4.0), "Length", num(app.project().findEvent(e0)->length));
             type(eid, 2, "00:00:06:15");
             check(near(app.project().findEvent(e0)->length, 6.5), "End", num(app.project().findEvent(e0)->length));
-            type(eid, 4, "Opening");
-            check(app.project().findEvent(e0)->name == "Opening", "Name");
-            type(eid, 6, "1.5");
-            type(eid, 7, "00:00:20:00");
-            check(near(app.project().findEvent(e0)->fadeIn, 1.5) && near(app.project().findEvent(e0)->fadeOut, 6.5), "Fade In, Fade Out (no longer than the event)",
-                  num(app.project().findEvent(e0)->fadeIn) + " " + num(app.project().findEvent(e0)->fadeOut));
-            type(eid, 8, "Yes");
-            check(app.project().findEvent(e0)->mute, "Muted");
+            // (VEGAS's columns: Track, Start, End, Length, Number of Takes, Active Take Name ... Select, Mute (12) ...)
+            type(eid, 5, "Opening");
+            check(app.project().findEvent(e0)->name == "Opening", "Active Take Name");
+            if (QTreeWidgetItem* it = rowOf(eid)) it->setCheckState(12, Qt::Checked);
+            uitest::settle(40);
+            check(app.project().findEvent(e0)->mute, "Mute (a check box)");
             const double before = app.project().findEvent(e0)->start;
             type(eid, 1, "whenever");
             check(near(app.project().findEvent(e0)->start, before) && rowOf(eid) && rowOf(eid)->text(1) == QString::fromStdString(rulerTime(app.project(), before)),

@@ -257,7 +257,7 @@ void testMediaBin()
     uitest::settle(300);
     const int all = (int)app.project().media.size();
     check((int)bin.shownMedia().size() == all, "media: Project Media shows everything", std::to_string(bin.shownMedia().size()));
-    check(kid<QTreeWidget>(&bin, "mediaBins") && kid<QTreeWidget>(&bin, "mediaBins")->topLevelItem(0)->text(0) == "Project Media", "media: the bins tree starts at Project Media");
+    check(kid<QTreeWidget>(&bin, "mediaBins") && kid<QTreeWidget>(&bin, "mediaBins")->topLevelItem(0)->text(0) == "All Media", "media: the bins tree starts at All Media (VEGAS 18)");
     uitest::shot(&bin, gOut + "/media_detailed.png");
 
     // bins

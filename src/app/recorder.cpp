@@ -2,10 +2,11 @@
 #include "recorder.h"
 #include "playback.h"
 #include "vprefs.h"
+#include <QCheckBox>
 #include <QDialog>
+#include <QFileIconProvider>
 #include <QDateTime>
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QLabel>
 #include <QMenu>
 #include <QListWidget>
@@ -161,72 +162,114 @@ static bool addBextChunk(const QString& path, uint64_t timeReference, int rate)
     return true;
 }
 
-// The Recorded Files dialog (Preferences > General "Prompt to keep files after recording"): the files of the recording
-// with Delete / Delete All, Rename and Done. Returns the files to keep (renamed ones under their new names), in the
-// order given; a deleted file is gone from the list.
-static QList<QPair<int, QString>> recordedFilesDialog(const QStringList& files)
+// The Recorded Files dialog, shown after recording while Preferences > General "Prompt to keep files after recording"
+// is on (its "Show after every recording session" box is that preference). As VEGAS 18's: the folder above the list
+// of file names, Delete and Rename (in place, in the list) on the left and Delete All on the right, then the check box
+// and Done. Returns the files to keep (renamed ones under their new names), in the order given; a deleted file is gone
+// from the list.
+QList<QPair<int, QString>> recordedFilesDialog(const QStringList& files)
 {
     QDialog d(QApplication::activeWindow());
     d.setObjectName("recordedFilesDialog");
     d.setWindowTitle("Recorded Files");
+    d.resize(348, 236);
     QVBoxLayout* v = new QVBoxLayout(&d);
-    v->addWidget(new QLabel("Recorded files:", &d));
+    v->setContentsMargins(11, 9, 11, 11);
+    v->setSpacing(6);
+    const QString folder = files.isEmpty() ? QString() : QFileInfo(files.first()).absolutePath();
+    // a long folder is shortened in the middle to fit (all of it in the tool tip)
+    const QString folderText = QDir::toNativeSeparators(folder.endsWith('/') ? folder : folder + '/');
+    QLabel* where = new QLabel(&d);
+    where->setObjectName("recordedFolder");
+    where->setToolTip(folderText);
+    where->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    where->setText(where->fontMetrics().elidedText(folderText, Qt::ElideMiddle, 326));
+    v->addWidget(where);
     QListWidget* list = new QListWidget(&d);
     list->setObjectName("recordedFiles");
-    for (const QString& f : files) list->addItem(QDir::toNativeSeparators(f));
+    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    list->setEditTriggers(QAbstractItemView::EditKeyPressed);
+    QList<QPair<int, QString>> keep;
+    for (int i = 0; i < files.size(); ++i) {
+        keep.append(qMakePair(i, files[i]));
+        QListWidgetItem* it = new QListWidgetItem(QFileIconProvider().icon(QFileInfo(files[i])), QFileInfo(files[i]).fileName(), list);
+        it->setFlags(it->flags() | Qt::ItemIsEditable);
+    }
     list->setCurrentRow(0);
     v->addWidget(list, 1);
+    v->addSpacing(4);
     QHBoxLayout* h = new QHBoxLayout();
     QPushButton* del = new QPushButton("&Delete", &d);
     del->setObjectName("delete");
+    QPushButton* ren = new QPushButton("&Rename", &d);
+    ren->setObjectName("rename");
     QPushButton* delAll = new QPushButton("Delete &All", &d);
     delAll->setObjectName("deleteAll");
-    QPushButton* ren = new QPushButton("&Rename...", &d);
-    ren->setObjectName("rename");
-    QPushButton* done = new QPushButton("Done", &d);
-    done->setObjectName("done");
-    done->setDefault(true);
     h->addWidget(del);
-    h->addWidget(delAll);
+    h->addSpacing(4);
     h->addWidget(ren);
     h->addStretch(1);
-    h->addWidget(done);
+    h->addWidget(delAll);
     v->addLayout(h);
-    QList<QPair<int, QString>> keep;
-    for (int i = 0; i < files.size(); ++i) keep.append(qMakePair(i, files[i]));
+    QHBoxLayout* h2 = new QHBoxLayout();
+    QCheckBox* showAgain = new QCheckBox("&Show after every recording session", &d);
+    showAgain->setObjectName("showAfterRecording");
+    showAgain->setChecked(vprefs::on("prefs/promptKeepRecorded"));
+    QPushButton* done = new QPushButton("Do&ne", &d);
+    done->setObjectName("done");
+    done->setDefault(true);
+    h2->addWidget(showAgain);
+    h2->addStretch(1);
+    h2->addWidget(done);
+    v->addLayout(h2);
+    for (QPushButton* b : {del, ren, delAll, done}) b->setMinimumWidth(75);
+
     auto removeRows = [&](bool all) {
-        const int row = list->currentRow();
-        if (!all && (row < 0 || row >= keep.size())) return;
-        const QString what = all ? QString("all the recorded files") : QDir::toNativeSeparators(keep[row].second);
-        if (QMessageBox::question(&d, "Recorded Files", "Delete " + what + "?") != QMessageBox::Yes) return;
-        if (all) {
-            for (const auto& f : keep) QFile::remove(f.second);
-            keep.clear();
-            list->clear();
-        } else {
-            QFile::remove(keep[row].second);
-            keep.removeAt(row);
-            delete list->takeItem(row);
+        std::vector<int> rows;
+        for (int r = 0; r < list->count(); ++r)
+            if (all || list->item(r)->isSelected()) rows.push_back(r);
+        if (rows.empty()) return;
+        if (QMessageBox::question(&d, "Recorded Files", "Are you sure you want to delete selected file(s) from your drive?") != QMessageBox::Yes) return;
+        for (auto r = rows.rbegin(); r != rows.rend(); ++r) {
+            QFile::remove(keep[*r].second);
+            keep.removeAt(*r);
+            delete list->takeItem(*r);
         }
         if (keep.isEmpty()) d.accept();
     };
     QObject::connect(del, &QPushButton::clicked, &d, [&] { removeRows(false); });
     QObject::connect(delAll, &QPushButton::clicked, &d, [&] { removeRows(true); });
     QObject::connect(ren, &QPushButton::clicked, &d, [&] {
-        const int row = list->currentRow();
+        if (QListWidgetItem* it = list->currentItem()) list->editItem(it);
+    });
+    // a name typed in: the file is renamed (keeping its extension when none is typed); a name that cannot be used
+    // goes back to the old one
+    bool renaming = false;
+    QObject::connect(list, &QListWidget::itemChanged, &d, [&](QListWidgetItem* it) {
+        if (renaming) return;
+        const int row = list->row(it);
         if (row < 0 || row >= keep.size()) return;
-        bool ok = false;
-        const QString name = QInputDialog::getText(&d, "Rename", "New name:", QLineEdit::Normal, QFileInfo(keep[row].second).completeBaseName(), &ok).trimmed();
-        if (!ok || name.isEmpty()) return;
-        const QString to = QFileInfo(keep[row].second).absoluteDir().filePath(name + ".wav");
-        if (QFileInfo::exists(to)) { QMessageBox::warning(&d, "Rename", "There is a file of that name already."); return; }
-        if (QFile::rename(keep[row].second, to)) {
-            keep[row].second = to;
-            list->item(row)->setText(QDir::toNativeSeparators(to));
+        const QFileInfo from(keep[row].second);
+        QString name = it->text().trimmed();
+        if (!name.isEmpty() && QFileInfo(name).suffix().isEmpty()) name += "." + from.suffix();
+        const QString to = from.absoluteDir().filePath(name);
+        bool ok = !name.isEmpty() && !name.contains('/') && !name.contains('\\');
+        if (ok && name != from.fileName()) {
+            if (QFileInfo::exists(to)) {
+                QMessageBox::warning(&d, "Recorded Files", "There is a file of that name already.");
+                ok = false;
+            } else {
+                ok = QFile::rename(keep[row].second, to);
+            }
+            if (ok) keep[row].second = to;
         }
+        renaming = true;
+        it->setText(QFileInfo(keep[row].second).fileName());
+        renaming = false;
     });
     QObject::connect(done, &QPushButton::clicked, &d, &QDialog::accept);
     d.exec();
+    vprefs::set("prefs/promptKeepRecorded", showAgain->isChecked());
     return keep;
 }
 

@@ -167,8 +167,6 @@ int main(int argc, char** argv)
         check(details.rows() == 1 && details.cell(0, 2) == "Here", "the markers", details.cell(0, 2).toStdString());
         details.setShow(EditDetails::Regions);
         check(details.rows() == 1 && details.cell(0, 4) == "Chorus", "the regions");
-        details.setShow(EditDetails::Media);
-        check(details.rows() == (int)app.project().media.size(), "the media");
         details.setShow(EditDetails::SelectedEvents);
         check(details.rows() == 0, "no event selected: none listed");
         uint64_t first = 0;

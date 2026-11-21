@@ -26,6 +26,7 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QElapsedTimer>
 #include <QDragEnterEvent>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -250,8 +251,16 @@ enum class Part {
     // VEGAS's Automation Settings button (right-click: the automation mode), a video track's Fade slider (in automation
     // mode), an audio track's Invert Track Phase and bus (output) buttons
     HeaderAuto, HeaderFade, HeaderPhase, HeaderBus,
+    // VEGAS 18's multipurpose send row (the bus / assignable FX chooser button, the send slider, Pre/Post), the arrow
+    // of an audio track's FX button, a video track's compositing buttons (and a compositing parent's Parent Motion and
+    // Parent Composite Mode), the track output meter, and the grouping lane down the left of a track group's headers
+    HeaderSendLabel, HeaderSend, HeaderSendPrePost, HeaderFxArrow,
+    HeaderCompMode, HeaderCompChild, HeaderCompParent, HeaderParentMotion, HeaderParentComp,
+    HeaderMeter, HeaderGroupLane,
     HeaderGap, HeaderArm,
     BusHeader, BusLane,
+    // a track group's header row: the row, its Collapse/Expand triangle, its name, Mute / Solo Track Group
+    GroupRow, GroupToggle, GroupName, GroupMute, GroupSolo,
     EnvPoint, EnvLine,
     HeaderEdge,
     TrackKey
@@ -293,7 +302,8 @@ enum class Drag {
     TrackHeight,
     SnapOffset,
     EventGain,
-    TrackKeys
+    TrackKeys,
+    Send                                // the send slider of a track header's multipurpose row
 };
 
 struct Mover {
@@ -514,6 +524,11 @@ struct TimelineWidget::Impl {
         double oldLoopA = 0, oldLoopB = 0;
         double startValue = 0;
         bool absolute = false;
+        // events dragged into the empty area below the last track (VEGAS): they go onto new tracks of their kind when
+        // let go; until then they are left out of the project and drawn as outlines there (a ghost's 'track' is which
+        // new track of its kind it goes on, 0 the first)
+        bool toVoid = false;
+        std::vector<Ghost> voidGhosts;
         Followers followers;
         bool ripple = false;
         double markerTime = 0, markerLength = 0;
@@ -678,7 +693,19 @@ struct TimelineWidget::Impl {
                          QRect autoBtn, fade, phase, bus;
                          // VEGAS's captions before the values ("Vol:", "Pan:"; a video track's "Level:"), where the header is
                          // wide enough to keep a usable slider after them
-                         QRect levelCaption, panCaption; };
+                         QRect levelCaption, panCaption;
+                         // the multipurpose send row: the chooser button ("Bus A:"), the value, the slider, Pre/Post
+                         QRect sendLabel, sendValue, send, sendPrePost;
+                         QRect fxArrow;
+                         // a video track's Compositing Mode, Make Compositing Child / Parent buttons; a parent's Parent
+                         // Motion and Parent Composite Mode buttons
+                         QRect compMode, compChild, compParent, parentMotion, parentComp;
+                         // the output meter (vertical: down the header's right; else a row under the name) and its "Out"
+                         QRect meter, meterCaption;
+                         bool meterVertical = true;
+                         // the grouping lane (a track in a group), and the parents' bands left of a compositing child
+                         QRect groupLane;
+                         int indent = 0; };
     HeaderRects headerRects(const Row& r) const;
     void placeSurround(HeaderRects& h) const;
 
@@ -689,6 +716,57 @@ struct TimelineWidget::Impl {
 
     HeaderRects vegasHeaderRects(const Row& r) const;
     void setHeaderWidth(int w);
+
+    // ---- VEGAS 18's track group headers: a row above each run of tracks of one group (Collapse/Expand, its name, Mute
+    // and Solo Track Group); a collapsed group shows only that row, with dark bars where the tracks' events are.
+    static constexpr int kGroupH = 20;
+    static constexpr int kGroupLaneW = 9;
+    static constexpr int kCompositeIndent = 14;
+    struct GroupRow { uint64_t group = 0; int y = 0, h = 0; size_t first = 0, last = 0; };
+    std::vector<GroupRow> groupRows;
+    int groupTop(const GroupRow& g) const { return kTopH + g.y - scrollY; }
+    struct GroupRects { QRect all, toggle, name, mute, solo; };
+    GroupRects groupRects(const GroupRow& g) const;
+    int groupRowAtY(double y) const;
+    void paintGroupRows(QPainter& p, const QRect& clip, bool lanes);
+    void pressGroup(const Hit& h);
+    void selectGroupTracks(uint64_t group);
+    // A compositing child's level as the timeline nests it (0: not a child), and the tracks it is nested in (from the
+    // outermost).
+    int compositeDepth(const Track& t, std::vector<const Track*>* parents = nullptr) const;
+    bool hasCompositeChildren(const Track& t) const;
+    void shiftCompositeLevel(uint64_t trackId, int by, const char* what);
+    void compositeModeMenu(QMenu& m, uint64_t trackId, bool parent);
+
+    // ---- the multipurpose send row: which bus or assignable FX chain each track's row shows (VEGAS's radio choice in
+    // the row's menu; the first in the list until one is chosen)
+    std::map<uint64_t, uint64_t> shownSend;
+    std::vector<const Bus*> sendTargets() const;
+    const Bus* sendShown(const Track& t) const;
+    static QString sendLevelText(double level);
+    void sendMenu(QMenu& m, uint64_t trackId);
+    void beginSendSlider(const Hit& h, const QPointF& pos);
+    void updateSendSlider(const QPointF& pos, Qt::KeyboardModifiers mods);
+    void toggleSendPrePost(uint64_t trackId);
+    void setSendLevel(uint64_t trackId, double level, bool drag);
+
+    // ---- the track output meters (VEGAS 18's meter in each audio track header): fed from Playback's per-track peaks
+    // as the Mixing Console's are; held peaks fall after a moment, clipping is kept until Reset Clip. Right-click:
+    // Reset Clip, Hold Peaks, the range, Vertical, Show Meters (kept in QSettings "timeline/trackMeters...").
+    struct TrackMeter { float level[2] = {0, 0}, hold[2] = {0, 0}; double holdAt[2] = {0, 0}; bool clip = false; };
+    std::unordered_map<uint64_t, TrackMeter> trackMeters;
+    std::unordered_map<uint64_t, QRect> meterPainted;      // what each meter showed when last painted (bar lengths, clip)
+    bool metersOn = true, meterVertical = true, meterHold = true;
+    double meterLo = -60.0;
+    QTimer* meterTimer = nullptr;
+    QElapsedTimer meterClock;
+    void meterTick();
+    void startMeters();
+    void paintMeters(QPainter& p, const QRect& clip);
+    void drawMeter(QPainter& p, const QRect& r, bool vertical, const TrackMeter* m) const;
+    void meterMenu(QMenu& m);
+    void saveMeterOptions();
+    void fxArrowMenu(QMenu& m, uint64_t trackId);
 
     // The height of an event's title bar (0: none). Shown on tall tracks only (or with View > Event Headers).
     double titleHeight(int rowH, double eventH) const
@@ -993,6 +1071,7 @@ struct TimelineWidget::Impl {
     void paintLayerLanes(QPainter& p, const Row& r, int y, const QRect& c);
     void paintLanes(QPainter& p, const QRect& clip);
     void paintDrop(QPainter& p, const QRect& c, int tracksBottom);
+    void paintVoidGhosts(QPainter& p, const QRect& c);
 
     mutable KeptText fxSigns[2];
     struct FadeLabel {
@@ -1076,7 +1155,7 @@ struct TimelineWidget::Impl {
         k.fx = d0.x() - ix;
         k.fy = d0.y() - iy;
         if ((hover.onHeader() || hover.part == Part::HeaderArm) && hover.track == r.id) k.hotPart = hover.part;
-        if ((drag.kind == Drag::Level || drag.kind == Drag::Pan || drag.kind == Drag::Fade || drag.kind == Drag::SurroundPoint) && drag.hit.track == r.id) k.held = drag.kind;
+        if ((drag.kind == Drag::Level || drag.kind == Drag::Pan || drag.kind == Drag::Fade || drag.kind == Drag::SurroundPoint || drag.kind == Drag::Send) && drag.hit.track == r.id) k.held = drag.kind;
         k.current = r.id == app.currentTrack;
         k.selected = selTracks.count(r.id) != 0;
         k.armed = app.armedTracks.count(r.id) != 0;
@@ -1236,7 +1315,10 @@ struct TimelineWidget::Impl {
     void scrubSoundDone(bool resume);
     void updateLoop(const QPointF& pos, Qt::KeyboardModifiers mods);
     bool beginMove();
-    void updateMove(const QPointF& pos, Qt::KeyboardModifiers mods);
+    // 'commit': the drag is being let go (events dragged below the last track get their new tracks now)
+    void updateMove(const QPointF& pos, Qt::KeyboardModifiers mods, bool commit = false);
+    // The top of the empty area below the tracks (and the bus tracks, if shown)
+    int voidTop() const;
 
     double moverSnapOffset(const Mover& m) const
     {
@@ -1294,6 +1376,7 @@ struct TimelineWidget::Impl {
     void release(QMouseEvent* ev);
     // release()'s parts: what letting go ends
     void finishMove(const DragState& was);
+    void commitVoidMove(const DragState& was);
     void finishEdgeDrag(const DragState& was);
     void finishZoomRange(const DragState& was, const QPointF& pos);
     void clickedButton(const DragState& was, const QPointF& pos);

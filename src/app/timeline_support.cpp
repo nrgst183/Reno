@@ -1,5 +1,9 @@
-// Helpers shared by the timeline files: colors, ruler steps, ripple and the track level text.
+// Helpers shared by the timeline files: colors, ruler steps, ripple and the track level text; what the track headers'
+// newer parts do (compositing parent and child, track group rows, the multipurpose send row, the output meters).
 #include "timeline_internal.h"
+#include "editdialogs.h"
+#include "fxautomation.h"
+#include <QActionGroup>
 
 namespace reno {
 namespace app {
@@ -243,6 +247,406 @@ QIcon curveIcon(int curve, bool falling, int crossCurve)
     return QIcon(pm);
 }
 
+}
+
+// ---- compositing parents and children (VEGAS's Make Compositing Parent / Child)
+
+// A video track's level as a compositing child: its compositeLevel, but never deeper than one more than the video track
+// above it (a child needs a parent). 'parents' gets the tracks it is composited into, the outermost first.
+int TimelineWidget::Impl::compositeDepth(const Track& t, std::vector<const Track*>* parents) const
+{
+    std::vector<const Track*> chain;
+    int prev = -1;
+    for (const Track& o : app.project().tracks) {
+        if (o.type != TrackType::Video) continue;
+        const int d = std::min(std::max(0, o.compositeLevel), prev + 1);
+        chain.resize((size_t)d);
+        if (o.id == t.id) {
+            if (parents) *parents = chain;
+            return d;
+        }
+        chain.push_back(&o);
+        prev = d;
+    }
+    return 0;
+}
+
+bool TimelineWidget::Impl::hasCompositeChildren(const Track& t) const
+{
+    const Project& p = app.project();
+    bool after = false;
+    for (const Track& o : p.tracks) {
+        if (o.type != TrackType::Video) continue;
+        if (after) return std::max(0, o.compositeLevel) > std::max(0, t.compositeLevel);
+        if (o.id == t.id) after = true;
+    }
+    return false;
+}
+
+// Make Compositing Child (by 1) / Parent (by -1): the track and its children go a level deeper or up (as the track
+// header menu's commands do).
+void TimelineWidget::Impl::shiftCompositeLevel(uint64_t trackId, int by, const char* what)
+{
+    app.edit(what, [&](Project& p) {
+        int base = -1;
+        for (Track& o : p.tracks) {
+            if (o.type != TrackType::Video) continue;
+            if (o.id == trackId) {
+                base = std::max(0, o.compositeLevel);
+                o.compositeLevel = std::max(0, base + by);
+                continue;
+            }
+            if (base < 0) continue;
+            if (std::max(0, o.compositeLevel) <= base) {
+                base = -1;
+                continue;
+            }
+            o.compositeLevel = std::max(0, o.compositeLevel + by);
+        }
+    });
+}
+
+// The compositing modes, the track's ticked: its own (Compositing Mode) or, for a parent, its group's (Parent Composite
+// Mode).
+void TimelineWidget::Impl::compositeModeMenu(QMenu& m, uint64_t trackId, bool parent)
+{
+    const Track* t = findTrackConst(trackId);
+    if (!t) return;
+    const std::string now = parent ? t->parentComposite : t->composite;
+    for (const CompositeMode& cm : compositeModes()) {
+        const std::string id = cm.id;
+        QAction* a = add(m, cm.label, [this, trackId, id, parent] {
+            app.edit(parent ? "Parent Composite Mode" : "Compositing Mode", [&](Project& p) {
+                if (Track* tr = p.findTrack(trackId)) (parent ? tr->parentComposite : tr->composite) = id;
+            });
+        });
+        a->setCheckable(true);
+        a->setChecked(now == cm.id);
+    }
+}
+
+// ---- track groups
+
+void TimelineWidget::Impl::selectGroupTracks(uint64_t group)
+{
+    std::set<uint64_t> ids;
+    uint64_t first = 0;
+    for (const Track& t : app.project().tracks)
+        if (t.trackGroup == group) {
+            ids.insert(t.id);
+            if (!first) first = t.id;
+        }
+    if (!first) return;
+    trackListFocus = true;
+    selTracks = ids;
+    setCurrentTrack(first);
+    ++headerGeneration;
+    q->update();
+}
+
+// A click on a track group's header row: its triangle collapses or expands it, its buttons mute or solo it; elsewhere
+// it selects the group's tracks (VEGAS 18 manual p215).
+void TimelineWidget::Impl::pressGroup(const Hit& h)
+{
+    const Track* t = findTrackConst(h.track);
+    if (!t || !t->trackGroup) return;
+    const uint64_t g = t->trackGroup;
+    setCurrentTrack(t->id);
+    switch (h.part) {
+    case Part::GroupToggle: q->collapseTrackGroup(!collapsedGroups.count(g)); break;
+    case Part::GroupMute: q->muteSoloTrackGroup(false, false); break;
+    case Part::GroupSolo: q->muteSoloTrackGroup(true, false); break;
+    default: selectGroupTracks(g); break;
+    }
+}
+
+// ---- the multipurpose send row
+
+// What a track can send to, in the order of VEGAS's menu: the assignable FX chains, then the busses.
+std::vector<const Bus*> TimelineWidget::Impl::sendTargets() const
+{
+    std::vector<const Bus*> out;
+    const Project& p = app.project();
+    for (const Bus& b : p.buses)
+        if (b.assignable) out.push_back(&b);
+    for (const Bus& b : p.buses)
+        if (!b.assignable) out.push_back(&b);
+    return out;
+}
+
+const Bus* TimelineWidget::Impl::sendShown(const Track& t) const
+{
+    const std::vector<const Bus*> all = sendTargets();
+    if (all.empty()) return nullptr;
+    const auto it = shownSend.find(t.id);
+    if (it != shownSend.end())
+        for (const Bus* b : all)
+            if (b->id == it->second) return b;
+    return all.front();
+}
+
+QString TimelineWidget::Impl::sendLevelText(double level)
+{
+    if (level <= 1e-5) return QString("-Inf.");
+    return QString::fromStdString(strfmt("%.1f dB", 20.0 * std::log10(level)));
+}
+
+static double sendLevelOf(const Track& t, uint64_t bus)
+{
+    for (const Send& s : t.sends)
+        if (s.bus == bus) return s.level;
+    return 0.0;
+}
+
+// The track's send to 'bus', made if it has none: as the Mixing Console makes one, before the track's volume for a
+// bus and after it for an assignable FX chain.
+static Send* sendOf(Project& p, uint64_t track, uint64_t bus)
+{
+    Track* t = p.findTrack(track);
+    if (!t) return nullptr;
+    for (Send& s : t->sends)
+        if (s.bus == bus) return &s;
+    Send s;
+    s.bus = bus;
+    const Bus* b = p.findBus(bus);
+    s.preFader = !(b && b->assignable);
+    t->sends.push_back(s);
+    return &t->sends.back();
+}
+
+// The row's button: every bus and assignable FX chain with the track's send level to it ("FX 1: -Inf."), the one the
+// row shows ticked; choosing another shows that one.
+void TimelineWidget::Impl::sendMenu(QMenu& m, uint64_t trackId)
+{
+    const Track* t = findTrackConst(trackId);
+    if (!t) return;
+    const Bus* shown = sendShown(*t);
+    QActionGroup* group = new QActionGroup(&m);
+    for (const Bus* b : sendTargets()) {
+        const uint64_t id = b->id;
+        QAction* a = add(m, QString("%1: %2").arg(QString::fromStdString(b->name), sendLevelText(sendLevelOf(*t, id))), [this, trackId, id] {
+            shownSend[trackId] = id;
+            ++headerGeneration;
+            q->update();
+        });
+        a->setCheckable(true);
+        a->setChecked(b == shown);
+        group->addAction(a);
+    }
+}
+
+void TimelineWidget::Impl::toggleSendPrePost(uint64_t trackId)
+{
+    const Track* t = findTrackConst(trackId);
+    const Bus* b = t ? sendShown(*t) : nullptr;
+    if (!b) return;
+    const uint64_t bus = b->id;
+    app.edit("Send Pre/Post", [&](Project& p) {
+        if (Send* s = sendOf(p, trackId, bus)) s->preFader = !s->preFader;
+    });
+}
+
+// The shown send of a track to 'level': as part of the drag going on ('drag'), or as an undo step of its own.
+void TimelineWidget::Impl::setSendLevel(uint64_t trackId, double level, bool inDrag)
+{
+    const Track* t = findTrackConst(trackId);
+    const Bus* b = t ? sendShown(*t) : nullptr;
+    if (!b) return;
+    const uint64_t bus = b->id;
+    auto fn = [&](Project& p) {
+        if (Send* s = sendOf(p, trackId, bus)) s->level = level;
+    };
+    if (inDrag) app.dragUpdate(fn);
+    else app.edit("Send Level", fn);
+    app.status(QString("%1: %2").arg(QString::fromStdString(b->name), sendLevelText(level)).toStdString());
+}
+
+void TimelineWidget::Impl::beginSendSlider(const Hit& h, const QPointF& pos)
+{
+    const Row* r = rowOf(h.track);
+    const Track* t = r ? trackOf(*r) : nullptr;
+    const Bus* b = t ? sendShown(*t) : nullptr;
+    if (!b) return;
+    const QRect s = headerRects(*r).send;
+    const double value = volumeToSlider(sendLevelOf(*t, b->id));
+    drag.kind = Drag::Send;
+    drag.startValue = value;
+    drag.absolute = std::fabs(pos.x() - (s.left() + value * s.width())) > 6.0;
+}
+
+// The send slider dragged (VEGAS's: as the Vol slider, Ctrl for fine steps, 0 dB a notch): one undo step for the drag.
+void TimelineWidget::Impl::updateSendSlider(const QPointF& pos, Qt::KeyboardModifiers mods)
+{
+    const Row* r = rowOf(drag.hit.track);
+    if (!r) return;
+    if (!drag.started) {
+        if (std::fabs(pos.x() - drag.pressPos.x()) < 2.0 && !drag.absolute) return;
+        app.beginDrag();
+        drag.started = true;
+    }
+    const QRect s = headerRects(*r).send;
+    if (s.width() <= 0) return;
+    const double fine = (mods & Qt::ControlModifier) ? 0.125 : 1.0;
+    const double v = clampd(drag.absolute ? (pos.x() - s.left()) / s.width() : drag.startValue + (pos.x() - drag.pressPos.x()) / s.width() * fine, 0.0, 1.0);
+    double level = sliderToVolume(v);
+    if (std::fabs(v - volumeToSlider(1.0)) < 0.006) level = 1.0;
+    if (v <= 0.0) level = 0.0;
+    setSendLevel(drag.hit.track, level, true);
+}
+
+// ---- the FX button's arrow (VEGAS 18 manual p242): FX Automation... (with no track effects, the Plug-In Chooser)
+
+void TimelineWidget::Impl::fxArrowMenu(QMenu& m, uint64_t trackId)
+{
+    add(m, "FX Automation...", [this, trackId] {
+        const Track* t = findTrackConst(trackId);
+        if (!t) return;
+        if (t->fx.empty()) {
+            if (!q->onOpenFx) return;
+            FxTarget ft;
+            ft.kind = FxTarget::Track;
+            ft.id = trackId;
+            q->onOpenFx(ft, 0);
+            return;
+        }
+        if (runFxAutomationChooser(q, trackId)) q->update();
+    });
+}
+
+// ---- the track output meters
+
+void TimelineWidget::Impl::saveMeterOptions()
+{
+    QSettings s;
+    s.setValue("timeline/trackMeters", metersOn);
+    s.setValue("timeline/trackMetersVertical", meterVertical);
+    s.setValue("timeline/trackMetersHold", meterHold);
+    s.setValue("timeline/trackMetersRange", meterLo);
+}
+
+void TimelineWidget::Impl::startMeters()
+{
+    if (metersOn && meterTimer && !meterTimer->isActive() && playback && playback->playing()) meterTimer->start();
+}
+
+// About 30 times a second while playing: each audio track's meter takes the peaks Playback has published for it (the
+// same the Mixing Console's meters show); only meters that look different are repainted. Stopped, the bars go out (the
+// held peaks stay) and the timer stops.
+void TimelineWidget::Impl::meterTick()
+{
+    if (!meterClock.isValid()) meterClock.start();
+    const double now = meterClock.elapsed() / 1000.0;
+    const bool playing = playback && playback->playing();
+    std::vector<AudioEngine::StripPeak> levels;
+    if (playing) playback->stripLevels(levels);
+    QRegion dirty;
+    for (const Row& r : rows) {
+        if (r.video) continue;
+        TrackMeter& m = trackMeters[r.id];
+        float in[2] = {0, 0};
+        for (const auto& x : levels)
+            if (x.id == r.id) {
+                in[0] = x.left;
+                in[1] = x.right;
+                break;
+            }
+        for (int c = 0; c < 2; ++c) {
+            m.level[c] = in[c];
+            if (in[c] >= m.hold[c]) {
+                m.hold[c] = in[c];
+                m.holdAt[c] = now;
+            } else if (!meterHold && now - m.holdAt[c] > 1.5) {
+                m.hold[c] = std::max(in[c], m.hold[c] * 0.8f);
+            }
+            if (in[c] > 1.0f) m.clip = true;
+        }
+        if (r.h <= 0 || !metersOn) continue;
+        const HeaderRects h = headerRects(r);
+        if (h.meter.isEmpty()) continue;
+        // what the meter shows, in pixels: the two bars, the held peak (its readout to a tenth of a dB) and clipping
+        const int len = h.meterVertical ? h.meter.height() : h.meter.width();
+        auto px = [&](float v) {
+            const double db = v > 1e-6f ? 20.0 * std::log10(v) : -200.0;
+            return (int)std::lround(clampd((db - meterLo) / -meterLo, 0.0, 1.0) * len);
+        };
+        const float hold = std::max(m.hold[0], m.hold[1]);
+        const QRect look(px(m.level[0]), px(m.level[1]), hold > 1e-6f ? (int)std::lround(200.0 * std::log10(hold)) : -9999, m.clip ? 1 : 0);
+        auto it = meterPainted.find(r.id);
+        if (it == meterPainted.end() || it->second != look) {
+            meterPainted[r.id] = look;
+            dirty |= h.meter.adjusted(-1, -12, 1, 1);
+        }
+    }
+    if (!dirty.isEmpty()) q->updateCursor(dirty.intersected(headerColumn()));
+    if (!playing) meterTimer->stop();
+}
+
+void TimelineWidget::Impl::paintMeters(QPainter& p, const QRect& clip)
+{
+    if (!metersOn) return;
+    const QRect c = headerColumn().intersected(clip);
+    if (c.isEmpty()) return;
+    p.save();
+    p.setClipRect(c);
+    for (const Row& r : rows) {
+        if (r.video || r.h <= 0) continue;
+        const int top = rowTop(r);
+        if (top > c.bottom() || top + r.h < c.top()) continue;
+        const HeaderRects h = headerRects(r);
+        if (h.meter.isEmpty() || !h.meter.adjusted(-1, -12, 1, 1).intersects(c)) continue;
+        const auto it = trackMeters.find(r.id);
+        p.save();
+        p.setClipRect(h.all.intersected(c));
+        drawMeter(p, h.meter, h.meterVertical, it == trackMeters.end() ? nullptr : &it->second);
+        p.restore();
+    }
+    p.restore();
+}
+
+// Right-click on a track's meter (VEGAS 18 manual p220: reset the clip indicators, choose a scale, vertical or not, or
+// turn the output meters off).
+void TimelineWidget::Impl::meterMenu(QMenu& m)
+{
+    add(m, "Reset Clip", [this] {
+        for (auto& tm : trackMeters) tm.second = TrackMeter();
+        meterPainted.clear();
+        q->update(headerColumn());
+    });
+    toggleItem(m, "Hold Peaks", meterHold, [this] {
+        meterHold = !meterHold;
+        saveMeterOptions();
+    });
+    m.addSeparator();
+    QActionGroup* ranges = new QActionGroup(&m);
+    for (int lo : {-12, -24, -42, -60, -78, -96}) {
+        QAction* a = add(m, QString("%1 dB").arg(lo), [this, lo] {
+            meterLo = lo;
+            meterPainted.clear();
+            saveMeterOptions();
+            q->update(headerColumn());
+        });
+        a->setCheckable(true);
+        a->setChecked(std::fabs(meterLo - lo) < 0.5);
+        ranges->addAction(a);
+    }
+    m.addSeparator();
+    toggleItem(m, "Vertical", meterVertical, [this] {
+        meterVertical = !meterVertical;
+        meterPainted.clear();
+        saveMeterOptions();
+        layout();
+        updateBars();
+        q->update();
+    });
+    toggleItem(m, "Show Meters", metersOn, [this] {
+        metersOn = !metersOn;
+        meterPainted.clear();
+        saveMeterOptions();
+        layout();
+        updateBars();
+        q->update();
+        startMeters();
+    });
 }
 
 }  // namespace app

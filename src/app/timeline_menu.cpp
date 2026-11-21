@@ -437,6 +437,20 @@ bool TimelineWidget::Impl::fillMenu(QMenu& menu, const Hit& hitIn, double time)
     } else if (h.part == Part::HeaderPan && h.track && panTypeMenu(menu, h.track)) {
     } else if (h.part == Part::HeaderBus && h.track) {
         busChoiceMenu(menu, h.track);
+    } else if (h.part == Part::HeaderMeter) {
+        meterMenu(menu);
+    } else if (h.part == Part::HeaderSendLabel && h.track) {
+        sendMenu(menu, h.track);
+    } else if (h.part == Part::HeaderFxArrow && h.track) {
+        fxArrowMenu(menu, h.track);
+    } else if ((h.part == Part::GroupRow || h.part == Part::GroupToggle || h.part == Part::GroupName || h.part == Part::GroupMute ||
+                h.part == Part::GroupSolo || h.part == Part::HeaderGroupLane) && h.track) {
+        // (VEGAS: the group's header or lane right-clicked selects the group's tracks; Ungroup Selected Tracks is in
+        // the menu)
+        if (const Track* gt = findTrackConst(h.track)) selectGroupTracks(gt->trackGroup);
+        Hit th = h;
+        th.part = Part::HeaderBody;
+        trackMenu(menu, th, false, time);
     } else if (h.part == Part::TrackKey && h.track) {
         trackKeyMenu(menu, h);
     } else if (h.part == Part::HeaderFx && h.track) {

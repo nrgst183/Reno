@@ -1033,11 +1033,53 @@ QToolButton* toolButton(QWidget* parent, const QString& text, const QString& tip
     return b;
 }
 
+// A drop-down drawn as VEGAS's Track Motion tool bar draws its own: no frame, the choice's name and a small arrow
+// ("Source Alpha", "Layout (Single Pane)": 'format' puts the name into a longer text).
+class FlatCombo : public QComboBox {
+public:
+    explicit FlatCombo(QWidget* parent, const QString& format = QString("%1")) : QComboBox(parent), format_(format)
+    {
+        setAttribute(Qt::WA_Hover, true);
+        // as wide as the choice shown (VEGAS's tool bar closes up behind it)
+        QObject::connect(this, &QComboBox::currentIndexChanged, this, [this](int) { updateGeometry(); });
+    }
+    QString shownText() const { return format_.arg(currentText()); }
+    QSize sizeHint() const override
+    {
+        const QFontMetrics fm(font());
+        return QSize(fm.horizontalAdvance(shownText()) + 20, std::max(20, fm.height() + 6));
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        if (underMouse()) p.fillRect(rect(), QColor(255, 255, 255, 30));
+        p.setPen(palette().color(isEnabled() ? QPalette::Active : QPalette::Disabled, QPalette::WindowText));
+        p.setFont(font());
+        const QRect r = rect().adjusted(3, 0, -12, 0);
+        p.drawText(r, Qt::AlignLeft | Qt::AlignVCenter, shownText());
+        const double x = width() - 9.5, y = height() / 2.0;
+        const QPointF tri[3] = {QPointF(x - 3.5, y - 1.5), QPointF(x + 3.5, y - 1.5), QPointF(x, y + 2.5)};
+        p.setPen(Qt::NoPen);
+        p.setBrush(p.pen().color());
+        p.setBrush(palette().color(QPalette::WindowText));
+        p.drawPolygon(tri, 3);
+    }
+
+private:
+    QString format_;
+};
+
 // ---------------------------------------------------------------------------------- the window's small pictures
 // The Pan/Crop window's tool and keyframe icons, drawn here in VEGAS's manner (VEGAS's own pictures are not used).
 enum BoxIcon {
     IconProps, IconArrow, IconZoom, IconSnap, IconLock, IconCenter, IconMove, IconAnchor, IconAnchorDel, IconTangent, IconRect, IconOval,
-    IconSync, IconFirst, IconPrev, IconNext, IconLast, IconAddKey, IconDelKey, IconCursorMark, IconSave, IconDelete
+    IconSync, IconFirst, IconPrev, IconNext, IconLast, IconAddKey, IconDelKey, IconCursorMark, IconSave, IconDelete,
+    // Track Motion's tool bar (Snap, Lock and Center are the ones above)
+    IconRotate, IconObject, IconNoMoveX, IconNoMoveY, IconNoMoveZ, IconNoScaleX, IconNoScaleY, IconNoScaleZ
 };
 QIcon boxIcon(int which)
 {
@@ -1213,6 +1255,74 @@ QIcon boxIcon(int which)
         p.setPen(QPen(QColor(200, 200, 204), 1.8));
         p.drawLine(QPointF(3.5, 3.5), QPointF(12.5, 12.5));
         p.drawLine(QPointF(12.5, 3.5), QPointF(3.5, 12.5));
+        break;
+    case IconRotate:
+        // Enable Rotation: a box with a turning arrow round it
+        p.drawRect(QRectF(4.5, 4.5, 7, 7));
+        p.drawArc(QRectF(1.5, 1.5, 13, 13), 20 * 16, 250 * 16);
+        p.setBrush(ink);
+        {
+            const QPointF a[3] = {QPointF(14.8, 4.5), QPointF(11.5, 4.2), QPointF(14, 8)};
+            p.drawPolygon(a, 3);
+        }
+        break;
+    case IconObject:
+        // Edit in Object Space: a turned box with its own axes
+        p.save();
+        p.translate(8, 8);
+        p.rotate(-25);
+        p.drawRect(QRectF(-5.5, -4, 11, 8));
+        p.setPen(QPen(blue, 1.3));
+        p.drawLine(QPointF(0, 0), QPointF(6.5, 0));
+        p.drawLine(QPointF(0, 0), QPointF(0, -6));
+        p.restore();
+        break;
+    case IconNoMoveX:
+    case IconNoMoveY:
+    case IconNoMoveZ: {
+        // Prevent Movement: the axis's arrows with a padlock
+        const bool across = which == IconNoMoveX, along = which == IconNoMoveY;
+        if (across) {
+            p.drawLine(QPointF(1.5, 6), QPointF(10.5, 6));
+            p.drawLine(QPointF(1.5, 6), QPointF(3.5, 4));
+            p.drawLine(QPointF(1.5, 6), QPointF(3.5, 8));
+            p.drawLine(QPointF(10.5, 6), QPointF(8.5, 4));
+            p.drawLine(QPointF(10.5, 6), QPointF(8.5, 8));
+        } else if (along) {
+            p.drawLine(QPointF(6, 1.5), QPointF(6, 12.5));
+            p.drawLine(QPointF(6, 1.5), QPointF(4, 3.5));
+            p.drawLine(QPointF(6, 1.5), QPointF(8, 3.5));
+            p.drawLine(QPointF(6, 12.5), QPointF(4, 10.5));
+            p.drawLine(QPointF(6, 12.5), QPointF(8, 10.5));
+        } else {
+            p.drawLine(QPointF(2, 11), QPointF(9, 3));
+            p.drawLine(QPointF(9, 3), QPointF(6, 3.5));
+            p.drawLine(QPointF(9, 3), QPointF(8.5, 6));
+            p.drawLine(QPointF(2, 11), QPointF(5, 10.5));
+            p.drawLine(QPointF(2, 11), QPointF(2.5, 8));
+        }
+        p.setPen(QPen(ink, 1.0));
+        p.drawArc(QRectF(10, 7.5, 4, 4), 0, 180 * 16);
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawRect(QRectF(9.5, 10, 5, 4.5));
+        break;
+    }
+    case IconNoScaleX:
+    case IconNoScaleY:
+    case IconNoScaleZ:
+        // Prevent Scaling: a box with the size that stays marked in blue
+        p.drawRect(QRectF(2.5, 3.5, 11, 9));
+        p.setPen(QPen(blue, 2.0));
+        if (which == IconNoScaleX) {
+            p.drawLine(QPointF(2.5, 3), QPointF(2.5, 13));
+            p.drawLine(QPointF(13.5, 3), QPointF(13.5, 13));
+        } else if (which == IconNoScaleY) {
+            p.drawLine(QPointF(2, 3.5), QPointF(14, 3.5));
+            p.drawLine(QPointF(2, 12.5), QPointF(14, 12.5));
+        } else {
+            p.drawLine(QPointF(3, 13), QPointF(13, 3));
+        }
         break;
     }
     return QIcon(pm);
@@ -1907,6 +2017,14 @@ protected:
     // keyframe rows under the workspace with icon buttons below them. (Track Motion keeps its tool bar across the top.)
     virtual bool vegasFrame() const { return false; }
     virtual QString frameChip() const { return QString(); }
+    // With vegasFrame, laid out as VEGAS's Track Motion instead: no header, the presets on the top row and under them
+    // a row of the window's own drop-downs and the tool icons (no column of tools at the left).
+    virtual bool toolRow() const { return false; }
+    // X and Y written as VEGAS's Track Motion writes them: from the frame's middle, Y upward.
+    virtual bool xyFromCenter() const { return false; }
+    // The subclass's rows in the list, put in where VEGAS has them: 0 before Position, 1 after Position, 2 after the
+    // Rotation rows.
+    virtual void panelRows(int) {}
 
     AppState& app_ = AppState::get();
     Playback* playback_;
@@ -1915,6 +2033,7 @@ protected:
     KeyStrip* strip_ = nullptr;
     PropPanel* panel_ = nullptr;
     QHBoxLayout* toolbar_ = nullptr;
+    QHBoxLayout* toolRow_ = nullptr;    // toolRow(): the row under the presets
     QToolButton *lockBtn_ = nullptr, *centreBtn_ = nullptr, *rotateBtn_ = nullptr, *syncBtn_ = nullptr;
     QToolButton *snapBtn_ = nullptr, *objectBtn_ = nullptr, *moveXBtn_ = nullptr, *moveYBtn_ = nullptr, *scaleXBtn_ = nullptr, *scaleYBtn_ = nullptr;
     Spin *wBox_ = nullptr, *hBox_ = nullptr, *xBox_ = nullptr, *yBox_ = nullptr, *rotBox_ = nullptr, *zoomBox_ = nullptr, *smoothBox_ = nullptr;
@@ -1963,15 +2082,25 @@ protected:
         if (vegasFrame()) {
             v->setContentsMargins(0, 0, 0, 4);
             v->setSpacing(0);
-            buildFrameHeader(v);
+            if (toolRow()) setIconStyle();
+            else buildFrameHeader(v);
         }
         toolbar_ = new QHBoxLayout();
         toolbar_->setSpacing(6);
         if (vegasFrame()) toolbar_->setContentsMargins(8, 4, 6, 4);
         v->addLayout(toolbar_);
+        if (vegasFrame() && toolRow()) {
+            toolRow_ = new QHBoxLayout();
+            toolRow_->setSpacing(2);
+            toolRow_->setContentsMargins(4, 0, 6, 4);
+            v->addLayout(toolRow_);
+        }
         QHBoxLayout* middle = new QHBoxLayout();
         middle->setSpacing(8);
-        if (vegasFrame()) {
+        if (vegasFrame() && toolRow()) {
+            middle->setContentsMargins(6, 0, 6, 0);
+            middle->setSpacing(4);
+        } else if (vegasFrame()) {
             middle->setContentsMargins(6, 0, 6, 0);
             middle->setSpacing(2);
             toolColumn_ = new QVBoxLayout();
@@ -2011,7 +2140,8 @@ protected:
             b->setFocusPolicy(Qt::NoFocus);
             if (!vegasFrame()) toolbar_->addWidget(b);
         }
-        if (vegasFrame()) buildToolColumn();
+        if (toolRow_) buildToolIcons();
+        else if (vegasFrame()) buildToolColumn();
         auto flag = [this](QToolButton* b, bool BoxView::*field) {
             QObject::connect(b, &QToolButton::toggled, this, [this, field](bool on) {
                 view_->*field = on;
@@ -2029,15 +2159,26 @@ protected:
         flag(scaleYBtn_, &BoxView::noScaleY);
         toolbar_->addStretch(1);
 
+        panelRows(0);
         panel_->group("Position");
-        wBox_ = new Spin(panel_, 1, 1.0e6, 1, 1, "boxWidth");
-        hBox_ = new Spin(panel_, 1, 1.0e6, 1, 1, "boxHeight");
-        xBox_ = new Spin(panel_, -1.0e6, 1.0e6, 1, 1, "boxX");
-        yBox_ = new Spin(panel_, -1.0e6, 1.0e6, 1, 1, "boxY");
-        panel_->add("Width", wBox_);
-        panel_->add("Height", hBox_);
-        panel_->add("X Center", xBox_);
-        panel_->add("Y Center", yBox_);
+        const int dec = xyFromCenter() ? 2 : 1;
+        wBox_ = new Spin(panel_, 1, 1.0e6, dec, 1, "boxWidth");
+        hBox_ = new Spin(panel_, 1, 1.0e6, dec, 1, "boxHeight");
+        xBox_ = new Spin(panel_, -1.0e6, 1.0e6, dec, 1, "boxX");
+        yBox_ = new Spin(panel_, -1.0e6, 1.0e6, dec, 1, "boxY");
+        if (xyFromCenter()) {
+            // VEGAS's Track Motion: X, Y (from the frame's middle), then Width, Height
+            panel_->add("X", xBox_);
+            panel_->add("Y", yBox_);
+            panel_->add("Width", wBox_);
+            panel_->add("Height", hBox_);
+        } else {
+            panel_->add("Width", wBox_);
+            panel_->add("Height", hBox_);
+            panel_->add("X Center", xBox_);
+            panel_->add("Y Center", yBox_);
+        }
+        panelRows(1);
         panel_->group("Rotation");
         rotBox_ = new Spin(panel_, -36000, 36000, 1, 1, "boxAngle");
         if (!vegasFrame()) rotBox_->setSuffix(QString::fromUtf8("\xc2\xb0"));
@@ -2053,6 +2194,7 @@ protected:
             QObject::connect(pivotYBox_, &QDoubleSpinBox::valueChanged, this, [this](double v) { numberEdited(6, v); });
             view_->pivots = true;
         }
+        panelRows(2);
         panel_->group("Keyframe interpolation");
         smoothBox_ = new Spin(panel_, 0, 100, 1, 1, "keySmoothness");
         smoothBox_->setToolTip("Smoothness: 0 moves the center in a straight line to the next keyframe, higher values curve through the surrounding keyframes");
@@ -2060,8 +2202,8 @@ protected:
         curveBox_ = combo(panel_, "keyCurve", curveItems());
         curveBox_->setToolTip("How values change from the keyframe at the cursor to the next one");
         QLabel* typeName = panel_->add("Type", curveBox_);
-        if (vegasFrame()) {
-            // (VEGAS sets the type from the keyframe's right-click menu: the row is not in its list)
+        if (vegasFrame() && !toolRow()) {
+            // (VEGAS's Pan/Crop sets the type from the keyframe's right-click menu: the row is not in its list)
             typeName->hide();
             curveBox_->hide();
         }
@@ -2154,11 +2296,32 @@ protected:
             cl->addWidget(chain, 1);
             v->addLayout(cl);
         }
+        setIconStyle();
+    }
+    void setIconStyle()
+    {
         setStyleSheet(
             "QToolButton[boxIcon=\"true\"] { background: transparent; border: 1px solid transparent; border-radius: 2px; padding: 0px; }"
             "QToolButton[boxIcon=\"true\"]:hover { background: rgba(255, 255, 255, 30); }"
             "QToolButton[boxIcon=\"true\"]:checked { background: #12b0ff; border-color: #12b0ff; }"
             "QToolButton[boxIcon=\"true\"]::menu-indicator { image: none; width: 0px; }");
+    }
+
+    // VEGAS's Track Motion tool bar (under the presets; the subclass puts its drop-downs first): Enable Rotation, Enable
+    // Snapping, Edit in Object Space; Prevent Movement X / Y; Lock Aspect Ratio, Scale About Center, Prevent Scaling
+    // X / Y, as icons.
+    void buildToolIcons()
+    {
+        const struct { QToolButton* b; int pic; } icons[] = {{rotateBtn_, IconRotate}, {snapBtn_, IconSnap}, {objectBtn_, IconObject},
+                                                             {moveXBtn_, IconNoMoveX}, {moveYBtn_, IconNoMoveY}, {lockBtn_, IconLock},
+                                                             {centreBtn_, IconCenter}, {scaleXBtn_, IconNoScaleX}, {scaleYBtn_, IconNoScaleY}};
+        toolRow_->addSpacing(6);
+        for (const auto& it : icons) {
+            iconize(it.b, it.pic);
+            toolRow_->addWidget(it.b);
+            if (it.b == objectBtn_ || it.b == moveYBtn_) toolRow_->addSpacing(8);
+        }
+        toolRow_->addStretch(1);
     }
 
     // VEGAS's tool icons down the left of the list: Show Properties, (Pan/Crop's mask tools go in after it), Zoom Edit
@@ -2237,8 +2400,21 @@ protected:
                 check->setParent(this);
                 h->addWidget(check);
             }
-            QLabel* l = new QLabel(name, this);
-            h->addWidget(l, 1);
+            label_ = new QLabel(name, this);
+            h->addWidget(label_, 1);
+        }
+        // The name as a button (Track Motion's rows: a click picks the row, as its buttons did).
+        void setNameButton(QToolButton* b)
+        {
+            label_->hide();
+            b->setParent(this);
+            b->setText(label_->text());
+            b->setAutoRaise(true);
+            b->setStyleSheet("QToolButton { border: none; background: transparent; padding: 0px; }");
+            b->setFixedHeight(KeyStrip::kRowH - 2);
+            QHBoxLayout* h = static_cast<QHBoxLayout*>(layout());
+            h->addWidget(b);
+            h->addStretch(1);
         }
         bool active = false;
         std::function<void()> onPick;
@@ -2254,6 +2430,9 @@ protected:
         {
             if (e->button() == Qt::LeftButton && onPick) onPick();
         }
+
+    private:
+        QLabel* label_ = nullptr;
     };
     std::vector<RowName*> rowNameWidgets_;
     RowName* addKeyRowName(const QString& name, QCheckBox* check)
@@ -2816,12 +2995,13 @@ protected:
     void numberEdited(int which, double v)
     {
         const QSizeF sp = space();
-        changeBox([which, v, sp](Box& b) {
+        const bool mid = xyFromCenter();
+        changeBox([which, v, sp, mid](Box& b) {
             switch (which) {
             case 0: b.w = (b.w < 0 ? -1 : 1) * v / sp.width(); break;
             case 1: b.h = (b.h < 0 ? -1 : 1) * v / sp.height(); break;
-            case 2: b.cx = v / sp.width(); break;
-            case 3: b.cy = v / sp.height(); break;
+            case 2: b.cx = mid ? 0.5 + v / sp.width() : v / sp.width(); break;
+            case 3: b.cy = mid ? 0.5 - v / sp.height() : v / sp.height(); break;
             case 5: b.px = v / sp.width() - b.cx; break;
             case 6: b.py = v / sp.height() - b.cy; break;
             default: b = turnedAbout(b, v, sp.width(), sp.height()); break;
@@ -3157,8 +3337,8 @@ protected:
         const QSizeF sp = space();
         wBox_->showValue(std::fabs(b.w) * sp.width());
         hBox_->showValue(std::fabs(b.h) * sp.height());
-        xBox_->showValue(b.cx * sp.width());
-        yBox_->showValue(b.cy * sp.height());
+        xBox_->showValue(xyFromCenter() ? (b.cx - 0.5) * sp.width() : b.cx * sp.width());
+        yBox_->showValue(xyFromCenter() ? (0.5 - b.cy) * sp.height() : b.cy * sp.height());
         rotBox_->showValue(b.rot);
         if (pivotXBox_) {
             pivotXBox_->showValue((b.cx + b.px) * sp.width());
@@ -4267,14 +4447,15 @@ public:
         setObjectName(parent_ ? "parentMotionWindow" : "trackMotionWindow");
         buildTop();
         view_->cropStyle = false;
-        mode_ = new QComboBox(this);
+        // VEGAS: the compositing mode as a drop-down with no label at the start of the tool bar ("Source Alpha")
+        FlatCombo* modeBox = new FlatCombo(this);
+        mode_ = modeBox;
         mode_->setObjectName("compositeMode");
         for (const CompositeMode& m : compositeModes()) mode_->addItem(m.label, QString(m.id));
-        mode_->setToolTip(parent_ ? "How this track and its compositing children are laid over the tracks below"
-                                  : "How this track is laid over the tracks below it");
-        toolbar_->insertWidget(0, new QLabel(parent_ ? "Parent Composite Mode:" : "Compositing Mode:", this));
-        toolbar_->insertWidget(1, mode_);
-        toolbar_->insertSpacing(2, 12);
+        mode_->setToolTip(parent_ ? "Parent Composite Mode: how this track and its compositing children are laid over the tracks below"
+                                  : "Compositing Mode: how this track is laid over the tracks below it");
+        mode_->setFocusPolicy(Qt::NoFocus);
+        toolRow_->insertWidget(0, mode_);
         QObject::connect(mode_, &QComboBox::currentIndexChanged, this, [this](int) {
             const std::string want = s8(mode_->currentData().toString());
             const Track* t = track();
@@ -4305,19 +4486,21 @@ public:
             });
         });
 
-        layoutLabel_ = new QLabel("Layout:", this);
-        layoutBox_ = combo(this, "layout3d", {{"1  Single Pane", "1"}, {"2  Split - Vertical", "2"}, {"3  Split - Horizontal", "3"},
-                                              {"4  Four Panes", "4"}, {"5  Large Pane, Two Beside", "5"}, {"6  Large Pane, Two Below", "6"}});
+        // 3D: VEGAS's "Layout (Single Pane)" drop-down after it (keys 1 to 6)
+        layoutBox_ = new FlatCombo(this, "Layout (%1)");
+        layoutBox_->setObjectName("layout3d");
+        const char* layouts[6] = {"Single Pane", "Split - Vertical", "Split - Horizontal", "Four Panes", "Large Pane, Two Beside", "Large Pane, Two Below"};
+        for (int i = 0; i < 6; ++i) layoutBox_->addItem(layouts[i], QString::number(i + 1));
         layoutBox_->setToolTip("Number and arrangement of 3D workspace panes (keys 1 to 6)");
         layoutBox_->setFocusPolicy(Qt::NoFocus);
-        toolbar_->insertWidget(3, layoutLabel_);
-        toolbar_->insertWidget(4, layoutBox_);
-        toolbar_->insertSpacing(5, 12);
+        toolRow_->insertWidget(1, layoutBox_);
         moveZBtn_ = toolButton(this, "Lock Z", "Prevent Movement (Z): the box does not move nearer or further", "preventMoveZ", true);
         scaleZBtn_ = toolButton(this, "Fix Depth", "Prevent Scaling (Shift+Z): the box's depth stays", "preventScaleZ", true);
+        iconize(moveZBtn_, IconNoMoveZ);
+        iconize(scaleZBtn_, IconNoScaleZ);
         for (QToolButton* b : {moveZBtn_, scaleZBtn_}) b->setFocusPolicy(Qt::NoFocus);
-        toolbar_->insertWidget(toolbar_->indexOf(moveYBtn_) + 1, moveZBtn_);
-        toolbar_->insertWidget(toolbar_->indexOf(scaleYBtn_) + 1, scaleZBtn_);
+        toolRow_->insertWidget(toolRow_->indexOf(moveYBtn_) + 1, moveZBtn_);
+        toolRow_->insertWidget(toolRow_->indexOf(scaleYBtn_) + 1, scaleZBtn_);
         view3d_ = new View3d(this);
         view3d_->setUp = [this](Pane3d* p) {
             p->current = [this] { return boxNow(); };
@@ -4366,58 +4549,108 @@ public:
             const int which = f.second;
             QObject::connect(f.first, &QDoubleSpinBox::valueChanged, this, [this, which](double v) { number3dEdited(which, v); });
         }
-
-        rows2d_.push_back(panel_->group("2D Shadow / Glow"));
-        effectOn_ = new QCheckBox("On", panel_);
-        effectOn_->setObjectName("effectOn");
-        rows2d_.push_back(panel_->add("Shadow / Glow", effectOn_));
-        rows2d_.push_back(effectOn_);
-        blurBox_ = new Spin(panel_, 0, 100, 0, 5, "effectBlur");
-        blurBox_->setSuffix(" %");
-        rows2d_.push_back(panel_->add("Blur", blurBox_));
-        rows2d_.push_back(blurBox_);
-        intensityBox_ = new Spin(panel_, 0, 100, 0, 5, "effectIntensity");
-        intensityBox_->setSuffix(" %");
-        rows2d_.push_back(panel_->add("Intensity", intensityBox_));
-        rows2d_.push_back(intensityBox_);
-        colorBtn_ = new QToolButton(panel_);
-        colorBtn_->setObjectName("effectColor");
-        colorBtn_->setToolTip("The color of the shadow or the glow");
-        colorBtn_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        rows2d_.push_back(panel_->add("Color", colorBtn_));
-        rows2d_.push_back(colorBtn_);
-        QObject::connect(effectOn_, &QCheckBox::toggled, this, [this](bool on) { setEffectOn(on); });
-        QObject::connect(blurBox_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
-            if (row_ != PositionRow) changeBox([v](Box& b) { b.blur = v / 100.0; });
-        });
-        QObject::connect(intensityBox_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
-            if (row_ != PositionRow) changeBox([v](Box& b) { b.intensity = v / 100.0; });
-        });
-        QObject::connect(colorBtn_, &QToolButton::clicked, this, [this] {
-            const Box b = boxNow();
-            const QColor c = QColorDialog::getColor(QColor::fromRgba(b.color), this, "2D Shadow / Glow Color", QColorDialog::ShowAlphaChannel);
-            if (c.isValid()) setEffectColor(c.rgba());
-        });
         buildRest();
 
-        QHBoxLayout* keysRow = nullptr;
-        if (QVBoxLayout* v = static_cast<QVBoxLayout*>(layout()))
-            keysRow = qobject_cast<QHBoxLayout*>(v->itemAt(v->count() - 1)->layout());
+        // VEGAS's keyframe rows: Position, 2D Shadow and 2D Glow, the last two with their on/off check boxes. The names
+        // are buttons (a click picks the row).
         const char* names[3] = {"Position", "2D Shadow", "2D Glow"};
         const char* ids[3] = {"rowPosition", "rowShadow", "rowGlow"};
+        const char* checkIds[3] = {"", "shadowOn", "glowOn"};
         for (int r = 0; r < 3; ++r) {
             rows_[r] = toolButton(this, names[r], QString("Show and edit the %1 keyframes").arg(names[r]), ids[r], true);
             rows_[r]->setFocusPolicy(Qt::NoFocus);
-            if (keysRow) keysRow->insertWidget(r, rows_[r]);
             QObject::connect(rows_[r], &QToolButton::clicked, this, [this, r] { setRow((Row)r); });
+            RowName* name = nullptr;
+            if (r == 0) {
+                name = rowNameWidgets_.empty() ? nullptr : rowNameWidgets_[0];
+            } else {
+                rowOn_[r] = new QCheckBox(this);
+                rowOn_[r]->setObjectName(checkIds[r]);
+                rowOn_[r]->setFocusPolicy(Qt::NoFocus);
+                rowOn_[r]->setToolTip(QString("%1 on or off").arg(names[r]));
+                rowOn_[r]->setStyleSheet("QCheckBox::indicator { width: 10px; height: 10px; border: 1px solid #b4b4ba; background: #1c1c1f; }"
+                                         "QCheckBox::indicator:checked { background: #12b0ff; border-color: #e8e8ec; }");
+                name = addKeyRowName(names[r], rowOn_[r]);
+                QObject::connect(rowOn_[r], &QCheckBox::clicked, this, [this, r](bool on) {
+                    setRow((Row)r);
+                    setEffectOn(on);
+                });
+            }
+            if (name) {
+                name->setNameButton(rows_[r]);
+                name->onPick = [this, r] { setRow((Row)r); };
+                rowNames3_[r] = name;
+            }
         }
-        if (keysRow) keysRow->insertSpacing(3, 12);
+        strip_->onRowClick = [this](int r) { setRow((Row)std::max(0, std::min(2, r))); };
+        strip_->otherRowKeys = [this](int r) {
+            std::vector<double> t;
+            if (const Track* tr = track()) {
+                if (r == 0) for (const MotionKey& k : motionOf(*tr)) t.push_back(k.time);
+                else for (const GlowKey& k : r == 1 ? tr->shadow2d : tr->glow2d) t.push_back(k.time);
+            }
+            return t;
+        };
         rows_[0]->setChecked(true);
+        showActiveKeyRow(0);
+        panel_->showGroup(fxGroup_, false);
         buildPresets();
         shownOnce_ = false;
         refresh();
     }
 
+    // The list's rows of Track Motion: VEGAS's 2D Shadow / 2D Glow group first (shown for those rows), the 2D
+    // Orientation after Position and the Rotation offsets after its Angle.
+    void panelRows(int where) override
+    {
+        if (where == 0) {
+            fxGroup_ = panel_->group("2D Shadow");
+            // the row's on/off: the check box beside its name under the workspace (this one, not shown, follows the row)
+            effectOn_ = new QCheckBox("On", this);
+            effectOn_->setObjectName("effectOn");
+            effectOn_->hide();
+            blurBox_ = new Spin(panel_, 0, 100, 2, 5, "effectBlur");
+            panel_->add("Blur(%)", blurBox_);
+            intensityBox_ = new Spin(panel_, 0, 100, 2, 5, "effectIntensity");
+            panel_->add("Intensity(%)", intensityBox_);
+            colorBtn_ = new QToolButton(panel_);
+            colorBtn_->setObjectName("effectColor");
+            colorBtn_->setToolTip("The color of the shadow or the glow");
+            colorBtn_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            colorBtn_->setFixedHeight(12);
+            panel_->add("Color", colorBtn_);
+            QObject::connect(effectOn_, &QCheckBox::toggled, this, [this](bool on) { setEffectOn(on); });
+            QObject::connect(blurBox_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+                if (row_ != PositionRow) changeBox([v](Box& b) { b.blur = v / 100.0; });
+            });
+            QObject::connect(intensityBox_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+                if (row_ != PositionRow) changeBox([v](Box& b) { b.intensity = v / 100.0; });
+            });
+            QObject::connect(colorBtn_, &QToolButton::clicked, this, [this] {
+                const Box b = boxNow();
+                const QColor c = QColorDialog::getColor(QColor::fromRgba(b.color), this, row_ == GlowRow ? "2D Glow Color" : "2D Shadow Color",
+                                                        QColorDialog::ShowAlphaChannel);
+                if (c.isValid()) setEffectColor(c.rgba());
+            });
+        } else if (where == 1) {
+            // (Reno's 2D Track Motion turns the picture about its center only: Rotation's Angle; these stay at 0)
+            orientGroup_ = panel_->group("Orientation");
+            Spin* ori = new Spin(panel_, -36000, 36000, 1, 1, "boxOrientation");
+            ori->setEnabled(false);
+            ori->setToolTip("Reno turns a 2D track's picture with Rotation's Angle");
+            panel_->add("Angle", ori);
+        } else if (where == 2) {
+            const char* names[2] = {"X Offset", "Y Offset"};
+            const char* ids[2] = {"boxRotOffsetX", "boxRotOffsetY"};
+            for (int i = 0; i < 2; ++i) {
+                Spin* off = new Spin(panel_, -1.0e6, 1.0e6, 2, 1, ids[i]);
+                off->setEnabled(false);
+                off->setToolTip("Reno turns a 2D track's picture about its center");
+                rotOffsetRows_.push_back(panel_->add(names[i], off));
+                rotOffsetRows_.push_back(off);
+            }
+        }
+    }
 
     // The right-click menu: Restore, Center, the flips, and VEGAS's shapes: the output's (the frame's), the source
     // media's (the event under the cursor on the track, else its first one) and a square, each keeping the height.
@@ -4455,6 +4688,12 @@ public:
         if (parent_ || is3d()) r = PositionRow;
         row_ = r;
         for (int k = 0; k < 3; ++k) rows_[k]->setChecked(k == (int)r);
+        showActiveKeyRow((int)r);
+        // VEGAS shows the 2D Shadow (or 2D Glow) group at the top of the list while that row is picked
+        if (fxGroup_) {
+            fxGroup_->setText(r == GlowRow ? "2D Glow" : "2D Shadow");
+            panel_->showGroup(fxGroup_, r != PositionRow);
+        }
         view_->rotation = r == PositionRow && rotateBtn_->isChecked();
         setProperty("row", (int)r);
         refresh();
@@ -4599,6 +4838,9 @@ private:
     }
     std::string clipKind() const override { return row_ == ShadowRow ? "shadow" : row_ == GlowRow ? "glow" : is3d() ? "motion3d" : "motion"; }
     const char* presetObjectName() const override { return "motionPreset"; }
+    bool vegasFrame() const override { return true; }
+    bool toolRow() const override { return true; }
+    bool xyFromCenter() const override { return true; }
     std::string presetUndoPrefix() const override { return undoName() + " Preset"; }
     std::vector<std::pair<QString, std::function<void(Box&)>>> builtinPresets() const override
     {
@@ -4749,15 +4991,20 @@ private:
             if (d3 && row_ != PositionRow) setRow(PositionRow);
             view_->setVisible(!d3);
             view3d_->setVisible(d3);
-            layoutLabel_->setVisible(d3);
             layoutBox_->setVisible(d3);
             moveZBtn_->setVisible(d3);
             scaleZBtn_->setVisible(d3);
             objectBtn_->setEnabled(!d3);
             centreBtn_->setEnabled(!d3);
             for (QWidget* w : rows3d_) if (w) w->setVisible(d3);
-            for (QWidget* w : rows2d_) if (w) w->setVisible(!d3 && !parent_);
-            for (int k = 1; k < 3; ++k) if (rows_[k]) rows_[k]->setVisible(!d3 && !parent_);
+            if (orientGroup_) panel_->showGroup(orientGroup_, !d3);
+            for (QWidget* w : rotOffsetRows_) if (w) w->setVisible(!d3);
+            // 2D Shadow and 2D Glow are 2D Track Motion's only (not 3D's, not Parent Motion's)
+            const bool fx = !d3 && !parent_;
+            for (int k = 1; k < 3; ++k) if (rowNames3_[k]) rowNames3_[k]->setVisible(fx);
+            strip_->setRows(fx ? 3 : 1);
+            strip_->setFixedHeight(fx ? KeyStrip::kRulerH + 3 * KeyStrip::kRowH + 2 : KeyStrip::kRulerH + KeyStrip::kRowH + 2);
+            if (fxGroup_ && !fx) panel_->showGroup(fxGroup_, false);
             setProperty("mode3d", d3);
         }
         if (d3) {
@@ -4785,20 +5032,21 @@ private:
         blurBox_->setEnabled(on);
         intensityBox_->setEnabled(on);
         colorBtn_->setEnabled(on);
-        for (int k = 1; k < 3 && rows_[k]; ++k) {
-            const bool has = k == 1 ? !t->shadow2d.empty() : !t->glow2d.empty();
-            rows_[k]->setText(QString(k == 1 ? "2D Shadow" : "2D Glow") + (has ? QString::fromUtf8(" \xe2\x9c\x93") : QString()));
+        for (int k = 1; k < 3; ++k) {
+            if (!rowOn_[k]) continue;
+            const QSignalBlocker b(rowOn_[k]);
+            rowOn_[k]->setChecked(k == 1 ? !t->shadow2d.empty() : !t->glow2d.empty());
         }
         if (on) {
             const Box b = boxNow();
             blurBox_->showValue(b.blur * 100.0);
             intensityBox_->showValue(b.intensity * 100.0);
+            // VEGAS's swatch: the color as a bar
             const QColor c = QColor::fromRgba(b.color);
-            colorBtn_->setText(c.name().toUpper());
-            colorBtn_->setStyleSheet(QString("QToolButton { background: %1; color: %2; }").arg(c.name(), c.lightness() > 128 ? "black" : "white"));
+            colorBtn_->setToolTip(QString("The color of the %1: %2").arg(row_ == GlowRow ? "glow" : "shadow", c.name().toUpper()));
+            colorBtn_->setStyleSheet(QString("QToolButton { background: %1; border: 1px solid #1c1c1f; }").arg(c.name()));
         } else {
-            colorBtn_->setText(QString());
-            colorBtn_->setStyleSheet(QString());
+            colorBtn_->setStyleSheet(QString("QToolButton { background: transparent; border: 1px solid #3a3a40; }"));
         }
     }
 
@@ -4824,16 +5072,20 @@ private:
     QComboBox* mode_ = nullptr;
     Row row_ = PositionRow;
     QToolButton* rows_[3] = {nullptr, nullptr, nullptr};
+    QCheckBox* rowOn_[3] = {nullptr, nullptr, nullptr};     // 2D Shadow's and 2D Glow's check boxes
+    RowName* rowNames3_[3] = {nullptr, nullptr, nullptr};
+    QLabel* fxGroup_ = nullptr;
+    QLabel* orientGroup_ = nullptr;
+    std::vector<QWidget*> rotOffsetRows_;
     QCheckBox* effectOn_ = nullptr;
     Spin *blurBox_ = nullptr, *intensityBox_ = nullptr;
     QToolButton* colorBtn_ = nullptr;
     View3d* view3d_ = nullptr;
-    QLabel* layoutLabel_ = nullptr;
     QComboBox* layoutBox_ = nullptr;
     QToolButton *moveZBtn_ = nullptr, *scaleZBtn_ = nullptr;
     Spin *zBox_ = nullptr, *depthBox_ = nullptr, *rxBox_ = nullptr, *ryBox_ = nullptr, *oxBox_ = nullptr, *oyBox_ = nullptr, *ozBox_ = nullptr;
     Spin *fxBox_ = nullptr, *fyBox_ = nullptr, *fzBox_ = nullptr;
-    std::vector<QWidget*> rows3d_, rows2d_;
+    std::vector<QWidget*> rows3d_;
     bool shown3d_ = false, shownOnce_ = false;
 };
 

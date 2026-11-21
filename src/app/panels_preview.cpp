@@ -60,6 +60,7 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPointer>
 #include <QProgressBar>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -648,6 +649,84 @@ public:
 
     Playback* playback = nullptr;
     bool showOverlays = true;
+
+    // Multicamera editing mode (Playback::setMulticam): the takes' grid the frame shows, with each take's name centered
+    // at its bottom, its number in a white box at the bottom right, and the active take's border in the indicator
+    // color (Preferences > Video, "Multicamera editing"). A click on a take chooses it (Ctrl: a cross-fade to it).
+    bool mcNames = true, mcNumbers = true;
+    QColor mcColor = QColor(64, 224, 224);
+    std::function<void(int number, bool crossfade)> onMulticamChoose;
+    void loadMulticamPrefs()
+    {
+        QSettings s;
+        mcNames = s.value("prefs/multicamTakeNames", true).toBool();
+        mcNumbers = s.value("prefs/multicamTakeNumbers", true).toBool();
+        const QColor c(s.value("prefs/multicamIndicator", QColor(64, 224, 224).name()).toString());
+        mcColor = c.isValid() ? c : QColor(64, 224, 224);
+    }
+    Playback::MulticamView multicamView() const
+    {
+        if (!playback || !playback->multicam() || image_.isNull()) return Playback::MulticamView();
+        const AppState& app = AppState::get();
+        return Playback::multicamAt(app.project(), playback->playing() ? playback->position() : app.cursor());
+    }
+    // The tile under 'pos' (widget coordinates), or -1.
+    int multicamTileAt(const Playback::MulticamView& v, const QPointF& pos) const
+    {
+        const QRect t = target();
+        if (!v.valid() || t.isEmpty() || !QRectF(t).contains(pos)) return -1;
+        const int n = v.columns;
+        const int col = std::min(n - 1, (int)((pos.x() - t.left()) * n / t.width()));
+        const int row = std::min(n - 1, (int)((pos.y() - t.top()) * n / t.height()));
+        const int k = row * n + col;
+        return k < (int)v.tiles.size() ? k : -1;
+    }
+    void drawMulticam(QPainter& p, const QRect& t, const Playback::MulticamView& v) const
+    {
+        p.save();
+        p.setClipRect(t);
+        for (int k = 0; k < (int)v.tiles.size(); ++k) {
+            const Playback::MulticamTile& tile = v.tiles[(size_t)k];
+            double fx, fy, fw, fh;
+            v.tileRect(k, fx, fy, fw, fh);
+            const int x0 = t.left() + (int)std::lround(fx * t.width()), y0 = t.top() + (int)std::lround(fy * t.height());
+            const int x1 = t.left() + (int)std::lround((fx + fw) * t.width()), y1 = t.top() + (int)std::lround((fy + fh) * t.height());
+            const QRect cell(x0, y0, x1 - x0, y1 - y0);
+            const bool active = k == v.active;
+            const int edge = cell.height() >= 60 ? 3 : 2;
+            if (active) {
+                p.fillRect(QRect(cell.left(), cell.top(), cell.width(), edge), mcColor);
+                p.fillRect(QRect(cell.left(), cell.bottom() - edge + 1, cell.width(), edge), mcColor);
+                p.fillRect(QRect(cell.left(), cell.top(), edge, cell.height()), mcColor);
+                p.fillRect(QRect(cell.right() - edge + 1, cell.top(), edge, cell.height()), mcColor);
+            }
+            const QRect in = active ? cell.adjusted(edge, edge, -edge, -edge) : cell;
+            QFont f = font();
+            const int px = std::max(9, std::min(16, (int)std::lround(cell.height() * 0.09)));
+            f.setPixelSize(tile.empty ? px * 4 / 3 : px);
+            p.setFont(f);
+            const QFontMetrics fm(f);
+            if (tile.empty || mcNames) {
+                const QString name = QString::fromStdString(tile.name);
+                const int w = fm.horizontalAdvance(name);
+                const int base = in.bottom() - (tile.empty ? cell.height() / 6 : std::max(2, fm.descent() + 1));
+                const int x = in.left() + (in.width() - w) / 2;
+                p.setPen(QColor(0, 0, 0, 200));
+                p.drawText(x + 1, base + 1, name);
+                p.setPen(Qt::white);
+                p.drawText(x, base, name);
+            }
+            if (mcNumbers && !tile.empty) {
+                const QString num = QString::number(tile.number);
+                const int bw = fm.horizontalAdvance(num) + 4, bh = fm.ascent() + 2;
+                const QRect box(in.right() + 1 - bw, in.bottom() + 1 - bh, bw, bh);
+                p.fillRect(box, Qt::white);
+                p.setPen(Qt::black);
+                p.drawText(box, Qt::AlignCenter, num);
+            }
+        }
+        p.restore();
+    }
     uint64_t overlaySlot() const { return slot_; }
     FxTarget overlayTarget() const { return fxTarget_; }
 
@@ -758,6 +837,10 @@ protected:
             p.setPen(QPen(QColor(255, 255, 255, 220), 1.0, Qt::DotLine));
             p.drawRect(a.adjusted(0.5, 0.5, -0.5, -0.5));
         }
+        if (!show360()) {
+            const Playback::MulticamView mv = multicamView();
+            if (mv.valid()) drawMulticam(p, t, mv);
+        }
         const Preferences& pr = AppState::get().prefs;
         if (grid) {
             p.setPen(QPen(QColor(255, 255, 255, 90), 1.0));
@@ -816,6 +899,16 @@ protected:
             start360_ = QPointF(yaw360, pitch360);
             e->accept();
             return;
+        }
+        if (e->button() == Qt::LeftButton && onMulticamChoose) {
+            const Playback::MulticamView mv = multicamView();
+            const int k = multicamTileAt(mv, e->position());
+            if (k >= 0) {
+                // an empty take ("(no camera)") cannot be chosen
+                if (!mv.tiles[(size_t)k].empty) onMulticamChoose(mv.tiles[(size_t)k].number, (e->modifiers() & Qt::ControlModifier) != 0);
+                e->accept();
+                return;
+            }
         }
         if (split && e->button() == Qt::LeftButton && !target().isEmpty() && ((e->modifiers() & Qt::ControlModifier) || !active())) {
             splitDrag_ = true;
@@ -1390,6 +1483,49 @@ struct PreviewWidget::Impl {
     void sync360();
     Alive alive = makeAlive();
     std::unique_ptr<BypassRenderer> bypassRenderer;
+    // Multicamera editing is the timeline's option (Tools > Multicamera > Enable Multicamera Editing, the main
+    // window's "multicam" action): followed here so the preview shows the takes' grid while it is on.
+    QPointer<QWidget> timelineWidget;
+    QPointer<QAction> multicamAction;
+    QElapsedTimer multicamLooked;     // (a window without a timeline looks again at most once a second)
+    TimelineWidget* timeline()
+    {
+        if (!timelineWidget && (!multicamLooked.isValid() || multicamLooked.elapsed() > 1000)) {
+            multicamLooked.start();
+            for (QWidget* top : QApplication::topLevelWidgets()) {
+                if (dynamic_cast<TimelineWidget*>(top)) timelineWidget = top;
+                for (QWidget* w : top->findChildren<QWidget*>()) {
+                    if (timelineWidget) break;
+                    if (dynamic_cast<TimelineWidget*>(w)) timelineWidget = w;
+                }
+                if (timelineWidget) break;
+            }
+        }
+        return dynamic_cast<TimelineWidget*>(timelineWidget.data());
+    }
+    void syncMulticam()
+    {
+        const bool look = !multicamAction && (!multicamLooked.isValid() || multicamLooked.elapsed() > 1000);
+        TimelineWidget* tl = timeline();
+        if (look) {
+            multicamLooked.start();
+            for (QWidget* top : QApplication::topLevelWidgets())
+                if (QAction* a = top->findChild<QAction*>("multicam", Qt::FindDirectChildrenOnly)) {
+                    multicamAction = a;
+                    Impl* self = this;
+                    const Alive al = alive;
+                    QObject::connect(a, &QAction::toggled, owner, [self, al] {
+                        if (al->load()) self->syncMulticam();
+                    });
+                    break;
+                }
+        }
+        const bool on = tl && tl->options().multicam;
+        if (pb && on != pb->multicam()) {
+            pb->setMulticam(on);
+            view->update();
+        }
+    }
 
     void refreshSplit(double seconds)
     {
@@ -1886,6 +2022,9 @@ void PreviewWidget::Impl::frameShown(const QImage& image, double seconds, double
 // The project, cursor, playback or preferences changed.
 void PreviewWidget::Impl::changed(int changes)
 {
+    syncMulticam();
+    if (changes & kPrefs) view->loadMulticamPrefs();
+    if (pb->multicam() && (changes & (kProject | kCursor))) view->update();
     if (changes & (kCursor | kProject)) showTime();
     if ((changes & kCursor) && pb->playing() && (!sizesShown.isValid() || sizesShown.elapsed() > 250)) {
         sizesShown.start();
@@ -2173,6 +2312,10 @@ PreviewWidget::PreviewWidget(Playback* playback, QWidget* parent) : QWidget(pare
     Impl* impl = d.get();
     d->view->onContextMenu = [impl](const QPoint& global) { impl->showContextMenu(global); };
     d->view->onSplitAreaChanged = [impl] { QSettings().setValue("preview/splitArea", impl->view->splitArea); };
+    d->view->loadMulticamPrefs();
+    d->view->onMulticamChoose = [impl](int number, bool crossfade) {
+        if (TimelineWidget* tl = impl->timeline()) tl->multicamCut(number, crossfade);
+    };
     playback->onFrame = [impl](const QImage& image, double seconds, double ms) { impl->frameShown(image, seconds, ms); };
     d->listener.reset(new ListenerHandle([impl](int changes) { impl->changed(changes); }));
 
@@ -2319,6 +2462,7 @@ QSize PreviewWidget::previewSize() const { return d->view->previewSize(); }
 void PreviewWidget::showEvent(QShowEvent* e)
 {
     QWidget::showEvent(e);
+    d->syncMulticam();
     if (d->view->image().isNull()) d->pb->requestFrame();
     d->showSizes();
 }

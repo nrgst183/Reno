@@ -248,6 +248,37 @@ public:
 
     QImage renderNow(double seconds);
     static QImage blackFrame(const Project& p);
+
+    // VEGAS's multicamera editing mode (Tools > Multicamera > Enable Multicamera Editing): the preview shows every take
+    // of the multicamera event at the cursor at once, tiled in a square grid (2 x 2 for up to four takes, 3 x 3 for up to
+    // nine...), each take's media as it is, without effects, envelopes or motion (as VEGAS bypasses them in this mode).
+    // Where no event with takes is under the cursor the frame is the ordinary one. The Video Preview draws the names,
+    // numbers and the active take's border over the tiles (MulticamView).
+    struct MulticamTile {
+        std::string name;       // the take's name ("(no camera)" for an empty take)
+        int number = 0;         // 1, 2, ... in VEGAS's take order (what the number keys choose)
+        bool empty = false;     // no media (or media without pictures): cannot be chosen
+    };
+    struct MulticamView {
+        uint64_t eventId = 0;
+        int columns = 0;        // the grid is columns x columns
+        int active = -1;        // the active take's tile
+        std::vector<MulticamTile> tiles;
+        bool valid() const { return columns > 0 && !tiles.empty(); }
+        // Tile k as a fraction of the frame, from the top left.
+        void tileRect(int k, double& x, double& y, double& w, double& h) const
+        {
+            const int n = std::max(1, columns);
+            x = (double)(k % n) / n;
+            y = (double)(k / n) / n;
+            w = h = 1.0 / n;
+        }
+    };
+    // The multicamera event VEGAS tiles at time 't': the topmost video event with takes there (the topmost track's;
+    // on one track, the one that starts last). Not valid when there is none.
+    static MulticamView multicamAt(const Project& p, double t);
+    void setMulticam(bool on);
+    bool multicam() const { return multicam_.load(); }
     // Recording goes on past the end of the project (silence there), as in VEGAS, instead of stopping where it ends.
     void setPlayPastEnd(bool on) { playPastEnd_ = on; }
     void setAudioOutput(std::unique_ptr<AudioOutput> out) { if (!playing_ && out) out_ = std::move(out); }
@@ -451,6 +482,9 @@ private:
     void videoThread(int index);
     QImage renderFrame(const Project& p, double t, int64_t frame, uint64_t stamp, double scale, bool draft,
                          const std::atomic<bool>* cancel, double& ms, bool& rendered, bool quick = false, bool* approximated = nullptr, bool setCursor = true);
+    // The multicamera grid at 't' for the event 'view' describes, at 'scale' of the project's frame.
+    QImage multicamFrame(const Project& p, const MulticamView& view, double t, double scale, bool draft, const std::atomic<bool>* cancel,
+                         bool quick, bool* approximated);
     QImage lastFrame_;
     std::atomic<uint64_t> rendered_{0};
     std::atomic<uint64_t> renderedAhead_{0};
@@ -495,6 +529,7 @@ private:
     void checkPrerendered();
     QImage prerenderedFrame(const Project& p, int64_t frame);
     std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
+    std::atomic<bool> multicam_{false};     // setMulticam
 };
 
 // A frame from the engine (bottom row first, BGRA) as a QImage (top row first).

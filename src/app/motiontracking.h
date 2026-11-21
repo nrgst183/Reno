@@ -1,9 +1,12 @@
 // VEGAS's Motion Tracking (Alt+M): follows something in a video event over time and turns the movement into Track Motion keyframes
 // or the event's own Pan/Crop keyframes (to keep it centred or hold it still: stabilizing).
-// The window shows the selected video event's media at the cursor. Drag a box round what to follow; Track Forward / Backward follow it
-// frame by frame (src/engine/tracker.h) to the end or start of the event (or time selection), or until lost. Then choose where the
-// movement goes and Apply (one undo step). Positions are on the event's media; for Track Motion they are taken as the
-// media fills the frame (fitted).
+// The panel is laid out as VEGAS 18's: the selected video event's name, Mask (one region, "Region 1", with Add Mask and
+// Remove Mask), Precision, Mode, Show Motion Vectors, the motion track indicator and status line, the five track buttons
+// and the motion transfer menu. Under it, the event's media at the cursor with the region: drag a box round what to
+// follow (VEGAS shows the region on the Preview window). The track buttons follow it frame by frame
+// (src/engine/tracker.h) to the end or start of the event (or time selection), or until lost; the transfer menu puts
+// the movement where it should go (one undo step). Positions are on the event's media; for Track Motion they are taken
+// as the media fills the frame (fitted).
 #pragma once
 #include "appstate.h"
 #include <QWidget>

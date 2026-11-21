@@ -1,9 +1,14 @@
 // VEGAS's Trimmer (View > Window > Trimmer, Alt+2): one media file on its own, to look through and pick the part that
 // goes on the timeline. A double-click on media in Project Media or the Explorer opens it here.
 // 
-// The window has the Trimmer history (newest first) and the Add buttons along the top; the image; a strip with the
-// file's whole length, waveform and selection (drag across it to select, drag the selection onto the timeline to put
-// that part there, click to move the cursor); and a transport bar of its own.
+// The window has, as in VEGAS 18, the Trimmer history (newest first) along the top with Sort Trimmer History, Remove
+// Current Media, Clear Trimmer History and Trimmer on External Monitor; the image; a strip with the file's whole
+// length, waveform and selection (drag across it to select, drag the selection onto the timeline to put that part
+// there, click to move the cursor); the Trimmer Transport tool bar (Play, Pause, Stop, Add to Timeline from Cursor and
+// Fit to Fill at first; the hamburger has the others, Loop Playback, Play From Start, Previous / Next Frame, Mark In /
+// Out, Add to Timeline up to Cursor, Enable Timeline Overwrite, Create Subclip, Insert Marker / Region, Save
+// Markers/Regions, and Edit Visible Button Set); and the selection's start, end and length (the cursor and the file's
+// length when nothing is selected; a double-click types a time).
 // 
 // Keys while it has focus, as in VEGAS: Space plays / stops, I / O set in and out points at the cursor, A (or Enter)
 // puts the selection (else the whole file) on the timeline at the timeline's cursor, Shift+A so it ends at the
@@ -20,8 +25,11 @@
 #pragma once
 #include "appstate.h"
 #include <QWidget>
+#include <QStringList>
 #include <QImage>
 #include <memory>
+
+class QMenu;
 
 namespace reno {
 namespace app {
@@ -91,9 +99,24 @@ public:
     bool hoverScrub() const;
 
     void play();
-    void stop();
+    void playFromStart();
+    void pause();       // stops where it is
+    void stop();        // stops and puts the cursor back where Play found it
     bool playing() const;
     void setLoop(bool on);
+
+    // The transport's buttons on the bar ("loop", "playFromStart", "play", "pause", "stop", "previousFrame",
+    // "nextFrame", "markIn", "markOut", "addFromCursor", "addUpToCursor", "fitToFill", "overwrite", "createSubclip",
+    // "insertMarker", "insertRegion", "saveMarkers"; Edit Visible Button Set, saved as "trimmer/transportButtons").
+    QStringList visibleTransportButtons() const;
+    void setVisibleTransportButtons(const QStringList& set);
+    void editVisibleTransportButtons();
+    QMenu* transportMenu();     // the hamburger's menu (the caller deletes it)
+    // Trimmer on External Monitor (the top bar's button) and Create Subclip (the transport's) are the main window's:
+    // their buttons are unavailable until it sets these. setExternalMonitorShown sets the button without calling it.
+    void setExternalMonitorHook(std::function<void(bool on)> fn);
+    void setExternalMonitorShown(bool on);
+    void setCreateSubclipHook(std::function<void()> fn);
 
     QStringList history() const;
     void removeCurrentFromHistory();
@@ -115,6 +138,7 @@ protected:
 private:
     QWidget* buildToolBar();
     QWidget* buildTransportBar();
+    void arrangeTransport();
     void showStripMenu(const QPoint& at, int mark);
     struct Impl;
     std::unique_ptr<Impl> d;

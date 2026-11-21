@@ -68,6 +68,8 @@ QString backupFolder(const QString& kind);
 // written (no changes, no project).
 bool writeBackup(const QString& kind);
 QStringList backupFiles(bool currentProjectOnly);
+// VEGAS's Restore Backup dialog (Advanced Save Utility > Restore...).
+void restoreBackupDialog(MainWindow* w);
 
 }  // namespace app
 }  // namespace reno
