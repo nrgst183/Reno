@@ -10,6 +10,7 @@
 #include "../engine/timefmt.h"
 #include "../engine/fxnames.h"
 #include "../engine/fxlog.h"
+#include "../media/media.h"
 #include "mediacache.h"
 #include "autoproxy.h"
 #include <QCoreApplication>
@@ -683,6 +684,28 @@ void AppState::loadPreferences()
     applyPreferences();
 }
 
+// The timer's auto-save. Not while playing: taking the effects' settings (captureStates) waits for each effect a frame
+// thread is rendering, one after another, and the picture stands still meanwhile. It is done once playing stops
+// (looked at every 2 s).
+static bool gAutoSaveWaiting = false;
+static void timedAutoSave()
+{
+    if (previewPlaying()) {
+        if (!gAutoSaveWaiting) {
+            gAutoSaveWaiting = true;
+            QTimer::singleShot(2000, QCoreApplication::instance(), [] {
+                gAutoSaveWaiting = false;
+                timedAutoSave();
+            });
+        }
+        return;
+    }
+    AppState& a = AppState::get();
+    std::string err;
+    if (a.autoSaveInBackground()) return;
+    if (!a.autoSaveNow(&err) && !err.empty()) a.status("Auto-save failed: " + err);
+}
+
 void AppState::applyPreferences()
 {
     prefs.save();
@@ -698,12 +721,7 @@ void AppState::applyPreferences()
     if (QCoreApplication::instance()) {
         if (!autoSaveTimer_) {
             autoSaveTimer_ = new QTimer(QCoreApplication::instance());
-            QObject::connect(autoSaveTimer_, &QTimer::timeout, [] {
-                AppState& a = AppState::get();
-                std::string err;
-                if (a.autoSaveInBackground()) return;
-                if (!a.autoSaveNow(&err) && !err.empty()) a.status("Auto-save failed: " + err);
-            });
+            QObject::connect(autoSaveTimer_, &QTimer::timeout, [] { timedAutoSave(); });
         }
         if (prefs.autoSaveMinutes > 0) {
             const int ms = prefs.autoSaveMinutes * 60 * 1000;
