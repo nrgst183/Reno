@@ -6,6 +6,7 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_TOOLCHAIN_FILE AND NOT
   set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Oldest macOS Reno runs on")
 endif()
 project(Reno LANGUAGES CXX)
+include(cmake/RenoVersion.cmake)    # RENO_VERSION: from the release tag, else the newest v* git tag
 
 # Reno builds on Windows (Visual Studio 2022 with clang-cl - the default in build_msvc.bat and Reno.sln - or MSVC), Linux (GCC or Clang) and macOS (Apple Clang), and
 # cross-compiles for Windows from Linux with clang-cl (cmake/toolchains/windows-clangcl.cmake). It also builds for FreeBSD
@@ -142,8 +143,9 @@ if(RENO_WITH_APP AND TARGET reno_media)
       set_target_properties(reno PROPERTIES MACOSX_BUNDLE ON OUTPUT_NAME Reno
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in
         MACOSX_BUNDLE_BUNDLE_NAME Reno MACOSX_BUNDLE_GUI_IDENTIFIER org.reno.editor
-        MACOSX_BUNDLE_BUNDLE_VERSION 1.0 MACOSX_BUNDLE_SHORT_VERSION_STRING 1.0)
+        MACOSX_BUNDLE_BUNDLE_VERSION ${RENO_VERSION_FULL} MACOSX_BUNDLE_SHORT_VERSION_STRING ${RENO_VERSION_STRING})
     endif()
+    reno_use_version(reno)
     target_link_libraries(reno PRIVATE reno_engine Qt6::Widgets)
     # effects' on-screen controls are drawn with OpenGL (Qt's offscreen framebuffer; no OpenGL widgets are used)
     if(TARGET Qt6::OpenGL)
@@ -166,9 +168,40 @@ if(RENO_WITH_APP AND TARGET reno_media)
     if(WIN32)
       target_sources(reno_cli PRIVATE resources/reno.rc)
     endif()
+    reno_use_version(reno_cli)
     target_link_libraries(reno_cli PRIVATE reno_engine Qt6::Gui)
     if(APPLE)
       set_target_properties(reno_cli PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Reno.app/Contents/MacOS)
+    endif()
+
+    # The icon with this version's number on it, drawn by tools/make_logo.cpp into icons/ in the build folder: the
+    # .rc files take reno.ico from there and the Linux, macOS and FreeBSD packages take reno_256.png. Not when
+    # cross-compiling (make_logo can't run here); the .rc files then use resources/reno.ico.
+    set(RENO_ICONS_DIR "")
+    if(NOT CMAKE_CROSSCOMPILING)
+      set(RENO_ICONS_DIR ${CMAKE_BINARY_DIR}/icons)
+      add_executable(make_logo tools/make_logo.cpp src/app/logo.cpp)
+      reno_use_version(make_logo)
+      target_link_libraries(make_logo PRIVATE Qt6::Gui)
+      # (not in bin/, which is what gets packaged)
+      set_target_properties(make_logo PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
+      add_custom_command(OUTPUT ${RENO_ICONS_DIR}/reno.ico ${RENO_ICONS_DIR}/reno_256.png
+        COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:make_logo> -DOUT=${RENO_ICONS_DIR}
+                -DQTBIN=${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS} -DQTPLUGINS=${QT6_INSTALL_PREFIX}/${QT6_INSTALL_PLUGINS}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_make_logo.cmake
+        DEPENDS make_logo ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_make_logo.cmake
+        COMMENT "Drawing Reno's icon for version ${RENO_VERSION_STRING}"
+        VERBATIM)
+      add_custom_target(reno_icons DEPENDS ${RENO_ICONS_DIR}/reno.ico)
+      add_dependencies(reno reno_icons)
+      add_dependencies(reno_cli reno_icons)
+      if(WIN32)
+        # (the .rc files name "icons/reno.ico"; the resource compiler finds it through this folder)
+        foreach(t reno reno_cli)
+          target_include_directories(${t} PRIVATE $<$<COMPILE_LANGUAGE:RC>:${CMAKE_BINARY_DIR}>)
+          target_compile_definitions(${t} PRIVATE RENO_GENERATED_ICON)
+        endforeach()
+      endif()
     endif()
 
     # Tools > Scripting: the ScriptPortal.Vegas source (compiled on first use) and an empty Script Menu folder, next to reno
@@ -227,9 +260,13 @@ if(RENO_WITH_APP AND TARGET reno_media)
       add_custom_target(reno_vst32 ALL
         COMMAND ${_vst32_wrap} ${CMAKE_COMMAND} -S ${CMAKE_CURRENT_SOURCE_DIR}/src/vst32 -B ${CMAKE_BINARY_DIR}/vst32
                 -G "${_vst32_gen}" -A Win32 ${_vst32_toolset} -DRENO_VST32_OUT=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+                -DRENO_VERSION=${RENO_VERSION_FULL} -DRENO_ICONS_DIR=${RENO_ICONS_DIR}
         COMMAND ${_vst32_wrap} ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/vst32 --config $<IF:$<CONFIG:Debug>,Debug,Release>
         COMMENT "Building reno_vst32.exe (32-bit, for 32-bit VST2 plug-ins)"
         VERBATIM)
+      if(TARGET reno_icons)
+        add_dependencies(reno_vst32 reno_icons)
+      endif()
       add_dependencies(reno reno_vst32)
     elseif(WIN32)
       message(STATUS "Reno: reno_vst32.exe (32-bit VST2 plug-ins) is not built by this configuration: build src/vst32 with a 32-bit toolchain (see src/vst32/CMakeLists.txt)")

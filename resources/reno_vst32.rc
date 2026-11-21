@@ -1,10 +1,16 @@
 // reno_vst32.exe's icon and version info (the 32-bit plug-in bridge, src/vst32). A program file that says what it is
 // is less often taken for something else by virus scanners' guesswork.
+// The version and icon come as in reno.rc.
+#include "../src/app/version.h"
+#ifdef RENO_GENERATED_ICON
+IDI_ICON1 ICON "icons/reno.ico"
+#else
 IDI_ICON1 ICON "reno.ico"
+#endif
 
 1 VERSIONINFO
-FILEVERSION     1,4,0,0
-PRODUCTVERSION  1,4,0,0
+FILEVERSION     RENO_VERSION_MAJOR,RENO_VERSION_MINOR,RENO_VERSION_PATCH,0
+PRODUCTVERSION  RENO_VERSION_MAJOR,RENO_VERSION_MINOR,RENO_VERSION_PATCH,0
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0x0L
 FILEOS          0x40004L
@@ -17,11 +23,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Reno"
             VALUE "FileDescription", "Reno 32-bit VST plug-in host"
-            VALUE "FileVersion", "1.4"
+            VALUE "FileVersion", RENO_VERSION_STRING
             VALUE "InternalName", "reno_vst32"
             VALUE "OriginalFilename", "reno_vst32.exe"
             VALUE "ProductName", "Reno"
-            VALUE "ProductVersion", "1.4"
+            VALUE "ProductVersion", RENO_VERSION_STRING
             VALUE "LegalCopyright", "All rights reserved"
         END
     END

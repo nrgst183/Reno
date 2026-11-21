@@ -19,7 +19,41 @@ env:
   QT_VERSION: '6.8.3'
 
 jobs:
+  # The version every build is made as (cmake/RenoVersion.cmake puts it in the .rc files, the About box and the icon): a
+  # pushed v* tag's, or the one given to Run workflow, else (nightly builds, pull requests) the newest v* tag's.
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0    # (the tags, for git describe)
+
+      - name: Version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="$GITHUB_REF_NAME"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            v="$INPUT_VERSION"
+          else
+            v="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+          fi
+          v="${v#v}"
+          if [[ -n "$v" && ! "$v" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::The version \"$v\" is not MAJOR.MINOR or MAJOR.MINOR.PATCH (e.g. v1.5.0)"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building as version ${v:-(the one in src/app/version.h)}"
+
   windows:
+    needs: version
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
@@ -40,7 +74,7 @@ jobs:
         run: ./tools/get_ffmpeg.ps1
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DRENO_VERSION=${{ needs.version.outputs.version }} -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
 
       - name: Build
         run: cmake --build build
@@ -59,6 +93,7 @@ jobs:
           path: reno-windows-x64.zip
 
   linux:
+    needs: version
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
@@ -79,7 +114,7 @@ jobs:
           cache: true
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DRENO_VERSION=${{ needs.version.outputs.version }}
 
       - name: Build
         run: cmake --build build
@@ -90,7 +125,7 @@ jobs:
       - name: Package
         run: |
           cp -a deps/ffmpeg/lib/*.so* build/bin/
-          cp resources/reno_256.png build/bin/reno.png
+          cp build/icons/reno_256.png build/bin/reno.png
           cp resources/reno.desktop build/bin/
           for f in build/bin/reno build/bin/reno_cli; do patchelf --set-rpath '$ORIGIN' "$f"; done
           tar -C build/bin -czf reno-linux-x64.tar.gz .
@@ -110,6 +145,7 @@ jobs:
             arch: arm64
           - runner: macos-15-intel
             arch: x64
+    needs: version
     runs-on: ${{ matrix.runner }}
     # (until a macOS build has been tried on a Mac, a failure here doesn't block the other builds or a release)
     continue-on-error: true
@@ -129,7 +165,7 @@ jobs:
           cache: true
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DRENO_FFMPEG_DIR="$(brew --prefix)"
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DRENO_VERSION=${{ needs.version.outputs.version }} -DRENO_FFMPEG_DIR="$(brew --prefix)"
 
       - name: Build
         run: cmake --build build
@@ -147,7 +183,7 @@ jobs:
           # Apple Silicon needs for anything to run
           macdeployqt build/bin/Reno.app -executable=build/bin/Reno.app/Contents/MacOS/reno_cli -verbose=1
           mkdir -p build/bin/Reno.app/Contents/Resources
-          cp resources/reno_256.png build/bin/Reno.app/Contents/Resources/reno.png
+          cp build/icons/reno_256.png build/bin/Reno.app/Contents/Resources/reno.png
           codesign --force --deep --sign - build/bin/Reno.app
           ditto -c -k --keepParent build/bin/Reno.app reno-macos-${{ matrix.arch }}.zip
 
@@ -159,6 +195,7 @@ jobs:
   windows7:
     # the Windows build for Windows 7 and later: no Windows 8/10 functions, and Qt's DLLs swapped for ones patched to run
     # on Windows 7 (tools/use_qt_win7.ps1). Not yet tried on Windows 7, so a failure doesn't block a release.
+    needs: version
     runs-on: windows-2022
     continue-on-error: true
     steps:
@@ -180,7 +217,7 @@ jobs:
         run: ./tools/get_ffmpeg.ps1
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DRENO_WINDOWS7=ON -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DRENO_VERSION=${{ needs.version.outputs.version }} -DRENO_WINDOWS7=ON -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
 
       - name: Build
         run: cmake --build build
@@ -200,6 +237,7 @@ jobs:
 
   freebsd:
     # FreeBSD in a virtual machine: Qt 6, FFmpeg and the Vulkan loader from its packages. Not yet tried on FreeBSD itself.
+    needs: version
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
@@ -212,10 +250,10 @@ jobs:
           prepare: pkg install -y cmake ninja pkgconf qt6-base qt6-multimedia ffmpeg vulkan-loader
           run: |
             set -e
-            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DCMAKE_PREFIX_PATH="/usr/local/lib/qt6;/usr/local" -DRENO_FFMPEG_DIR=/usr/local
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRENO_WITH_TESTS=OFF -DRENO_VERSION=${{ needs.version.outputs.version }} -DCMAKE_PREFIX_PATH="/usr/local/lib/qt6;/usr/local" -DRENO_FFMPEG_DIR=/usr/local
             cmake --build build
             test -x build/bin/reno && test -x build/bin/reno_cli
-            cp resources/reno_256.png build/bin/reno.png
+            cp build/icons/reno_256.png build/bin/reno.png
             cp resources/reno.desktop build/bin/
             tar -C build/bin -czf reno-freebsd-x64.tar.gz .
 

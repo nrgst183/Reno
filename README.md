@@ -34,7 +34,10 @@ The screenshots use generated test media; `tests/ui/vegasshot_test.cpp` makes th
 
 Builds are on the [Releases](../../releases) page. Every push to `main` updates the "Nightly build" prerelease.
 Versioned releases come from pushing a `v*` tag (for example `v0.1.0`), or from Actions > Build > Run workflow with a
-version filled in.
+version filled in. The release is built as that version: the About box, the splash screen, the program files' version
+info and the number on the icon all follow the tag, so no file needs changing for a release. Nightly builds carry the
+newest `v*` tag's version. A local CMake build does the same with the tags it can see, or takes `-DRENO_VERSION=1.6`;
+`src/app/version.h` holds the version for builds without CMake (Reno.sln).
 
 | File | System | Notes |
 |---|---|---|

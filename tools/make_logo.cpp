@@ -1,4 +1,6 @@
-// Writes Reno's logo (src/app/logo.cpp) as PNG files and as resources/reno.ico (PNG-compressed entries).
+// Writes Reno's logo (src/app/logo.cpp) as PNG files and as reno.ico (PNG-compressed entries). The CMake build runs it
+// into icons/ in the build folder (cmake/run_make_logo.cmake); resources/reno.ico and reno_256.png are copies for builds
+// without CMake (Reno.sln) and cross-compiles.
 //   make_logo <output folder>      (run with QT_QPA_PLATFORM=offscreen)
 #include "../src/app/logo.h"
 #include <QBuffer>

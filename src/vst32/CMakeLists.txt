@@ -48,7 +48,16 @@ if(WIN32)
     target_link_options(reno_vst32 PRIVATE -mwindows)
   endif()
   target_link_libraries(reno_vst32 PRIVATE user32 gdi32 ole32 oleaut32 uuid shell32 advapi32 comdlg32 winmm)
-  # its icon and version info
+  # its icon and version info: the version from RENO_VERSION (the main build passes its own), and the icon the main
+  # build drew into RENO_ICONS_DIR when it gives one, else resources/reno.ico
   enable_language(RC)
   target_sources(reno_vst32 PRIVATE ${SRC}/../resources/reno_vst32.rc)
+  include(${SRC}/../cmake/RenoVersion.cmake)
+  reno_use_version(reno_vst32)
+  if(RENO_ICONS_DIR)
+    # (the .rc file names "icons/reno.ico")
+    get_filename_component(_icons_parent "${RENO_ICONS_DIR}" DIRECTORY)
+    target_include_directories(reno_vst32 PRIVATE $<$<COMPILE_LANGUAGE:RC>:${_icons_parent}>)
+    target_compile_definitions(reno_vst32 PRIVATE RENO_GENERATED_ICON)
+  endif()
 endif()

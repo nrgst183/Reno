@@ -1,4 +1,5 @@
 #include "logo.h"
+#include "version.h"
 #include <QFont>
 #include <QFontMetricsF>
 #include <QLinearGradient>
@@ -8,7 +9,7 @@
 namespace reno {
 namespace app {
 
-const char* renoVersion() { return "1.4"; }
+const char* renoVersion() { return RENO_VERSION_STRING; }
 
 // Like VEGAS Pro's icon (dark square, thin rim, big letter, version in the corner) but in the inverse of VEGAS's blue: orange.
 QImage renoLogo(int size)
