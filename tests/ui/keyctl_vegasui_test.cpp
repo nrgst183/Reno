@@ -227,6 +227,77 @@ int main(int argc, char** argv)
         check(moved && !hp->keys.count(kt) && vp->keys.count(kt), "dragging it sideways moves its time (that setting's only)");
         app.undo();
         settle(100);
+
+        // ---- Manual / Split Manual: the key's handles shape the curve, and are dragged in Curves
+        inst->userSetKeyCurve(hp, kt, ofx::Param::KeyManual);
+        settle(100);
+        std::vector<double> h0;
+        {
+            std::lock_guard<std::recursive_mutex> lk(inst->mutex);
+            if (hp->keyHandles.count(kt)) h0 = hp->keyHandles[kt];
+        }
+        check(h0.size() == 4 && h0[0] < 0 && h0[2] > 0, "a key made Manual gets an in and an out handle", strf("%.0f handles", (double)h0.size()));
+        const double mid = std::floor((28 + 85) * 0.5 * fps), linearMid = 0.1 + (0.6 - 0.1) * (mid - kt) / (std::floor(85 * fps) - kt);
+        if (h0.size() == 4) {
+            std::vector<double> lifted = h0;
+            lifted[3] = 0.9;                                        // the out handle well above the line
+            inst->userSetKeyHandles(hp, kt, lifted);
+        }
+        const double bent = hp->valueAt(mid)[0];
+        check(bent > linearMid + 0.05, "a handle pulled up bends the curve up after the key", strf("%.3f against %.3f", bent, linearMid));
+        if (h0.size() == 4) inst->userSetKeyHandles(hp, kt, h0);
+        settle(100);
+        uitest::shot(w, gOut + "/keyctl_manual.png");
+        // drag the out handle up: on a Manual key the in handle turns with it (down)
+        auto handleY = [&](double v) { return (int)std::lround(bottom - v * (bottom - top)); };
+        auto outHandlePos = [&](const std::vector<double>& h) { return QPoint(frameX(strip, kt + h[2], len), handleY(h[3])); };
+        std::vector<double> h1;
+        if (h0.size() == 4) {
+            uitest::mouseDrag(strip, outHandlePos(h0), outHandlePos(h0) + QPoint(0, -30), 8);
+            settle(100);
+            std::lock_guard<std::recursive_mutex> lk(inst->mutex);
+            h1 = hp->keyHandles[kt];
+        }
+        check(h1.size() == 4 && h1[3] > h0[3] + 0.02 && h1[1] < h0[1] - 0.005, "dragging a Manual key's out handle up turns its in handle down",
+              h1.size() == 4 ? strf("out %.3f, in %.3f", h1[3], h1[1]) : std::string("no handles"));
+        check(app.undoName() == "Keyframe Handle", "one undo step", app.undoName());
+        // Split Manual: the in handle stays
+        inst->userSetKeyCurve(hp, kt, ofx::Param::KeySplit);
+        settle(100);
+        std::vector<double> h2;
+        if (h1.size() == 4) {
+            uitest::mouseDrag(strip, outHandlePos(h1), outHandlePos(h1) + QPoint(0, -20), 8);
+            settle(100);
+            std::lock_guard<std::recursive_mutex> lk(inst->mutex);
+            h2 = hp->keyHandles[kt];
+        }
+        check(h2.size() == 4 && h2[3] > h1[3] + 0.01 && std::fabs(h2[1] - h1[1]) < 1e-9, "on a Split Manual key the other handle stays",
+              h2.size() == 4 ? strf("out %.3f, in %.3f", h2[3], h2[1]) : std::string("no handles"));
+        // the key's value moved: its handles go with it
+        {
+            const double before = h2.size() == 4 ? h2[3] : 0;
+            inst->userSetValue(hp, {0.3}, kt, true);
+            std::lock_guard<std::recursive_mutex> lk(inst->mutex);
+            check(hp->keyHandles.count(kt) && std::fabs(hp->keyHandles[kt][3] - (before + 0.2)) < 1e-9, "raising the key raises its handles with it");
+        }
+        // kept in the effect's state, and read back
+        {
+            const Json st = inst->saveState();
+            const Json kh = st.get("params").get("HorizontalPixelization").get("kh");
+            std::vector<double> saved;
+            {
+                std::lock_guard<std::recursive_mutex> lk(inst->mutex);
+                saved = hp->keyHandles[kt];
+            }
+            inst->userSetKeyHandles(hp, kt, h0);
+            inst->loadState(st);
+            std::lock_guard<std::recursive_mutex> lk(inst->mutex);
+            check(kh.size() == 1 && hp->keyCurve(kt) == ofx::Param::KeySplit && hp->keyHandles.count(kt) && hp->keyHandles[kt] == saved,
+                  "the curve and its handles are kept in the project (\"kh\")");
+        }
+        app.undo();
+        app.undo();
+        settle(100);
         w->findChild<QToolButton*>("fxKeyLanes")->click();
         settle(80);
         check(!strip->property("curvesView").toBool(), "Lanes switches back");

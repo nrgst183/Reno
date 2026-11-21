@@ -3289,6 +3289,7 @@ public:
         bool whole = false;
         int colour = 0;
         std::map<double, std::vector<double>> keyValues;
+        std::map<double, std::vector<double>> keyHandles;   // Manual / Split Manual keys' handles (Param::keyHandles)
     };
 
     explicit KeyStrip(QWidget* parent) : QWidget(parent)
@@ -3549,6 +3550,75 @@ public:
         const double v = it != r.keyValues.end() && comp < (int)it->second.size() ? it->second[(size_t)comp] : 0.0;
         return QPointF(xOf(time), graphY(r, v));
     }
+    // Where a Manual / Split Manual key's handle (which: 0 in, 1 out) of part 'comp' is drawn in the Curves view.
+    QPointF handlePoint(int row, double time, int comp, int which) const
+    {
+        const Row& r = rows_[(size_t)row];
+        auto it = r.keyHandles.find(time);
+        const int dim = (int)r.line.size();
+        if (it == r.keyHandles.end() || (size_t)(dim * 4) > it->second.size()) return curvePoint(row, time, comp);
+        const double dt = it->second[(size_t)(dim * (which ? 2 : 0) + comp)], v = it->second[(size_t)(dim * (which ? 3 : 1) + comp)];
+        return QPointF(xOf(time + dt), graphY(r, v));
+    }
+    // The Curves view: the active setting's handle near 'pos' (*time its key, *comp, *which), false if none.
+    bool handleUnder(const QPointF& pos, double* time, int* comp, int* which) const
+    {
+        const int a = activeRow();
+        if (a < 0) return false;
+        double bestD = 6.0;
+        bool found = false;
+        for (const auto& h : rows_[(size_t)a].keyHandles)
+            for (int c = 0; c < (int)rows_[(size_t)a].line.size(); ++c)
+                for (int w = 0; w < 2; ++w) {
+                    const QPointF d = handlePoint(a, h.first, c, w) - pos;
+                    const double dist = std::hypot(d.x(), d.y());
+                    if (dist <= bestD) {
+                        bestD = dist;
+                        found = true;
+                        *time = h.first;
+                        *comp = c;
+                        *which = w;
+                    }
+                }
+        return found;
+    }
+    // A handle dragged to 'pos': its time offset (not past the key on its side) and value; on a Manual key the other
+    // handle turns with it to stay in line (its length kept), on a Split Manual key it stays.
+    void dragHandleTo(const QPointF& pos)
+    {
+        ofx::Instance* inst = live ? live() : nullptr;
+        const int row = selRow_;
+        if (!inst || row < 0 || row >= (int)rows_.size() || rows_[(size_t)row].params.empty()) return;
+        ofx::Param* p = rows_[(size_t)row].params[0];
+        std::vector<double> h;
+        double v = 0;
+        int curve = 0;
+        {
+            std::lock_guard<std::recursive_mutex> lk(inst->mutex);
+            auto it = p->keyHandles.find(dragNow_);
+            auto kv = p->keys.find(dragNow_);
+            if (it == p->keyHandles.end() || kv == p->keys.end() || dragComp_ >= (int)kv->second.size()) return;
+            h = it->second;
+            v = kv->second[(size_t)dragComp_];
+            curve = p->keyCurve(dragNow_);
+        }
+        const int dim = p->dim, c = dragComp_;
+        const double frames = viewLen() * (pos.x() - (kLabelW + 6)) / std::max(1.0, (double)(width() - kLabelW - 12)) + viewFrom();
+        double dt = frames - dragNow_;
+        dt = dragWhich_ ? std::max(0.0, dt) : std::min(0.0, dt);
+        const double value = graphValue(rows_[(size_t)row], pos.y());
+        const size_t tIdx = (size_t)(dim * (dragWhich_ ? 2 : 0) + c), vIdx = (size_t)(dim * (dragWhich_ ? 3 : 1) + c);
+        if (tIdx >= h.size() || vIdx >= h.size()) return;
+        h[tIdx] = dt;
+        h[vIdx] = value;
+        if (curve == ofx::Param::KeyManual && std::fabs(dt) > 1e-9) {
+            const size_t oT = (size_t)(dim * (dragWhich_ ? 0 : 2) + c), oV = (size_t)(dim * (dragWhich_ ? 1 : 3) + c);
+            const double slope = (value - v) / dt;
+            h[oV] = v + slope * h[oT];
+        }
+        inst->userSetKeyHandles(p, dragNow_, h);
+    }
+
     // The setting whose line the Curves view draws thick: the picked row if it is a setting's, else the first setting
     // under the picked header (or the first of all).
     int activeRow() const
@@ -3631,6 +3701,9 @@ protected:
                     vhi = std::max(vhi, v[(size_t)c]);
                 }
             }
+            r.keyHandles.clear();
+            for (const auto& h : p->keyHandles)
+                if (p->keys.count(h.first) && ofx::Param::curveHasHandles(p->keyCurve(h.first))) r.keyHandles[h.first] = h.second;
             for (const auto& k : p->keys) {
                 r.keyValues[k.first] = k.second;
                 for (int c = 0; c < dim && c < (int)k.second.size(); ++c) {
@@ -3807,6 +3880,16 @@ protected:
         if (active >= 0) {
             const Row& row = rows_[(size_t)active];
             drawLine(row, 3.0);
+            // a Manual / Split Manual key's handles: a line from the key to each, a small square at its end
+            for (const auto& h : row.keyHandles)
+                for (int c = 0; c < (int)row.line.size(); ++c)
+                    for (int w = 0; w < 2; ++w) {
+                        const QPointF hp = handlePoint(active, h.first, c, w);
+                        p.setPen(QPen(QColor(235, 235, 235), 1.0));
+                        p.drawLine(curvePoint(active, h.first, c), hp);
+                        p.setBrush(QColor(60, 150, 255));
+                        p.drawRect(QRectF(hp.x() - 3.0, hp.y() - 3.0, 6.0, 6.0));
+                    }
             for (const auto& k : row.keyValues)
                 for (size_t c = 0; c < k.second.size() && c < row.line.size(); ++c) {
                     const bool sel = active == selRow_ && k.first == selTime_;
@@ -3963,6 +4046,24 @@ protected:
             return;
         }
         if (e->button() != Qt::LeftButton) return;
+        {
+            double ht = 0;
+            int hc = 0, hw = 0;
+            if (k < 0 && handleUnder(pos, &ht, &hc, &hw)) {
+                selRow_ = a;
+                selTime_ = ht;
+                dragging_ = true;
+                dragCurve_ = false;
+                dragHandle_ = true;
+                dragComp_ = hc;
+                dragWhich_ = hw;
+                dragFrom_ = dragNow_ = ht;
+                pressX_ = pos.x();
+                AppState::get().beginFxEdit(slotId);
+                update();
+                return;
+            }
+        }
         if (k >= 0) {
             selRow_ = a;
             selTime_ = k;
@@ -3994,6 +4095,13 @@ protected:
             setCursor(keyUnder(r, e->position().x()) >= 0 ? Qt::SizeHorCursor : Qt::ArrowCursor);
             return;
         }
+        if (dragHandle_) {
+            dragHandleTo(e->position());
+            const double at = dragNow_;
+            refresh();
+            selTime_ = at;
+            return;
+        }
         // the time moves by as much as the mouse did (a keyframe is not pulled to the frame under the mouse first)
         const double t = std::min(spanLen(), std::max(0.0, dragFrom_ + timeAt(e->position().x()) - timeAt(pressX_)));
         const bool row = selRow_ >= 0 && selRow_ < (int)rows_.size();
@@ -4014,6 +4122,12 @@ protected:
     {
         if (!dragging_) return;
         dragging_ = false;
+        if (dragHandle_) {
+            dragHandle_ = false;
+            AppState::get().endFxEdit(slotId, "Keyframe Handle");
+            refresh();
+            return;
+        }
         AppState::get().endFxEdit(slotId, dragCurve_ && dragNow_ == dragFrom_ ? "Keyframe Value" : "Move Keyframe");
         refresh();
     }
@@ -4060,7 +4174,8 @@ protected:
         const int now = rows_[(size_t)row].keys.count(time) ? rows_[(size_t)row].keys.at(time) : 0;
         const struct { const char* text; int curve; } kinds[] = {{"&Linear", ofx::Param::KeyLinear}, {"&Fast", ofx::Param::KeyFast},
                                                                  {"&Slow", ofx::Param::KeySlow}, {"S&mooth", ofx::Param::KeySmooth},
-                                                                 {"S&harp", ofx::Param::KeySharp}, {"H&old", ofx::Param::KeyHold}};
+                                                                 {"S&harp", ofx::Param::KeySharp}, {"H&old", ofx::Param::KeyHold},
+                                                                 {"&Manual", ofx::Param::KeyManual}, {"S&plit Manual", ofx::Param::KeySplit}};
         for (const auto& k : kinds) {
             QAction* a = m.addAction(k.text);
             a->setCheckable(true);
@@ -4084,8 +4199,8 @@ private:
     std::set<QString> folded_;
     int selRow_ = -1;
     double selTime_ = -1;
-    bool dragging_ = false, dragCurve_ = false, curves_ = false;
-    int dragComp_ = 0;
+    bool dragging_ = false, dragCurve_ = false, curves_ = false, dragHandle_ = false;
+    int dragComp_ = 0, dragWhich_ = 0;      // (dragWhich_: the handle dragged, 0 in, 1 out)
     double dragFrom_ = 0, dragNow_ = 0, pressX_ = 0;
     double zoom_ = 1, viewStart_ = 0;
 };

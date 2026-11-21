@@ -945,8 +945,23 @@ void Instance::userSetValue(Param* p, const std::vector<double>& v, double time,
     currentTime = time;
     if (setKey || !p->keys.empty()) {
         const bool fresh = p->keys.find(time) == p->keys.end();
+        // (a key's handles go up and down with it)
+        if (!fresh) {
+            auto h = p->keyHandles.find(time);
+            if (h != p->keyHandles.end() && h->second.size() >= (size_t)p->dim * 4) {
+                const std::vector<double>& was = p->keys[time];
+                for (int d = 0; d < p->dim && d < (int)was.size(); ++d) {
+                    const double by = vv[(size_t)d] - was[(size_t)d];
+                    h->second[(size_t)(p->dim + d)] += by;
+                    h->second[(size_t)(p->dim * 3 + d)] += by;
+                }
+            }
+        }
         p->keys[time] = vv;
-        if (fresh && Param::newKeyCurve().load() != Param::KeyLinear) p->keyCurves[time] = Param::newKeyCurve().load();
+        if (fresh && Param::newKeyCurve().load() != Param::KeyLinear) {
+            p->keyCurves[time] = Param::newKeyCurve().load();
+            if (Param::curveHasHandles(p->keyCurves[time])) p->keyHandles[time] = p->defaultHandles(time);
+        }
     } else {
         p->value = vv;
     }
@@ -992,6 +1007,7 @@ void Instance::userDeleteKeys(Param* p, double time)
     if (p->dim > 0) p->value = p->valueAt(time);
     p->keys.clear();
     p->keyCurves.clear();
+    p->keyHandles.clear();
     p->props.setInt(kOfxParamPropIsAnimating, 0);
     bumpRevision();
     changed(p, kOfxChangeUserEdited, time);
@@ -1007,11 +1023,16 @@ bool Instance::userMoveKey(Param* p, double time, double to)
     if (to == time) return true;
     const std::vector<double> v = it->second;
     const int curve = p->keyCurve(time);
+    const auto hit = p->keyHandles.find(time);
+    const std::vector<double> handles = hit != p->keyHandles.end() ? hit->second : std::vector<double>();
     p->keys.erase(it);
     p->keyCurves.erase(time);
+    p->keyHandles.erase(time);
     p->keys[to] = v;
     if (curve != Param::KeyLinear) p->keyCurves[to] = curve;
     else p->keyCurves.erase(to);
+    if (!handles.empty()) p->keyHandles[to] = handles;
+    else p->keyHandles.erase(to);
     currentTime = to;
     bumpRevision();
     changed(p, kOfxChangeUserEdited, to);
@@ -1021,10 +1042,23 @@ bool Instance::userMoveKey(Param* p, double time, double to)
 
 bool Instance::userSetKeyCurve(Param* p, double time, int curve)
 {
-    if (!p || p->dim == 0 || !p->keys.count(time) || curve < Param::KeyLinear || curve > Param::KeyHold) return false;
+    if (!p || p->dim == 0 || !p->keys.count(time) || curve < Param::KeyLinear || curve > Param::kLastKeyCurve) return false;
     std::lock_guard<std::recursive_mutex> lk(mutex);
     if (curve == Param::KeyLinear) p->keyCurves.erase(time);
     else p->keyCurves[time] = curve;
+    // (a key made Manual or Split Manual gets handles along the curve's slope; one that keeps its handles keeps them)
+    if (Param::curveHasHandles(curve) && !p->keyHandles.count(time)) p->keyHandles[time] = p->defaultHandles(time);
+    bumpRevision();
+    changed(p, kOfxChangeUserEdited, time);
+    if (onParamChanged) onParamChanged(p, "value");
+    return true;
+}
+
+bool Instance::userSetKeyHandles(Param* p, double time, const std::vector<double>& handles)
+{
+    if (!p || p->dim == 0 || !p->keys.count(time) || handles.size() != (size_t)p->dim * 4) return false;
+    std::lock_guard<std::recursive_mutex> lk(mutex);
+    p->keyHandles[time] = handles;
     bumpRevision();
     changed(p, kOfxChangeUserEdited, time);
     if (onParamChanged) onParamChanged(p, "value");
@@ -1040,6 +1074,7 @@ bool Instance::userDeleteKey(Param* p, double time)
     if (p->keys.size() == 1) p->value = it->second;
     p->keys.erase(it);
     p->keyCurves.erase(time);
+    p->keyHandles.erase(time);
     p->props.setInt(kOfxParamPropIsAnimating, p->keys.empty() ? 0 : 1);
     bumpRevision();
     changed(p, kOfxChangeUserEdited, time);
@@ -1328,6 +1363,16 @@ Json Instance::saveState()
                         kc.push(one);
                     }
                 if (kc.size() > 0) e["kc"] = kc;
+                // Manual / Split Manual keys' handles: [[time, in times..., in values..., out times..., out values...], ...]
+                Json kh = Json::array();
+                for (const auto& h : p->keyHandles)
+                    if (p->keys.count(h.first) && Param::curveHasHandles(p->keyCurve(h.first))) {
+                        Json one = Json::array();
+                        one.push(h.first);
+                        for (double x : h.second) one.push(x);
+                        kh.push(one);
+                    }
+                if (kh.size() > 0) e["kh"] = kh;
             }
         } else {
             e["s"] = p->str;
@@ -1385,8 +1430,19 @@ void Instance::loadState(const Json& state)
                 if (c.size() < 2) continue;
                 const double t = c.at(0).asDouble();
                 const int curve = c.at(1).asInt();
-                if (p->keys.count(t) && curve > Param::KeyLinear && curve <= Param::KeyHold) p->keyCurves[t] = curve;
+                if (p->keys.count(t) && curve > Param::KeyLinear && curve <= Param::kLastKeyCurve) p->keyCurves[t] = curve;
             }
+            p->keyHandles.clear();
+            for (const auto& h : e.get("kh").items()) {
+                if (h.size() < 1 + (size_t)p->dim * 4) continue;
+                const double t = h.at(0).asDouble();
+                std::vector<double> hv((size_t)p->dim * 4);
+                for (size_t i = 0; i < hv.size(); ++i) hv[i] = h.at(i + 1).asDouble();
+                if (p->keys.count(t)) p->keyHandles[t] = hv;
+            }
+            // (a Manual or Split Manual key that came without handles gets them)
+            for (const auto& c : p->keyCurves)
+                if (Param::curveHasHandles(c.second) && !p->keyHandles.count(c.first)) p->keyHandles[c.first] = p->defaultHandles(c.first);
             p->props.setInt(kOfxParamPropIsAnimating, p->keys.empty() ? 0 : 1);
         } else {
             p->str = e.get("s").asString();
@@ -1398,10 +1454,11 @@ void Instance::loadState(const Json& state)
     }
     bumpRevision();
     clipPrefsDirty = true;
-    struct Saved { Param* p; std::vector<double> value; std::map<double, std::vector<double>> keys; std::string str; std::map<double, std::string> strKeys; std::map<double, int> curves; };
+    struct Saved { Param* p; std::vector<double> value; std::map<double, std::vector<double>> keys; std::string str; std::map<double, std::string> strKeys; std::map<double, int> curves;
+                   std::map<double, std::vector<double>> handles; };
     std::vector<Saved> saved;
     for (const auto& p : params.params)
-        if (p->hasValue() && ps.has(p->name)) saved.push_back({p.get(), p->value, p->keys, p->str, p->strKeys, p->keyCurves});
+        if (p->hasValue() && ps.has(p->name)) saved.push_back({p.get(), p->value, p->keys, p->str, p->strKeys, p->keyCurves, p->keyHandles});
     for (const auto& sv : saved) changed(sv.p, kOfxChangeUserEdited, currentTime);
     for (const auto& sv : saved) {
         sv.p->value = sv.value;
@@ -1409,6 +1466,7 @@ void Instance::loadState(const Json& state)
         sv.p->str = sv.str;
         sv.p->strKeys = sv.strKeys;
         sv.p->keyCurves = sv.curves;
+        sv.p->keyHandles = sv.handles;
         sv.p->props.setInt(kOfxParamPropIsAnimating, (sv.p->keys.empty() && sv.p->strKeys.empty()) ? 0 : 1);
     }
     bumpRevision();

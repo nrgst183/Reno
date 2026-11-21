@@ -83,9 +83,20 @@ struct Param {
     std::map<double, std::vector<double>> keys;
     std::map<double, std::string> strKeys;
     // Interpolation from a keyframe to the next (VEGAS's types; keys not listed: Linear). Values are the engine's fade curves (src/engine/project.h):
-    // 0 Linear, 1 Fast, 2 Slow, 3 Smooth, 4 Sharp, 5 Hold.
-    enum KeyCurve { KeyLinear = 0, KeyFast = 1, KeySlow = 2, KeySmooth = 3, KeySharp = 4, KeyHold = 5 };
+    // 0 Linear, 1 Fast, 2 Slow, 3 Smooth, 4 Sharp, 5 Hold; then VEGAS's Manual and Split Manual, whose curves are shaped by
+    // the keys' handles (keyHandles).
+    enum KeyCurve { KeyLinear = 0, KeyFast = 1, KeySlow = 2, KeySmooth = 3, KeySharp = 4, KeyHold = 5, KeyManual = 6, KeySplit = 7 };
+    static constexpr int kLastKeyCurve = KeySplit;
     std::map<double, int> keyCurves;
+    // A Manual or Split Manual key's handles, as a .veg keeps them: per dimension the in handle's time offset (frames, not
+    // after the key), then the in handles' values, then the out handles' time offsets (not before the key) and values
+    // (4 x dim numbers). The curve after a key with handles is a Bezier from it, through its out handle and the next key's
+    // in handle (a key without handles: a third of the way along the straight line), to the next key. Manual keeps a
+    // key's two handles in line; Split Manual moves them apart.
+    std::map<double, std::vector<double>> keyHandles;
+    static bool curveHasHandles(int c) { return c == KeyManual || c == KeySplit; }
+    // Handles for a key just made Manual or Split Manual: along the slope through its neighbours, a third of the way to each.
+    std::vector<double> defaultHandles(double time) const;
     static std::atomic<int>& newKeyCurve()
     {
         static std::atomic<int> c{0};
@@ -246,6 +257,8 @@ public:
     // deleted (the last one gone, the setting keeps its value). False if there is no key at 'time'.
     bool userMoveKey(Param* p, double time, double to);
     bool userSetKeyCurve(Param* p, double time, int curve);
+    // A Manual / Split Manual key's handles (Param::keyHandles' layout). False if there is no key at 'time'.
+    bool userSetKeyHandles(Param* p, double time, const std::vector<double>& handles);
     bool userDeleteKey(Param* p, double time);
     void beginEdit();
     void endEdit();

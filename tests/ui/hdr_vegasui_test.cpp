@@ -10,6 +10,7 @@
 #include "uitestlib.h"
 #include <QApplication>
 #include <QDir>
+#include <QLineEdit>
 #include <QMenu>
 #include <QSettings>
 #include <QTimer>
@@ -467,6 +468,34 @@ void groups(TimelineWidget* tl)
     }
     uitest::mouseClick(tl, tl->trackGroupRect(v1, 1).center());
     check(tl->trackRect(v1).height() > 0 && tl->trackRect(v2).height() > 0, "and expands it again");
+
+    // ---- its scribble strip: double-click, type the name, Enter (VEGAS 18 manual "Renaming track groups")
+    const uint64_t group = findTrack(v1)->trackGroup;
+    check(app.project().trackGroupName(group).empty(), "a new track group has no name");
+    uitest::mouseDoubleClick(tl, tl->trackGroupRect(v1, 2).center());
+    uitest::settle(30);
+    QLineEdit* edit = nullptr;
+    for (QLineEdit* e : tl->findChildren<QLineEdit*>())
+        if (e->isVisible()) edit = e;
+    check(edit != nullptr, "double-clicking the group's name strip opens a box to type in");
+    if (edit) {
+        edit->setText("Surfing");
+        QMetaObject::invokeMethod(edit, "editingFinished");
+        uitest::settle(30);
+    }
+    check(app.project().trackGroupName(group) == "Surfing" && app.undoName() == "Rename Track Group", "Enter names the group, one undo step",
+          app.project().trackGroupName(group) + " / " + app.undoName());
+    {
+        const QRect r0 = tl->trackGroupRect(v1, 0);
+        tl->grab(QRect(0, r0.top(), tl->width(), tl->headerRect(v3).bottom() - r0.top() + 1)).save(gOut + "/group_named.png");
+    }
+    Project back;
+    const bool read = back.fromJson(app.project().toJson());
+    check(read && back.trackGroupName(group) == "Surfing", "the name is kept in Reno's project file");
+    app.undo();
+    check(app.project().trackGroupName(group).empty(), "and undo takes it away");
+    app.redo();
+    check(app.project().trackGroupName(group) == "Surfing", "redo puts it back");
     tl->setHeaderWidth(161);
 }
 

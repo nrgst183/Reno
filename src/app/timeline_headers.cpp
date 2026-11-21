@@ -506,10 +506,12 @@ void TimelineWidget::Impl::paintGroupRows(QPainter& p, const QRect& clip, bool l
         else tri << QPointF(tc.x() - 4.0, tc.y() - 2.0) << QPointF(tc.x() + 4.0, tc.y() - 2.0) << QPointF(tc.x(), tc.y() + 3.0);
         p.drawPolygon(tri);
         p.restore();
-        // (a track group has no name of its own in the project yet: VEGAS's default name is shown)
+        // its scribble strip: the name typed there (VEGAS 18 manual p214: "Surfing"), none until then
         p.setFont(q->font());
         p.setPen(QColor(226, 214, 150));
-        p.drawText(r.name, Qt::AlignVCenter | Qt::AlignLeft, QFontMetrics(q->font()).elidedText(QString("Track Group"), Qt::ElideRight, r.name.width()));
+        if (!(naming == Naming::Group && renaming == g.group))
+            p.drawText(r.name, Qt::AlignVCenter | Qt::AlignLeft,
+                       QFontMetrics(q->font()).elidedText(QString::fromStdString(pr.trackGroupName(g.group)), Qt::ElideRight, r.name.width()));
         bool allMuted = true, allSolo = true;
         for (size_t k = g.first; k <= g.last && k < pr.tracks.size(); ++k) {
             allMuted = allMuted && pr.tracks[k].mute;

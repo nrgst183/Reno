@@ -193,6 +193,48 @@ std::vector<std::string> Param::choices() const
     return out;
 }
 
+std::vector<double> Param::defaultHandles(double time) const
+{
+    std::vector<double> h((size_t)dim * 4, 0.0);
+    auto it = keys.find(time);
+    if (it == keys.end() || dim == 0) return h;
+    const auto prev = it == keys.begin() ? keys.end() : std::prev(it);
+    const auto next = std::next(it);
+    const double before = prev != keys.end() ? time - prev->first : 0.0, after = next != keys.end() ? next->first - time : 0.0;
+    for (int d = 0; d < dim; ++d) {
+        const auto at = [&](decltype(it) k) { return d < (int)k->second.size() ? k->second[(size_t)d] : 0.0; };
+        const double v = at(it);
+        double slope = 0.0;
+        if (prev != keys.end() && next != keys.end()) slope = (at(next) - at(prev)) / (next->first - prev->first);
+        else if (next != keys.end()) slope = (at(next) - v) / after;
+        else if (prev != keys.end()) slope = (v - at(prev)) / before;
+        const double inT = -(before > 0 ? before / 3.0 : 1.0), outT = after > 0 ? after / 3.0 : 1.0;
+        h[(size_t)d] = inT;
+        h[(size_t)dim + d] = v + slope * inT;
+        h[(size_t)dim * 2 + d] = outT;
+        h[(size_t)dim * 3 + d] = v + slope * outT;
+    }
+    return h;
+}
+
+// One dimension of a Bezier segment from (t0, v0) through (t1, v1) and (t2, v2) to (t3, v3), at 'time' (the handles' times
+// kept inside the segment, so time only grows along it).
+static double bezierAt(double t0, double v0, double t1, double v1, double t2, double v2, double t3, double v3, double time)
+{
+    t1 = std::max(t0, std::min(t3, t1));
+    t2 = std::max(t0, std::min(t3, t2));
+    double a = 0.0, b = 1.0, u = 0.5;
+    for (int i = 0; i < 50; ++i) {
+        u = 0.5 * (a + b);
+        const double m = 1.0 - u;
+        const double x = m * m * m * t0 + 3.0 * m * m * u * t1 + 3.0 * m * u * u * t2 + u * u * u * t3;
+        if (x < time) a = u;
+        else b = u;
+    }
+    const double m = 1.0 - u;
+    return m * m * m * v0 + 3.0 * m * m * u * v1 + 3.0 * m * u * u * v2 + u * u * u * v3;
+}
+
 std::vector<double> Param::valueAt(double time) const
 {
     if (keys.empty() || dim == 0) return value;
@@ -201,6 +243,24 @@ std::vector<double> Param::valueAt(double time) const
     if (hi == keys.begin() || hi->first == time) return hi->second;
     auto lo = std::prev(hi);
     if (kind == ParamKind::Bool || kind == ParamKind::Choice) return lo->second;
+    if (curveHasHandles(keyCurve(lo->first))) {
+        // Manual / Split Manual: the Bezier through the keys' handles
+        const auto hl = keyHandles.find(lo->first), hh = keyHandles.find(hi->first);
+        const bool hiHandles = curveHasHandles(keyCurve(hi->first)) && hh != keyHandles.end();
+        const double t0 = lo->first, t3 = hi->first, len = t3 - t0;
+        std::vector<double> v((size_t)dim);
+        for (int k = 0; k < dim; ++k) {
+            const double a = k < (int)lo->second.size() ? lo->second[(size_t)k] : 0.0;
+            const double b = k < (int)hi->second.size() ? hi->second[(size_t)k] : 0.0;
+            const auto handle = [&](const std::vector<double>& h, int part) { return (size_t)(dim * part + k) < h.size() ? h[(size_t)(dim * part + k)] : 0.0; };
+            double t1 = t0 + len / 3.0, v1 = a + (b - a) / 3.0, t2 = t3 - len / 3.0, v2 = b - (b - a) / 3.0;
+            if (hl != keyHandles.end()) { t1 = t0 + handle(hl->second, 2); v1 = handle(hl->second, 3); }
+            if (hiHandles) { t2 = t3 + handle(hh->second, 0); v2 = handle(hh->second, 1); }
+            v[(size_t)k] = bezierAt(t0, a, t1, v1, t2, v2, t3, b, time);
+            if (isWhole()) v[(size_t)k] = std::floor(v[(size_t)k] + 0.5);
+        }
+        return v;
+    }
     double t = (time - lo->first) / (hi->first - lo->first);
     switch (keyCurve(lo->first)) {
     case KeyFast: t = 1.0 - (1.0 - t) * (1.0 - t); break;

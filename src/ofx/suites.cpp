@@ -477,6 +477,7 @@ static OfxStatus paramDeleteKey(OfxParamHandle h, OfxTime time)
     if (it == p->keys.end()) return kOfxStatErrBadIndex;
     if (p->keys.size() == 1) p->value = it->second;
     p->keyCurves.erase(it->first);
+    p->keyHandles.erase(it->first);
     p->keys.erase(it);
     p->props.setInt(kOfxParamPropIsAnimating, p->keys.empty() ? 0 : 1);
     pluginSetParam(p);
@@ -490,6 +491,7 @@ static OfxStatus paramDeleteAllKeys(OfxParamHandle h)
     if (!p->keys.empty()) p->value = p->valueAt(instanceTime(p));
     p->keys.clear();
     p->keyCurves.clear();
+    p->keyHandles.clear();
     if (!p->strKeys.empty()) p->str = p->strAt(instanceTime(p));
     p->strKeys.clear();
     p->props.setInt(kOfxParamPropIsAnimating, 0);

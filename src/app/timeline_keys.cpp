@@ -196,6 +196,10 @@ bool TimelineWidget::Impl::namedStillThere() const
     case Naming::Track: return rowOf(renaming) != nullptr;
     case Naming::Event: return app.project().findEvent(renaming) != nullptr;
     case Naming::Marker: return markerIndex(renaming) >= 0;
+    case Naming::Group:
+        for (const Track& t : app.project().tracks)
+            if (t.trackGroup == renaming) return true;
+        return false;
     default: return false;
     }
 }
@@ -220,6 +224,14 @@ void TimelineWidget::Impl::placeNameEdit()
         const int right = std::max(left + 160, (int)std::min(er.right(), (double)lanesRight()));
         n = QRect(left, (int)er.top() - 2, right - left, kTitleH + 6);
         nameEdit->setVisible(n.top() >= kTopH - 2 && n.bottom() <= lanesBottom());
+    } else if (naming == Naming::Group) {
+        const GroupRow* g = nullptr;
+        for (const GroupRow& gr : groupRows)
+            if (gr.group == renaming) g = &gr;
+        if (!g) return;
+        const GroupRects r = groupRects(*g);
+        n = QRect(r.name.left() - 3, r.name.top() - 1, r.mute.left() - 4 - r.name.left() + 3, r.name.height() + 2);
+        nameEdit->setVisible(n.top() >= kTopH - 2 && n.bottom() <= lanesBottom());
     } else {
         const int k = markerIndex(renaming);
         if (k < 0) return;
@@ -242,6 +254,8 @@ void TimelineWidget::Impl::startRename(Naming kind, uint64_t id)
         const Event* e = app.project().findEvent(id);
         if (!e) return;
         current = e->name;
+    } else if (kind == Naming::Group) {
+        current = app.project().trackGroupName(id);
     } else {
         const int k = markerIndex(id);
         if (k < 0) return;
@@ -280,6 +294,13 @@ void TimelineWidget::Impl::endRename(bool keep)
             const Event* e = app.project().findEvent(id);
             if (e && e->name != text)
                 app.edit("Rename Event", [&](Project& p) { if (Event* o = p.findEvent(id)) o->name = text; });
+        } else if (kind == Naming::Group) {
+            if (app.project().trackGroupName(id) != text)
+                app.edit("Rename Track Group", [&](Project& p) {
+                    auto& names = p.trackGroupNames;
+                    names.erase(std::remove_if(names.begin(), names.end(), [id](const std::pair<uint64_t, std::string>& n) { return n.first == id; }), names.end());
+                    if (!text.empty()) names.push_back({id, text});
+                });
         } else {
             const int k = markerIndex(id);
             if (k >= 0 && app.project().markers[(size_t)k].name != text)

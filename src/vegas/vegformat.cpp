@@ -444,15 +444,36 @@ static bool valueLayout(const Bytes& v, ValLayout& out)
 
 // A key's interpolation as stored (OFXInterpolationType: 1 Linear, 2 Fast, 3 Slow, 4 Smooth, 5 Sharp, 6 Hold,
 // 7 Manual, 8 Split; every number key in the samples has 1, choices and other whole numbers 0) mapped to Reno's
-// OpenFX host curve (Param::KeyCurve: 0 Linear, 1 Fast, 2 Slow, 3 Smooth, 4 Sharp, 5 Hold), and back. Manual and
-// Split (Bezier handles) become Linear.
+// OpenFX host curve (Param::KeyCurve: 0 Linear, 1 Fast, 2 Slow, 3 Smooth, 4 Sharp, 5 Hold, 6 Manual, 7 Split Manual),
+// and back. Manual and Split shape the curve with the key's handles (its tangents, read into "kh").
 int curveOfOfxInterp(uint32_t v)
 {
-    return (v >= 2 && v <= 6) ? (int)v - 1 : 0;
+    return (v >= 2 && v <= 8) ? (int)v - 1 : 0;
 }
 uint32_t ofxInterpOfCurve(int curve)
 {
-    return (curve >= 1 && curve <= 5) ? (uint32_t)curve + 1 : 1u;
+    return (curve >= 1 && curve <= 7) ? (uint32_t)curve + 1 : 1u;
+}
+
+// The "kh" of Reno's state ([[frame, in times..., in values..., out times..., out values...], ...]) for a number's
+// Manual and Split keys: their tangents as stored after the key's values (per dimension the in handle's time offset,
+// the in values, the out time offsets, the out values).
+static Json keyHandlesJson(const Bytes& v, const ValLayout& lay)
+{
+    Json kh = Json::array();
+    if (lay.kind != ValKind::Double) return kh;
+    const size_t dims = lay.vsize / 8;
+    size_t k0 = lay.vsize + 4;
+    for (uint32_t k = 0; k < lay.keys; ++k, k0 += lay.keySize) {
+        const uint32_t interp = v.u32(k0 + 8);
+        if (interp != 7 && interp != 8) continue;
+        if (!v.has(k0 + 12 + lay.vsize, 4 * lay.vsize)) continue;
+        Json one = Json::array();
+        one.push(v.f64(k0));
+        for (size_t i = 0; i < 4 * dims; ++i) one.push(v.f64(k0 + 12 + lay.vsize + 8 * i));
+        kh.push(one);
+    }
+    return kh;
 }
 
 // The "kc" of Reno's state ([[frame, curve], ...], non-Linear keys only) for a number's keys.
@@ -536,6 +557,8 @@ bool readOfxRecord(const Bytes& b, size_t off, OfxRecord& out)
                 e["k"] = ks;
                 const Json kc = keyCurvesJson(v, lay);
                 if (kc.size() > 0) e["kc"] = kc;
+                const Json kh = keyHandlesJson(v, lay);
+                if (kh.size() > 0) e["kh"] = kh;
                 ++out.keyframedParams;
             }
         }
@@ -1197,6 +1220,8 @@ Json paramJson(const Bytes& v, const ValLayout& lay)
         e["k"] = ks;
         const Json kc = keyCurvesJson(v, lay);
         if (kc.size() > 0) e["kc"] = kc;
+        const Json kh = keyHandlesJson(v, lay);
+        if (kh.size() > 0) e["kh"] = kh;
     }
     return e;
 }
@@ -1310,7 +1335,7 @@ std::string numberValue(const Json& e, size_t dims, bool whole, const Bytes* ori
                 if (std::fabs(orig->f64(k0) - t) < 1e-9) { ok = k0; break; }
         }
         // interpolation: whole numbers keep the original's (0); a number's comes from its curve in "kc" (the original
-        // key keeps its own while it means the same curve; Manual and Split count as Linear)
+        // key keeps its own while it means the same curve)
         uint32_t interp = ok != std::string::npos ? orig->u32(ok + 8) : (whole ? 0u : 1u);
         if (!whole) {
             int curve = 0;
@@ -1322,17 +1347,28 @@ std::string numberValue(const Json& e, size_t dims, bool whole, const Bytes* ori
         for (size_t d = 0; d < dims; ++d) putNumber(key, d + 1 < k.size() ? k.at(d + 1).asDouble() : 0.0, whole);
         if (!whole) {
             // tangents: per dimension the in handle's time offset and value, then the out handle's
-            std::vector<double> inT(dims, -0.1), outT(dims, 0.1);
+            std::vector<double> inT(dims, -0.1), outT(dims, 0.1), inV(dims), outV(dims);
+            for (size_t d = 0; d < dims; ++d) inV[d] = outV[d] = d + 1 < k.size() ? k.at(d + 1).asDouble() : 0.0;
             if (ok != std::string::npos) {
                 for (size_t d = 0; d < dims; ++d) {
                     inT[d] = orig->f64(ok + 12 + vsize + 8 * d);
                     outT[d] = orig->f64(ok + 12 + vsize + 2 * vsize + 8 * d);
                 }
             }
+            // a Manual / Split key's own handles (Reno's "kh")
+            if (interp == 7 || interp == 8)
+                for (const auto& h : e.get("kh").items())
+                    if (h.size() >= 1 + 4 * dims && std::fabs(h.at(0).asDouble() - t) < 1e-9)
+                        for (size_t d = 0; d < dims; ++d) {
+                            inT[d] = h.at(1 + d).asDouble();
+                            inV[d] = h.at(1 + dims + d).asDouble();
+                            outT[d] = h.at(1 + 2 * dims + d).asDouble();
+                            outV[d] = h.at(1 + 3 * dims + d).asDouble();
+                        }
             for (size_t d = 0; d < dims; ++d) addF64(key, inT[d]);
-            for (size_t d = 0; d < dims; ++d) addF64(key, d + 1 < k.size() ? k.at(d + 1).asDouble() : 0.0);
+            for (size_t d = 0; d < dims; ++d) addF64(key, inV[d]);
             for (size_t d = 0; d < dims; ++d) addF64(key, outT[d]);
-            for (size_t d = 0; d < dims; ++d) addF64(key, d + 1 < k.size() ? k.at(d + 1).asDouble() : 0.0);
+            for (size_t d = 0; d < dims; ++d) addF64(key, outV[d]);
         }
         s += key;
     }

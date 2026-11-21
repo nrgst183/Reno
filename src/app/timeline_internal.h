@@ -419,7 +419,7 @@ struct TimelineWidget::Impl {
     uint64_t markerAnchor = 0;
     int headerW = kHeaderDefault;
     NameEdit* nameEdit = nullptr;
-    enum class Naming { None, Track, Event, Marker };
+    enum class Naming { None, Track, Event, Marker, Group };
     Naming naming = Naming::None;
     uint64_t renaming = 0;
     QTimer* autoScroll = nullptr;

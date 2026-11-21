@@ -308,7 +308,8 @@ static bool checkKeyCurves(const std::string& file)
         check(back.state.get("params").get("Center").get("kc").dump() == cc.dump(), "Center's Sharp key comes back");
         // the interpolation numbers VEGAS's scripting uses: Fast 2, Smooth 4, Hold 6, Linear 1
         check(curveOfOfxInterp(2) == 1 && curveOfOfxInterp(4) == 3 && curveOfOfxInterp(6) == 5 && curveOfOfxInterp(1) == 0 &&
-              curveOfOfxInterp(7) == 0 && ofxInterpOfCurve(0) == 1 && ofxInterpOfCurve(5) == 6, "interpolation numbers");
+              curveOfOfxInterp(7) == 6 && curveOfOfxInterp(8) == 7 && ofxInterpOfCurve(0) == 1 && ofxInterpOfCurve(5) == 6 &&
+                  ofxInterpOfCurve(6) == 7 && ofxInterpOfCurve(7) == 8, "interpolation numbers (Manual and Split Manual too)");
         // back to Linear: every key 1 again
         st["params"]["Feather"]["kc"] = Json::array();
         in.state = st;

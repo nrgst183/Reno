@@ -584,6 +584,14 @@ struct Project {
         std::string comment;    // a command marker's Comment (Command Properties; in a .veg its first text)
     };
     std::vector<Marker> markers;        // markers and regions
+    // Track groups' names (VEGAS's track group scribble strip), by the group id in Track::trackGroup; a group without one
+    // has no name. Reno's own project files keep them (where a .veg keeps track groups is not known).
+    std::vector<std::pair<uint64_t, std::string>> trackGroupNames;
+    std::string trackGroupName(uint64_t group) const
+    {
+        for (const auto& n : trackGroupNames) if (n.first == group) return n.second;
+        return std::string();
+    }
     // Project Media's bins: every user bin's path ("Interviews", "Interviews/Day 1"), kept even when empty, and the
     // smart bins (a name and the search they show).
     std::vector<std::string> mediaBins;

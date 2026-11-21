@@ -1243,6 +1243,11 @@ void TimelineWidget::Impl::doubleClick(QMouseEvent* ev)
         if (q->onTrackMotion) q->onTrackMotion(id);
         break;
     case Part::HeaderName: startRename(Naming::Track, id); break;
+    case Part::GroupName:
+        // a track group's scribble strip: double-click to type its name
+        for (const Track& t : app.project().tracks)
+            if (t.id == h.track && t.trackGroup) startRename(Naming::Group, t.trackGroup);
+        break;
     case Part::MarkerTag:
     case Part::RegionEndTag: {
         // VEGAS: a double-click on a region's (or CD track's) tag selects it; on a command marker's, its Command

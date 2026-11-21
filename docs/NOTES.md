@@ -90,6 +90,11 @@ above each reader or writer says which parts are confirmed and which are guesses
   output and the master, a bus's pan position, a master solo, surround pans, multichannel channel
   choice, Trimmer markers, Red Eye Reduction areas, and keyframe interpolation other than Linear for keys that did
   not come from a `.veg`. The Color Grading panel's effect and adjustment tracks have no VEGAS equivalent.
+- OpenFX keyframes of the Manual and Split Manual types (VEGAS's interpolation 7 and 8) keep their handles: a `.veg`
+  key's tangents (per dimension the in handle's time offset and value, then the out handle's) are read into the
+  effect's state as `kh` and written back, and the curve between keys is a Bezier through them
+  (`Param::keyHandles`, `src/ofx/props.cpp`). The handles' time offsets are taken to be in frames like the key times;
+  no sample with Manual keys confirms it. A track group's name is kept in Reno's own project files only.
 - Written from the files of a Settings Matrix run (`tools/scripts/Reno Settings Matrix.cs`, one change per file;
   `vegmatrix_write_test` rebuilds each change from its base and compares the records byte for byte with VEGAS's):
   a bus's mute, solo and pan type and the master's mute, the compositing parent/child setting (one level), an

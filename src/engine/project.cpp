@@ -1449,6 +1449,16 @@ Json Project::toJson() const
     Json mk = Json::array();
     for (const auto& m : markers) mk.push(markerToJson(m));
     j["markers"] = mk;
+    if (!trackGroupNames.empty()) {
+        Json gn = Json::array();
+        for (const auto& n : trackGroupNames) {
+            Json o = Json::object();
+            o["group"] = n.first;
+            o["name"] = n.second;
+            gn.push(o);
+        }
+        j["trackGroupNames"] = gn;
+    }
     j["nextId"] = nextId;
     Json ms = Json::array();
     for (const auto& m : media) ms.push(mediaItemToJson(m));
@@ -1797,6 +1807,8 @@ bool Project::fromJson(const Json& j, std::string* error)
     p.videoFadeTop = (uint32_t)j.get("videoFadeTop").asDouble((double)0xFFFFFFFFu);
     p.videoFadeBottom = (uint32_t)j.get("videoFadeBottom").asDouble((double)0xFF000000u);
     for (const auto& jm : j.get("markers").items()) p.markers.push_back(markerFromJson(jm));
+    for (const auto& g : j.get("trackGroupNames").items())
+        if (g.get("group").asUInt64() && !g.get("name").asString().empty()) p.trackGroupNames.push_back({g.get("group").asUInt64(), g.get("name").asString()});
     for (const auto& b : j.get("mediaBins").items())
         if (!b.asString().empty()) p.mediaBins.push_back(b.asString());
     for (const auto& b : j.get("smartBins").items()) p.smartBins.push_back({b.get("name").asString(), b.get("search").asString()});
