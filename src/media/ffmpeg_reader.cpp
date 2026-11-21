@@ -91,6 +91,56 @@ int64_t aacDelaySamples(const std::string& format, AVCodecID codec, int profile)
     return 2112;
 }
 
+// An MP3 file with a Xing/Info frame (LAME, FFmpeg and most encoders write one): FFmpeg leaves that frame out and drops
+// the encoder's delay and the decoder's 529 samples after it (its stream starts that late), but VEGAS plays the frame as
+// silence and drops nothing, so its sound of the file starts this many samples earlier (2257 at 48 kHz for a 576-sample
+// encoder delay: 1152 + 576 + 529; checked against VEGAS's render of such a file). Returned negative, as aDelay_ (samples
+// VEGAS drops) is; 0 for anything else.
+int64_t mp3LeadSamples(const std::string& path, const std::string& format, const AVStream* st)
+{
+    if (format != "mp3" || !st || st->codecpar->codec_id != AV_CODEC_ID_MP3 || st->codecpar->sample_rate <= 0) return 0;
+    FILE* f = nullptr;
+#ifdef _WIN32
+    f = _wfopen(widen(path).c_str(), L"rb");
+#else
+    f = std::fopen(path.c_str(), "rb");
+#endif
+    if (!f) return 0;
+    std::vector<uint8_t> b(16384);
+    const size_t got = std::fread(b.data(), 1, b.size(), f);
+    // past an ID3v2 tag at the start
+    size_t at = 0;
+    if (got >= 10 && b[0] == 'I' && b[1] == 'D' && b[2] == '3') {
+        const size_t tag = ((size_t)(b[6] & 0x7f) << 21) | ((size_t)(b[7] & 0x7f) << 14) | ((size_t)(b[8] & 0x7f) << 7) | (size_t)(b[9] & 0x7f);
+        at = 10 + tag + ((b[5] & 0x10) ? 10 : 0);
+        if (at + 4 > got) {
+            b.resize(at + 4096);
+            std::fseek(f, (long)at, SEEK_SET);
+            const size_t more = std::fread(b.data() + at, 1, 4096, f);
+            b.resize(at + more);
+        } else {
+            b.resize(got);
+        }
+    } else {
+        b.resize(got);
+    }
+    std::fclose(f);
+    // the first frame: its header, then Xing or Info within it
+    while (at + 4 <= b.size() && !(b[at] == 0xff && (b[at + 1] & 0xe0) == 0xe0)) ++at;
+    if (at + 4 > b.size()) return 0;
+    const bool mpeg1 = (b[at + 1] & 0x18) == 0x18;
+    const int frameSamples = mpeg1 ? 1152 : 576;
+    bool info = false;
+    for (size_t k = at + 4; k + 4 <= b.size() && k < at + 64; ++k)
+        if (std::memcmp(&b[k], "Xing", 4) == 0 || std::memcmp(&b[k], "Info", 4) == 0) info = true;
+    if (!info) return 0;
+    // what FFmpeg skipped after it: its stream's start
+    int64_t skipped = 0;
+    if (st->start_time != kNoPts && st->start_time > 0)
+        skipped = av_rescale_q(st->start_time, st->time_base, av_make_q(1, st->codecpar->sample_rate));
+    return -(frameSamples + skipped);
+}
+
 void setError(std::string* error, const std::string& text)
 {
     if (error) *error = text;
@@ -917,6 +967,7 @@ void FFReader::describeAudio(AVFormatContext* fc, const std::string& format, int
     info_.channelNames = speakerNames(par->ch_layout, info_.channels);
     info_.audioCodec = avcodec_get_name(par->codec_id);
     aDelay_ = aacDelaySamples(format, par->codec_id, par->profile);
+    if (!aDelay_) aDelay_ = mp3LeadSamples(info_.path, format, st);
     info_.audioDelaySamples = (int)aDelay_;
     if (vi < 0) {
         if (st->start_time != kNoPts) originUs_ = av_rescale_q(st->start_time, st->time_base, us);

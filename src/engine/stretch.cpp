@@ -361,7 +361,28 @@ private:
             G = tab[i] + (tab[i + 1] - tab[i]) * (x - kX[i]) / (kX[i + 1] - kX[i]);
         }
         const double w = std::min(1.0, noisiness(energy) / 0.01);
-        return (pro_ ? 0.989 : 1.0) * (1.0 - (1.0 - G) * w);
+        return (pro_ ? 0.989 : 1.0) * (1.0 - (1.0 - G) * w) * levelMatch();
+    }
+
+    // The level against VEGAS's renders of the same events at each stretch (tools/vegas/Stretch Samples.cs: 48 playback
+    // rates and 23 lengths of a music excerpt per mode, tests/vegas/stretch_samples_test.cpp), smoothed over ln(rate):
+    // Efficient came out about 1 dB loud when shortening, Pro up to 1.5 dB quiet when shortening a lot. ln(alpha) against gain.
+    double levelMatch() const
+    {
+        static const double kX[] = {-1.3863, -1.0986, -0.9163, -0.6931, -0.4700, -0.2624, -0.1398, -0.0488,
+                                    -0.0100, 0.0101,  0.0513,  0.1625,  0.3567,  0.6931,  1.1087,  1.3863};
+        static const double kEff[] = {0.8517, 0.8790, 0.8750, 0.8936, 0.8845, 0.8875, 0.8862, 0.8960,
+                                      0.8971, 1.0138, 1.0112, 1.0019, 0.9784, 0.9725, 0.9653, 0.9539};
+        static const double kPro[] = {1.1848, 1.1470, 1.1556, 1.0613, 1.0133, 1.0050, 1.0208, 1.0239,
+                                      1.0243, 1.0303, 1.0304, 1.0329, 1.0357, 1.0322, 1.0568, 1.0591};
+        const int n = (int)(sizeof kX / sizeof kX[0]);
+        const double* tab = pro_ ? kPro : kEff;
+        const double x = std::log(std::max(1e-3, alpha_));
+        if (x <= kX[0]) return tab[0];
+        if (x >= kX[n - 1]) return tab[n - 1];
+        int i = 0;
+        while (x > kX[i + 1]) ++i;
+        return tab[i] + (tab[i + 1] - tab[i]) * (x - kX[i]) / (kX[i + 1] - kX[i]);
     }
 
     // the log spectral envelope of mag_ into env_ (real cepstrum, low quefrencies kept)

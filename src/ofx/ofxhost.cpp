@@ -1179,6 +1179,13 @@ struct RenderCall {
         in.setInt(kRenoOfxImageEffectPropOpenCLEnabled, 0);
         if (vegas) in.setString(kVegasPropRenderQuality, vegasQuality());
         st = plugin->call(kOfxImageEffectActionRender, &inst, &in, nullptr);
+        if (plugin->crashed) {
+            // what it was asked for when it crashed (it is not called again this session: one crash, wherever it was -
+            // a preset's thumbnail, the preview - leaves the effect out everywhere)
+            logf("ofx: %s crashed rendering %dx%d at %.4f s (render scale %.4g x %.4g, %s%s%s)", plugin->info.id.c_str(), w, h, time,
+                 inst.renderScale[0], inst.renderScale[1], opt.interactive ? "preview" : "final render", gl ? ", OpenGL" : "",
+                 opt.draft ? ", draft" : "");
+        }
         if (!plugin->crashed) plugin->call(kOfxImageEffectActionEndSequenceRender, &inst, &seq, nullptr);
         if (plugin->crashed) { failMsg = plugin->error; return false; }
         if (st != kOfxStatOK) {

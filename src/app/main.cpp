@@ -13,8 +13,12 @@
 #include <QApplication>
 #include <QFileInfo>
 #include <QTimer>
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
 #include <clocale>
 #include <memory>
+#include <mutex>
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -96,6 +100,25 @@ int main(int argc, char** argv)
 
     // this run's record for crash recovery (recovery.h)
     reno::app::session::begin();
+
+    // Reno's log (plug-ins that crash or fail, what was given up on) in reno.log in Reno's folder, the last run's in
+    // reno.prev.log: the editor has no console for it to go to
+    {
+        const QString dir = QString::fromStdString(reno::userDataDir());
+        const QString log = QDir(dir).filePath("reno.log"), prev = QDir(dir).filePath("reno.prev.log");
+        QFile::remove(prev);
+        QFile::rename(log, prev);
+        auto file = std::make_shared<QFile>(log);
+        if (file->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+            auto mutex = std::make_shared<std::mutex>();
+            reno::setLogSink([file, mutex](const std::string& line) {
+                std::lock_guard<std::mutex> lk(*mutex);
+                if (file->size() > (qint64)8 << 20) return;         // (a plug-in that logs every frame is not let fill the disk)
+                file->write((QDateTime::currentDateTime().toString("hh:mm:ss.zzz ") + QString::fromStdString(line) + "\n").toUtf8());
+                file->flush();
+            });
+        }
+    }
 
     // Start as VEGAS does: splash screen while the plug-in list loads, new plug-ins are looked for, the project Reno was
     // started with is

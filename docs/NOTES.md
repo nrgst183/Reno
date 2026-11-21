@@ -130,6 +130,10 @@ Measured against VEGAS's own mixes (`.sfap0` proxies) and renders:
 
 - AAC in `.mp4`/`.mov`/`.m4a`: VEGAS drops the first 2112 samples the decoder produces (the encoder delay) after the
   file's edit list. Reno does the same.
+- MP3 with a Xing/Info frame (what LAME, FFmpeg and most encoders write): VEGAS plays that frame as silence and drops
+  neither the encoder's delay nor the decoder's 529 samples, which FFmpeg drops, so its sound starts that much earlier
+  (2257 samples for a 48 kHz file with a 576-sample encoder delay: 1152 + 576 + 529). Reno starts it as VEGAS does
+  (`mp3LeadSamples`); its unstretched render of such a file is then VEGAS's, sample for sample.
 - An event plays the timeline samples nearest its start and end and reads media from its offset rounded to a sample
   of the file.
 - Quickfade Audio Edits is off by default: VEGAS's renders show no fade at the edges of very short events.
@@ -275,7 +279,11 @@ with VEGAS's 19 presets and its splice lengths, crossfades and search ranges) an
 library and only VEGAS may use it, so Reno has its own algorithms of the same kind for the four modes: Pro (phase
 vocoder with locked partials, optional formant preservation and shift), Efficient (lighter, with a level correction
 fitted to VEGAS's renders, see `PhaseVocoder::levelGain`), Soloist (Monophonic) and Soloist (Speech)
-(pitch-synchronous). They sound close to VEGAS's, not the same.
+(pitch-synchronous). They sound close to VEGAS's, not the same. `tools/vegas/Stretch Samples.cs` renders a sound
+through VEGAS's Efficient and Pro at 48 playback rates and 23 lengths; `stretch_samples_test` makes the same events in
+Reno and measures them against those renders (lag, correlation, level, spectrum, octave bands, loudness curve). The
+level by rate is fitted to them (`PhaseVocoder::levelMatch`: within about 0.1 dB on average); the waveforms differ (a
+correlation of about 0.3 at the best lag, 2-5 dB apart per spectral bin), as two phase vocoders do.
 
 ## 32-bit VST2 plug-ins
 

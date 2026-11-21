@@ -16,6 +16,10 @@ They are written for VEGAS Pro 18 (Tools > Scripting) in C# 5, and compile again
 the script is wrong; report the error text.
 
 
+  Stretch Samples.cs       renders a sound file through VEGAS's élastique Efficient and Pro at 48 playback rates and
+                           23 event lengths (143 WAVs and an index.csv), for matching Reno's time stretching to VEGAS's.
+
+
 Installing
 ----------
 Either run the .cs file with Tools > Scripting > Run Script..., or copy the files to "Vegas Script Menu" in your
@@ -87,3 +91,13 @@ scripting API: the op then has "viaApi": true). The log's first lines after "===
 
 Back in Reno, tests/ui/editparity_replay.cpp redoes each scenario's operations on its before.veg in Reno and writes the same
 JSON; tools/vegas/editparity_compare.py <VEGAS folder> <Reno folder> lists the differences field by field.
+
+
+Stretch Samples
+---------------
+Run it and pick a sound file (a video with sound works too). It starts a new project (asking to save the open one),
+puts the first 2 s of the file on a track once per case, and renders each event's span on its own as 32-bit float
+stereo 48 kHz PCM into "<file name> - stretch samples" beside the file: reference.wav (unstretched), then
+efficient_rate_*.wav, efficient_len_*.wav, pro_rate_*.wav and pro_len_*.wav, with index.csv saying what each one is.
+The excerpt, sample rate, modes, rates and lengths are at the top of the script. Speech or music with clear transients
+shows the differences best.
