@@ -7,10 +7,10 @@
 //   0x00 u32 0x38   0x04 class GUID
 //   0x14 u32 bytes of the static block (the effect's settings as it starts: 8 bytes per setting, no length in front)
 //   0x18 u32 keyframe count   0x1c, 0x20, 0x24 u32 0   0x28 u32 2
-//   0x2c u32 flags: 0x30c for most of these (0x10e for Light Rays; 0x30e for the XML ones). Bit 0x80 is "apply
-//        before pan/crop": across all 291 chains of two or more effects in the 37 samples (63 with an effect before
-//        pan/crop) such effects are always first in the chain. Bits 0x10 (every TV Look) and 0x40 (one record) are
-//        unexplained.
+//   0x2c u32 flags: 0x30c for most of these (0x10e for Light Rays; 0x30e for the XML ones). Bit 0x40 is "apply
+//        before pan/crop" (a script setting it made VEGAS write it; see recordBeforePanCrop). Bit 0x80 was taken for it
+//        before, but a Swirl with 0x38c draws in VEGAS after the event's Pan/Crop; what it means is not known. Bit 0x10
+//        (every TV Look) is unexplained too.
 //   0x30 u32 (0..7; not worked out)   0x34 u32 preset name bytes   0x38 preset name (UTF-16LE with its 0)
 //   the static block
 //   per keyframe: u32 0x1c, i64 time (100 ns from the event's start), 12 bytes (0 in every sample), u32 settings
@@ -88,8 +88,9 @@ bool legacyFxState(const LegacyFxRecord& r, double fps, Json& state, std::vector
 // state's. 'warnings' lists what Reno could not save.
 bool legacyFxWith(const LegacyFxRecord& orig, const Json& state, double fps, LegacyFxRecord& out, std::vector<std::string>& warnings);
 
-// "Apply before pan/crop" of a non-OpenFX record (these and the XML ones of vegmanaged.h): bit 0x80 of the word at
-// 0x2c. Not available from any VEGAS export (scripting lists only OpenFX effects); inferred from the order of chains.
+// "Apply before pan/crop" of a non-OpenFX record (these and the XML ones of vegmanaged.h): bit 0x40 of the word at
+// 0x2c. Not available from any VEGAS export (scripting lists only OpenFX effects); from a script's coverage run and from
+// how VEGAS draws such a record (veglegacyfx.cpp). Writing it changes only that bit.
 bool recordBeforePanCrop(const Bytes& b, size_t off);
 void setRecordBeforePanCrop(std::string& record, bool on);
 // Bypass of the older records: bit 0x01 of the same word, as in the OpenFX record. INFERRED (none of the 27 sample

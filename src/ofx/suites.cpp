@@ -261,12 +261,15 @@ static double instanceTime(Param* p)
 }
 
 // While an effect without multi-resolution renders at a preview's size (Instance::canonW), settings in canonical coordinates (positions and sizes,
-// the X / Y / XY double types) are scaled to that size. The factor for dimension k of 'p' (1 for everything else).
+// the X / Y / XY double types) are scaled to that size. The factor for dimension k of 'p' (1 for everything else). Not a setting whose coordinates
+// are normalised (VEGAS's own effects and Reno's built-ins, such as Swirl's Center): its value is a fraction of the frame, the same at
+// any size (halving it moved a Swirl at a 50% preview from the middle of the picture to near its corner).
 static double canonicalFactor(Param* p, int k)
 {
     Instance* inst = (p->set && p->set->owner) ? asInstance(p->set->owner) : nullptr;
     if (!inst || inst->canonW <= 0) return 1.0;
     if (p->kind != ParamKind::Double && p->kind != ParamKind::Double2D) return 1.0;
+    if (p->props.getString(kOfxParamPropDefaultCoordinateSystem) == kOfxParamCoordinatesNormalised) return 1.0;
     const std::string t = p->props.getString(kOfxParamPropDoubleType);
     if (t == kOfxParamDoubleTypeX || t == kOfxParamDoubleTypeXAbsolute) return inst->canonScale[0];
     if (t == kOfxParamDoubleTypeY || t == kOfxParamDoubleTypeYAbsolute) return inst->canonScale[1];

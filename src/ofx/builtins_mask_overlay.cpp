@@ -687,10 +687,10 @@ OfxStatus meshEntry(const char* action, const void* handle, OfxPropertySetHandle
         if (!makeView(in, v)) return kOfxStatReplyDefault;
         MeshNow m = meshNow(v);
         if (m.cols < 2 || m.rows < 2 || m.pts.size() < (size_t)m.cols * m.rows * 2) return kOfxStatReplyDefault;
-        // a point in canonical coordinates (from the bottom left)
+        // a point in canonical coordinates (from the bottom left, the way up the mesh's y runs: builtins_magix.cpp fromTop)
         auto at = [&](int k, double& x, double& y) {
             x = m.pts[(size_t)k * 2] * v.w;
-            y = (1.0 - m.pts[(size_t)k * 2 + 1]) * v.h;
+            y = m.pts[(size_t)k * 2 + 1] * v.h;
         };
         if (!std::strcmp(action, kOfxInteractActionDraw)) {
             GL& g = gl();
@@ -763,7 +763,7 @@ OfxStatus meshEntry(const char* action, const void* handle, OfxPropertySetHandle
             double px, py;
             penPosition(v, in, px, py);
             m.pts[(size_t)drag * 2] = (float)clampd(px / v.w, -0.5, 1.5);
-            m.pts[(size_t)drag * 2 + 1] = (float)clampd(1.0 - py / v.h, -0.5, 1.5);
+            m.pts[(size_t)drag * 2 + 1] = (float)clampd(py / v.h, -0.5, 1.5);
             v.setStr("WarpData", meshWarpText(m.cols, m.rows, m.pts));
             return kOfxStatOK;
         }

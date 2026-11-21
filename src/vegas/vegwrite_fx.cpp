@@ -226,7 +226,7 @@ std::string Writer::ofxRecord(const FxSlot& s, const std::string& where)
             managedFxWith(mr, s.state, s.bypass, p_.settings.fps(), nr, w)) {
             for (const auto& line : w) warn(where + ": VEGAS " + mr.root + ": " + line + ".");
             std::string rec = writeManagedFx(o->chunk->data, o->entryOff, nr);
-            setRecordBeforePanCrop(rec, s.beforePanCrop);        // bit 0x80 of the word at 0x2c, as for the older kind
+            setRecordBeforePanCrop(rec, s.beforePanCrop);        // bit 0x40 of the word at 0x2c, as for the older kind
             return rec;
         }
         o = nullptr;            // another effect in its place: written as a new OpenFX effect

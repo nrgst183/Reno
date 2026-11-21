@@ -210,6 +210,7 @@ const char* kHelp =
     "                           TIMES: comma-separated seconds, or a text file with one time (or name=time) per\n"
     "                           line or separated by commas/blanks. With name=T the file is DIR/name.png\n"
     "                           (default still_0000.png ...).\n"
+    "  --stills-preview         with --stills: make them as the playing preview does instead, at --scale (default 0.5)\n"
     "  --find-media             look for missing media by file name next to the project (for --stills, --profile\n"
     "                           and --audiofx-report)\n"
     "\n"
@@ -602,6 +603,7 @@ struct Options {
     std::string vstParams;                  // --vst-params <plug-in file or folder>
     bool audioFxReport = false;             // --audiofx-report <project>
     std::string stills, stillsDir;          // --stills TIMES --stills-dir DIR
+    bool stillsPreview = false;             // --stills-preview
     bool findMedia = false;                 // --find-media
     double previewScale = 0.5;              // --scale
     std::string hwDecode;                   // --hw-decode: auto, off or an API name (empty: auto on Windows, off elsewhere)
@@ -757,6 +759,7 @@ bool parseArgs(const std::vector<std::string>& args, Options& o, std::string* pr
             o.previewProfile = true;
         }
         else if (a == "--stills-dir") { if (!need(k, a, &o.stillsDir)) return false; }
+        else if (a == "--stills-preview") o.stillsPreview = true;
         else if (a == "--find-media") o.findMedia = true;
         else if (a == "--scale") {
             if (!need(k, a, &v)) return false;
@@ -1307,7 +1310,7 @@ int runPreviewProfile(AppState& app, const std::string& input, double from, doub
 // ------------------------------------------------------------------------------------------------ --stills
 // Writes the project's picture at each given time as a PNG, at final render quality and full size.
 // 'times' is a comma-separated list or a file holding one; an entry is T or name=T (seconds).
-int runStills(AppState& app, const std::string& times, const std::string& dir)
+int runStills(AppState& app, const std::string& times, const std::string& dir, double previewScale)
 {
     std::string text = times;
     if (fileExists(times)) {
@@ -1372,6 +1375,11 @@ int runStills(AppState& app, const std::string& times, const std::string& dir)
     VideoEngine video(pool, app.fx);
     FrameOptions fo;
     fo.interactive = false;
+    // --stills-preview: made as the playing preview makes them (at --scale of the project's size)
+    if (previewScale > 0) {
+        fo.interactive = true;
+        fo.scale = previewScale >= 0.999 ? 1.0 : previewScale;
+    }
     int failed = 0;
     for (size_t k = 0; k < wants.size(); ++k) {
         if (gCancel.load()) { err("stopped"); return kCancelled; }
@@ -2306,7 +2314,7 @@ int main(int argc, char** argv)
     setNestedPreviewUse(!o.noNestedPreviews);
     if (o.buildNestedPreviews) return runBuildNestedPreviews(app, o.allNestedPreviews);
     if (o.audioFxReport) return runAudioFxReport(app, job.input);
-    if (!o.stills.empty()) return runStills(app, o.stills, o.stillsDir);
+    if (!o.stills.empty()) return runStills(app, o.stills, o.stillsDir, o.stillsPreview ? o.previewScale : 0.0);
     if (o.previewProfile) return runPreviewProfile(app, job.input, job.from, job.to, o.previewScale, o.threads, o.proxies, o.hashFrames, o.hashFile);
 
     code = applyTemplateOptions(o, project.settings, job);

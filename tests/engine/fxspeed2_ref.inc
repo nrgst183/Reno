@@ -130,6 +130,16 @@ void meshWarp(Ctx& c)
     const int W = c.out.w, H = c.out.h;
     Mesh m;
     if (!c.b("EnableWarp") || !readMesh(c.s("WarpData"), m) || m.identity) { copyFrame(c); return; }
+    {
+        // the mesh's y runs up from the bottom (as VEGAS 18's plug-in): turned over, row j is row rows - 1 - j at 1 - y
+        Mesh t = m;
+        for (int j = 0; j < m.rows; ++j)
+            for (int i = 0; i < m.cols; ++i) {
+                t.pt[((size_t)j * m.cols + i) * 2] = m.pt[((size_t)(m.rows - 1 - j) * m.cols + i) * 2];
+                t.pt[((size_t)j * m.cols + i) * 2 + 1] = 1.f - m.pt[((size_t)(m.rows - 1 - j) * m.cols + i) * 2 + 1];
+            }
+        m = t;
+    }
     const int cols = m.cols, rows = m.rows;
     if (c.i("WarpDirection") == 0) {
         // Source: every output pixel looks up where in the frame to take its colour from, by bilinear interpolation of the
@@ -150,8 +160,8 @@ void meshWarp(Ctx& c)
         });
         return;
     }
-    // Target: the mesh's cells, each cut into two triangles, are laid at the points; a pixel inside a triangle takes the
-    // colour of the same place in the regular cell's triangle. Pixels no triangle covers stay transparent.
+    // Target: the mesh's cells, each cut into two triangles along its shorter diagonal, are laid at the points; a pixel inside a
+    // triangle takes the colour of the same place in the regular cell's triangle. Pixels no triangle covers stay transparent.
     struct Tri { double x[3], y[3], sx[3], sy[3], den; int y0, y1; };
     std::vector<Tri> tris;
     tris.reserve((size_t)(cols - 1) * (rows - 1) * 2);
@@ -175,8 +185,17 @@ void meshWarp(Ctx& c)
     for (int j = 0; j + 1 < rows; ++j)
         for (int i = 0; i + 1 < cols; ++i) {
             const int a = j * cols + i, b = a + 1, cc = a + cols, d = cc + 1;
-            add(a, b, cc);
-            add(b, d, cc);
+            auto d2 = [&](int p, int q) {
+                const double dx = m.pt[(size_t)p * 2] - m.pt[(size_t)q * 2], dy = m.pt[(size_t)p * 2 + 1] - m.pt[(size_t)q * 2 + 1];
+                return dx * dx + dy * dy;
+            };
+            if (d2(a, d) < d2(b, cc)) {
+                add(a, b, d);
+                add(a, d, cc);
+            } else {
+                add(a, b, cc);
+                add(b, d, cc);
+            }
         }
     std::vector<std::vector<int>> perRow((size_t)H);
     for (size_t k = 0; k < tris.size(); ++k)

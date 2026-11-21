@@ -253,13 +253,14 @@ std::string legacyPluginId(const LegacyFxRecord& r)
 
 // "Apply before pan/crop" in a legacy or managed record. VEGAS Pro 18 wrote 0x41 in the word at 0x2c for every such effect that a
 // script both bypassed and set to apply before pan/crop (coverage run, 13 effect kinds: the plain record is 0x30c/0x30e/...),
-// so 0x01 is the bypass bit (as for OpenFX effects) and 0x40 is taken as this setting. Older samples hold one record
-// with 0x80 (a Swirl) and one with 0x40 (a TV Simulator), both in second place behind an effect applied before pan/crop; 0x80
-// was taken as the setting before the coverage run, so it still counts. Bypass alone and the setting alone are not told apart by
-// that run (RenoCoverage.cs should set them one at a time).
+// so 0x01 is the bypass bit (as for OpenFX effects) and 0x40 is this setting. Bypass alone and the setting alone are not told apart
+// by that run (RenoCoverage.cs should set them one at a time).
+// 0x80 is not it: a Swirl with 0x38c, second in an event's chain behind a Color Corrector (Secondary) applied before pan/crop,
+// shows in VEGAS's preview as a swirl of the picture as zoomed by the event's Pan/Crop (its ellipse that part of the frame, round
+// that point of the frame), not of the whole media. What 0x80 means is not known; it is kept as it was.
 bool recordBeforePanCrop(const Bytes& b, size_t off)
 {
-    return b.has(off, 0x30) && (b.u32(off + 0x2c) & 0xC0u) != 0;
+    return b.has(off, 0x30) && (b.u32(off + 0x2c) & 0x40u) != 0;
 }
 
 static void setFlagBit(std::string& record, uint32_t bit, bool on)
@@ -276,8 +277,8 @@ void setRecordBeforePanCrop(std::string& record, bool on)
     if (record.size() < 0x30) return;
     uint32_t f = 0;
     std::memcpy(&f, record.data() + 0x2c, 4);
-    if (on == ((f & 0xC0u) != 0)) return;           // as it was (a record that has 0x80 keeps it)
-    setFlagBit(record, on ? 0x40u : 0xC0u, on);
+    if (on == ((f & 0x40u) != 0)) return;           // as it was
+    setFlagBit(record, 0x40u, on);                  // (0x80, whatever it means, stays as it was)
 }
 
 bool legacyBypass(const LegacyFxRecord& r) { return (r.flags & 0x01u) != 0; }

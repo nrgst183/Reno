@@ -1298,7 +1298,7 @@ static VegOlderFx olderFxAt(const Bytes& b, size_t off)
     if (b.has(off, 0x38)) {
         const uint32_t flags = b.u32(off + 0x2c);
         f.bypass = (flags & 1u) != 0;
-        f.beforePanCrop = (flags & 0xC0u) != 0;
+        f.beforePanCrop = (flags & 0x40u) != 0;     // (as recordBeforePanCrop)
         const uint32_t n = b.u32(off + 0x34);
         if (n >= 2 && n < 4096 && b.has(off + 0x38, n)) f.preset = b.text(off + 0x38, n);
     }

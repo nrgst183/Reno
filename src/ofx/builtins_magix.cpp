@@ -8,7 +8,8 @@
 //   com.sonycreativesoftware:smart_upscale       Smart Upscale (SPICA): Reno only sharpens, since the frame stays the project's size.
 //
 // Guessed (VEGAS's maths are not published): which of the four curves is the master and that it works after the channels' curves, the direction and unit of Tiny Planet's Z (larger =
-// nearer to the planet), which way up Mesh Warp's y runs, and everything Smart Upscale does. All are correct at any render scale (Ctx::scale), thread safe and work row by row on all cores.
+// nearer to the planet), and everything Smart Upscale does. (Mesh Warp's y running up from the bottom, and a cell drawn as one
+// bilinear shape, were checked against VEGAS 18's own plug-in.) All are correct at any render scale (Ctx::scale), thread safe and work row by row on all cores.
 #include "../core/rmath.h"
 #include "builtins_impl.h"
 #include "builtins_mask_internal.h"
@@ -424,11 +425,28 @@ bool readMesh(const std::string& text, Mesh& m)
     return true;
 }
 
+// VEGAS 18's Mesh Warp (its own plug-in, run in Reno's host with a project's mesh over a checkerboard) counts the mesh's rows and
+// its y up from the bottom of the picture, as OpenFX's coordinates do. The code below works from the top, so the mesh is turned
+// over first: row j is the mesh's row rows - 1 - j, at 1 - y. (The overlay draws the points the same way up.)
+Mesh fromTop(const Mesh& m)
+{
+    Mesh t = m;
+    for (int j = 0; j < m.rows; ++j)
+        for (int i = 0; i < m.cols; ++i) {
+            const float* s = &m.pt[((size_t)(m.rows - 1 - j) * m.cols + i) * 2];
+            float* d = &t.pt[((size_t)j * m.cols + i) * 2];
+            d[0] = s[0];
+            d[1] = 1.f - s[1];
+        }
+    return t;
+}
+
 void meshWarp(Ctx& c)
 {
     const int W = c.out.w, H = c.out.h;
     Mesh m;
     if (!c.b("EnableWarp") || !readMesh(c.s("WarpData"), m) || m.identity) { copyFrame(c); return; }
+    m = fromTop(m);
     const int cols = m.cols, rows = m.rows;
     if (c.i("WarpDirection") == 0) {
         struct Col { int i; double fx, omfx; };
@@ -469,6 +487,10 @@ void meshWarp(Ctx& c)
         });
         return;
     }
+    // Target: each cell of the regular grid is drawn into the shape its points make, as two triangles, each mapped by its own
+    // affine map. VEGAS cuts a cell along its shorter diagonal (measured in fractions of the frame; checked cell by cell against
+    // VEGAS 18's plug-in, where the two cuts of one cell differ by hundreds of pixels); the cells meet with creases along their
+    // edges, as in VEGAS.
     struct Tri { double x[3], y[3], sx[3], sy[3], den; int y0, y1; double a0, a1, a2, a3, xmin, xmax; };
     std::vector<Tri> tris;
     tris.reserve((size_t)(cols - 1) * (rows - 1) * 2);
@@ -496,11 +518,20 @@ void meshWarp(Ctx& c)
         t.xmax = std::max(t.x[0], std::max(t.x[1], t.x[2]));
         tris.push_back(t);
     };
+    auto dist2 = [&](int p, int q) {
+        const double dx = m.pt[(size_t)p * 2] - m.pt[(size_t)q * 2], dy = m.pt[(size_t)p * 2 + 1] - m.pt[(size_t)q * 2 + 1];
+        return dx * dx + dy * dy;
+    };
     for (int j = 0; j + 1 < rows; ++j)
         for (int i = 0; i + 1 < cols; ++i) {
             const int a = j * cols + i, b = a + 1, cc = a + cols, d = cc + 1;
-            add(a, b, cc);
-            add(b, d, cc);
+            if (dist2(a, d) < dist2(b, cc)) {       // cut from the top left to the bottom right
+                add(a, b, d);
+                add(a, d, cc);
+            } else {                                // from the top right to the bottom left (also when they are equal)
+                add(a, b, cc);
+                add(b, d, cc);
+            }
         }
     std::vector<std::vector<int>> perRow((size_t)H);
     for (size_t k = 0; k < tris.size(); ++k)
@@ -768,7 +799,7 @@ int meshWarpGpu(Ctx& c, int& cols, int& rows, std::vector<float>& pts)
     if (c.i("WarpDirection") != 0) return 0;
     cols = m.cols;
     rows = m.rows;
-    pts = m.pt;
+    pts = fromTop(m).pt;            // (as meshWarp turns it over)
     return 2;
 }
 
