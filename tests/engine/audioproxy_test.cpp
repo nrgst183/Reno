@@ -268,6 +268,37 @@ int main(int argc, char** argv)
         std::filesystem::remove_all(mproxy + ".part");
     }
 
+    // ---------------------------------------------------------------- only the part that is played
+    {
+        const std::string tone3 = pathJoin(dir, "tone3.wav"), longp = pathJoin(dir, "long.reno"), lproxy = vegasfiles::audioProxyPath(longp);
+        std::remove(lproxy.c_str());
+        check(writeTone(tone3, 20.0, 0.5), "part played: a 20 s sound file is written");
+        Project lp = playing(tone3, 20.0, 1.0);
+        check(lp.save(longp, nullptr), "part played: a 20 s nested project is saved");
+        // a project playing one second of it, from 2 s on
+        Project outer = playing(longp, 1.0, 1.0);
+        outer.tracks[0].events[0].offset = 2.0;
+        setAudioProxyOptions(true, true);
+        noteNestedAudioUse(outer);
+        buildAudioProxy(longp);
+        check(waitForAudioProxies(120) && finished.load() > 0, "part played: the proxy is built");
+        check(!fileExists(lproxy), "part played: no .sfap0 is written (VEGAS would take it for the whole sound)");
+        check(audioProxyComplete(longp) && nestedProjectsNeedingProxies(outer).empty(), "part played: it holds what is played");
+        const std::vector<float> heard = readAll(longp, (int64_t)(2.2 * 48000), 4800);
+        const auto t0 = std::filesystem::last_write_time(tone3);
+        check(writeTone(tone3, 20.0, 0.25), "part played: the sound file is changed behind its back");
+        std::filesystem::last_write_time(tone3, t0);
+        const std::vector<float> inside = readAll(longp, (int64_t)(2.2 * 48000), 4800);
+        const std::vector<float> outside = readAll(longp, (int64_t)(12.0 * 48000), 4800);
+        check(maxDiff(inside, heard) < 1e-6 && rms(inside) > 0.3, "part played: what is played comes from the proxy", strfmt("rms %f", rms(inside)));
+        check(std::fabs(rms(outside) - 0.25 / std::sqrt(2.0)) < 0.01, "part played: the rest, never mixed into it, is mixed when read", strfmt("rms %f", rms(outside)));
+        // the event now plays from 12 s: the proxy misses it and is asked for again
+        outer.tracks[0].events[0].offset = 12.0;
+        noteNestedAudioUse(outer);
+        check(!audioProxyComplete(longp) && nestedProjectsNeedingProxies(outer).size() == 1, "part played: playing more of it asks for it again");
+        setAudioProxyOptions(true, false);
+    }
+
     // ---------------------------------------------------------------- not a project, nonsense
     buildAudioProxy(tone);
     buildAudioProxy(pathJoin(dir, "missing.veg"), true);

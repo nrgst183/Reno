@@ -1397,6 +1397,11 @@ struct MemProxy {
     int64_t vegTime = 0, depTime = 0;
     int rate = 0;
     std::shared_ptr<const std::vector<float>> l, r;
+    // Only the stretches the projects using it play (see heardSamples), when that is much less than all of it: never
+    // written to the .sfap0, which VEGAS would take as the whole sound.
+    bool piecewise = false;
+    int64_t frames = 0;
+    std::vector<vegasfiles::AudioProxyPiece> pieces;
     uint64_t lastUse = 0;
 };
 std::mutex gMemProxyMutex;
@@ -1407,7 +1412,10 @@ const size_t kMemProxyLimit = (size_t)768 << 20;
 size_t memProxyBytes()
 {
     size_t n = 0;
-    for (const auto& kv : gMemProxies) n += (kv.second.l ? kv.second.l->size() : 0) * 2 * sizeof(float);
+    for (const auto& kv : gMemProxies) {
+        n += (kv.second.l ? kv.second.l->size() : 0) * 2 * sizeof(float);
+        for (const auto& pc : kv.second.pieces) n += pc.left->size() * 2 * sizeof(float);
+    }
     return n;
 }
 
@@ -1427,8 +1435,65 @@ std::shared_ptr<vegasfiles::AudioProxyFile> memoryProxy(const std::string& path)
         mp = it->second;
     }
     auto f = std::make_shared<vegasfiles::AudioProxyFile>();
-    if (!f->openMemory(mp.rate, mp.l, mp.r)) return nullptr;
+    if (mp.piecewise ? !f->openPieces(mp.rate, mp.frames, mp.pieces) : !f->openMemory(mp.rate, mp.l, mp.r)) return nullptr;
     return f;
+}
+
+// ---- Only the sound that is played: the stretches of each nested project its parents' audio events play (with a
+// little either side), found by noteNestedAudioUse from the project being edited, in milliseconds by samePath. Where
+// they are much less than the whole project, its proxy holds only them (in memory; MemProxy::piecewise) and the rest,
+// never played, is never mixed.
+std::mutex gHeardMutex;
+std::map<std::string, std::vector<std::pair<int64_t, int64_t>>> gHeard;
+const int64_t kHeardPadMs = 500;            // either side of what is played: stretching and effects read around it
+const int64_t kHeardPrerollMs = 1000;       // mixed before each stretch and thrown away: effects' tails and state settle
+
+// The stretches of the project at 'path' that are played, in samples at 'rate' within [0, frames); false if they are
+// not known or are most of it (the proxy is then made whole, as VEGAS makes it).
+bool heardSamples(const std::string& path, int rate, int64_t frames, std::vector<std::pair<int64_t, int64_t>>& out)
+{
+    out.clear();
+    std::lock_guard<std::mutex> lk(gHeardMutex);
+    auto it = gHeard.find(samePath(path));
+    if (it == gHeard.end() || frames <= 0) return false;
+    int64_t total = 0;
+    for (const auto& sp : it->second) {
+        const int64_t a = std::max<int64_t>(0, sp.first * rate / 1000), b = std::min(frames, (sp.second * rate + 999) / 1000);
+        if (b > a) {
+            out.emplace_back(a, b);
+            total += b - a;
+        }
+    }
+    return total * 4 < frames * 3;          // (under three quarters of it)
+}
+
+// Whether a piecewise proxy holds every stretch now played.
+bool piecesCover(const MemProxy& mp, const std::vector<std::pair<int64_t, int64_t>>& want)
+{
+    for (const auto& w : want) {
+        bool in = false;
+        for (const auto& pc : mp.pieces)
+            if (pc.start <= w.first && pc.start + (int64_t)pc.left->size() >= w.second) in = true;
+        if (!in) return false;
+    }
+    return true;
+}
+
+// Whether the in-memory proxy of 'path' is current and holds what is played of it.
+bool memoryProxyComplete(const std::string& path)
+{
+    if (!memoryProxy(path)) return false;
+    MemProxy mp;
+    {
+        std::lock_guard<std::mutex> lk(gMemProxyMutex);
+        auto it = gMemProxies.find(samePath(path));
+        if (it == gMemProxies.end()) return false;
+        mp = it->second;
+    }
+    if (!mp.piecewise) return true;
+    std::vector<std::pair<int64_t, int64_t>> want;
+    if (!heardSamples(path, mp.rate, mp.frames, want)) return false;        // (now most of it: made whole)
+    return piecesCover(mp, want);
 }
 
 void proxyWorker();
@@ -1507,6 +1572,87 @@ static void closeOpenProxies(ProxyBook& b, const std::string& path)
     b.open.erase(it);
 }
 
+// The proxy of only the stretches 'heard' of the project, mixed into memory (each after a second of mixing thrown away,
+// for the effects to settle). Returns as buildProxy.
+static int buildPiecewiseProxy(const std::string& path, std::shared_ptr<const Project> proj, int64_t vegTime, int rate, int64_t frames,
+                               const std::vector<std::pair<int64_t, int64_t>>& heard, const std::function<bool()>& stopped,
+                               std::string* message)
+{
+    std::set<std::string> seen;
+    const int64_t dep = newestDependency(path, seen, 0);
+    FinalRenderScope final;
+    const uint64_t leftOut = nestedEffectsLeftOut();
+    MediaPool pool;
+    pool.setReaderLimits(2, 12);
+    NestedFxPtr fx = makeNestedFx(proj, path, false, true);
+    if (!nestedFxReady(fx, true)) {
+        if (message) *message = "its audio effects could not be made";
+        return 1;
+    }
+    int64_t total = 0, done = 0;
+    for (const auto& h : heard) total += h.second - h.first;
+    std::vector<vegasfiles::AudioProxyPiece> pieces;
+    {
+        AudioEngine engine(pool, fx->fx);
+        std::vector<float> l(4096), r(4096);
+        auto lastTold = std::chrono::steady_clock::now();
+        tellProxy(path, 0.0, 0, std::string());
+        ++gNestedDepth;
+        for (const auto& h : heard) {
+            auto pl = std::make_shared<std::vector<float>>(), pr = std::make_shared<std::vector<float>>();
+            pl->reserve((size_t)(h.second - h.first));
+            pr->reserve((size_t)(h.second - h.first));
+            for (int64_t at = std::max<int64_t>(0, h.first - kHeardPrerollMs * rate / 1000); at < h.second;) {
+                if (stopped()) {
+                    --gNestedDepth;
+                    return 2;
+                }
+                const int n = (int)std::min<int64_t>(4096, h.second - at);
+                engine.render(*proj, at, n, l.data(), r.data(), true);
+                const int64_t from = std::max(at, h.first);
+                if (from < at + n) {
+                    pl->insert(pl->end(), l.begin() + (from - at), l.begin() + n);
+                    pr->insert(pr->end(), r.begin() + (from - at), r.begin() + n);
+                    done += at + n - from;
+                }
+                at += n;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - lastTold > std::chrono::milliseconds(200)) {
+                    lastTold = now;
+                    tellProxy(path, total > 0 ? (double)done / (double)total : 1.0, 0, std::string());
+                }
+            }
+            vegasfiles::AudioProxyPiece pc;
+            pc.start = h.first;
+            pc.left = pl;
+            pc.right = pr;
+            pieces.push_back(pc);
+        }
+        --gNestedDepth;
+    }
+    if (const int bad = proxyStillGood(path, vegTime, leftOut, message)) return bad;
+    {
+        std::lock_guard<std::mutex> lk(gMemProxyMutex);
+        MemProxy mp;
+        mp.vegTime = vegTime;
+        mp.depTime = dep;
+        mp.rate = rate;
+        mp.piecewise = true;
+        mp.frames = frames;
+        mp.pieces = std::move(pieces);
+        mp.lastUse = ++gMemProxyTick;
+        gMemProxies[samePath(path)] = mp;
+        while (memProxyBytes() > kMemProxyLimit && gMemProxies.size() > 1) {
+            auto oldest = gMemProxies.begin();
+            for (auto it = gMemProxies.begin(); it != gMemProxies.end(); ++it)
+                if (it->second.lastUse < oldest->second.lastUse) oldest = it;
+            gMemProxies.erase(oldest);
+        }
+    }
+    gProxyGeneration.fetch_add(1);
+    return 0;
+}
+
 int buildProxy(const std::string& path, std::string* message)
 {
     ProxyBook& b = proxyBook();
@@ -1515,7 +1661,7 @@ int buildProxy(const std::string& path, std::string* message)
         std::lock_guard<std::mutex> lk(b.mutex);
         stopGen = b.stopGeneration;
     }
-    auto stopped = [&] {
+    std::function<bool()> stopped = [&] {
         std::lock_guard<std::mutex> lk(b.mutex);
         return b.stop || b.stopGeneration != stopGen;
     };
@@ -1530,6 +1676,8 @@ int buildProxy(const std::string& path, std::string* message)
     const int rate = proj->settings.sampleRate > 0 ? proj->settings.sampleRate : 48000;
     // VEGAS's length: the project's length in whole samples (floor; 0.4450774 s at 48 kHz is 21363 samples)
     const int64_t frames = (int64_t)std::floor(proj->length() * rate + 1e-6);
+    std::vector<std::pair<int64_t, int64_t>> heard;
+    if (heardSamples(path, rate, frames, heard)) return buildPiecewiseProxy(path, proj, vegTime, rate, frames, heard, stopped, message);
     vegasfiles::AudioProxyWriter w;
     const std::string pp = vegasfiles::audioProxyPath(path);
     // Where the file cannot be written, the sound is kept in memory instead (if it is not too long for that)
@@ -1631,7 +1779,7 @@ void proxyWorker()
             b.stop = false;
         }
         // asked for, but current by now - VEGAS made it, or it was asked for twice.
-        if (!job.second && (openCurrentProxy(job.first, nullptr, nullptr) || memoryProxy(job.first))) {
+        if (!job.second && (openCurrentProxy(job.first, nullptr, nullptr) || memoryProxyComplete(job.first))) {
             std::lock_guard<std::mutex> lk(b.mutex);
             b.waiting.erase(b.building);
             continue;
@@ -1672,8 +1820,11 @@ std::shared_ptr<vegasfiles::AudioProxyFile> currentProxy(NestedShared& sh)
         if (newestDependency(sh.path, seen, 0) <= sh.proxyFileTime) return sh.proxy;
     }
     sh.proxy = openCurrentProxy(sh.path, &sh.proxyVegTime, &sh.proxyFileTime);
-    if (!sh.proxy) sh.proxy = memoryProxy(sh.path);
-    if (!sh.proxy && gProxyCreate.load()) requestProxy(sh.path, false);
+    if (!sh.proxy) {
+        sh.proxy = memoryProxy(sh.path);
+        // (one that holds only some of what is played now is read meanwhile: the rest is mixed as it plays)
+        if (gProxyCreate.load() && !memoryProxyComplete(sh.path)) requestProxy(sh.path, false);
+    }
     return sh.proxy;
 }
 
@@ -1779,11 +1930,23 @@ void addFrameSpan(FrameSpans& s, int64_t a, int64_t b, FrameSpans* added)
 void addShownFrames(const Project& q, const FrameSpans& shown, int depth, std::map<std::string, FrameSpans>& out)
 {
     if (depth >= kMaxNestedDepth) return;
+    // The tracks left out as the renderer leaves them out (VideoEngine's trackOff): muted, or in a muted composite
+    // parent, or, while a video track is soloed, neither soloed nor in a soloed parent. (A "mute" envelope is not
+    // looked at: its frames are counted.)
+    const bool anySolo = q.anySolo(TrackType::Video);
+    struct Parent { int level; bool muted, soloed; };
+    std::vector<Parent> parents;            // the composite parents of the track being looked at
     for (const Track& t : q.tracks) {
         if (t.type != TrackType::Video) continue;
+        const int level = std::max(0, t.compositeLevel);
+        while (!parents.empty() && parents.back().level >= level) parents.pop_back();
+        const bool muted = t.mute || (!parents.empty() && parents.back().muted);
+        const bool soloed = t.solo || (!parents.empty() && parents.back().soloed);
+        parents.push_back({level, muted, soloed});
+        if (muted || (anySolo && !soloed)) continue;
         for (const Event& e : t.events) {
             const MediaItem* m = q.findMedia(e.mediaId);
-            if (!m || m->generated || m->offline || !isProjectFile(m->path) || !(e.length > 0)) continue;
+            if (e.mute || !m || m->generated || m->offline || !isProjectFile(m->path) || !(e.length > 0)) continue;
             std::shared_ptr<const Project> inner = sharedProject(m->path, nullptr);
             NestedCacheInfo shape;
             if (!inner || !previewShape(*inner, shape)) continue;
@@ -2018,6 +2181,7 @@ void buildAudioProxy(const std::string& path, bool force)
 }
 
 bool audioProxyCurrent(const std::string& path) { return (bool)openCurrentProxy(path, nullptr, nullptr); }
+bool audioProxyComplete(const std::string& path) { return openCurrentProxy(path, nullptr, nullptr) || memoryProxyComplete(path); }
 
 int64_t mediaStamp(const std::string& path)
 {
@@ -2030,6 +2194,61 @@ int64_t mediaStamp(const std::string& path)
     return t;
 }
 
+namespace {
+// The stretches of the projects 'q' plays in its audio events, and the same at every level below them (by samePath), in
+// milliseconds: 'heard' are q's own times that are played. Muted tracks and events, and tracks a solo leaves out, play
+// nothing. Each event is followed through its media's time every 5 ms (rate, velocity, looping, reversing).
+void addHeardTimes(const Project& q, const std::vector<std::pair<int64_t, int64_t>>& heard, int depth,
+                   std::map<std::string, std::vector<std::pair<int64_t, int64_t>>>& out)
+{
+    if (depth >= kMaxNestedDepth) return;
+    const bool anySolo = q.anySolo(TrackType::Audio);
+    for (const Track& t : q.tracks) {
+        if (t.type != TrackType::Audio || t.mute || (anySolo && !t.solo)) continue;
+        for (const Event& e : t.events) {
+            const MediaItem* m = q.findMedia(e.mediaId);
+            if (e.mute || !m || m->generated || m->offline || !isProjectFile(m->path) || !(e.length > 0)) continue;
+            std::shared_ptr<const Project> inner = sharedProject(m->path, nullptr);
+            if (!inner) continue;
+            const int64_t innerEnd = (int64_t)std::ceil(inner->length() * 1000.0);
+            auto& have = out[samePath(m->path)];
+            FrameSpans added;
+            const int64_t ea = (int64_t)std::floor(e.start * 1000.0), eb = (int64_t)std::ceil(e.end() * 1000.0);
+            int64_t ra = -1, rb = -1;
+            for (const auto& sp : heard) {
+                const int64_t a = std::max(ea, sp.first), b = std::min(eb, sp.second);
+                for (int64_t ms = a; ms < b; ms = (ms + 5 < b || ms == b - 1) ? ms + 5 : b - 1) {
+                    const double at = std::min(std::max(ms / 1000.0, e.start), e.end() - 1e-9);
+                    const int64_t mt = (int64_t)std::floor(eventMediaTime(e, m, at) * 1000.0);
+                    const int64_t lo = std::max<int64_t>(0, mt - kHeardPadMs), hi = std::min(innerEnd, mt + kHeardPadMs);
+                    if (hi <= lo) continue;
+                    if (ra >= 0 && lo <= rb && hi >= ra) {
+                        ra = std::min(ra, lo);
+                        rb = std::max(rb, hi);
+                    } else {
+                        if (ra >= 0) addFrameSpan(have, ra, rb, &added);
+                        ra = lo;
+                        rb = hi;
+                    }
+                }
+            }
+            if (ra >= 0) addFrameSpan(have, ra, rb, &added);
+            if (!added.empty()) addHeardTimes(*inner, added, depth + 1, out);
+        }
+    }
+}
+}  // namespace
+
+void noteNestedAudioUse(const Project& p)
+{
+    std::map<std::string, std::vector<std::pair<int64_t, int64_t>>> heard;
+    addHeardTimes(p, {{0, std::numeric_limits<int64_t>::max() / 2}}, 0, heard);
+    {
+        std::lock_guard<std::mutex> lk(gHeardMutex);
+        for (auto& h : heard) gHeard[h.first] = h.second;
+    }
+}
+
 std::vector<std::string> nestedProjectsNeedingProxies(const Project& p)
 {
     std::vector<std::string> out;
@@ -2037,7 +2256,7 @@ std::vector<std::string> nestedProjectsNeedingProxies(const Project& p)
     std::function<void(const Project&, int)> walk = [&](const Project& q, int depth) {
         for (const auto& m : q.media) {
             if (m.generated || !isProjectFile(m.path) || !seen.insert(samePath(m.path)).second || !fileExists(m.path)) continue;
-            if (!openCurrentProxy(m.path, nullptr, nullptr) && !memoryProxy(m.path)) out.push_back(m.path);
+            if (!openCurrentProxy(m.path, nullptr, nullptr) && !memoryProxyComplete(m.path)) out.push_back(m.path);
             if (depth < 8)
                 if (std::shared_ptr<const Project> inner = sharedProject(m.path, nullptr)) walk(*inner, depth + 1);
         }

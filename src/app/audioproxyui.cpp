@@ -170,8 +170,10 @@ void installAudioProxyUi(QMainWindow* w)
         AppState& app = AppState::get();
         if (changes & kFile) gAsked.clear();
         if (!app.prefs.createAudioProxies) return;
+        // (only what the project plays of each is mixed; one that now plays more is asked for again)
+        noteNestedAudioUse(app.project());
         for (const std::string& path : nestedOfProject())
-            if (gAsked.insert(path).second) buildAudioProxy(path, false);
+            if (gAsked.insert(path).second || !audioProxyComplete(path)) buildAudioProxy(path, false);
     });
     QObject::connect(w, &QObject::destroyed, [listener] { AppState::get().removeListener(listener); });
 }
@@ -179,6 +181,7 @@ void installAudioProxyUi(QMainWindow* w)
 void rebuildOfflineNestedAudio()
 {
     AppState& app = AppState::get();
+    noteNestedAudioUse(app.project());
     const std::vector<std::string> need = nestedProjectsNeedingProxies(app.project());
     if (need.empty()) {
         app.status(nestedOfProject().empty() ? "Rebuild Offline Nested Audio: the project has no nested projects."

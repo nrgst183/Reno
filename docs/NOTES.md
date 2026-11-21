@@ -157,9 +157,15 @@ project's sound only from its proxy). A proxy is current when it was made from t
 mark, the `.veg`'s last-change time to 100 ns. Reno also rebuilds one when a file the nested project uses has
 changed, which VEGAS does not notice. Tools > Rebuild Offline Nested Audio builds missing, stale and cancelled
 proxies. Preference: Audio > Create audio proxy files for nested projects.
+Where the parents' audio events (not muted, not left out by a solo, through every level of nesting) play under three
+quarters of a nested project, only those stretches are mixed (half a second either side, after a second of mixing thrown
+away for the effects to settle) into a proxy held in memory: the `.sfap0` is not written then, as VEGAS would take it
+for the whole sound. A read of a stretch it does not hold is mixed as it plays, and playing more of the project asks for
+the proxy again (`noteNestedAudioUse`, called by the editor on every change).
 
 **Preview files** (`<project>.veg.renopreview`, Reno's own; `src/media/nestedcache.h`) hold the frames of a nested
-project that the projects using it show (the region of it each event plays, and a frame either side), rendered once at
+project that the projects using it show (the region of it each event plays; not the events of muted tracks, muted
+events, or tracks a solo leaves out), rendered once at
 half its size, so that playing a project that uses it reads frames instead of rendering it
 again at every level of nesting. The frames are the renderer's own bytes (8-bit premultiplied B,G,R,A), each
 compressed without loss on its own (FFmpeg's UT Video as planes G,B,R,A, so nothing goes through YUV), so a 50%

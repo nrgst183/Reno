@@ -62,13 +62,19 @@ void setAudioProxyProgressHook(std::function<void(const std::string& path, doubl
 // Queues a proxy build for the project at 'path'. 'force' rebuilds even if the proxy is current (Tools > Rebuild
 // Offline Nested Audio builds missing and stale proxies; Rebuild Audio Peaks rebuilds all).
 void buildAudioProxy(const std::string& path, bool force = false);
-// The project files used by 'p' (directly or nested) whose proxy is missing or stale.
+// Notes which stretches of each project 'p' uses (directly or nested) its audio events play. A project of which they are
+// under three quarters gets a proxy of only those, in memory (the .sfap0, which VEGAS takes as the whole sound, is left
+// alone); a later read of the rest mixes it, and a proxy that misses what is played now is made again.
+void noteNestedAudioUse(const Project& p);
+// The project files used by 'p' (directly or nested) whose proxy is missing or stale (or holds too little of what is played).
 std::vector<std::string> nestedProjectsNeedingProxies(const Project& p);
 // Changes when the file at 'path' changes (for a project file: or anything it uses). 0 if the file doesn't exist.
 // Sound caches are checked against it.
 int64_t mediaStamp(const std::string& path);
 // True if the project at 'path' has a current proxy.
 bool audioProxyCurrent(const std::string& path);
+// True if it has a current proxy (file or memory) that holds all of it that is played.
+bool audioProxyComplete(const std::string& path);
 // Stops the running build and drops the queued ones (another project opened, Reno closing). 'cancelled' means the
 // user cancelled (VEGAS's status bar): those projects get no proxy until one is requested with 'force', and are mixed
 // directly meanwhile.

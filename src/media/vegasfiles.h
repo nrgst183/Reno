@@ -119,6 +119,12 @@ private:
     std::vector<float> buf_;
 };
 
+// A stretch of a proxy's sound held in memory: samples [start, start + size) of the two channels.
+struct AudioProxyPiece {
+    int64_t start = 0;
+    std::shared_ptr<const std::vector<float>> left, right;
+};
+
 // Reads an audio proxy's samples from anywhere at once (any thread: reads are positioned, under a lock).
 class AudioProxyFile {
 public:
@@ -133,10 +139,15 @@ public:
     // A proxy held in memory instead of a file (the engine makes one when the folder cannot be written): the same
     // reads, from the two channels' samples.
     bool openMemory(int rate, std::shared_ptr<const std::vector<float>> left, std::shared_ptr<const std::vector<float>> right);
+    // Only some stretches of a sound 'frames' long, in memory (the engine mixes only the parts of a nested project the
+    // projects using it play): a read of samples none of them holds returns false, for the caller to mix them itself.
+    bool openPieces(int rate, int64_t frames, std::vector<AudioProxyPiece> pieces);
 
 private:
     bool readAt(int64_t offset, void* to, size_t n);
     std::shared_ptr<const std::vector<float>> memL_, memR_;
+    std::vector<AudioProxyPiece> pieces_;   // (openPieces) in order, not touching
+    bool piecewise_ = false;
     std::string path_;
     AudioProxyInfo info_;
     std::mutex mutex_;

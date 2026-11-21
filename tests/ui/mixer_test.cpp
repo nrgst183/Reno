@@ -615,5 +615,10 @@ int main(int argc, char** argv)
     masterBus.hide();
     check(mixer.minimumSizeHint().width() < 400, "the console can be made narrow (its tool bar does not hold it wide)",
           std::to_string(mixer.minimumSizeHint().width()));
+    // docked, its smallest size is what the panels beside it can give up: the strips (and the Master and Preview ones)
+    // scroll rather than hold it big
+    check(mixer.minimumSizeHint().width() < 200 && mixer.minimumSizeHint().height() < 150,
+          "the console can be made small: its strips scroll instead of holding the panels beside it",
+          strfmt("%dx%d", mixer.minimumSizeHint().width(), mixer.minimumSizeHint().height()));
     return uitest::summary();
 }

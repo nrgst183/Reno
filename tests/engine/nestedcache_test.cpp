@@ -320,6 +320,28 @@ int main(int argc, char** argv)
         f.close();
     }
 
+    // ---------------------------------------------------------------- muted and non-soloed tracks are left out
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        check(in.save(inner, &err), "the innermost project is saved again (its file is stale)", err);
+        Project quiet = showing(inner);
+        quiet.tracks[0].mute = true;
+        check(nestedPreviewsNeeded(quiet).empty(), "a nested project only on a muted track is not built");
+        quiet.tracks[0].mute = false;
+        quiet.tracks[0].events[0].mute = true;
+        check(nestedPreviewsNeeded(quiet).empty(), "nor one only in a muted event");
+        quiet.tracks[0].events[0].mute = false;
+        Track other;
+        other.id = quiet.newId();
+        other.type = TrackType::Video;
+        other.solo = true;
+        quiet.tracks.push_back(other);
+        check(nestedPreviewsNeeded(quiet).empty(), "nor one on a track left out by another track's solo");
+        quiet.tracks[1].solo = false;
+        need = nestedPreviewsNeeded(quiet);
+        check(need.size() == 1 && pathFileName(need[0]) == "nc_inner.reno", "but it is once the track plays");
+    }
+
     std::printf("\n%d passed, %d failed\n", gPass, gFail);
     return gFail ? 1 : 0;
 }

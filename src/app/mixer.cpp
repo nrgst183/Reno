@@ -3526,12 +3526,27 @@ MixerWindow::MixerWindow(Playback* playback, QWidget* parent) : QWidget(parent),
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
     root->addWidget(d->buildToolBar());
-    auto* body = new QHBoxLayout();
+    // The channel list, the strips and the Master and Preview strips scroll as a whole where the console is smaller than
+    // they are: docked, its smallest size is what the panels beside it can be given (the strips' fixed rows and the
+    // meters' least height held it at about 320 x 400, and the Master Bus and Preview beside it could not grow)
+    auto* bodyHost = new QWidget();
+    bodyHost->setObjectName("mixerBody");
+    bodyHost->setAutoFillBackground(true);
+    bodyHost->setPalette(pal);
+    auto* body = new QHBoxLayout(bodyHost);
     body->setContentsMargins(0, 0, 0, 0);
     body->setSpacing(0);
     body->addWidget(d->buildSidePane());
     d->buildStrips(body);
-    root->addLayout(body, 1);
+    auto* bodyScroll = new QScrollArea(this);
+    bodyScroll->setObjectName("mixerBodyScroll");
+    bodyScroll->setFrameShape(QFrame::NoFrame);
+    bodyScroll->setWidgetResizable(true);
+    bodyScroll->setFocusPolicy(Qt::NoFocus);
+    bodyScroll->viewport()->setAutoFillBackground(true);
+    bodyScroll->viewport()->setPalette(pal);
+    bodyScroll->setWidget(bodyHost);
+    root->addWidget(bodyScroll, 1);
 
     d->listener.reset(new Listener([this](int changes) {
         if (changes & kProject) {

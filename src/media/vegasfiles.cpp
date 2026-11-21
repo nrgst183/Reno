@@ -619,6 +619,28 @@ bool AudioProxyFile::openMemory(int rate, std::shared_ptr<const std::vector<floa
     return true;
 }
 
+bool AudioProxyFile::openPieces(int rate, int64_t frames, std::vector<AudioProxyPiece> pieces)
+{
+    close();
+    if (rate < 1 || frames < 0) return false;
+    for (const auto& p : pieces)
+        if (!p.left || !p.right || p.left->size() != p.right->size()) return false;
+    std::sort(pieces.begin(), pieces.end(), [](const AudioProxyPiece& a, const AudioProxyPiece& b) { return a.start < b.start; });
+    std::lock_guard<std::mutex> lk(mutex_);
+    memL_.reset();
+    memR_.reset();
+    pieces_ = std::move(pieces);
+    piecewise_ = true;
+    info_ = AudioProxyInfo();
+    info_.format = 3;
+    info_.channels = 2;
+    info_.rate = rate;
+    info_.bits = 32;
+    info_.frames = frames;
+    path_.clear();
+    return true;
+}
+
 void AudioProxyFile::close()
 {
     std::lock_guard<std::mutex> lk(mutex_);
@@ -688,6 +710,19 @@ bool AudioProxyFile::read(int64_t start, int frames, float* left, float* right)
     std::fill(left, left + frames, 0.f);
     std::fill(right, right + frames, 0.f);
     std::lock_guard<std::mutex> lk(mutex_);
+    if (piecewise_) {
+        // silence outside the sound; inside it, the samples only if one piece holds them all
+        const int64_t mf = std::max<int64_t>(0, start), mt = std::min<int64_t>(info_.frames, start + frames);
+        if (mt <= mf) return true;
+        for (const auto& p : pieces_) {
+            if (p.start > mf) break;
+            if (p.start + (int64_t)p.left->size() < mt) continue;
+            std::memcpy(left + (mf - start), p.left->data() + (mf - p.start), (size_t)(mt - mf) * sizeof(float));
+            std::memcpy(right + (mf - start), p.right->data() + (mf - p.start), (size_t)(mt - mf) * sizeof(float));
+            return true;
+        }
+        return false;
+    }
     if (memL_) {
         const int64_t mf = std::max<int64_t>(0, start), mt = std::min<int64_t>(info_.frames, start + frames);
         if (mt > mf) {
