@@ -198,6 +198,11 @@ const char* kHelp =
     "                           (default 1; plug-ins that are not thread safe run one call at a time, as in the editor) and limits processors used.\n"
     "                           (--profile followed by something that is not a project file is the H.264 profile.)\n"
     "                           --preview-profile is the same as --profile with a project.\n"
+    "                           Nested projects with a current preview file (.renopreview) are read from it, as in\n"
+    "                           the editor; --no-nested-previews renders them instead.\n"
+    "  reno_cli --build-nested-previews <project.veg> [--all]\n"
+    "                           make the preview files of the nested projects the project uses whose file is missing\n"
+    "                           or out of date (with --all: every one), deepest nested project first\n"
     "\n"
     "Single pictures (for comparing with VEGAS snapshots, see tools/fuzz_compare.py):\n"
     "  reno_cli --stills TIMES --stills-dir DIR <project.veg>\n"
@@ -583,6 +588,9 @@ struct Options {
     int gpu = -1;                           // --gpu on|off (-1: not given)
     bool fullSizeFx = false;                // --full-size-fx
     bool proxies = false;                   // --proxies
+    bool noNestedPreviews = false;          // --no-nested-previews
+    bool buildNestedPreviews = false;       // --build-nested-previews <project>
+    bool allNestedPreviews = false;         // --all
     bool hashFrames = false;                // --hash [FILE]
     std::string hashFile;
     int efx = -1;                           // --efx real|builtin (-1: use the preference)
@@ -728,6 +736,15 @@ bool parseArgs(const std::vector<std::string>& args, Options& o, std::string* pr
         else if (a == "--vst-params") {
             if (!need(k, a, &o.vstParams)) return false;
         }
+        else if (a == "--build-nested-previews") {
+            if (!need(k, a, &v)) return false;
+            o.previewProfile = true;
+            o.buildNestedPreviews = true;
+            if (!o.input.empty()) { *problem = "more than one input file: " + o.input + " and " + v; return false; }
+            o.input = v;
+        }
+        else if (a == "--all") o.allNestedPreviews = true;
+        else if (a == "--no-nested-previews") o.noNestedPreviews = true;
         else if (a == "--audiofx-report") {
             if (!need(k, a, &v)) return false;
             o.previewProfile = true;
@@ -1100,6 +1117,53 @@ void reportProject(const Project& p, FxRuntime& fx, const std::string& title, st
     }
 }
 }  // namespace
+
+// --build-nested-previews: the preview files of the project's nested projects, deepest first. Each is built on a
+// thread of its own while this one hands out the interface work (nested projects make their effects here).
+int runBuildNestedPreviews(AppState& app, bool all)
+{
+    const std::vector<std::string> list = nestedPreviewsNeeded(app.project(), all);
+    if (list.empty()) {
+        out("the preview files of the nested projects are all up to date");
+        return kOk;
+    }
+    int failed = 0;
+    for (size_t k = 0; k < list.size(); ++k) {
+        if (gCancel.load()) {
+            err("stopped");
+            return kCancelled;
+        }
+        const std::string& path = list[k];
+        std::atomic<bool> done{false};
+        std::atomic<int64_t> frames{0};
+        int result = 0;
+        std::string message;
+        const auto t0 = std::chrono::steady_clock::now();
+        std::thread worker([&] {
+            result = buildNestedPreview(path, [&](int64_t, int64_t total, bool) {
+                frames = total;
+                return !gCancel.load();
+            }, &message);
+            done = true;
+        });
+        while (!done.load()) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        worker.join();
+        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (result == 0) {
+            out(strfmt("%zu of %zu  %s: %lld frames in %.1f s", k + 1, list.size(), pathFileName(path).c_str(), (long long)frames.load(), s));
+        } else if (result == 2) {
+            err("stopped");
+            return kCancelled;
+        } else {
+            ++failed;
+            err(strfmt("%zu of %zu  %s: not made: %s", k + 1, list.size(), pathFileName(path).c_str(), message.c_str()));
+        }
+    }
+    return failed ? kRenderFailed : kOk;
+}
 
 int runAudioFxReport(AppState& app, const std::string& input)
 {
@@ -2239,6 +2303,8 @@ int main(int argc, char** argv)
     code = chooseRange(o, project, job);
     if (code != kContinue) return code;
 
+    setNestedPreviewUse(!o.noNestedPreviews);
+    if (o.buildNestedPreviews) return runBuildNestedPreviews(app, o.allNestedPreviews);
     if (o.audioFxReport) return runAudioFxReport(app, job.input);
     if (!o.stills.empty()) return runStills(app, o.stills, o.stillsDir);
     if (o.previewProfile) return runPreviewProfile(app, job.input, job.from, job.to, o.previewScale, o.threads, o.proxies, o.hashFrames, o.hashFile);

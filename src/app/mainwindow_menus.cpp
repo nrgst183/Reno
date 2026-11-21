@@ -5,6 +5,7 @@
 // Commands Reno cannot do
 // are greyed, saying why.
 #include "audioproxyui.h"
+#include "nestedpreviewui.h"
 #include "mainwindow.h"
 #include "mainwindow_internal.h"
 #include "pluginchooser.h"
@@ -670,6 +671,7 @@ void MainWindow::addVegasToolsCommands(VegasCommandBuilder& cmd)
         if (QMenu* m = findChild<QMenu*>("scriptingMenu")) fillScriptMenu(m, this);
     });
     cmd.add("rebuildNestedAudio", "Rebuild Offline &Nested Audio", QList<QKeySequence>(), [] { rebuildOfflineNestedAudio(); });
+    cmd.add("rebuildNestedPreviews", "Rebuild Nested Project Pre&views", QList<QKeySequence>(), [this] { checkNestedPreviews(this, true); });
     cmd.add("cleanProjectMedia", "&Clean Project Media", QList<QKeySequence>(), [this, &app] {
         int unused = 0;
         {
@@ -1112,10 +1114,10 @@ void MainWindow::arrangeVegasToolsMenu(QMenu* toolsMenu)
         }
     fillScriptMenu(scripting, this);
     toolsMenu->addMenu(scripting);
-    toolsMenu->addActions({vegasAction("externalMonitor"), vegasAction("cleanProjectMedia"), vegasAction("rebuildNestedAudio"), vegasAction("openInTrimmer")});
+    toolsMenu->addActions({vegasAction("externalMonitor"), vegasAction("cleanProjectMedia"), vegasAction("rebuildNestedAudio"), vegasAction("rebuildNestedPreviews"), vegasAction("openInTrimmer")});
     arrange(toolsMenu, {">Audio", ">Video", "-", "renderToNewTrack", "externalMonitor", "selectivePrerender", "cleanPrerender", "ramPreview", "-",
                         ">Burn Disc", "printToTape", "printToHdvTape", "-",
-                        ">Scripting", ">Multicamera", "-", "cleanProjectMedia", "rebuildNestedAudio", "relinkWireless", "-", "layOutAudioCd",
+                        ">Scripting", ">Multicamera", "-", "cleanProjectMedia", "rebuildNestedAudio", "rebuildNestedPreviews", "relinkWireless", "-", "layOutAudioCd",
                         "generateLoudnessLog", "extractAudioCd", "-", "openInTrimmer", "record", "armTrack", "armTrackPath", "dimOutput",
                         "-", "rescan", "rescanAll"});
 }

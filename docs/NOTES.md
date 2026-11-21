@@ -158,6 +158,29 @@ mark, the `.veg`'s last-change time to 100 ns. Reno also rebuilds one when a fil
 changed, which VEGAS does not notice. Tools > Rebuild Offline Nested Audio builds missing, stale and cancelled
 proxies. Preference: Audio > Create audio proxy files for nested projects.
 
+**Preview files** (`<project>.veg.renopreview`, Reno's own; `src/media/nestedcache.h`) hold every frame of a nested
+project rendered once at half its size, so that playing a project that uses it reads frames instead of rendering it
+again at every level of nesting. The frames are the renderer's own bytes (8-bit premultiplied B,G,R,A), each
+compressed without loss on its own (FFmpeg's UT Video as planes G,B,R,A, so nothing goes through YUV), so a 50%
+preview read from them is the same, byte for byte, as rendering it (checked with `reno_cli --profile --hash` against
+`--no-nested-previews`); a smaller preview scales them down. Only previews read them: a final render (Render As,
+Selective Prerender, audio proxies) renders the nested project, and frames read from a file are kept in memory apart
+from rendered ones (`kFromPreviewFile`) so that a final render never gets one.
+- A file is current while its signature matches: Reno's version and the name, size and time of last change of the
+  project, every media file it uses and, the same way, everything at every level below it. So saving a project deep
+  down makes the file of every project above it stale.
+- `nestedPreviewsNeeded` lists the stale ones a project shows in its video events, each after the projects it uses;
+  `buildNestedPreview` builds one on the calling thread with its own media readers and effects, after making the
+  effects of every project below it (a frame is never kept without them). A parent's frames read its children's new
+  files. It waits while playback runs, and throws the file away if anything it is made from changed meanwhile.
+- The editor builds them with a progress window (`nestedpreviewui.cpp`) after opening a project, when Reno comes back
+  to the front (a nested project saved in the other Reno that Open Nested Timeline starts), and from Tools > Rebuild
+  Nested Project Previews. Cancelled ones aren't asked for again until something they are made from changes. Where
+  the project's folder can't be written the file goes in Reno's folder (`cache/nested`). Preference: Reno > Create
+  preview files for nested projects.
+- `reno_cli --build-nested-previews <project> [--all]` builds them; `tests/engine/nestedcache_test.cpp` covers the file,
+  the order, exactness, staleness and stopping.
+
 **Peak files** (`<media>.sfk`) hold a file's waveform. A current `.sfk` beside a file gives its waveform at once.
 Reno writes them with VEGAS's numbers, which VEGAS then uses. Where the folder cannot be written, and for
 files with more than two channels, waveforms are cached in Reno's own folder (the channels of up to eight are each

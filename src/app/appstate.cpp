@@ -610,6 +610,7 @@ void Preferences::load()
     }
     cursorPreview = std::min(60.0, std::max(0.1, q.value("prefs/cursorPreview", def.cursorPreview).toDouble()));
     createAudioProxies = q.value("prefs/createAudioProxies", def.createAudioProxies).toBool();
+    buildNestedPreviews = q.value("prefs/buildNestedPreviews", def.buildNestedPreviews).toBool();
     vegasPeakFiles = q.value("prefs/vegasPeakFiles", def.vegasPeakFiles).toBool();
     quickFadeEdits = q.value("prefs/quickFadeEdits2", def.quickFadeEdits).toBool();
     quickFadeMs = std::min(1000.0, std::max(1.0, q.value("prefs/quickFadeMs", def.quickFadeMs).toDouble()));
@@ -640,6 +641,7 @@ void Preferences::save() const
     q.setValue("prefs/preservePitch", preservePitch);
     q.setValue("prefs/cursorPreview", cursorPreview);
     q.setValue("prefs/createAudioProxies", createAudioProxies);
+    q.setValue("prefs/buildNestedPreviews", buildNestedPreviews);
     q.setValue("prefs/vegasPeakFiles", vegasPeakFiles);
     q.setValue("prefs/quickFadeEdits2", quickFadeEdits);
     q.setValue("prefs/quickFadeMs", quickFadeMs);
@@ -734,6 +736,7 @@ void AppState::applyPreferences()
     defaultFadeTypes().audio = vprefs::curveCode("prefs/curveAudioGain");
     defaultFadeTypes().video = vprefs::curveCode("prefs/curveVideoOpacity");
     setAudioProxyOptions(true, prefs.createAudioProxies);
+    setNestedPreviewUse(prefs.buildNestedPreviews);
     mediacache::vegasPeakFiles().store(prefs.vegasPeakFiles);
     // Preferences > Reno and the VEGAS ones that set how Reno works inside: threads, caches, proxy and peak folders...
     const bool builtinFxBefore = hc.preferBuiltinVegasFx;

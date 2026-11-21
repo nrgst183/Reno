@@ -1,5 +1,6 @@
 // The first part of VEGAS Pro 18's manual in the main window: see vegasextras.h.
 #include "vegasextras.h"
+#include "nestedpreviewui.h"
 #include "fxlibrary.h"
 #include "dialoglook.h"
 #include <QIntValidator>
@@ -1532,7 +1533,11 @@ public:
     explicit BackgroundWatcher(MainWindow* w) : QObject(w), w_(w)
     {
         QObject::connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState st) {
-            if (st == Qt::ApplicationActive) return;
+            if (st == Qt::ApplicationActive) {
+                // a nested project saved meanwhile (Open Nested Timeline's other Reno, or VEGAS): its preview file is made again
+                checkNestedPreviews(w_);
+                return;
+            }
             if (vprefs::on("prefs/closePortsInactive") && w_->playback() && w_->playback()->playing()) w_->playback()->pause();
             if (vprefs::on("prefs/closeMediaInactive")) {
                 AppState::get().notify(kMediaPictures);

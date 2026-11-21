@@ -24,6 +24,7 @@ The screenshots use generated test media; `tests/ui/vegasshot_test.cpp` makes th
 
 - Opens, edits and saves `.veg` projects, keeping the settings it doesn't understand
 - Video and audio tracks, buses, envelopes, transitions, compositing, Pan/Crop, Track Motion and nested projects
+  (each rendered once into a preview file, deepest first, which the preview plays from)
 - OpenFX, VST2 (including 32-bit), VST3 and DirectX plug-in hosts
 - Built-in versions of VEGAS's video effects, transitions and generators, rendered on the GPU with Vulkan
 - Time stretch and pitch shift, 5.1 audio, loudness meters and recording

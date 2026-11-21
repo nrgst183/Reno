@@ -1,5 +1,6 @@
 // Opening, saving and closing projects: File > Open / Save / Save Version / Save As, recovery, Copy Media With Project.
 #include "audioproxyui.h"
+#include "nestedpreviewui.h"
 #include "mainwindow.h"
 #include "mainwindow_internal.h"
 #include "vprefs.h"
@@ -153,6 +154,8 @@ bool MainWindow::openProject(const QString& path)
                   QString("%1 is open. Reno cannot use everything in it; what it cannot use is kept in the project and saved back "
                           "as it was:").arg(QFileInfo(path).fileName()),
                   notes);
+    // the nested projects it uses whose preview files are missing or out of date are rendered now (as VEGAS does)
+    checkNestedPreviews(this);
     return true;
 }
 
@@ -331,6 +334,7 @@ void MainWindow::closeEvent(QCloseEvent* e)
     saveWindowLayout();
     fxWindow_->close();
     stopAudioProxies();
+    stopNestedPreviews();
     e->accept();
 }
 

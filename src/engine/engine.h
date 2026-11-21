@@ -76,6 +76,24 @@ void stopAudioProxyBuilds(bool wait, bool cancelled = false);
 // Waits until no build is running or queued, or 'seconds' have passed. Returns true if none is left. (tests)
 bool waitForAudioProxies(double seconds);
 
+// ---- Preview files of nested projects ("<project>.veg.renopreview", media/nestedcache.h): every frame of a nested
+// project rendered once at half its size, deepest nested project first, and read by previews instead of rendering it
+// again. Only previews read them; a final render (Render As, Selective Prerender, the audio proxies) renders live. A
+// file is current while nothing it was made from has changed: the project, the media it uses, and the same at every
+// level below it.
+void setNestedPreviewUse(bool use);
+// The project files used by 'p' (directly or nested) that show pictures and whose preview file is missing or stale -
+// or all of them with 'all' - with every project after the ones it uses, the order to build them in.
+std::vector<std::string> nestedPreviewsNeeded(const Project& p, bool all = false);
+bool nestedPreviewCurrent(const std::string& path);
+// What the preview file of the project at 'path' would be made from now (for remembering a cancelled build).
+uint64_t nestedPreviewSignature(const std::string& path);
+// Builds the preview file of the project at 'path', on the calling thread (not the interface's: the project's effects
+// are made there). 'progress' is told the frames done of the total and whether it is waiting while playback runs; it
+// returns false to stop. 0 made, 1 failed (*message says why), 2 stopped, 3 something it uses changed meanwhile.
+int buildNestedPreview(const std::string& path, const std::function<bool(int64_t done, int64_t total, bool paused)>& progress,
+                       std::string* message = nullptr);
+
 // True for the name of a project file (.veg, .reno) rather than a media file.
 bool isProjectFile(const std::string& path);
 // A reader that renders another project's frames and sound like a media file. Returns null with *error set if the
