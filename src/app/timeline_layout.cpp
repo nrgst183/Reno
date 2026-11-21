@@ -194,19 +194,25 @@ TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::vegasHeaderRects(const R
         }
     }
     h.name = QRect(bx + 4, y + 3, std::max(0, left - 6 - (bx + 4)), 17);
+    // (VEGAS: "Vol:  0,0 dB" / "Pan:  Center" / "Level:  100,0 %", then the slider; on a narrow header the values alone)
+    const int capW = r.video ? 34 : 24, kMinSlider = 44;
+    const bool captions = br - 20 - (bx + 8 + capW + 52) >= kMinSlider;
+    const int valueX = captions ? bx + 8 + capW : bx + 10, sliderX = captions ? valueX + 52 : bx + 67;
     if (r.h >= 46) {
         const int ly = y + 27;
-        if (r.video) {
+        if (captions) h.levelCaption = QRect(bx + 8, ly, capW, 12);
+        if (r.video && !captions) {
             h.level = QRect(bx + 19, ly, br - 20 - (bx + 19), 12);
         } else {
-            h.levelValue = QRect(bx + 10, ly, 50, 12);
-            h.level = QRect(bx + 67, ly, br - 20 - (bx + 67), 12);
+            h.levelValue = QRect(valueX, ly, 50, 12);
+            h.level = QRect(sliderX, ly, br - 20 - sliderX, 12);
         }
     }
     if (!r.video && r.h >= 66) {
         const int py = y + 49;
-        h.panValue = QRect(bx + 10, py, 50, 12);
-        h.pan = QRect(bx + 67, py, br - 20 - (bx + 67), 12);
+        if (captions) h.panCaption = QRect(bx + 8, py, capW, 12);
+        h.panValue = QRect(valueX, py, 50, 12);
+        h.pan = QRect(sliderX, py, br - 20 - sliderX, 12);
     }
     const Track* tk = trackOf(r);
     if (r.video && tk && tk->automation && r.h >= 66) h.fade = QRect(bx + 19, y + 49, br - 20 - (bx + 19), 12);
@@ -216,7 +222,12 @@ TimelineWidget::Impl::HeaderRects TimelineWidget::Impl::vegasHeaderRects(const R
     }
     if (h.autoBtn.isEmpty() && r.video && !h.level.isEmpty() && !buttonHidden(true, "auto")) {
         h.autoBtn = QRect(bx + 1, h.level.top() - 2, 16, 16);
-        h.level.setLeft(h.level.left() + 6);
+        if (!h.levelCaption.isEmpty()) {
+            // (the button goes before the caption: everything moves along)
+            h.levelCaption.translate(12, 0);
+            h.levelValue.translate(12, 0);
+            h.level.setLeft(h.level.left() + 12);
+        } else h.level.setLeft(h.level.left() + 6);
         if (!h.fade.isEmpty()) h.fade.setLeft(h.fade.left() + 6);
     }
     if (h.autoBtn.isEmpty() && !buttonHidden(false, "auto") && !h.bus.isEmpty() && h.bus.right() + 22 < br) h.autoBtn = QRect(h.bus.right() + 6, h.bus.top(), 16, 16);
@@ -692,8 +703,29 @@ const Event* TimelineWidget::Impl::fadeSource(size_t t, size_t k) const
 QRectF TimelineWidget::Impl::markerTag(int index, const Project::Marker& m) const
 {
     const QFontMetrics fm(smallFont);
-    const double w = fm.horizontalAdvance(QString::number(index + 1)) + 9.0;
+    const double w = fm.horizontalAdvance(markerLabel(index, m)) + 9.0;
     return QRectF(std::floor(xAtF(m.time)), kMarkerTop + 2.0, w, kMarkerH - 4.0);
+}
+
+QString TimelineWidget::Impl::markerLabel(int index, const Project::Marker& m) const
+{
+    const Project& pr = app.project();
+    if (m.kind == "cdtrack") {
+        int n = pr.settings.cdFirstTrack;
+        for (const auto& o : pr.markers)
+            if (o.kind == "cdtrack" && o.id != m.id && o.time < m.time) ++n;
+        return QString("Track %1").arg(n);
+    }
+    if (m.kind == "cdindex") {
+        double trackStart = -1.0;
+        for (const auto& o : pr.markers)
+            if (o.kind == "cdtrack" && o.time <= m.time && o.time > trackStart) trackStart = o.time;
+        int n = 2;
+        for (const auto& o : pr.markers)
+            if (o.kind == "cdindex" && o.id != m.id && o.time < m.time && o.time >= trackStart) ++n;
+        return QString("Index %1").arg(n);
+    }
+    return QString::number(index + 1);
 }
 
 int TimelineWidget::Impl::markerIndex(uint64_t id) const

@@ -411,6 +411,11 @@ public:
     std::map<std::string, std::unique_ptr<Descriptor>> contextDescs;
     RenderGate renderGate;
     std::recursive_mutex loadMutex;                 // describing is done once, by one thread
+    // Loading or describing (in a context) is under way on the thread holding loadMutex. A plug-in that opens a window of its
+    // own then (an activation or registration box with its own message loop) lets that thread's other work run in the
+    // middle of it; whatever of that work wants the same plug-in is told it is not ready, rather than loading it a second
+    // time over the first.
+    bool loading = false, describing = false;
     std::mutex suiteLogMutex;                       // guards suiteLog
     int safety = 1;
 };

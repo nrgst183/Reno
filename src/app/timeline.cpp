@@ -84,6 +84,7 @@ TimelineWidget::Impl::Impl(TimelineWidget* w, Playback* pb) : q(w), playback(pb)
     nameEdit = new NameEdit(q);
     nameEdit->hide();
     nameEdit->setMaxLength(60);
+    nameEdit->setPlaceholderText("Type track name here");
     nameEdit->onCancel = [this] { endRename(false); };
     QObject::connect(nameEdit, &QLineEdit::editingFinished, q, [this] { endRename(true); });
 

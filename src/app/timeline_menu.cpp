@@ -617,7 +617,6 @@ void TimelineWidget::Impl::timeDisplayMenu(QMenu& menu)
     }
     menu.addSeparator();
     timeFormatItems(*menu.addMenu("Time Format"), false, true);
-    menu.addSeparator();
     auto colorMenu = [this](QMenu* m, bool text) {
         add(*m, "Default", [this, text] { setTimeDisplayColor(text, QColor()); });
         add(*m, "Custom...", [this, text] {

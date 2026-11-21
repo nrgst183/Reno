@@ -1933,7 +1933,9 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
 QColor TimelineWidget::Impl::markerColor(const Project::Marker& m)
 {
     if (m.kind == "command") return QColor(196, 150, 236);
-    if (m.kind == "cdtrack" || m.kind == "cdindex") return QColor(110, 196, 240);
+    // (VEGAS 18 manual p210-211: CD tracks salmon red, CD indexes magenta)
+    if (m.kind == "cdtrack") return QColor(226, 104, 104);
+    if (m.kind == "cdindex") return QColor(214, 88, 214);
     return m.region ? kRegionColor : kMarkerColor;
 }
 

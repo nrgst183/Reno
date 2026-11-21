@@ -995,7 +995,7 @@ void ColorGradingPanel::addColorCurvesPage()
     auto* side = new QVBoxLayout();
     auto* group = new QButtonGroup(page);
     group->setExclusive(true);
-    const char* names[4] = {"Brightness", "Red", "Green", "Blue"};
+    const char* names[4] = {"RGB", "Red", "Green", "Blue"};
     for (int k = 0; k < 4; ++k) {
         QCheckBox* c = d->curveCheck[k] = new QCheckBox(names[k], page);
         c->setObjectName(QString("gradeCurveChannel%1").arg(k));

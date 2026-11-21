@@ -1765,9 +1765,8 @@ void TimelineWidget::Impl::updateEdge(const QPointF& pos, Qt::KeyboardModifiers 
     }
     if (kind != Drag::FadeIn && kind != Drag::FadeOut) edgePreview(edge);
     else {
-        // a small label beside the pointer with the fade's length (the Vegas 8 tutorial shows "Fade offset 00:00:13.08"
-        // while a fade handle is dragged)
-        envLabel = QString::fromStdString("Fade offset " + timecode(fade, fps()));
+        // a small label beside the pointer with the fade's length (VEGAS 18 manual p150: "Fade in offset 00:00:03,01")
+        envLabel = QString::fromStdString((kind == Drag::FadeIn ? "Fade in offset " : "Fade out offset ") + timecode(fade, fps()));
         envLabelAt = pos;
     }
     app.status(say);

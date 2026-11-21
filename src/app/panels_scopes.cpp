@@ -22,6 +22,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QWheelEvent>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -228,6 +229,9 @@ public:
     bool composite = false;
     int histogram = 0;
     bool setup75 = false, studioRgb = false;
+    // Video Scopes Settings' Skin tone line: a line from the vectorscope's middle at this angle (VEGAS's default 123)
+    bool skinLine = false;
+    double skinAngle = 123.0;
     QString readout;
 
     // The waveform's scale: IRE of an 8-bit level (Studio RGB: 16 is black, 235 white; 7.5 IRE setup lifts black).
@@ -267,9 +271,7 @@ protected:
                 const int side = std::min(a.width(), a.height());
                 const QPointF c(a.left() + a.width() / 2.0, a.top() + a.height() / 2.0);
                 const double dx = (pt.x() - c.x()) / (side / 2.0), dy = (c.y() - pt.y()) / (side / 2.0);
-                double hue = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
-                if (hue < 0) hue += 360;
-                readout = QString("Hue %1°  Saturation %2%").arg((int)std::lround(hue)).arg((int)std::lround(std::sqrt(dx * dx + dy * dy) * 100));
+                readout = QString("%1%").arg((int)std::lround(std::sqrt(dx * dx + dy * dy) * 100));
                 break;
             }
             }
@@ -355,17 +357,24 @@ protected:
             p.setBrush(Qt::NoBrush);
             p.setPen(kScopeGrid);
             const QPointF c = QRectF(r).center();
-            for (double fr : {1.0, 0.75, 0.5, 0.25}) p.drawEllipse(c, r.width() / 2.0 * fr, r.height() / 2.0 * fr);
+            for (int k = 1; k <= 5; ++k) {
+                const double fr = k * 0.2;
+                p.drawEllipse(c, r.width() / 2.0 * fr, r.height() / 2.0 * fr);
+                p.drawText(QRectF(c.x() + 2.0, c.y() - r.height() / 2.0 * fr - 11.0, 24.0, 11.0), Qt::AlignLeft | Qt::AlignBottom, QString::number(k * 20));
+            }
             p.drawLine(QPointF(c.x(), r.top()), QPointF(c.x(), r.bottom()));
             p.drawLine(QPointF(r.left(), c.y()), QPointF(r.right(), c.y()));
-            const struct { const char* name; int r, g, b; } bars[] = {{"R", 191, 0, 0}, {"Mg", 191, 0, 191}, {"B", 0, 0, 191},
-                                                                     {"Cy", 0, 191, 191}, {"G", 0, 191, 0}, {"Yl", 191, 191, 0}};
+            if (skinLine) {
+                const double a = skinAngle * 3.14159265358979323846 / 180.0;
+                p.drawLine(c, QPointF(c.x() + std::cos(a) * r.width() / 2.0, c.y() - std::sin(a) * r.height() / 2.0));
+            }
+            // (red, magenta, blue, cyan, green, yellow)
+            const struct { int r, g, b; } bars[] = {{191, 0, 0}, {191, 0, 191}, {0, 0, 191}, {0, 191, 191}, {0, 191, 0}, {191, 191, 0}};
             for (const auto& b : bars) {
                 const double x = r.left() + (cbOf(b.r, b.g, b.b) + 128) * r.width() / 256.0;
                 const double y = r.top() + (127 - crOf(b.r, b.g, b.b)) * r.height() / 256.0;
                 p.setPen(kScopeTarget);
                 p.drawRect(QRectF(x - 5, y - 5, 10, 10));
-                p.drawText(QRectF(x + 6, y - 14, 24, 12), Qt::AlignLeft | Qt::AlignBottom, b.name);
             }
             p.setRenderHint(QPainter::Antialiasing, false);
             break;
@@ -514,6 +523,8 @@ VideoScopes::VideoScopes(Playback* playback, QWidget* parent) : QWidget(parent),
         d->view->histogram = std::max(0, std::min(6, s.value("scopes/histogram", (int)HistLuminance).toInt()));
         d->view->setup75 = s.value("scopes/setup75", false).toBool();
         d->view->studioRgb = s.value("scopes/studioRgb", false).toBool();
+        d->view->skinLine = s.value("scopes/skinLine", false).toBool();
+        d->view->skinAngle = s.value("scopes/skinAngle", 123.0).toDouble();
     }
     d->fillMode();
     QObject::connect(d->choice, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { setScope((Scope)d->choice->currentData().toInt()); });
@@ -527,21 +538,56 @@ VideoScopes::VideoScopes(Playback* playback, QWidget* parent) : QWidget(parent),
         dlg.setObjectName("videoScopesSettings");
         dlg.setWindowTitle("Video Scopes Settings");
         auto* lv = new QVBoxLayout(&dlg);
-        auto* setup = new QCheckBox("7.5 IRE Setup", &dlg);
+        auto* hdr = new QCheckBox("Enable ST.2084 HDR scope", &dlg);
+        hdr->setObjectName("hdrScope");
+        hdr->setChecked(QSettings().value("scopes/hdr", false).toBool());
+        hdr->setToolTip("Kept: Reno's scopes do not draw an ST.2084 (HDR) scale yet");
+        auto* tenBit = new QCheckBox("10 bit scale", &dlg);
+        tenBit->setObjectName("tenBitScale");
+        tenBit->setEnabled(false);              // (as VEGAS: only with the HDR scope)
+        QObject::connect(hdr, &QCheckBox::toggled, tenBit, &QCheckBox::setEnabled);
+        tenBit->setEnabled(hdr->isChecked());
+        tenBit->setChecked(QSettings().value("scopes/tenBit", false).toBool());
+        auto* skin = new QCheckBox("Skin tone line", &dlg);
+        skin->setObjectName("skinToneLine");
+        skin->setChecked(d->view->skinLine);
+        auto* angle = new QDoubleSpinBox(&dlg);
+        angle->setObjectName("skinToneAngle");
+        angle->setRange(0.0, 360.0);
+        angle->setDecimals(1);
+        angle->setValue(d->view->skinAngle);
+        auto* skinRow = new QHBoxLayout();
+        skinRow->addWidget(skin);
+        skinRow->addStretch(1);
+        skinRow->addWidget(new QLabel("Angle:", &dlg));
+        skinRow->addWidget(angle);
+        auto* setup = new QCheckBox("7.5 &IRE Setup", &dlg);
         setup->setObjectName("setup75");
         setup->setChecked(d->view->setup75);
         setup->setToolTip("Show black at 7.5 IRE in the waveform, as an external scope does with hardware that adds NTSC setup");
-        auto* studio = new QCheckBox("Studio RGB (16 to 235)", &dlg);
+        auto* studio = new QCheckBox("Studio &RGB (16/64 to 235/940)", &dlg);
         studio->setObjectName("studioRgb");
         studio->setChecked(d->view->studioRgb);
         studio->setToolTip("Read 16 as black and 235 as white (studio RGB) instead of 0 and 255");
+        lv->addWidget(hdr);
+        lv->addWidget(tenBit);
+        lv->addLayout(skinRow);
         lv->addWidget(setup);
         lv->addWidget(studio);
         auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
         lv->addWidget(bb);
         QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
         QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-        if (dlg.exec() == QDialog::Accepted) setDisplaySettings(setup->isChecked(), studio->isChecked());
+        if (dlg.exec() == QDialog::Accepted) {
+            QSettings s;
+            s.setValue("scopes/hdr", hdr->isChecked());
+            s.setValue("scopes/tenBit", tenBit->isChecked());
+            s.setValue("scopes/skinLine", skin->isChecked());
+            s.setValue("scopes/skinAngle", angle->value());
+            d->view->skinLine = skin->isChecked();
+            d->view->skinAngle = angle->value();
+            setDisplaySettings(setup->isChecked(), studio->isChecked());
+        }
     });
     d->timer = new QTimer(this);
     d->timer->setInterval(100);

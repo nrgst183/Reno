@@ -2109,7 +2109,7 @@ private:
             if (b.assignable) continue;
             items.push_back(std::make_pair(qs(b.name), b.id));
         }
-        if (kind_ == InputStrip) items.push_back(std::make_pair(QString("Off"), kOutputOff));
+        if (kind_ == InputStrip) items.insert(items.begin(), std::make_pair(QString("Output Off"), kOutputOff));
         // refilled only when the choices change, so an open menu is not disturbed by a fader moving elsewhere
         bool same = output->count() == (int)items.size();
         for (int i = 0; same && i < output->count(); ++i)
@@ -2865,7 +2865,9 @@ struct MixerWindow::Impl {
         save();
     }
 
-    void nudgeFaders(int dir)
+    // The selected channels' faders half a dB up or down. 'side': 0 both, 1 only the left, 2 only the right of a stereo
+    // fader (the master's: moving one side alone splits it); a fader of one channel moves whole either way.
+    void nudgeFaders(int dir, int side = 0)
     {
         std::vector<Strip*> sel;
         for (Strip* s : all())
@@ -2897,7 +2899,10 @@ struct MixerWindow::Impl {
                 } else if (s->kind() == Strip::BusStrip) {
                     if (reno::Bus* b = p.findBus(s->id())) b->level = bump(b->level);
                 } else if (s->kind() == Strip::MasterStrip) {
-                    p.masterVolume = bump(p.masterVolume);
+                    const double left = p.masterVolume, right = p.masterRightVolume();
+                    if (side != 2) p.masterVolume = bump(left);
+                    if (side == 2 || (side == 0 && p.masterVolumeR >= 0)) p.masterVolumeR = bump(right);
+                    else if (side == 1) p.masterVolumeR = right;
                 }
             }
         });
@@ -3230,7 +3235,7 @@ QWidget* MixerWindow::Impl::buildToolBar()
     insertTrack = insertTool("insertAudioTrack", "Insert Audio Track", "Add an audio track (Ctrl+Q)", TrackPic);
     insertAssignable = insertTool("insertAssignableFx", "Insert Assignable FX...", "Add an assignable effects chain for tracks to send to (Insert > Audio Assignable FX)", AssignablePic);
     insertBus = insertTool("insertBus", "Insert Bus", "Add a bus (Bus A, Bus B ...)", BusPic);
-    insertInput = insertTool("insertInputBus", "Insert Input Bus", "Add an input bus: sound from a sound card input, mixed with the project (VEGAS Pro 23)", InputBusPic);
+    insertInput = insertTool("insertInputBus", "Insert Input Bus", "Add an input bus: sound from a sound card input, mixed with the project", InputBusPic);
     // (VEGAS has no Delete Bus button: a bus is deleted from its strip's menu or with Delete; the button stays for that)
     deleteBus = makeTool(bar, nullptr, "deleteBus", "Delete Bus", "Delete Bus", false);
     deleteBus->hide();
@@ -3552,8 +3557,10 @@ static bool consoleKey(int key, Qt::KeyboardModifiers mods)
     const Qt::KeyboardModifiers m = mods & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
     switch (key) {
     case Qt::Key_F2: case Qt::Key_D: case Qt::Key_N: case Qt::Key_W: case Qt::Key_Q: case Qt::Key_U: case Qt::Key_A:
-    case Qt::Key_E: case Qt::Key_P: case Qt::Key_F: case Qt::Key_I: case Qt::Key_M: case Qt::Key_S: case Qt::Key_Up: case Qt::Key_Down:
+    case Qt::Key_E: case Qt::Key_P: case Qt::Key_F: case Qt::Key_I: case Qt::Key_M: case Qt::Key_S:
         return m == Qt::NoModifier;
+    case Qt::Key_Up: case Qt::Key_Down:     // (Shift: the left channel of a stereo fader; Ctrl: the right one)
+        return m == Qt::NoModifier || m == Qt::ShiftModifier || m == Qt::ControlModifier;
     case Qt::Key_H: case Qt::Key_T: return m == Qt::NoModifier || m == Qt::ShiftModifier;
     case Qt::Key_C: case Qt::Key_L: case Qt::Key_R: return m == Qt::ShiftModifier;
     default: return false;
@@ -3609,8 +3616,12 @@ bool MixerWindow::handleKey(int key, Qt::KeyboardModifiers mods)
     case Qt::Key_L: v.labels = !v.labels; d->viewChanged(); break;
     case Qt::Key_C: d->setPane(d->channelPane, !!d->channelPane->isHidden()); break;
     case Qt::Key_R: d->setPane(d->viewPane, !!d->viewPane->isHidden()); break;
-    case Qt::Key_Up: d->nudgeFaders(1); break;
-    case Qt::Key_Down: d->nudgeFaders(-1); break;
+    case Qt::Key_Up:
+    case Qt::Key_Down: {
+        const int side = shift ? 1 : (mods & Qt::ControlModifier) ? 2 : 0;
+        d->nudgeFaders(key == Qt::Key_Up ? 1 : -1, side);
+        break;
+    }
     default: return false;
     }
     return true;

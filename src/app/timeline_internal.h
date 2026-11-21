@@ -359,6 +359,8 @@ void drawMagnifier(QPainter& p, const QRectF& r);
 QColor envelopeColor(const std::string& kind);
 
 QString envelopeName(const std::string& kind);
+// What follows the pointer while an envelope point is dragged, as VEGAS's: "Volume at 00:00:02:17 is 4.1 dB".
+QString envPointLabel(const std::string& kind, double time, double value);
 
 const double kEnvMaxGain = 2.0;
 double envToFrac(const std::string& kind, double v);
@@ -673,7 +675,10 @@ struct TimelineWidget::Impl {
                          QRect surround;
                          // (see Part::HeaderAuto...)     // (an audio track in a 5.1 project: its small surround
                          // panner, in place of the pan slider)
-                         QRect autoBtn, fade, phase, bus; };
+                         QRect autoBtn, fade, phase, bus;
+                         // VEGAS's captions before the values ("Vol:", "Pan:"; a video track's "Level:"), where the header is
+                         // wide enough to keep a usable slider after them
+                         QRect levelCaption, panCaption; };
     HeaderRects headerRects(const Row& r) const;
     void placeSurround(HeaderRects& h) const;
 
@@ -747,6 +752,9 @@ struct TimelineWidget::Impl {
     const MediaItem* mediaOf(uint64_t id) const;
     const Event* fadeSource(size_t t, size_t k) const;
     QRectF markerTag(int index, const Project::Marker& m) const;
+    // What a marker's tag says: its number; an audio CD track "Track N" (from Project Properties' first track number) and
+    // a CD index "Index N" (2 on, within its track), as VEGAS's CD layout bar.
+    QString markerLabel(int index, const Project::Marker& m) const;
     QRectF regionEndTag(const Project::Marker& m) const
     {
         return QRectF(std::floor(xAtF(m.time + m.length)) - 8.0, kMarkerTop + 2.0, 9.0, kMarkerH - 4.0);
@@ -1298,6 +1306,9 @@ struct TimelineWidget::Impl {
 
     void keyCursor(double t);
     double stepFrom(double t, int dir) const;
+    // Where a Shift+key selection starts from: the cursor, or the other end of the time selection the cursor is at.
+    double selectionAnchor() const;
+    void selectTo(double t);                        // the cursor to t, selecting from selectionAnchor()
 
     double homeTime() const { return app.loopEnd > app.loopStart ? app.loopStart : viewStart; }
     double endTime() const { return app.loopEnd > app.loopStart ? app.loopEnd : timeAtF(lanesRight() - 1); }

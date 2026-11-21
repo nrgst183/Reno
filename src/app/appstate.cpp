@@ -1046,6 +1046,8 @@ std::vector<uint64_t> AppState::addMediaToTimeline(uint64_t mediaId, double time
             else if (m.subclipLength > 0 && !m.generated && !m.info.isStill) e.offset = m.subclipStart;
             e.group = group;
             e.name = m.name;
+            // (VEGAS 18 manual p530: "Import stereo as dual mono" names the two events "<name> [Channel 1]" / "[Channel 2]")
+            if (dualMono && first >= 0) e.name = m.name + " [Channel " + std::to_string(first + 1) + "]";
             e.loop = prefs.loopEvents;
             setDefaultFadeCurves(e, type);
             // Preferences > Reno > Editing: the fade lengths a new event starts with, each at most half its length

@@ -1208,12 +1208,12 @@ public:
         ob->setSpacing(2);
         openFolderWhenDone_ = new QCheckBox("Open folder when rendering is complete", optBox);
         openFolderWhenDone_->setObjectName("openFolderWhenDone");
-        openFolderWhenDone_->setChecked(settings.value("render/openFolderWhenDone", true).toBool());
+        openFolderWhenDone_->setChecked(settings.value("render/openFolderWhenDone", false).toBool());
         ob->addWidget(openFolderWhenDone_);
         ob->addWidget(closeWhenDone_);
         shutdown_ = new QCheckBox("Shut down computer after render completes", optBox);
         shutdown_->setObjectName("shutdownWhenDone");
-        ob->addWidget(shutdown_);
+        shutdown_->hide();          // (VEGAS 23's; VEGAS 18's progress has only the two above)
         pv->addWidget(pathLabel_);
         pv->addWidget(bar_);
         pv->addLayout(counts);

@@ -182,6 +182,11 @@ double fracToEnv(const std::string& kind, double f)
     return f;
 }
 
+QString envPointLabel(const std::string& kind, double time, double value)
+{
+    return envelopeName(kind) + " at " + QString::fromStdString(rulerTime(AppState::get().project(), time)) + " is " + envValueText(kind, value);
+}
+
 QString envValueText(const std::string& kind, double v)
 {
     if (kind == "volume" || kind == "send") {

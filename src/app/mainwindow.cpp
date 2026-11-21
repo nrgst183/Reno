@@ -529,6 +529,12 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Navigate", "Time Select Previous Selected Event", "Ctrl+Shift+[", S::Window, ""},
         {"Navigate", "Time Select Next Selected Event", "Ctrl+Shift+]", S::Window, ""},
         {"Navigate", "Time Select Right by Marker/Region", "Ctrl+Shift+Right", S::Window, "from the cursor (or the time selection's start) to the next marker or region edge; with the track list's keyboard, track pan"},
+        {"Navigate", "Time Select Left by Marker/Region", "Ctrl+Shift+Left", S::Window, "the same, back to the previous marker or region edge; with the track list's keyboard, track pan"},
+        {"Navigate", "Select by Frame", "Alt+Shift+Left or Alt+Shift+Right", S::Window, "as Alt+Left / Right, selecting from the cursor (or the time selection's other end)"},
+        {"Navigate", "Select by Event Edit Points", "Ctrl+Alt+Shift+Left or Ctrl+Alt+Shift+Right", S::Window, ""},
+        {"Navigate", "Select to Project Start / End", "Ctrl+Shift+Home or Ctrl+Shift+End", S::Window, ""},
+        {"Navigate", "Select to the Time Selection's (or the View's) Start / End", "Shift+Home or Shift+End", S::Timeline, "a selection that already starts (ends) there goes on to the view's edge"},
+        {"Navigate", "Select by Grid Marks", "Shift+Page Up or Shift+Page Down", S::Timeline, ""},
         {"Navigate", "Cursor Left / Right", "Left or Right", S::Timeline, "a pixel, at least a frame while quantizing"},
         {"Navigate", "Extend the Time Selection", "Shift+Left or Shift+Right", S::Timeline, ""},
         {"Navigate", "Cursor by Grid Marks", "Page Up or Page Down", S::Timeline, ""},
@@ -793,6 +799,8 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Mixing Console", "Show / Hide Fader Ticks", "Shift+T", S::Panel, "the dB scale beside the faders"},
         {"Mixing Console", "Show / Hide Faders, Insert FX, I/O, Meters, Sends", "F or I or H or M or S", S::Panel, "the control regions (the faders region has pan, mute, solo and arm for record)"},
         {"Mixing Console", "Selected Channels' Faders Up / Down", "Up or Down", S::Panel, "half a decibel a press, one undo step each (the master's left and right faders move together unless split with its L/R button)"},
+        {"Mixing Console", "Left Channel of a Stereo Fader Up / Down", "Shift+Up or Shift+Down", S::Panel, "the master's left fader alone (which splits it from the right)"},
+        {"Mixing Console", "Right Channel of a Stereo Fader Up / Down", "Ctrl+Up or Ctrl+Down", S::Panel, "the master's right fader alone"},
         {"Effects window", "Animate: the keyframe strip under an OpenFX effect's controls", "", S::Panel, "click: move the cursor; drag a keyframe to move it; double-click a row to add one; right-click one: Linear / Fast / Slow / Smooth / Sharp / Hold, Delete; the buttons go to the first / previous / next / last keyframe and create or delete one"},
         {"Effects window", "Delete the picked keyframe", "Delete", S::Panel, "in the keyframe strip"},
         {"Effects window", "Preset list of an audio effect; Load / Save .fxp, .fxb", "", S::Panel, "the plug-in's programs and your presets (Save Preset / Delete Preset); VST2: the ... button"},
@@ -1806,9 +1814,10 @@ void MainWindow::addNavigationActions(ActionBuilder& b)
         if (tl->trackListFocused()) tl->changeTrackLevel(1, false);
         else tl->cursorToMarker(1);
     });
-    b.add("trackPanLeft", "Track Pan Left (track list)", keys({"Ctrl+Shift+Left"}), [tl, &app] {
+    b.add("trackPanLeft", "Track Pan Left (track list)", keys({"Ctrl+Shift+Left"}), [tl] {
+        // (otherwise, as Ctrl+Left with Shift: the time selection back to the previous marker or region edge)
         if (tl->trackListFocused()) tl->changeTrackLevel(-1, true);
-        else app.status("Ctrl+Shift+Left pans the selected tracks while the track list has the keyboard (Tab).");
+        else tl->extendSelectionWith([tl] { tl->cursorToMarker(-1); });
     });
     // (Ctrl+Shift+Right is also VEGAS's Time Select Right by Marker/Region: that, unless the track list has the keyboard)
     b.add("trackPanRight", "Track Pan Right (track list)", keys({"Ctrl+Shift+Right"}), [this, tl] {
@@ -1824,6 +1833,16 @@ void MainWindow::addNavigationActions(ActionBuilder& b)
     b.add("nextFrame", "Next F&rame", keys({"Alt+Right"}), [frameStep] { frameStep(1); });
     b.add("prevEditPoint", "Previous &Edit Point", keys({"Ctrl+Alt+Left"}), [tl] { tl->cursorToEditPoint(-1); });
     b.add("nextEditPoint", "Next Edit &Point", keys({"Ctrl+Alt+Right"}), [tl] { tl->cursorToEditPoint(1); });
+    // VEGAS: "most of the cursor placement commands, when combined with the Shift key, also perform selection"
+    b.add("selectFrameLeft", "Select Left by Frame", keys({"Alt+Shift+Left"}), [tl, frameStep] { tl->extendSelectionWith([&] { frameStep(-1); }); });
+    b.add("selectFrameRight", "Select Right by Frame", keys({"Alt+Shift+Right"}), [tl, frameStep] { tl->extendSelectionWith([&] { frameStep(1); }); });
+    b.add("selectEditPointLeft", "Select Left by Event Edit Points", keys({"Ctrl+Alt+Shift+Left"}), [tl] { tl->extendSelectionWith([tl] { tl->cursorToEditPoint(-1); }); });
+    b.add("selectEditPointRight", "Select Right by Event Edit Points", keys({"Ctrl+Alt+Shift+Right"}), [tl] { tl->extendSelectionWith([tl] { tl->cursorToEditPoint(1); }); });
+    b.add("selectToStart", "Select to Project Start", keys({"Ctrl+Shift+Home"}), [pb, tl] { tl->extendSelectionWith([&] { pb->jumpTo(0); }); tl->scrollToCursor(); });
+    b.add("selectToEnd", "Select to Project End", keys({"Ctrl+Shift+End"}), [pb, &app, tl] {
+        tl->extendSelectionWith([&] { pb->pause(); app.setCursor(app.project().length()); });
+        tl->scrollToCursor();
+    });
     b.add("prevEdge", "Select Event &Start", keys({"["}), [tl] { tl->selectEdge(-1); });
     b.add("nextEdge", "Select Event &End", keys({"]"}), [tl] { tl->selectEdge(1); });
     b.add("expandedEdit", "Enter Expanded Edit &Mode\tNum 5", QList<QKeySequence>(), [tl] { tl->toggleExpandedEdit(); });

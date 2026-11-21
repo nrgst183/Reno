@@ -3466,22 +3466,27 @@ private:
             app_.edit("Mask: Apply to FX", [id, on](Project& p) { if (Event* ev = p.findEvent(id)) ev->maskApplyToFx = on; });
         });
         pathGroup_ = panel_->group("Path");
-        modeBox_ = combo(panel_, "maskMode", {{"Positive", "0"}, {"Negative", "1"}});
-        modeBox_->setToolTip("Positive: the inside of the path shows. Negative: the outside shows.");
+        modeBox_ = combo(panel_, "maskMode", {{"Positive", "0"}, {"Negative", "1"}, {"Disabled", "2"}});
+        modeBox_->setToolTip("Positive: the inside of the path shows. Negative: the outside shows. Disabled: the path does nothing.");
         panel_->add("Mode", modeBox_);
         aaBox_ = combo(panel_, "maskAntiAlias", {{"Yes", "1"}, {"No", "0"}});
         panel_->add("Anti alias", aaBox_);
         opacityBox_ = new Spin(panel_, 0, 100, 1, 1, "maskOpacity");
-        opacityBox_->setSuffix(" %");
-        panel_->add("Opacity", opacityBox_);
+        if (!vegasFrame()) opacityBox_->setSuffix(" %");
+        panel_->add(vegasFrame() ? "Opacity (%)" : "Opacity", opacityBox_);
         featherTypeBox_ = combo(panel_, "maskFeatherType", {{"None", "0"}, {"In", "1"}, {"Out", "2"}, {"Both", "3"}});
         featherTypeBox_->setToolTip("Which side of the path's edge is softened");
         panel_->add("Feather type", featherTypeBox_);
         featherBox_ = new Spin(panel_, 0, 100, 1, 1, "maskFeather");
-        featherBox_->setSuffix(" %");
+        if (!vegasFrame()) featherBox_->setSuffix(" %");
         featherBox_->setToolTip("How soft the edge is (100%: a quarter of the frame's shorter side)");
-        panel_->add("Feather", featherBox_);
-        QObject::connect(modeBox_, &QComboBox::activated, this, [this](int i) { editPath("Mask Path: Mode", [i](MaskPath& m) { m.negative = i == 1; }); });
+        panel_->add(vegasFrame() ? "Feather (%)" : "Feather", featherBox_);
+        QObject::connect(modeBox_, &QComboBox::activated, this, [this](int i) {
+            editPath("Mask Path: Mode", [i](MaskPath& m) {
+                m.enabled = i != 2;
+                if (i != 2) m.negative = i == 1;
+            });
+        });
         QObject::connect(aaBox_, &QComboBox::activated, this, [this](int i) { editPath("Mask Path: Anti Alias", [i](MaskPath& m) { m.antiAlias = i == 0; }); });
         QObject::connect(featherTypeBox_, &QComboBox::activated, this, [this](int i) { editPath("Mask Path: Feather Type", [i](MaskPath& m) { m.featherType = i; }); });
         QObject::connect(opacityBox_, &QDoubleSpinBox::valueChanged, this, [this](double v) { editPath("Mask Path: Opacity", [v](MaskPath& m) { m.opacity = v / 100.0; }); });
@@ -4152,7 +4157,7 @@ private:
         for (QWidget* w : std::initializer_list<QWidget*>{modeBox_, aaBox_, opacityBox_, featherTypeBox_, featherBox_}) w->setEnabled(has);
         if (has) {
             const MaskPath& m = ps[(size_t)selPath_];
-            pickData(modeBox_, m.negative ? "1" : "0");
+            pickData(modeBox_, !m.enabled ? "2" : m.negative ? "1" : "0");
             pickData(aaBox_, m.antiAlias ? "1" : "0");
             pickData(featherTypeBox_, QString::number(m.featherType));
             opacityBox_->showValue(m.opacity * 100.0);

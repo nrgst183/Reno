@@ -1982,7 +1982,13 @@ private:
         QListWidget* list = new QListWidget(b);
         list->setObjectName("deprecatedList");
         const QString kept = "Reno has no such feature; the setting only shows the menu item VEGAS shows for it";
-        for (auto it : std::vector<std::pair<const char*, const char*>>{{"Enable XDCam Explorer", "prefs/depXdcamExplorer"},
+        // (VEGAS 18 manual p548, in its order)
+        for (auto it : std::vector<std::pair<const char*, const char*>>{{"Allow legacy GPU rendering", "prefs/depLegacyGpu"},
+                                                                       {"Enable ProType Titler", "prefs/depProType"},
+                                                                       {"Enable the QuickTime plugin", "prefs/depQuickTime"},
+                                                                       {"Enable legacy text", "prefs/depLegacyText"},
+                                                                       {"Enable Legacy stabilizer", "prefs/depLegacyStabilizer"},
+                                                                       {"Enable XDCam Explorer", "prefs/depXdcamExplorer"},
                                                                        {"Enable Import DVD Camcorder Disc", "prefs/depDvdCamcorder"}}) {
             QListWidgetItem* li = new QListWidgetItem(it.first, list);
             li->setFlags(li->flags() | Qt::ItemIsUserCheckable);

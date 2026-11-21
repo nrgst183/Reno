@@ -425,9 +425,19 @@ void TimelineWidget::Impl::paintHeaders(QPainter& p, const QRect& clip)
             const double ls = r.video ? clampd(lv, 0.0, 1.0) : volumeToSlider(lv);
             drawSlider(p, h.level, ls, false, levelHot, current);
             if (tr.automation) drawAutoKnob(p, h.level, ls);
-            if (!h.levelValue.isEmpty()) {
+            if (!h.levelCaption.isEmpty()) {
                 p.setPen(text);
-                p.drawText(h.levelValue, Qt::AlignVCenter | Qt::AlignLeft, levelText(r.video, lv));
+                p.drawText(h.levelCaption, Qt::AlignVCenter | Qt::AlignLeft, r.video ? QString("Level:") : QString("Vol:"));
+            }
+            if (!h.levelValue.isEmpty()) {
+                // (VEGAS: a muted audio track's volume reads MUTED, in yellow)
+                if (!r.video && muteShown) {
+                    p.setPen(QColor(240, 200, 40));
+                    p.drawText(h.levelValue, Qt::AlignVCenter | Qt::AlignLeft, QString("MUTED"));
+                } else {
+                    p.setPen(text);
+                    p.drawText(h.levelValue, Qt::AlignVCenter | Qt::AlignLeft, levelText(r.video, lv));
+                }
             }
         }
         if (!h.pan.isEmpty()) {
@@ -436,6 +446,7 @@ void TimelineWidget::Impl::paintHeaders(QPainter& p, const QRect& clip)
             drawSlider(p, h.pan, clampd((pv + 1.0) * 0.5, 0.0, 1.0), true, panHot, current);
             if (tr.automation) drawAutoKnob(p, h.pan, clampd((pv + 1.0) * 0.5, 0.0, 1.0));
             p.setPen(text);
+            if (!h.panCaption.isEmpty()) p.drawText(h.panCaption, Qt::AlignVCenter | Qt::AlignLeft, QString("Pan:"));
             p.drawText(h.panValue, Qt::AlignVCenter | Qt::AlignLeft, panText(pv));
         }
         if (!h.fade.isEmpty()) {
@@ -553,7 +564,7 @@ void TimelineWidget::Impl::paintRuler(QPainter& p, const QRect& clip)
             p.drawRect(tag.adjusted(0.5, 0.5, -0.5, -0.5));
         }
         p.setPen(QColor(16, 16, 16));
-        p.drawText(tag, Qt::AlignCenter, QString::number(k + 1));
+        p.drawText(tag, Qt::AlignCenter, markerLabel((int)k, m));
         if (!m.name.empty()) {
             double limit = lanesRight() - 1;
             for (const auto& o : pr.markers)
@@ -677,7 +688,7 @@ QString TimelineWidget::Impl::tipAt(const QPointF& pos) const
     case Part::EventMenu: return QString("Event menu");
     case Part::EventSnap: {
         const Event* se = pr.findEvent(h.event);
-        return QString("Snap offset: %1 (drag along the event: where it snaps when it is moved)")
+        return QString("Snap offset: %1")
             .arg(QString::fromStdString(timecode(se ? se->snapOffset : 0.0, fps())));
     }
     case Part::MarkerTag:
@@ -727,7 +738,7 @@ QString TimelineWidget::Impl::tipAt(const QPointF& pos) const
     case Part::EventGain:
         if (const Event* e = pr.findEvent(h.event)) {
             const Row* gr = rowOf(h.track);
-            return gainText(gr && gr->video, e->gain) + QString("\nDrag to change it (Ctrl or the right button: finely)");
+            return gainText(gr && gr->video, e->gain);
         }
         return QString();
     case Part::EventBody:

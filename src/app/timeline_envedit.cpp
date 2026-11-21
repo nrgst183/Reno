@@ -45,7 +45,7 @@ void TimelineWidget::Impl::pressEnvelope(const Hit& h, Qt::KeyboardModifiers mod
         drag.grabbed = (size_t)h.point;
         drag.kind = Drag::EnvPoints;
         const EnvPoint& pt = L.env->points[(size_t)h.point];
-        envLabel = envValueText(h.env.kind, pt.value);
+        envLabel = envPointLabel(h.env.kind, L.origin + pt.time, pt.value);
         envLabelAt = envPointPos(L, (size_t)h.point);
     } else {
         const int a = h.point;
@@ -190,9 +190,9 @@ void TimelineWidget::Impl::updateEnvelope(const QPointF& pos, Qt::KeyboardModifi
     });
     const double v = valueOf(base[grabbed]);
     const double at = drag.envOrigin + base[grabbed].time + dt;
-    envLabel = envValueText(kind, v);
+    envLabel = drag.kind == Drag::EnvPoints ? envPointLabel(kind, at, v) : envValueText(kind, v);
     envLabelAt = QPointF(xAtF(at), drag.envArea.bottom() - envToFrac(kind, v) * drag.envArea.height());
-    app.status((envelopeName(kind) + ": " + envLabel).toStdString() + (drag.kind == Drag::EnvPoints ? "  at " + rulerTime(app.project(), at) : std::string()));
+    app.status(drag.kind == Drag::EnvPoints ? envLabel.toStdString() : (envelopeName(kind) + ": " + envLabel).toStdString());
     q->update();
 }
 

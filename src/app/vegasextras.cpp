@@ -785,17 +785,19 @@ bool subtitleDialog(QWidget* parent, bool fromFile, QString* file, QString* pres
             const QString fn = QFileDialog::getOpenFileName(&d, "Insert Subtitles", path->text(), "Subtitle text (*.txt *.csv);;All files (*)");
             if (!fn.isEmpty()) path->setText(QDir::toNativeSeparators(fn));
         });
-        f->addRow("File:", row);
+        f->addRow("Folder:", row);       // (VEGAS's label, though it is a file)
     }
     QComboBox* presets = new QComboBox(&d);
     presets->setObjectName("subtitlePreset");
     for (const OfxPreset& pr : presetsFor("com.vegascreativesoftware:titlesandtext", "Generator")) presets->addItem(qs(pr.name));
     if (presets->count() == 0) presets->addItem("(Default)");
-    const QString def = QSettings().value("subtitles/preset", "Subtitle").toString();
+    QString def = QSettings().value("subtitles/preset", "Subtitles").toString();
+    if (presets->findText(def) < 0) def = "Subtitle";
     if (presets->findText(def) >= 0) presets->setCurrentIndex(presets->findText(def));
     f->addRow("Preset:", presets);
     QCheckBox* asDefault = new QCheckBox("Use current preset as default", &d);
     asDefault->setObjectName("subtitleDefault");
+    asDefault->setChecked(true);
     f->addRow(asDefault);
     QHBoxLayout* buttons = new QHBoxLayout();
     buttons->addStretch(1);

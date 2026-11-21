@@ -63,7 +63,7 @@ QStringList vegasDefault(bool timeline)
     if (timeline)
         return {"-", "editToolButton", "toolEnvelope", "toolSelection", "toolZoom", "-", "delete", "trim", "trimStart", "trimEnd", "split", "smartSplit",
                 "lockEvent", "-", "marker", "region", "-", "snapping", "autoCrossfade", "autoRippleButton", "lockEnvelopes", "ignoreGrouping", "-",
-                "colorGrading", "nestParent", "nestOpen", "nestCreate", "-", "quantize", "-", "group", "ungroup", "clearGroup"};
+                "colorGrading", "nestParent", "nestOpen", "nestCreate"};      // (tests/ui/data/vegas_toolbars.txt)
     return {"newPlain", "open", "save", "render", "properties", "cut", "copy", "paste", "undoButton", "redoButton", "interactiveTutorials", "whatsThis"};
 }
 

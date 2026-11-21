@@ -4,8 +4,8 @@
 //   reno_cli check [--out-dir DIR] [--no-audio] [--no-video] [--no-dx]
 //       Tries every OpenFX, VST and DirectX audio plug-in, each in a separate process, and writes
 //       plugin_report.txt and plugin_report.json.
-//   reno_cli ofxprobe [--out FILE] [--no-render] [--verbose] [--stubs] [--plain-host] [--host-name NAME] file.ofx ...
-//   reno_cli audioprobe [--out FILE] [--describe-only] file.dll|file.vst3 ...
+//   reno_cli ofxprobe [--out FILE] [--no-render] [--verbose] [--stubs] [--plain-host] [--host-name NAME] [--keep-windows] file.ofx ...
+//   reno_cli audioprobe [--out FILE] [--describe-only] [--keep-windows] file.dll|file.vst3 ...
 //   reno_cli dxprobe [--out FILE] [uid]
 #include "plugincheck.h"
 #include "../core/base.h"
@@ -20,6 +20,10 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+#include <mutex>
+#include <set>
+#include <thread>
+#include <vector>
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -41,14 +45,84 @@ static void emit(const Json& j, const std::string& outPath)
     else writeFile(outPath, text);
 }
 
+// ---------------------------------------------------------------------------------------------- windows a plug-in opens
+// A plug-in may open a window of its own when it is loaded: an activation or registration box, a message. Nobody is there
+// to answer it in a probe (and each probe is a process of its own, so a plug-in that asks once a session asks in every
+// one), and one that waits for the answer would keep the probe until it timed out. While a probe runs, every window the
+// process opens is closed as soon as it shows, as if its close box had been clicked (a dialog box takes that as Cancel);
+// the titles go into the file's report as "closedWindows". --keep-windows leaves them up.
+#ifdef _WIN32
+namespace {
+
+std::mutex gClosedMutex;
+std::vector<std::string> gClosed;
+std::set<HWND> gAsked;
+
+BOOL CALLBACK closeOwnWindow(HWND w, LPARAM)
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    if (pid != GetCurrentProcessId() || !IsWindowVisible(w)) return TRUE;
+    wchar_t cls[64] = {0};
+    GetClassNameW(w, cls, 64);
+    if (!lstrcmpW(cls, L"ConsoleWindowClass")) return TRUE;
+    std::lock_guard<std::mutex> lk(gClosedMutex);
+    if (!gAsked.insert(w).second) return TRUE;
+    wchar_t title[256] = {0};
+    GetWindowTextW(w, title, 256);
+    std::string t = narrow(std::wstring(title));
+    if (t.empty()) t = narrow(std::wstring(cls));
+    gClosed.push_back(t);
+    std::fprintf(stderr, "probe: closed a window the plug-in opened: %s\n", t.c_str());
+    PostMessageW(w, WM_CLOSE, 0, 0);
+    return TRUE;
+}
+
+void startWindowCloser()
+{
+    std::thread([] {
+        for (;;) {
+            EnumWindows(closeOwnWindow, 0);
+            Sleep(100);
+        }
+    }).detach();
+}
+
+}  // namespace
+#endif
+
+[[maybe_unused]] static bool keepWindows(const std::vector<std::string>& args)
+{
+    return std::find(args.begin(), args.end(), std::string("--keep-windows")) != args.end();
+}
+
+// The windows closed since the last call go into the report of the file just tried.
+static void noteClosedWindows(Json& report)
+{
+#ifdef _WIN32
+    std::lock_guard<std::mutex> lk(gClosedMutex);
+    if (gClosed.empty()) return;
+    Json list = Json::array();
+    for (const auto& t : gClosed) list.push(Json(t));
+    report["closedWindows"] = list;
+    gClosed.clear();
+#else
+    (void)report;
+#endif
+}
+
 // ---------------------------------------------------------------------------------------------- one file
 static int cmdOfxProbe(const std::vector<std::string>& args)
 {
     ofx::ProbeOptions opt;
     std::vector<std::string> files;
     std::string out;
+#ifdef _WIN32
+    if (!keepWindows(args)) startWindowCloser();
+#endif
     for (size_t k = 0; k < args.size(); ++k) {
         const std::string& a = args[k];
+        if (a == "--keep-windows") continue;
         if (a == "--no-render") opt.render = false;
         else if (a == "--verbose") ofx::Host::get().config.verbose = true;
         else if (a == "--stubs") ofx::Host::get().config.stubUnknownSuites = true;
@@ -60,7 +134,9 @@ static int cmdOfxProbe(const std::vector<std::string>& args)
     ofx::Host::get().applyConfig();
     Json all = Json::array();
     for (const auto& f : files) {
-        all.push(ofx::probeBinary(f, opt));
+        Json r = ofx::probeBinary(f, opt);
+        noteClosedWindows(r);
+        all.push(r);
         emit(all, out);                 // written after every file
     }
     emit(all, out);
@@ -115,10 +191,13 @@ static int cmdAudioProbe(const std::vector<std::string>& args)
     std::string out;
     std::vector<std::string> files;
     bool describeOnly = false;
+#ifdef _WIN32
+    if (!keepWindows(args)) startWindowCloser();
+#endif
     for (size_t k = 0; k < args.size(); ++k) {
         if (args[k] == "--out" && k + 1 < args.size()) out = args[++k];
         else if (args[k] == "--describe-only") describeOnly = true;
-        else files.push_back(args[k]);
+        else if (args[k] != "--keep-windows") files.push_back(args[k]);
     }
     Json all = Json::array();
     for (const auto& path : files) {
@@ -140,6 +219,7 @@ static int cmdAudioProbe(const std::vector<std::string>& args)
             }
             rep["plugins"] = arr;
         }
+        noteClosedWindows(rep);
         all.push(rep);
         emit(all, out);
     }

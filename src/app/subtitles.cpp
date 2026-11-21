@@ -224,13 +224,16 @@ PresetRow addPresetRow(QDialog& d, QFormLayout* f)
     PresetRow r;
     r.preset = new QComboBox(&d);
     r.preset->setObjectName("subtitlePreset");
-    r.preset->addItem("(Default)", QString());
     for (const std::string& n : subtitlePresetNames()) r.preset->addItem(QString::fromStdString(n), QString::fromStdString(n));
-    const int at = r.preset->findData(QString::fromStdString(defaultSubtitlePreset()));
+    if (r.preset->count() == 0) r.preset->addItem("(Default)", QString());
+    // (VEGAS opens with its "Subtitles" preset, or the one made the default)
+    int at = r.preset->findData(QString::fromStdString(defaultSubtitlePreset()));
+    if (at < 0) at = r.preset->findText("Subtitles");
     if (at >= 0) r.preset->setCurrentIndex(at);
     f->addRow("Preset:", r.preset);
     r.makeDefault = new QCheckBox("Use current preset as default", &d);
     r.makeDefault->setObjectName("subtitleMakeDefault");
+    r.makeDefault->setChecked(true);
     f->addRow(QString(), r.makeDefault);
     return r;
 }
@@ -253,12 +256,11 @@ bool runInsertSubtitlesFromFile(QWidget* parent)
     browse->setObjectName("subtitleBrowse");
     h->addWidget(path, 1);
     h->addWidget(browse);
-    f->addRow("File:", h);
+    // (VEGAS's label, though it is a file)
+    f->addRow("Folder:", h);
+    path->setToolTip("A .txt or .csv file. A line of \"Start, End, Length, Text\" (timecodes as hh:mm:ss;ff, separated by tabs or commas) is placed as given; any other line becomes a 5 second title, one after another.");
     const PresetRow pr = addPresetRow(d, f);
     v->addLayout(f);
-    QLabel* hint = new QLabel("A .txt or .csv file. A line of \"Start, End, Length, Text\" (timecodes as hh:mm:ss;ff, separated by tabs or commas) is placed as given; any other line becomes a 5 second title, one after another.", &d);
-    hint->setWordWrap(true);
-    v->addWidget(hint);
     QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
     v->addWidget(bb);
     QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);

@@ -436,11 +436,44 @@ static OfxStatus guardedEntry(OfxPluginEntryPoint* f, const char* a, const void*
         return kOfxStatFailed;
     }
 }
+
+// A plug-in that asks something in a window of its own while it loads or makes an instance (an activation box) may make
+// it modal to Reno's window by disabling that, and not enable it again (it crashed, or left it to its owner): the windows
+// of this thread that were enabled before the action are enabled again after it.
+static BOOL CALLBACK collectEnabled(HWND w, LPARAM list)
+{
+    if (IsWindowVisible(w) && IsWindowEnabled(w)) reinterpret_cast<std::vector<HWND>*>(list)->push_back(w);
+    return TRUE;
+}
+
+static bool mayOpenWindows(const char* action)
+{
+    return !std::strcmp(action, kOfxActionLoad) || !std::strcmp(action, kOfxActionDescribe) ||
+           !std::strcmp(action, kOfxImageEffectActionDescribeInContext) || !std::strcmp(action, kOfxActionCreateInstance);
+}
 #endif
 
 OfxStatus Plugin::call(const char* action, const void* handle, PropertySet* in, PropertySet* out)
 {
     if (!ofx || !ofx->mainEntry || crashed) return kOfxStatFailed;
+#ifdef _WIN32
+    std::vector<HWND> enabled;
+    const bool watchWindows = mayOpenWindows(action);
+    if (watchWindows) EnumThreadWindows(GetCurrentThreadId(), collectEnabled, reinterpret_cast<LPARAM>(&enabled));
+    struct Reenable {
+        const std::vector<HWND>& list;
+        const Plugin* pl;
+        const char* action;
+        ~Reenable()
+        {
+            for (HWND w : list)
+                if (IsWindow(w) && !IsWindowEnabled(w)) {
+                    EnableWindow(w, TRUE);
+                    logf("ofx: %s left a window of Reno's disabled after %s; it is enabled again", pl->info.id.c_str(), action);
+                }
+        }
+    } reenable{enabled, this, action};
+#endif
     // what the plug-in asks for and does not get during this action (a nested action keeps the outer one's afterwards)
     MissingTrace& trace = missingTrace();
     const MissingTrace outer = trace;
@@ -518,12 +551,18 @@ bool Plugin::load(std::string* err)
     std::lock_guard<std::recursive_mutex> once(loadMutex);
     if (loaded) return true;
     if (failed) { if (err) *err = error; return false; }
+    if (loading) {
+        if (err) *err = "is still loading (it may be waiting for a window of its own to be answered)";
+        return false;
+    }
     Host& host = Host::get();
     if (!binary || !binary->builtin) host.settleOpenGl();
     Plugin* prev = host.currentPlugin;
     host.currentPlugin = this;
+    loading = true;
     auto fail = [&](const std::string& m) {
         failed = true;
+        loading = false;
         if (error.empty() || !crashed) error = m;
         if (err) *err = error;
         host.currentPlugin = prev;
@@ -566,6 +605,7 @@ bool Plugin::load(std::string* err)
     const std::string safe = s.getString(kOfxImageEffectPluginRenderThreadSafety);
     safety = safe == kOfxImageEffectRenderUnsafe ? 0 : (safe == kOfxImageEffectRenderFullySafe ? 2 : 1);
     loaded = true;
+    loading = false;
     host.currentPlugin = prev;
     return true;
 }
@@ -592,6 +632,10 @@ Descriptor* Plugin::describeInContext(const std::string& context, std::string* e
         if (err) *err = "does not work as a " + context;
         return nullptr;
     }
+    if (describing) {
+        if (err) *err = "is still describing itself (it may be waiting for a window of its own to be answered)";
+        return nullptr;
+    }
     Host& host = Host::get();
     Plugin* prev = host.currentPlugin;
     host.currentPlugin = this;
@@ -601,7 +645,9 @@ Descriptor* Plugin::describeInContext(const std::string& context, std::string* e
     d->props.setString(kOfxImageEffectPropContext, context);
     PropertySet in;
     in.setString(kOfxImageEffectPropContext, context);
+    describing = true;
     OfxStatus st = call(kOfxImageEffectActionDescribeInContext, d.get(), &in, nullptr);
+    describing = false;
     host.currentPlugin = prev;
     if (crashed) { if (err) *err = error; return nullptr; }
     if (st != kOfxStatOK && st != kOfxStatReplyDefault) {

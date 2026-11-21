@@ -4,6 +4,7 @@
 #include "appstate.h"
 #include <QRegion>
 #include <QWidget>
+#include <functional>
 #include <memory>
 #include <set>
 
@@ -144,6 +145,10 @@ public:
     // The cursor to the previous (-1) or next (+1): marker or region end; edit point (event edges and
     // fade ends); edge of a selected event. Each falls back to the project's start or end.
     void cursorToMarker(int dir);
+    // VEGAS: most cursor keys, with Shift, also select. 'move' moves the cursor; the time selection then runs from where
+    // it was anchored (the cursor before, or the selection's other end when the cursor was at one of its ends) to the
+    // cursor.
+    void extendSelectionWith(const std::function<void()>& move);
     void cursorToEditPoint(int dir);
     void cursorToSelectedEdge(int dir);
     void timeSelectSelectedEvent(int dir);

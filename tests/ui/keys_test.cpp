@@ -606,6 +606,45 @@ int main(int argc, char** argv)
         press("Shift+L");
         check(near(st().loopStart, 11.0) && near(st().loopEnd, 13.0), "Shift+L selects the loop region again, as Shift+Q does", num(st().loopStart) + " " + num(st().loopEnd));
         st().setLoop(0, 0);
+        // VEGAS: most cursor keys also select with Shift (from the cursor, or the time selection's other end)
+        st().setCursor(9.0);
+        press("Ctrl+Shift+Left");
+        check(near(st().loopStart, 3.0) && near(st().loopEnd, 9.0) && near(st().cursor(), 3.0), "Ctrl+Shift+Left time-selects back to the previous marker",
+              num(st().loopStart) + " " + num(st().loopEnd));
+        st().setLoop(0, 0);
+        st().setCursor(1.0);
+        press("Alt+Shift+Right");
+        press("Alt+Shift+Right");
+        check(near(st().loopStart, 1.0) && near(st().loopEnd, 1.0 + 2 * fr(), 1e-6) && near(st().cursor(), st().loopEnd), "Alt+Shift+Right selects a frame at a time",
+              num(st().loopStart) + " " + num(st().loopEnd));
+        press("Alt+Shift+Left");
+        check(near(st().loopStart, 1.0) && near(st().loopEnd, 1.0 + fr(), 1e-6), "Alt+Shift+Left takes a frame off again", num(st().loopStart) + " " + num(st().loopEnd));
+        st().setLoop(0, 0);
+        st().setCursor(2.0);
+        press("Ctrl+Shift+End");
+        check(near(st().loopStart, 2.0) && near(st().loopEnd, st().project().length()), "Ctrl+Shift+End selects to the project's end",
+              num(st().loopStart) + " " + num(st().loopEnd));
+        st().setLoop(0, 0);
+        st().setCursor(2.0);
+        press("Ctrl+Shift+Home");
+        check(near(st().loopStart, 0.0) && near(st().loopEnd, 2.0), "Ctrl+Shift+Home selects to the project's start", num(st().loopStart) + " " + num(st().loopEnd));
+        st().setLoop(0, 0);
+        st().setCursor(2.0);
+        tl->setFocus();
+        press("Shift+PgDown");
+        check(near(st().loopStart, 2.0) && st().loopEnd > 2.0 + 1e-6 && near(st().cursor(), st().loopEnd), "Shift+Page Down selects to the next grid mark",
+              num(st().loopStart) + " " + num(st().loopEnd));
+        st().setLoop(0, 0);
+        st().setCursor(2.0);
+        press("Shift+End");
+        check(near(st().loopStart, 2.0) && st().loopEnd > 2.0 + 1e-6 && near(st().cursor(), st().loopEnd), "Shift+End selects to the end of the view",
+              num(st().loopStart) + " " + num(st().loopEnd));
+        st().setLoop(0, 0);
+        st().setCursor(4.0);
+        press("Ctrl+Alt+Shift+Right");
+        check(near(st().loopStart, 4.0) && st().loopEnd > 4.0 + 1e-6 && near(st().cursor(), st().loopEnd), "Ctrl+Alt+Shift+Right selects to the next edit point",
+              num(st().loopStart) + " " + num(st().loopEnd));
+        st().setLoop(0, 0);
         // with the mouse: click a tag, drag it, double-click to name it, right-click to delete it
         const uint64_t m1 = st().project().markers[0].id;
         QRect tag = tl->markerTagRect(m1);
@@ -1162,6 +1201,27 @@ int main(int argc, char** argv)
                   "with the console focused, N narrows its channels and M is its meters (not Insert Marker)", strfmt("width %d -> %d, markers %d -> %d", width, mixer->property("channelWidth").toInt(), (int)markers, (int)st().project().markers.size()));
             press("Ctrl+Q");
             check(st().project().tracks.size() == tracks + 1 && st().undoName() == "Insert Audio Track", "and Ctrl+Q inserts an audio track there too");
+            st().undo();
+            // the master's stereo fader: Shift+Up / Down its left side, Ctrl+Up / Down its right side
+            QWidget* ms = mixer->findChild<QWidget*>("strip:master");
+            QWidget* head = ms ? ms->findChild<QWidget*>("header") : nullptr;
+            if (head) uitest::mouseClick(head, head->rect().center());
+            mixer->setFocus();
+            QCoreApplication::processEvents();
+            const double left0 = st().project().masterVolume, right0 = st().project().masterRightVolume();
+            press("Shift+Up");
+            const double left1 = st().project().masterVolume, right1 = st().project().masterRightVolume();
+            check(head && left1 > left0 + 1e-6 && near(right1, right0), "Shift+Up raises only the left side of the master fader",
+                  strfmt("%.4f %.4f -> %.4f %.4f", left0, right0, left1, right1));
+            press("Ctrl+Down");
+            check(near(st().project().masterVolume, left1) && st().project().masterRightVolume() < right1 - 1e-6, "Ctrl+Down lowers only its right side",
+                  strfmt("%.4f %.4f", st().project().masterVolume, st().project().masterRightVolume()));
+            const double right2 = st().project().masterRightVolume();
+            press(Qt::Key_Up);
+            check(st().project().masterVolume > left1 + 1e-6 && st().project().masterRightVolume() > right2 + 1e-6,
+                  "Up moves both sides of the split fader", strfmt("%.4f %.4f", st().project().masterVolume, st().project().masterRightVolume()));
+            st().undo();
+            st().undo();
             st().undo();
             press(Qt::Key_D);
         }

@@ -1465,7 +1465,12 @@ struct PreviewWidget::Impl {
         else
             previewInfo->setToolTip("The size the preview is rendered at, for the preview quality chosen");
         const QRect t = view->target();
-        setReadoutText(display, t.isEmpty() ? QString("-") : QString("%1x%2x32").arg(t.width()).arg(t.height()));
+        // (VEGAS adds the view transform in use: "519x292x32 ACES RRT (sRGB)")
+        QString viewName;
+        if (s.viewTransform != "off")
+            for (const ColorSpaceChoice& c : viewTransforms(s.acesVersion))
+                if (c.id == s.viewTransform) viewName = QString::fromStdString(c.label);
+        setReadoutText(display, t.isEmpty() ? QString("-") : QString("%1x%2x32").arg(t.width()).arg(t.height()) + (viewName.isEmpty() ? QString() : " " + viewName));
         QPalette pal = display->palette();
         pal.setColor(QPalette::WindowText, !t.isEmpty() && t.width() < ps.width() ? QColor(240, 128, 128) : QColor(220, 220, 220));
         display->setPalette(pal);
@@ -1947,14 +1952,13 @@ QWidget* PreviewWidget::Impl::buildToolBar()
     auto* tb = new QHBoxLayout(bar);
     tb->setContentsMargins(4, 0, 4, 0);
     tb->setSpacing(2);
-    auto* props = new GlyphButton(Glyph::Properties, "Project Video Properties", bar);
+    auto* props = new GlyphButton(Glyph::Properties, "Project Video Properties... (Alt+Enter)", bar);
     props->setObjectName("projectProperties");
     auto* monitor = new GlyphButton(Glyph::Monitor, "Video Preview on External Monitor (Alt+Shift+4)", bar);
     monitor->setObjectName("externalMonitor");
-    auto* outFx = new GlyphButton(Glyph::OutputFx, "Video Output FX", bar);
+    auto* outFx = new GlyphButton(Glyph::OutputFx, "Applies video effects to all video events in your project.", bar);
     outFx->setObjectName("videoOutputFx");
-    split = new GlyphButton(Glyph::Split, "Split-Screen View: the picture without effects (or the clipboard's) in part of the window; "
-                                          "drag over the picture to choose the part. The arrow chooses what shows.", bar, 34);
+    split = new GlyphButton(Glyph::Split, "Split Screen View", bar, 34);
     split->setObjectName("splitScreen");
     split->menuArrow = true;
     split->setCheckable(true);
@@ -1964,7 +1968,7 @@ QWidget* PreviewWidget::Impl::buildToolBar()
     qualityButton->setFocusPolicy(Qt::NoFocus);
     qualityButton->setAutoRaise(true);
     qualityButton->setStyleSheet("QToolButton::menu-indicator { image: none; width: 0px; } QToolButton { padding: 2px 3px; }");
-    overlays = new GlyphButton(Glyph::Overlays, "Overlays: the effects' on-screen controls, safe areas, grid", bar, 34);
+    overlays = new GlyphButton(Glyph::Overlays, "Displays graphical overlays in the Video Preview and Trimmer windows to help you perform visual alignment and color analysis.", bar, 34);
     overlays->setObjectName("overlays");
     overlays->menuArrow = true;
     auto* zoomBtn = new GlyphButton(Glyph::Zoom, "Zoom Video Preview: look closer at the picture (the mouse wheel zooms, the middle button pans)", bar, 34);
@@ -1976,8 +1980,7 @@ QWidget* PreviewWidget::Impl::buildToolBar()
     button360->setCheckable(true);
     button360->setAutoRaise(true);
     button360->setFocusPolicy(Qt::NoFocus);
-    button360->setToolTip(QString::fromUtf8("360\u00B0 Preview: look around a 360\u00B0 project's picture (drag to turn, the wheel to zoom); "
-                                            "Project Properties' 360\u00B0 output makes a project a 360\u00B0 one"));
+    button360->setToolTip("Preview in spatial view for 360 editing");
     auto* copy = new GlyphButton(Glyph::Copy, "Copy Snapshot to Clipboard", bar);
     copy->setObjectName("copySnapshot");
     auto* save = new GlyphButton(Glyph::Save, "Save Snapshot to File...", bar);
@@ -1985,7 +1988,8 @@ QWidget* PreviewWidget::Impl::buildToolBar()
     bypass = new GlyphButton(Glyph::Bypass, "Bypass All Video FX (show the picture without any effects)", bar);
     bypass->setObjectName("bypassFx");
     bypass->setCheckable(true);
-    for (QWidget* w : std::initializer_list<QWidget*>{props, monitor, outFx, split, qualityButton, overlays, zoomBtn, button360, copy, save, bypass}) tb->addWidget(w);
+    // (VEGAS 18's order; Zoom and Bypass All Video FX, which its tool bar has not, after its buttons)
+    for (QWidget* w : std::initializer_list<QWidget*>{props, monitor, outFx, split, qualityButton, overlays, copy, save, button360, zoomBtn, bypass}) tb->addWidget(w);
     tb->addStretch(1);
 
     QObject::connect(props, &QAbstractButton::clicked, q, [q] { if (q->onProjectProperties) q->onProjectProperties(); });

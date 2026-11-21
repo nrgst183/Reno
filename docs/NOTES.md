@@ -372,6 +372,16 @@ identifier), media decoding per file (reads, seeks, time), and compositing. See 
 its own, and writes `plugin_report.txt` and `.json` (`--out-dir DIR`, `--no-video`, `--no-audio`, `--no-dx`).
 `reno.exe` runs `reno_cli ofxprobe`, `audioprobe` and `dxprobe` on each new plug-in file.
 
+Plug-ins that open a window of their own when they load (an activation or registration box): `ofxprobe` and
+`audioprobe` close every window their process opens as soon as it shows (`WM_CLOSE`, which a dialog box takes as
+Cancel; `--keep-windows` leaves them up) and list the titles under `closedWindows` in the file's report. Without
+that, each probe (a process of its own, so a plug-in that asks once a session asks in every one) kept its window up
+until it was answered or the scan's time limit ran out, and a plug-in left waiting was recorded as broken. In the
+editor such a window is the plug-in's to show: while the plug-in is inside its Load or Describe in Context, a second
+request for it on the same thread (the window's message loop runs the editor's other work meanwhile) is told it is
+not ready rather than loading it over the first, and any window of the editor's that the plug-in disabled and left
+disabled during Load, Describe, Describe in Context or Create Instance is enabled again (`Plugin::call`).
+
 **VEGAS effect comparison.** `reno_cli vegasfx [--out-dir DIR] [--size WxH] [--frames N] [--only TEXT]
 [--plugin-path DIR] [--quick] [--max-params N] [--gpu on|off] [--stubs] [--all] [--timeout SECONDS]` renders test
 pictures through each real VEGAS plug-in (in a process of its own) and through Reno's built-in version at the

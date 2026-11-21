@@ -1663,8 +1663,8 @@ MediaBin::MediaBin(QWidget* parent) : QWidget(parent), d(new Impl())
     d->viewButton->setPopupMode(QToolButton::InstantPopup);
     d->viewButton->setStyleSheet("QToolButton::menu-indicator { image: none; width: 0px; }");
     auto* views = new QMenu(d->viewButton);
-    views->addAction("Detailed", [impl] { impl->setView(0); });
     views->addAction("List", [impl] { impl->setView(1); });
+    views->addAction("Details", [impl] { impl->setView(0); });
     views->addAction("Thumbnails", [impl] { impl->setView(2); });
     d->viewButton->setMenu(views);
     d->search = new QLineEdit(this);

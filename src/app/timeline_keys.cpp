@@ -22,6 +22,30 @@ double TimelineWidget::Impl::stepFrom(double t, int dir) const
     return std::max(0.0, n);
 }
 
+double TimelineWidget::Impl::selectionAnchor() const
+{
+    const double c = app.cursor();
+    if (app.timeSel()) {
+        if (std::fabs(c - app.loopEnd) < 1e-9) return app.loopStart;
+        if (std::fabs(c - app.loopStart) < 1e-9) return app.loopEnd;
+    }
+    return c;
+}
+
+void TimelineWidget::Impl::selectTo(double t)
+{
+    const double anchor = selectionAnchor();
+    keyCursor(t);
+    app.setLoop(anchor, app.cursor());
+}
+
+void TimelineWidget::extendSelectionWith(const std::function<void()>& move)
+{
+    const double anchor = d->selectionAnchor();
+    move();
+    d->app.setLoop(anchor, d->app.cursor());
+}
+
 bool TimelineWidget::Impl::key(QKeyEvent* ev)
 {
     const Qt::KeyboardModifiers mods = ev->modifiers() & ~Qt::KeypadModifier;
@@ -81,20 +105,16 @@ bool TimelineWidget::Impl::key(QKeyEvent* ev)
     case Qt::Key_Left:
     case Qt::Key_Right: {
         const int dir = ev->key() == Qt::Key_Right ? 1 : -1;
-        if (ctrl && alt) cursorToEdge(dir, EdgeKind::EditPoints);
-        else if (ctrl) cursorToEdge(dir, EdgeKind::Markers);
-        else if (alt) keyCursor(pr.frameTime(std::max<int64_t>(0, pr.frameAt(app.cursor()) + dir)));
-        else if (shift) {
-            const double c = app.cursor();
-            double anchor = c;
-            if (app.timeSel()) {
-                if (std::fabs(c - app.loopEnd) < 1e-9) anchor = app.loopStart;
-                else if (std::fabs(c - app.loopStart) < 1e-9) anchor = app.loopEnd;
-            }
-            const double t = stepFrom(c, dir);
-            keyCursor(t);
-            app.setLoop(anchor, t);
-        } else keyCursor(stepFrom(app.cursor(), dir));
+        // (with Shift, each also selects: VEGAS's "most cursor placement commands, combined with Shift, also select")
+        auto go = [&](const std::function<void()>& move) {
+            if (shift) q->extendSelectionWith(move);
+            else move();
+        };
+        if (ctrl && alt) go([&] { cursorToEdge(dir, EdgeKind::EditPoints); });
+        else if (ctrl) go([&] { cursorToEdge(dir, EdgeKind::Markers); });
+        else if (alt) go([&] { keyCursor(pr.frameTime(std::max<int64_t>(0, pr.frameAt(app.cursor()) + dir))); });
+        else if (shift) selectTo(stepFrom(app.cursor(), dir));
+        else keyCursor(stepFrom(app.cursor(), dir));
         return true;
     }
     case Qt::Key_Up:
@@ -113,22 +133,24 @@ bool TimelineWidget::Impl::key(QKeyEvent* ev)
         return true;
     }
     case Qt::Key_Home:
-        if (ctrl) keyCursor(0.0);
-        else if (plain) keyCursor(homeTime());
-        else return false;
+    case Qt::Key_End: {
+        if (alt) return false;
+        const bool end = ev->key() == Qt::Key_End;
+        double t = ctrl ? (end ? pr.length() : 0.0) : (end ? endTime() : homeTime());
+        if (shift && !ctrl && app.timeSel() && std::fabs(t - selectionAnchor()) < 1e-9)
+            t = end ? timeAtF(lanesRight() - 1) : viewStart;    // (the selection already reaches it: on to the view's edge)
+        if (shift) selectTo(t);
+        else keyCursor(t);
         return true;
-    case Qt::Key_End:
-        if (ctrl) keyCursor(pr.length());
-        else if (plain) keyCursor(endTime());
-        else return false;
-        return true;
+    }
     case Qt::Key_PageUp:
     case Qt::Key_PageDown: {
-        if (!plain) return false;
+        if (ctrl || alt) return false;
         const double step = gridStep();
         const double c = app.cursor();
         double t = ev->key() == Qt::Key_PageDown ? (std::floor(c / step + 1e-6) + 1.0) * step : (std::ceil(c / step - 1e-6) - 1.0) * step;
-        keyCursor(std::max(0.0, t));
+        if (shift) selectTo(std::max(0.0, t));
+        else keyCursor(std::max(0.0, t));
         return true;
     }
     case Qt::Key_F2:
