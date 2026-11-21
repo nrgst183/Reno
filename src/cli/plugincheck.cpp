@@ -162,7 +162,7 @@ static int cmdOfxProbe(const std::vector<std::string>& args)
                 const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
                 if (at && now - at > 20000) {
                     std::fflush(nullptr);
-                    _exit(ofx::kProbeInstanceTooLong);
+                    std::_Exit(ofx::kProbeInstanceTooLong);
                 }
             }
         }).detach();
