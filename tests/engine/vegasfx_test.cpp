@@ -212,13 +212,17 @@ static void testNoVegasBundles(const std::string& standin)
     const std::string root = "vegasfx_test_dirs";
     const std::string vb = root + "/Vfx1.ofx.bundle/Contents/Win64";
     const std::string ob = root + "/Other.ofx.bundle/Contents/Win64";
-    std::string cmd = "rm -rf " + root;
+    std::string cmd = "rm -rf " + root + " && mkdir -p " + root + "/Vfx1.ofx.bundle/Contents/Resources && touch " + root +
+                      "/Vfx1.ofx.bundle/Contents/Resources/Vfx1.xml";
     for (const char* arch : {"Win64", "Linux-x86-64", "MacOS"})       // (the folder the host looks in depends on the system)
         cmd += std::string(" && mkdir -p ") + root + "/Vfx1.ofx.bundle/Contents/" + arch + " " + root + "/Other.ofx.bundle/Contents/" + arch +
                " && touch " + root + "/Vfx1.ofx.bundle/Contents/" + arch + "/Vfx1.ofx " + root + "/Other.ofx.bundle/Contents/" + arch + "/Other.ofx";
     if (std::system(cmd.c_str()) != 0) { check(false, "test folders made"); return; }
     check(ofx::Host::isVegasBundleFile(vb + "/Vfx1.ofx"), "Vfx1.ofx.bundle is recognized as VEGAS's");
     check(!ofx::Host::isVegasBundleFile(ob + "/Other.ofx"), "another bundle is not");
+    // NewBlue's Filters.ofx.bundle (its FI effects) has the name of one of VEGAS's but not VEGAS's Resources/Filters.xml
+    check(!ofx::Host::isVegasBundleFile(root + "/NewBlueFX/Filters.ofx.bundle/Contents/Win64/Filters.ofx"),
+          "a bundle named like VEGAS's without VEGAS's resources is not");
 
     host.config.preferBuiltinVegasFx = true;
     ofx::Host::vegasRealAllowed().clear();

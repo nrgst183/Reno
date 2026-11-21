@@ -74,8 +74,9 @@ struct Preferences {
     // Audio proxies (.sfap0) for nested projects, and VEGAS peak files (.sfk) beside the media.
     bool createAudioProxies = true;
     // Preview files (.renopreview) for nested projects: built when a project using them is opened or comes back to the
-    // front, read by the preview instead of rendering the nested project (nestedpreviewui.h).
-    bool buildNestedPreviews = true;
+    // front (nestedpreviewui.h). Off by default, as VEGAS renders nested projects' pictures as they play; current
+    // files (Tools > Rebuild Nested Project Previews) are read by the preview either way.
+    bool buildNestedPreviews = false;
     bool vegasPeakFiles = true;
     // Preferences > Video: render threads for playback (0 = automatic, 2) and Dynamic RAM Preview limit in MB.
     int renderThreads = 0;

@@ -239,6 +239,30 @@ bool NestedCacheWriter::write(const Image& img)
     return true;
 }
 
+bool NestedCacheWriter::skip()
+{
+    if (!file_) return false;
+    index_.emplace_back(0, 0u);
+    return true;
+}
+
+bool NestedCacheWriter::canCopy(const NestedCacheFile& from) const
+{
+    const NestedCacheInfo& i = from.info();
+    return file_ && i.width == info_.width && i.height == info_.height && i.codec == info_.codec &&
+           (info_.codec == 0 || (enc_ && from.tag_ == enc_->ctx->codec_tag && from.extradata_ == extradata_));
+}
+
+bool NestedCacheWriter::copy(NestedCacheFile& from, int64_t frame)
+{
+    FILE* f = (FILE*)file_;
+    if (!f || !canCopy(from) || !from.readRaw(frame, buf_) || buf_.empty()) return false;
+    if (std::fwrite(buf_.data(), 1, buf_.size(), f) != buf_.size()) return false;
+    index_.emplace_back(at_, (uint32_t)buf_.size());
+    at_ += buf_.size();
+    return true;
+}
+
 bool NestedCacheWriter::finish(std::string* error)
 {
     FILE* f = (FILE*)file_;
@@ -414,9 +438,22 @@ void NestedCacheFile::giveBack(std::unique_ptr<Decoder> d)
     if (idle_.size() < 8) idle_.push_back(std::move(d));
 }
 
+bool NestedCacheFile::has(int64_t frame) const
+{
+    return frame >= 0 && frame < (int64_t)index_.size() && index_[(size_t)frame].second > 0;
+}
+
+bool NestedCacheFile::readRaw(int64_t frame, std::vector<uint8_t>& out)
+{
+    if (!has(frame)) return false;
+    out.resize(index_[(size_t)frame].second);
+    std::lock_guard<std::mutex> lk(mutex_);
+    return handle_ && readAt(index_[(size_t)frame].first, out.data(), out.size());
+}
+
 ImagePtr NestedCacheFile::read(int64_t frame)
 {
-    if (frame < 0 || frame >= (int64_t)index_.size()) return nullptr;
+    if (!has(frame)) return nullptr;
     const uint64_t at = index_[(size_t)frame].first;
     const uint32_t n = index_[(size_t)frame].second;
     const int w = info_.width, h = info_.height;

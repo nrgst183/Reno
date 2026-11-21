@@ -1,5 +1,5 @@
-// Preview files of nested projects ("<project>.veg.renopreview"): every frame of a project rendered once at half its
-// size, for playing a project that uses it without rendering it again. The frames are kept exactly as the renderer made
+// Preview files of nested projects ("<project>.veg.renopreview"): the frames of a project that the projects using it
+// show, rendered once at half its size, for playing a project that uses it without rendering it again. The frames are kept exactly as the renderer made
 // them (8-bit premultiplied B,G,R,A, bottom row first), each one compressed on its own without loss (FFmpeg's UT Video,
 // or raw where that encoder is missing), so reading one gives back the same bytes and any frame can be read first.
 // The engine decides when a file is current (engine.cpp, "nested projects' preview files"); this file only writes and
@@ -14,7 +14,8 @@
 //   32  u64 signature                  what the frames were made from (the engine's previewSignature)
 //   40  u32 codec                      0 raw, 1 UT Video (planar G,B,R,A)
 //   44  u32 extradata size             the codec's setup bytes, right after this header
-//   48  u64 index offset               where the index starts: per frame u64 offset, u32 size, u32 0
+//   48  u64 index offset               where the index starts: per frame u64 offset, u32 size, u32 0 (size 0: the
+//                                      frame isn't in the file)
 //   56  u32 codec tag                  (UT Video tells its kinds apart by it), then 4 bytes 0
 //   64  extradata, then the frames, then the index
 #pragma once
@@ -41,6 +42,8 @@ std::string nestedCacheFallbackPath(const std::string& projectPath);
 // The header of a preview file; false if it isn't one (or is unfinished).
 bool readNestedCacheInfo(const std::string& path, NestedCacheInfo& out);
 
+class NestedCacheFile;
+
 // Writes a preview file: frames 0, 1, 2 ... in order, then finish() renames it into place.
 class NestedCacheWriter {
 public:
@@ -51,6 +54,10 @@ public:
     // 'info.codec' is ignored: UT Video if FFmpeg has it, else raw.
     bool open(const std::string& path, const NestedCacheInfo& info, std::string* error = nullptr);
     bool write(const Image& frame);         // 8-bit, info's size
+    bool skip();                            // the next frame isn't kept
+    // The next frame copied from 'from' as it is stored there (canCopy: the same size and kind of compression).
+    bool canCopy(const NestedCacheFile& from) const;
+    bool copy(NestedCacheFile& from, int64_t frame);
     bool finish(std::string* error = nullptr);
     void abort();                           // stops, removing the part written
     int64_t written() const { return (int64_t)index_.size(); }
@@ -78,10 +85,13 @@ public:
     const NestedCacheInfo& info() const { return info_; }
     const std::string& path() const { return path_; }
     ImagePtr read(int64_t frame);           // null if it can't be read
+    bool has(int64_t frame) const;          // whether the file keeps the frame
     void close();
 
 private:
+    friend class NestedCacheWriter;
     struct Decoder;
+    bool readRaw(int64_t frame, std::vector<uint8_t>& out);
     bool readAt(uint64_t offset, void* to, size_t n);
     std::unique_ptr<Decoder> takeDecoder();
     void giveBack(std::unique_ptr<Decoder> d);

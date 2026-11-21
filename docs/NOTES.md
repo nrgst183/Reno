@@ -158,8 +158,9 @@ mark, the `.veg`'s last-change time to 100 ns. Reno also rebuilds one when a fil
 changed, which VEGAS does not notice. Tools > Rebuild Offline Nested Audio builds missing, stale and cancelled
 proxies. Preference: Audio > Create audio proxy files for nested projects.
 
-**Preview files** (`<project>.veg.renopreview`, Reno's own; `src/media/nestedcache.h`) hold every frame of a nested
-project rendered once at half its size, so that playing a project that uses it reads frames instead of rendering it
+**Preview files** (`<project>.veg.renopreview`, Reno's own; `src/media/nestedcache.h`) hold the frames of a nested
+project that the projects using it show (the region of it each event plays, and a frame either side), rendered once at
+half its size, so that playing a project that uses it reads frames instead of rendering it
 again at every level of nesting. The frames are the renderer's own bytes (8-bit premultiplied B,G,R,A), each
 compressed without loss on its own (FFmpeg's UT Video as planes G,B,R,A, so nothing goes through YUV), so a 50%
 preview read from them is the same, byte for byte, as rendering it (checked with `reno_cli --profile --hash` against
@@ -170,14 +171,19 @@ from rendered ones (`kFromPreviewFile`) so that a final render never gets one.
   project, every media file it uses and, the same way, everything at every level below it. So saving a project deep
   down makes the file of every project above it stale.
 - `nestedPreviewsNeeded` lists the stale ones a project shows in its video events, each after the projects it uses;
-  `buildNestedPreview` builds one on the calling thread with its own media readers and effects, after making the
-  effects of every project below it (a frame is never kept without them). A parent's frames read its children's new
+  `buildNestedPreview` builds one with its own media readers and effects, after making the effects of every project
+  below it (a frame is never kept without them). It renders the frames that `nestedPreviewsNeeded` found shown on
+  several threads at once (one while a project below it has effects that can't run on several), writes them in order
+  on the calling thread, and copies the frames a current file of it keeps already instead of rendering them again (all
+  are rendered again with Rebuild). A frame a file doesn't keep (an event trimmed to show more of it) is rendered as
+  it plays until the next build. A parent's frames read its children's new
   files. It waits while playback runs, and throws the file away if anything it is made from changed meanwhile.
 - The editor builds them with a progress window (`nestedpreviewui.cpp`) after opening a project, when Reno comes back
   to the front (a nested project saved in the other Reno that Open Nested Timeline starts), and from Tools > Rebuild
   Nested Project Previews. Cancelled ones aren't asked for again until something they are made from changes. Where
   the project's folder can't be written the file goes in Reno's folder (`cache/nested`). Preference: Reno > Create
-  preview files for nested projects.
+  preview files for nested projects, off by default (VEGAS builds only the audio proxies up front and renders nested
+  projects' pictures as they play); current files are read either way.
 - `reno_cli --build-nested-previews <project> [--all]` builds them; `tests/engine/nestedcache_test.cpp` covers the file,
   the order, exactness, staleness and stopping.
 

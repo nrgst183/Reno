@@ -76,13 +76,14 @@ void stopAudioProxyBuilds(bool wait, bool cancelled = false);
 // Waits until no build is running or queued, or 'seconds' have passed. Returns true if none is left. (tests)
 bool waitForAudioProxies(double seconds);
 
-// ---- Preview files of nested projects ("<project>.veg.renopreview", media/nestedcache.h): every frame of a nested
-// project rendered once at half its size, deepest nested project first, and read by previews instead of rendering it
+// ---- Preview files of nested projects ("<project>.veg.renopreview", media/nestedcache.h): the frames of a nested
+// project that the projects using it show, rendered once at half its size, deepest nested project first, and read by previews instead of rendering it
 // again. Only previews read them; a final render (Render As, Selective Prerender, the audio proxies) renders live. A
 // file is current while nothing it was made from has changed: the project, the media it uses, and the same at every
 // level below it.
 void setNestedPreviewUse(bool use);
-// The project files used by 'p' (directly or nested) that show pictures and whose preview file is missing or stale -
+// The project files used by 'p' (directly or nested) that show pictures and whose preview file is missing, stale or
+// lacks frames 'p' shows now (which the next buildNestedPreview of each renders) -
 // or all of them with 'all' - with every project after the ones it uses, the order to build them in.
 std::vector<std::string> nestedPreviewsNeeded(const Project& p, bool all = false);
 bool nestedPreviewCurrent(const std::string& path);

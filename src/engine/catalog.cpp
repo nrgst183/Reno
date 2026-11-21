@@ -3,6 +3,7 @@
 #include "../core/process.h"
 #include "../ofx/ofxhost.h"
 #include "../ofx/builtins.h"
+#include "../ofx/probe.h"
 #include "../audiofx/audioplugin.h"
 #include <filesystem>
 #include <algorithm>
@@ -295,6 +296,22 @@ void Catalog::scan(const std::string& probeExe, bool full, const std::function<v
             if (!pr.started || pr.timedOut || pr.exitCode != 0) {
                 // whatever was being tried when the child died is the one to blame; mark every effect that has no verdict
                 r["processProblem"] = pr.describe();
+                // An effect that described itself and then never came back from being made (the child gave up on it,
+                // kProbeInstanceTooLong, or took too long) or crashed there is listed as not working, with why: making
+                // one would do the same in Reno (NewBlue's Titler Pro hangs every process that makes one, in its
+                // CloseWindow of its TitlerStandalone helper's window).
+                Json plugins = Json::array();
+                for (const auto& p : r.get("plugins").items()) {
+                    Json q = p;
+                    if (q.get("instancePending").asBool()) {
+                        q["ok"] = false;
+                        q["error"] = pr.timedOut || pr.exitCode == ofx::kProbeInstanceTooLong
+                                         ? std::string("hangs when an instance is made (it never came back within 20 seconds)")
+                                         : "crashed when an instance was made (" + pr.describe() + ")";
+                    }
+                    plugins.push(q);
+                }
+                if (r.get("plugins").isArray()) r["plugins"] = plugins;
             }
             entry["result"] = r;
         }

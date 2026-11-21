@@ -178,6 +178,16 @@ Json probeBinary(const std::string& path, const ProbeOptions& opt)
         j["depths"] = dep;
         j["ownWindow"] = pl->info.hasHwndInteract;
         j["overlay"] = pl->info.hasOverlay;
+        if (ok && opt.described && (opt.render || opt.instance)) {
+            Json pj = j;
+            pj["ok"] = true;
+            pj["instancePending"] = true;
+            Json sofar = plugins;
+            sofar.push(pj);
+            Json partial = rep;
+            partial["plugins"] = sofar;
+            opt.described(partial);
+        }
         if (ok && opt.render) ok = probeRender(pl, opt, j, e);
         else if (ok && opt.instance) ok = probeInstance(pl, opt, j, e);
         if (!pl->info.upliftGuids.empty()) {

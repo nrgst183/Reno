@@ -20,6 +20,8 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -88,6 +90,19 @@ void startWindowCloser()
     }).detach();
 }
 
+// The host window effects are given (kOfxPropHostOSHandle), hidden, as reno_cli's renders and the editor give one, so that a
+// probe makes an effect the way using it will.
+HWND makeProbeHostWindow()
+{
+    WNDCLASSW wc = {};
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"RenoProbeHostWindow";
+    RegisterClassW(&wc);
+    return CreateWindowExW(0, wc.lpszClassName, L"reno_cli", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 640, 360, nullptr, nullptr,
+                           wc.hInstance, nullptr);
+}
+
 }  // namespace
 #endif
 
@@ -131,10 +146,35 @@ static int cmdOfxProbe(const std::vector<std::string>& args)
         else if (a == "--out" && k + 1 < args.size()) out = args[++k];
         else files.push_back(a);
     }
+#ifdef _WIN32
+    if (HWND host = makeProbeHostWindow()) ofx::Host::get().config.mainWindow = (void*)host;
+#endif
     ofx::Host::get().applyConfig();
     Json all = Json::array();
+    // Making an effect that has not come back after 20 s is given up on (the report written before it says what it is),
+    // instead of the scan waiting out its own limit of 3 minutes
+    static std::atomic<int64_t> pendingSince{0};
+    if (!opt.render)
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                const int64_t at = pendingSince.load();
+                const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                if (at && now - at > 20000) {
+                    std::fflush(nullptr);
+                    _exit(ofx::kProbeInstanceTooLong);
+                }
+            }
+        }).detach();
     for (const auto& f : files) {
+        opt.described = [&](const Json& partial) {
+            Json sofar = all;
+            sofar.push(partial);
+            emit(sofar, out);
+            pendingSince = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        };
         Json r = ofx::probeBinary(f, opt);
+        pendingSince = 0;
         noteClosedWindows(r);
         all.push(r);
         emit(all, out);                 // written after every file

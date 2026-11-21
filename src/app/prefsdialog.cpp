@@ -2110,8 +2110,9 @@ private:
         previews->setObjectName("buildNestedPreviews");
         bindPref([previews](const Preferences& p) { previews->setChecked(p.buildNestedPreviews); }, [previews](Preferences& p) { p.buildNestedPreviews = previews->isChecked(); });
         f->addRow(previews);
-        f->addRow(note("Every frame of a nested project rendered once at half its size, beside its .veg, when a project using it is opened or "
-                       "Reno comes back to the front after it was saved. The preview plays from them; renders always render the nested project.", b));
+        f->addRow(note("The frames of a nested project that the project shows, rendered once at half their size, beside its .veg, when a project using it "
+                       "is opened or Reno comes back to the front after it was saved. Off, nested projects are rendered as they play, as in VEGAS "
+                       "(Tools > Rebuild Nested Project Previews makes them anyway). The preview plays from them; renders always render the nested project.", b));
         f->addRow(check(b, "Automatically create preview proxies for the long-GOP video (H.264, HEVC, MPEG-2, VP9, AV1) the project uses", "prefs/autoProxyPreview", "autoProxyPreview"));
         f->addRow(note("Made in the background while not playing: small copies (at most 960 x 540, a key frame every half second) that the preview uses below Best quality, "
                        "so a cut into a long file costs a few frames instead of seconds. Renders and Best quality use the originals.", b));

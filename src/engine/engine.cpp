@@ -1678,8 +1678,8 @@ std::shared_ptr<vegasfiles::AudioProxyFile> currentProxy(NestedShared& sh)
 }
 
 // ====================================================================== nested projects' preview files
-// Every frame of a nested project rendered once at half its size (media/nestedcache.h), read by previews instead of
-// rendering the project again.
+// The frames of a nested project that the projects using it show, rendered once at half its size (media/nestedcache.h),
+// read by previews instead of rendering the project again.
 std::atomic<bool> gPreviewUse{true};
 std::atomic<uint64_t> gPreviewGeneration{1};       // goes up whenever a preview file is made, or using them is turned on or off
 // The frames a preview read from a preview file are kept under their generation with this bit set: a final render,
@@ -1734,6 +1734,138 @@ bool previewFits(const NestedCacheInfo& have, const NestedCacheInfo& want, uint6
 {
     return have.width == want.width && have.height == want.height && have.fpsNum == want.fpsNum && have.fpsDen == want.fpsDen &&
            have.frames == want.frames && have.signature == signature;
+}
+
+// Frames of a project: sorted half-open spans [first, second) that don't touch.
+typedef std::vector<std::pair<int64_t, int64_t>> FrameSpans;
+
+// Adds [a, b) to 's'; 'added' (if given) gets the parts of it that weren't in 's' yet.
+void addFrameSpan(FrameSpans& s, int64_t a, int64_t b, FrameSpans* added)
+{
+    if (!(b > a)) return;
+    if (added) {
+        int64_t at = a;
+        for (const auto& x : s) {
+            if (x.second <= at) continue;
+            if (x.first >= b) break;
+            if (x.first > at) added->emplace_back(at, x.first);
+            at = std::max(at, x.second);
+            if (at >= b) break;
+        }
+        if (at < b) added->emplace_back(at, b);
+    }
+    FrameSpans out;
+    out.reserve(s.size() + 1);
+    bool put = false;
+    for (const auto& x : s) {
+        if (x.second < a) out.push_back(x);
+        else if (x.first > b) {
+            if (!put) out.emplace_back(a, b);
+            put = true;
+            out.push_back(x);
+        } else {
+            a = std::min(a, x.first);
+            b = std::max(b, x.second);
+        }
+    }
+    if (!put) out.emplace_back(a, b);
+    s.swap(out);
+}
+
+// The frames of the projects 'q' shows in its video events, and the same at every level below them (by samePath): what
+// their preview files keep. 'shown' are q's own frames that are shown. Each frame of an event counts the nested
+// project's frame it shows (as mediaTimeFor reads it), and the next one too where frame resampling may blend the two.
+// (A frame missed is rendered as it plays.)
+void addShownFrames(const Project& q, const FrameSpans& shown, int depth, std::map<std::string, FrameSpans>& out)
+{
+    if (depth >= kMaxNestedDepth) return;
+    for (const Track& t : q.tracks) {
+        if (t.type != TrackType::Video) continue;
+        for (const Event& e : t.events) {
+            const MediaItem* m = q.findMedia(e.mediaId);
+            if (!m || m->generated || m->offline || !isProjectFile(m->path) || !(e.length > 0)) continue;
+            std::shared_ptr<const Project> inner = sharedProject(m->path, nullptr);
+            NestedCacheInfo shape;
+            if (!inner || !previewShape(*inner, shape)) continue;
+            const int64_t last = shape.frames - 1;
+            const double end = e.start + e.length;
+            const double qfps = q.settings.fps(), ifps = inner->settings.fps();
+            // (as VideoEngine's resampleOn, erring towards blending)
+            bool blends = true;
+            {
+                std::string mode = eventFxResample(e);
+                if (mode.empty()) mode = (e.resample == "force" || e.resample == "off" || e.resample == "optical") ? e.resample : q.settings.resample;
+                const Envelope* v = findEnvelope(e.envelopes, "velocity");
+                const double r = qfps > 0 ? ifps * std::fabs(e.rate) * eventFxRate(e) / qfps : 0.0;
+                if (mode == "off") blends = false;
+                else if (mode != "force" && mode != "optical" && !(v && !v->points.empty()) && std::round(r) >= 1.0 &&
+                         std::fabs(r - std::round(r)) < 1e-3)
+                    blends = false;
+            }
+            const bool undersampled = e.undersample > 0.01 && e.undersample < 0.999;
+            const double step = qfps > 0 ? 1.0 / (qfps * (undersampled ? e.undersample : 1.0)) : 0.0;
+            // (the frames whose times are in [start, end))
+            const int64_t fa = std::max<int64_t>(0, q.frameAt(e.start)), fb = (int64_t)std::ceil(end * qfps - 1e-6);
+            FrameSpans& have = out[samePath(m->path)];
+            FrameSpans added;
+            int64_t ra = -1, rb = -1;           // the frames found so far that follow on from each other
+            for (const auto& sp : shown) {
+                for (int64_t f = std::max(fa, sp.first), to = std::min(fb, sp.second); f < to; ++f) {
+                    double at = std::max(q.frameTime(f), e.start);
+                    if (undersampled) at = e.start + std::floor((at - e.start) / step + 1e-6) * step;
+                    const double mt = eventMediaTime(e, m, e.reverse ? at + step : at);
+                    const int64_t n = std::min(last, std::max<int64_t>(0, inner->frameAt(mt)));
+                    const int64_t lo = n, hi = std::min(last, blends ? n + 1 : n) + 1;
+                    if (ra >= 0 && lo <= rb && hi >= ra) {
+                        ra = std::min(ra, lo);
+                        rb = std::max(rb, hi);
+                    } else {
+                        if (ra >= 0) addFrameSpan(have, ra, rb, &added);
+                        ra = lo;
+                        rb = hi;
+                    }
+                }
+            }
+            if (ra >= 0) addFrameSpan(have, ra, rb, &added);
+            // (only what is new: what was there already has been followed down)
+            if (!added.empty()) addShownFrames(*inner, added, depth + 1, out);
+        }
+    }
+}
+
+// The frames the preview file of each project keeps, from the last nestedPreviewsNeeded (by samePath), and whether
+// they are all to be rendered again (Rebuild) rather than copied from a current file.
+struct PreviewWanted {
+    FrameSpans frames;
+    bool fresh = false;
+};
+std::mutex gPreviewWantedMutex;
+std::map<std::string, PreviewWanted> gPreviewWanted;
+
+// The frames the preview file of the project at 'path' keeps: those the projects using it show, or all of them when
+// that hasn't been looked at.
+FrameSpans wantedFrames(const std::string& path, int64_t frames, bool* fresh = nullptr)
+{
+    FrameSpans out;
+    if (fresh) *fresh = false;
+    std::lock_guard<std::mutex> lk(gPreviewWantedMutex);
+    auto it = gPreviewWanted.find(samePath(path));
+    if (it == gPreviewWanted.end()) {
+        if (frames > 0) out.emplace_back(0, frames);
+        return out;
+    }
+    for (const auto& sp : it->second.frames)
+        if (sp.first < frames) out.emplace_back(sp.first, std::min(sp.second, frames));
+    if (fresh) *fresh = it->second.fresh;
+    return out;
+}
+
+bool previewKeeps(const NestedCacheFile& f, const FrameSpans& frames)
+{
+    for (const auto& sp : frames)
+        for (int64_t k = sp.first; k < sp.second; ++k)
+            if (!f.has(k)) return false;
+    return true;
 }
 
 // The current preview file of the project at 'path' (beside it, or where it is kept when that folder can't be
@@ -1953,15 +2085,25 @@ bool nestedPreviewCurrent(const std::string& path)
     NestedCacheInfo want;
     if (!p || !previewShape(*p, want)) return false;
     const uint64_t signature = previewSignature(path);
+    const FrameSpans frames = wantedFrames(path, want.frames);
     for (const std::string& f : {nestedCachePath(path), nestedCacheFallbackPath(path)}) {
         NestedCacheInfo have;
-        if (readNestedCacheInfo(f, have) && previewFits(have, want, signature)) return true;
+        if (!readNestedCacheInfo(f, have) || !previewFits(have, want, signature)) continue;
+        NestedCacheFile file;
+        if (file.open(f) && previewFits(file.info(), want, signature) && previewKeeps(file, frames)) return true;
     }
     return false;
 }
 
 std::vector<std::string> nestedPreviewsNeeded(const Project& p, bool all)
 {
+    // the frames of each one that are shown, which its file keeps
+    std::map<std::string, FrameSpans> shown;
+    addShownFrames(p, FrameSpans{{0, std::numeric_limits<int64_t>::max()}}, 0, shown);
+    {
+        std::lock_guard<std::mutex> lk(gPreviewWantedMutex);
+        for (auto& s : shown) gPreviewWanted[s.first] = PreviewWanted{s.second, all};
+    }
     std::vector<std::string> out;
     std::set<std::string> seen;
     std::function<void(const Project&, int)> walk = [&](const Project& q, int depth) {
@@ -1974,6 +2116,8 @@ std::vector<std::string> nestedPreviewsNeeded(const Project& p, bool all)
             if (depth < kMaxNestedDepth) walk(*inner, depth + 1);
             NestedCacheInfo shape;
             if (!previewShape(*inner, shape)) continue;
+            auto it = shown.find(samePath(m.path));
+            if (it == shown.end() || it->second.empty()) continue;
             if (all || !nestedPreviewCurrent(m.path)) out.push_back(m.path);
         }
     };
@@ -1996,10 +2140,33 @@ int buildNestedPreview(const std::string& path, const std::function<bool(int64_t
     NestedCacheInfo shape;
     if (!previewShape(*proj, shape)) return fail(pathFileName(path) + " shows no pictures");
     shape.signature = before;
+    // Only the frames the projects using it show are rendered; the ones a current file of it keeps already are copied
+    // from it (unless all are made again), and the rest aren't kept.
+    bool fresh = false;
+    const FrameSpans wanted = wantedFrames(path, shape.frames, &fresh);
+    std::unique_ptr<NestedCacheFile> old;
+    if (!fresh)
+        for (const std::string& f : {nestedCachePath(path), nestedCacheFallbackPath(path)}) {
+            NestedCacheInfo have;
+            if (!readNestedCacheInfo(f, have) || !previewFits(have, shape, before)) continue;
+            old.reset(new NestedCacheFile());
+            if (old->open(f) && previewFits(old->info(), shape, before)) break;
+            old.reset();
+        }
     NestedCacheWriter w;
     if (!w.open(nestedCachePath(path), shape, &err)) {
         std::string err2;
         if (!w.open(nestedCacheFallbackPath(path), shape, &err2)) return fail(err);
+    }
+    if (old && !w.canCopy(*old)) old.reset();
+    enum : uint8_t { kSkip, kRender, kCopy };
+    std::vector<uint8_t> what((size_t)shape.frames, kSkip);
+    for (const auto& sp : wanted)
+        for (int64_t f = sp.first; f < sp.second; ++f) what[(size_t)f] = kRender;
+    int64_t total = 0;
+    for (int64_t f = 0; f < shape.frames; ++f) {
+        if (old && old->has(f)) what[(size_t)f] = kCopy;
+        if (what[(size_t)f] == kRender) ++total;
     }
     // The effects of every project below it are made first, so that a frame of one that has no preview file is never
     // drawn without them (a preview's nested frames leave effects out until they exist).
@@ -2016,8 +2183,13 @@ int buildNestedPreview(const std::string& path, const std::function<bool(int64_t
         };
         ready(*proj, 0);
     }
+    // several threads render its frames (below): a reader each, and the frames one decodes shared with the others, as
+    // when playing
+    const int cores = processorLimit() > 0 ? processorLimit() : (int)std::thread::hardware_concurrency();
+    const int threads = nestedVideoParallelSafe(*proj, true) ? std::max(1, std::min(8, cores - 1)) : 1;
     MediaPool pool;
-    pool.setReaderLimits(4, 8);
+    pool.setReaderLimits((size_t)std::max(4, threads + 1), 8);
+    pool.setShareFrames(true);
     NestedFxPtr fx = makeNestedFx(proj, path, true, false);
     if (!nestedFxReady(fx, true)) {
         w.abort();
@@ -2029,37 +2201,129 @@ int buildNestedPreview(const std::string& path, const std::function<bool(int64_t
         FrameOptions fo;
         fo.scale = 0.5;
         fo.transparent = true;
-        for (int64_t f = 0; f < shape.frames; ++f) {
-            // not while playing: the frames playback needs come first
-            while (previewPlaying()) {
-                if (progress && !progress(f, shape.frames, true)) {
-                    w.abort();
-                    return 2;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            }
-            if (progress && !progress(f, shape.frames, false)) {
-                w.abort();
-                return 2;
-            }
-            // made as a preview makes it (ProjectReader::videoFrame), but in full: nothing approximated
+        // made as a preview makes it (ProjectReader::videoFrame), but in full: nothing approximated. Null with *why set
+        // if it can't be.
+        auto renderFrame = [&](int64_t f, std::string& why) -> ImagePtr {
             mediaReadHints().approximated = false;
             ++gNestedDepth;
             ImagePtr img = engine.render(*proj, proj->frameTime(f), fo);
             --gNestedDepth;
             if (!img) {
-                w.abort();
-                return fail(strfmt("frame %lld could not be rendered", (long long)f));
+                why = strfmt("frame %lld could not be rendered", (long long)f);
+                return nullptr;
             }
             if (img->w != shape.width || img->h != shape.height) img = fitImage(*img, shape.width, shape.height);
             if (!img || mediaReadHints().approximated) {
-                w.abort();
-                return fail(strfmt("frame %lld could only be approximated", (long long)f));
+                why = strfmt("frame %lld could only be approximated", (long long)f);
+                return nullptr;
             }
-            if (!w.write(*img)) {
-                w.abort();
-                return fail("cannot write the preview file (is the disk full?)");
+            img->sync();
+            return img;
+        };
+        // The frames are rendered on several threads at once (as playback renders them: a plug-in that isn't thread
+        // safe is run one call at a time by the effects themselves), a few ahead of the one written, and written in
+        // order on this thread. One thread while a project below it has effects that can't run on several.
+        std::vector<int64_t> jobs;
+        for (int64_t f = 0; f < shape.frames; ++f)
+            if (what[(size_t)f] == kRender) jobs.push_back(f);
+        const size_t ahead = (size_t)threads * 2;
+        std::mutex mu;
+        std::condition_variable cv;
+        std::map<size_t, ImagePtr> made;        // by job
+        std::string failed;                     // the first frame that couldn't be made
+        size_t next = 0, written = 0;           // the next job to take; the jobs written
+        bool quit = false;
+        auto work = [&] {
+            lowerThreadPriority();
+            for (;;) {
+                size_t k;
+                {
+                    std::unique_lock<std::mutex> lk(mu);
+                    cv.wait(lk, [&] { return quit || next >= jobs.size() || next < written + ahead; });
+                    if (quit || next >= jobs.size()) return;
+                    k = next++;
+                }
+                // not while playing: the frames playback needs come first
+                while (previewPlaying()) {
+                    {
+                        std::lock_guard<std::mutex> lk(mu);
+                        if (quit) return;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                }
+                std::string why;
+                ImagePtr img = renderFrame(jobs[k], why);
+                std::lock_guard<std::mutex> lk(mu);
+                if (!img && failed.empty()) failed = why;
+                made[k] = img;
+                cv.notify_all();
             }
+        };
+        std::vector<std::thread> workers;
+        for (int t = 0; t < (jobs.empty() ? 0 : threads); ++t) workers.emplace_back(work);
+        auto stopAll = [&] {
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                quit = true;
+                cv.notify_all();
+            }
+            for (auto& t : workers) t.join();
+            workers.clear();
+        };
+        // 0 done, else what buildNestedPreview returns
+        auto writeAll = [&]() -> int {
+            size_t k = 0;                       // the next job to write
+            for (int64_t f = 0; f < shape.frames; ++f) {
+                if (what[(size_t)f] == kSkip) {
+                    if (!w.skip()) return fail("cannot write the preview file");
+                    continue;
+                }
+                if (what[(size_t)f] == kCopy) {
+                    if (w.copy(*old, f)) continue;
+                    // (one that can't be copied is rendered here)
+                    std::string why;
+                    ImagePtr img = renderFrame(f, why);
+                    if (!img) return fail(why);
+                    if (!w.write(*img)) return fail("cannot write the preview file (is the disk full?)");
+                    continue;
+                }
+                if (progress && !progress((int64_t)k, total, false)) return 2;
+                ImagePtr img;
+                for (;;) {
+                    std::unique_lock<std::mutex> lk(mu);
+                    auto it = made.find(k);
+                    if (it != made.end()) {
+                        img = it->second;
+                        made.erase(it);
+                        break;
+                    }
+                    if (!failed.empty()) {
+                        const std::string why = failed;
+                        lk.unlock();
+                        return fail(why);
+                    }
+                    const int64_t done = (int64_t)written;
+                    lk.unlock();
+                    if (progress && !progress(done, total, previewPlaying())) return 2;
+                    lk.lock();
+                    cv.wait_for(lk, std::chrono::milliseconds(100), [&] { return made.count(k) || !failed.empty(); });
+                }
+                if (!img) return fail(failed);
+                if (!w.write(*img)) return fail("cannot write the preview file (is the disk full?)");
+                ++k;
+                {
+                    std::lock_guard<std::mutex> lk(mu);
+                    written = k;
+                    cv.notify_all();
+                }
+            }
+            return 0;
+        };
+        const int r = writeAll();
+        stopAll();
+        if (r != 0) {
+            w.abort();
+            return r;
         }
     }
     // (a project below it saved meanwhile is read again, and its effects are made again: asked first, as the cause)
@@ -2072,8 +2336,9 @@ int buildNestedPreview(const std::string& path, const std::function<bool(int64_t
         w.abort();
         return fail("the effects of a project it uses could not be made");
     }
-    if (progress) progress(shape.frames, shape.frames, false);
-    // the preview files of it being read are closed first, then it is put in place
+    if (progress) progress(total, total, false);
+    // the preview files of it being read (and the old one copied from) are closed first, then it is put in place
+    old.reset();
     closeOpenPreviews(path);
     if (!w.finish(&err)) return fail(err);
     gPreviewGeneration.fetch_add(1);
@@ -2173,7 +2438,7 @@ public:
         std::shared_ptr<NestedCacheFile> pv;
         if (gFinalDepth == 0) {
             pv = currentPreview(*sh_);
-            if (pv && !(ow <= pv->info().width && oh <= pv->info().height && frame < pv->info().frames)) pv.reset();
+            if (pv && !(ow <= pv->info().width && oh <= pv->info().height && pv->has(frame))) pv.reset();
         }
         const uint64_t gen = gNestedGeneration.load() | (pv ? kFromPreviewFile : 0);
         bool mine = false;

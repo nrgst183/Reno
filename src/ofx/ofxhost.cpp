@@ -278,13 +278,18 @@ bool Host::isVegasBundleFile(const std::string& path)
         std::string base = toLower(pathJoin(d, "OFX Video Plug-Ins"));
         if (low.size() > base.size() && low.compare(0, base.size(), base) == 0 && (low[base.size()] == '/' || low[base.size()] == '\\')) return true;
     }
-    // the bundles VEGAS Pro 18 ships, wherever they were copied to
+    // the bundles VEGAS Pro 18 ships, wherever they were copied to: by name, and with VEGAS's Contents/Resources/<name>.xml
+    // (NewBlue's Filters.ofx.bundle, its FI effects, shares the name but not that file)
     for (const char* b : {"filters", "magixaifx", "magixcvfx", "ofxstitch", "stabilize", "titlesandtext", "vfx1", "ofx360stabilizer", "ofxrotation",
                           "spica_cutout", "spica_resizer"}) {
         const std::string name = std::string(b) + ".ofx.bundle";
         for (const char sep : {'/', '\\'}) {
             const std::string part = std::string(1, sep) + name + std::string(1, sep);
-            if (low.find(part) != std::string::npos) return true;
+            const size_t at = low.find(part);
+            if (at == std::string::npos) continue;
+            const std::string bundle = path.substr(0, at + 1 + name.size());
+            const std::string own = path.substr(at + 1, name.size() - 11);      // (the name as the folder spells it)
+            if (fileExists(pathJoin(pathJoin(pathJoin(bundle, "Contents"), "Resources"), own + ".xml"))) return true;
         }
     }
     return false;

@@ -1,7 +1,7 @@
-// Tests of nested projects' preview files (engine.h buildNestedPreview, media/nestedcache.h): the file keeps every frame
+// Tests of nested projects' preview files (engine.h buildNestedPreview, media/nestedcache.h): the file keeps its frames
 // exactly, can be read in any order from several threads, is built deepest project first, is read by previews and
 // gives the same pictures as rendering, is never read by a final render, goes stale when anything it is made from
-// changes, and a stopped build leaves nothing behind.
+// changes, a stopped build leaves nothing behind, and only the frames shown are rendered (those kept already copied).
 //
 //   nestedcache_test <scratch folder>
 // (built with the other tests: cmake -DRENO_WITH_TESTS=ON, target nestedcache_test)
@@ -278,6 +278,47 @@ int main(int argc, char** argv)
     check(stopped == 2, "a build can be stopped", strfmt("%d", stopped));
     check(!fileExists(nestedCachePath(inner) + ".part") && !nestedPreviewCurrent(inner), "and leaves no file behind");
     check(buildNestedPreview(inner, nullptr, &err) == 0 && nestedPreviewCurrent(inner), "built again afterwards", err);
+
+    // ---------------------------------------------------------------- only the frames that are shown
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        in.tracks[0].events[0].length = 1.25;
+        check(in.save(inner, &err), "the innermost project is saved again", err);
+        // a project showing half a second of it from 0.5 s on
+        const std::string part = pathJoin(dir, "nc_part.reno");
+        Project pp = showing(inner);
+        pp.tracks[0].events[0].offset = 0.5;
+        pp.tracks[0].events[0].length = 0.5;
+        check(pp.save(part, &err), "a project showing part of it is saved", err);
+        Project top = showing(part);
+        need = nestedPreviewsNeeded(top);
+        check(!need.empty() && pathFileName(need[0]) == "nc_inner.reno", "it is to be built");
+        int64_t total = 0;
+        check(buildNestedPreview(inner, [&](int64_t, int64_t t, bool) { total = t; return true; }, &err) == 0, "and is built", err);
+        check(total == 15, "only the frames shown are rendered", strfmt("%lld", (long long)total));
+        NestedCacheFile f;
+        check(f.open(nestedCachePath(inner), &err) && f.info().frames == 38 && !f.has(14) && f.has(15) && f.has(29) && !f.has(30),
+              "the file keeps those and no others", strfmt("%lld frames", (long long)f.info().frames));
+        f.close();
+        check(nestedPreviewCurrent(inner), "it is current");
+        setNestedPreviewUse(false);
+        const ImagePtr liveTop = previewFrame(top, 0.25, false);
+        setNestedPreviewUse(true);
+        const ImagePtr fileTop = previewFrame(top, 0.25, false);
+        check(liveTop && fileTop && sameBytes(*liveTop, *fileTop), "a preview read from it is the same as rendering");
+
+        // showing more of it: only the new frames are rendered, the others copied
+        pp.tracks[0].events[0].offset = 0.0;
+        pp.tracks[0].events[0].length = 1.0;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        check(pp.save(part, &err), "the project showing it is changed", err);
+        need = nestedPreviewsNeeded(top);
+        check(!need.empty() && pathFileName(need[0]) == "nc_inner.reno" && !nestedPreviewCurrent(inner), "its file no longer keeps all it shows");
+        check(buildNestedPreview(inner, [&](int64_t, int64_t t, bool) { total = t; return true; }, &err) == 0, "built again", err);
+        check(total == 15, "only the frames not kept yet are rendered", strfmt("%lld", (long long)total));
+        check(f.open(nestedCachePath(inner), &err) && f.has(0) && f.has(29) && !f.has(30), "and the file keeps them all");
+        f.close();
+    }
 
     std::printf("\n%d passed, %d failed\n", gPass, gFail);
     return gFail ? 1 : 0;
