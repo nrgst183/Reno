@@ -45,6 +45,14 @@ struct Peaks {
     }
 };
 
+// The sound itself for a stretch of a file, for a waveform zoomed in past the peaks (VEGAS then draws every sample):
+// 'rate' samples a second from sample 'start' (at that rate), left and right (the same channel twice for one channel).
+struct WaveDetail {
+    int rate = 0;
+    int64_t start = 0;
+    std::vector<float> l, r;
+};
+
 struct ThumbKey {
     int media = 0;
     int height = 0;
@@ -69,6 +77,12 @@ public:
 
     void requestThumb(const ThumbKey& key, const MediaItem& m, double seconds, int w, int h);
     std::shared_ptr<Peaks> peaks(int user, const MediaItem& m, int first = -1, int count = 0);
+    // The samples of 'frames' samples from 'start' at 'rate' of the sound peaks() would give, if read already; else they
+    // are asked for (with some to spare either side, the last request for a file replacing one not yet read) and null
+    // comes back until they are there (takeDetails).
+    std::shared_ptr<const WaveDetail> detail(int user, const MediaItem& m, int first, int count, int rate, int64_t start, int frames);
+    // Whether samples asked for by detail() came in since the last call.
+    bool takeDetails();
     double duration(const MediaItem& m);
     int channels(const MediaItem& m);
     std::vector<std::string> takeProbed();
@@ -106,6 +120,15 @@ private:
         std::set<std::string> probing;
         std::map<std::string, MediaInfo> probed;
         std::vector<std::string> probedNew;
+        struct DetailJob {
+            std::tuple<int, int, int> key;
+            MediaItem media;
+            uint64_t user = 0;
+            int first = -1, count = 0, rate = 0, frames = 0;
+            int64_t start = 0;
+        };
+        std::deque<DetailJob> details;
+        std::vector<std::pair<std::tuple<int, int, int>, std::shared_ptr<const WaveDetail>>> detailsDone;
         bool posted = false;
         std::function<void()> onReady;
     };
@@ -145,6 +168,8 @@ private:
     std::set<ThumbKey> pending_;
     std::set<int> dropped_;
     std::map<std::tuple<int, int, int>, std::shared_ptr<Peaks>> peaks_;
+    std::map<std::tuple<int, int, int>, std::shared_ptr<const WaveDetail>> details_;
+    std::map<std::tuple<int, int, int>, std::tuple<int, int64_t, int>> detailAsked_;     // rate, start, frames
 };
 
 }  // namespace tl

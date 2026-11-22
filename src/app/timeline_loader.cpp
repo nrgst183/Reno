@@ -110,6 +110,61 @@ std::shared_ptr<Peaks> Loader::peaks(int user, const MediaItem& m, int first, in
     return pk;
 }
 
+std::shared_ptr<const WaveDetail> Loader::detail(int user, const MediaItem& m, int first, int count, int rate, int64_t start, int frames)
+{
+    if (first < 0) count = 0;
+    if (rate <= 0 || frames <= 0) return nullptr;
+    const std::tuple<int, int, int> key(user, first, count);
+    auto it = details_.find(key);
+    if (it != details_.end()) {
+        const WaveDetail& d = *it->second;
+        if (d.rate == rate && start >= d.start && start + frames <= d.start + (int64_t)d.l.size()) return it->second;
+    }
+    // asked for already (and not read yet): wait for it, if it covers this
+    auto a = detailAsked_.find(key);
+    if (a != detailAsked_.end() && std::get<0>(a->second) == rate && start >= std::get<1>(a->second) &&
+        start + frames <= std::get<1>(a->second) + std::get<2>(a->second))
+        return nullptr;
+    // half as much again either side, so scrolling a little needs no new read
+    const int64_t from = std::max<int64_t>(0, start - frames / 2);
+    const int n = (int)std::min<int64_t>(frames * 2LL + 2, 64LL * 1024 * 1024);
+    detailAsked_[key] = std::make_tuple(rate, from, n);
+    Shared::DetailJob j;
+    j.key = key;
+    j.media = lightCopy(m);
+    // a reader of its own, so reading here doesn't move the reader the waveform is read with
+    j.user = (1ULL << 40) | ((uint64_t)(unsigned)user << 8) | (uint64_t)(first + 1);
+    j.first = first;
+    j.count = count;
+    j.rate = rate;
+    j.start = from;
+    j.frames = n;
+    {
+        std::lock_guard<std::mutex> lk(s_->mutex);
+        for (auto d = s_->details.begin(); d != s_->details.end();)
+            if (d->key == key) d = s_->details.erase(d);
+            else ++d;
+        s_->details.push_back(std::move(j));
+    }
+    s_->cv.notify_one();
+    return nullptr;
+}
+
+bool Loader::takeDetails()
+{
+    std::vector<std::pair<std::tuple<int, int, int>, std::shared_ptr<const WaveDetail>>> got;
+    {
+        std::lock_guard<std::mutex> lk(s_->mutex);
+        got.swap(s_->detailsDone);
+    }
+    for (auto& g : got) {
+        auto a = detailAsked_.find(g.first);
+        if (a != detailAsked_.end() && std::get<0>(a->second) == g.second->rate && std::get<1>(a->second) == g.second->start) detailAsked_.erase(a);
+        details_[g.first] = std::move(g.second);
+    }
+    return !got.empty();
+}
+
 // The length of 'm': the project's, or when it has none (a .veg's media) the file's own once the loader has looked (0
 // until then).
 double Loader::duration(const MediaItem& m)
@@ -148,6 +203,14 @@ void Loader::forgetMedia(int user, const std::string& path)
 {
     for (auto it = peaks_.begin(); it != peaks_.end();) {
         if (std::get<0>(it->first) == user) it = peaks_.erase(it);
+        else ++it;
+    }
+    for (auto it = details_.begin(); it != details_.end();) {
+        if (std::get<0>(it->first) == user) it = details_.erase(it);
+        else ++it;
+    }
+    for (auto it = detailAsked_.begin(); it != detailAsked_.end();) {
+        if (std::get<0>(it->first) == user) it = detailAsked_.erase(it);
         else ++it;
     }
     std::lock_guard<std::mutex> lk(s_->mutex);
@@ -463,8 +526,25 @@ void Loader::run(std::shared_ptr<Shared> s, MediaPool* pool)
         bool thumb = false, started = false;
         {
             std::unique_lock<std::mutex> lk(s->mutex);
-            s->cv.wait(lk, [&] { return s->quit || !s->thumbs.empty() || wave || !s->waves.empty() || !s->probes.empty(); });
+            s->cv.wait(lk, [&] { return s->quit || !s->thumbs.empty() || wave || !s->waves.empty() || !s->probes.empty() || !s->details.empty(); });
             if (s->quit) return;
+            // the samples of a waveform zoomed in: what is on screen now, before anything else
+            if (!s->details.empty()) {
+                Shared::DetailJob dj = std::move(s->details.front());
+                s->details.pop_front();
+                lk.unlock();
+                auto d = std::make_shared<WaveDetail>();
+                d->rate = dj.rate;
+                d->start = dj.start;
+                d->l.assign((size_t)dj.frames, 0.f);
+                d->r.assign((size_t)dj.frames, 0.f);
+                pool->audio(dj.user, dj.media, dj.start, dj.frames, dj.rate, d->l.data(), d->r.data(), dj.first, dj.count);
+                lk.lock();
+                s->detailsDone.emplace_back(dj.key, std::move(d));
+                lk.unlock();
+                wake(s);
+                continue;
+            }
             if (!s->probes.empty()) {
                 MediaItem m = std::move(s->probes.front());
                 s->probes.pop_front();

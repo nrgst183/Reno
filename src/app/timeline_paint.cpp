@@ -527,6 +527,8 @@ void TimelineWidget::Impl::changed(int changes)
 
 void TimelineWidget::Impl::loaderReady()
 {
+    // the samples of a waveform zoomed in came in: the events in view are drawn from them now
+    if (loader->takeDetails()) q->update();
     std::set<int> keys = loader->takeDropped();
     for (const std::string& path : loader->takeProbed()) {
         auto k = mediaKeys.find(path);
@@ -1014,23 +1016,74 @@ void TimelineWidget::Impl::drawWaveRow(QPainter& p, const Event& e, const MediaI
     QVector<QLineF> lines;
     const int x0 = (int)std::ceil(std::max(content.left(), (double)c.left() - 1.0)), x1 = (int)std::floor(std::min(content.right(), (double)c.right() + 1.0));
     lines.reserve(std::max(0, x1 - x0 + 1));
-    for (int x = x0; x <= x1; ++x) {
+    // where column x starts in the media (seconds); false: past the media's end (no loop)
+    auto mediaAt = [&](int x, double* out) {
         // a reversed event plays its stretch of the media from its end back: the column shows the stretch that ends
         // where a forward one would begin, as the sound is heard and as VEGAS draws it
         double m0 = e.reverse ? e.offset + (e.length - (timeAtF(x) - e.start)) * e.rate - span : e.offset + (timeAtF(x) - e.start) * e.rate;
         if (e.loop) {
             m0 = std::fmod(m0, dur);
             if (m0 < 0) m0 += dur;
-        } else if (m0 < 0 || m0 >= dur) continue;
+        } else if (m0 < 0 || m0 >= dur) return false;
+        *out = m0;
+        return true;
+    };
+    // Zoomed in past the peaks (a stretch of them wider than a pixel): the sound itself, as VEGAS draws it, each column
+    // from the lowest to the highest sample it covers and the sound at its two edges, so the columns join into one line
+    // through the samples. Until the loader has read them the peaks are drawn.
+    std::shared_ptr<const WaveDetail> detail;
+    if (mip == 0 && perPx < 1.0 && x1 >= x0) {
+        double a = 0, b = 0;
+        const bool ha = mediaAt(x0, &a), hb = mediaAt(x1, &b);
+        const double from = std::min(a, b), to = std::max(a, b) + span;
+        // (a looping event whose columns go round the end of the media in view keeps the peaks)
+        if (ha && hb && to - from <= (x1 - x0 + 2) * span * 1.001 + 1e-9) {
+            const int rate = m.info.sampleRate > 0 ? std::min(m.info.sampleRate, 192000) : 48000;
+            const int64_t s0 = std::max<int64_t>(0, (int64_t)std::floor(from * rate) - 2);
+            const int64_t s1 = (int64_t)std::ceil(to * rate) + 2;
+            if (s1 - s0 < 8 * 1024 * 1024) detail = loader->detail(key, m, first, nch, rate, s0, (int)(s1 - s0));
+        }
+    }
+    for (int x = x0; x <= x1; ++x) {
+        double m0 = 0;
+        if (!mediaAt(x, &m0)) continue;
         double lo = 0, hi = 0;
-        if (perPx < 1.0) {
+        bool have = false;
+        if (detail) {
+            const WaveDetail& d = *detail;
+            const double fa = m0 * d.rate - (double)d.start, fb = (m0 + span) * d.rate - (double)d.start;
+            const int64_t n = (int64_t)d.l.size();
+            if (fa >= 0 && fb + 1 < (double)n) {
+                float vlo = 1e9f, vhi = -1e9f;
+                auto take = [&](float v) {
+                    vlo = std::min(vlo, v);
+                    vhi = std::max(vhi, v);
+                };
+                auto edge = [&](double t) {
+                    const int64_t i = (int64_t)std::floor(t);
+                    const float f = (float)(t - (double)i);
+                    take(d.l[(size_t)i] + (d.l[(size_t)i + 1] - d.l[(size_t)i]) * f);
+                    take(d.r[(size_t)i] + (d.r[(size_t)i + 1] - d.r[(size_t)i]) * f);
+                };
+                edge(fa);
+                edge(fb);
+                for (int64_t k = (int64_t)std::floor(fa) + 1; (double)k < fb; ++k) {
+                    take(d.l[(size_t)k]);
+                    take(d.r[(size_t)k]);
+                }
+                lo = clampd((double)vlo, -1.0, 1.0) * 127.0;
+                hi = clampd((double)vhi, -1.0, 1.0) * 127.0;
+                have = true;
+            }
+        }
+        if (!have && perPx < 1.0) {
             const double at = (m0 + span * 0.5) * perSecond - 0.5;
             const int64_t a = std::max<int64_t>(0, (int64_t)std::floor(at)), b = std::min(a + 1, count - 1);
             if (b >= ready) continue;
             const double f = clampd(at - (double)a, 0.0, 1.0);
             lo = lv.lo[(size_t)a] + (lv.lo[(size_t)b] - lv.lo[(size_t)a]) * f;
             hi = lv.hi[(size_t)a] + (lv.hi[(size_t)b] - lv.hi[(size_t)a]) * f;
-        } else {
+        } else if (!have) {
             const int64_t a = (int64_t)std::floor(m0 * perSecond);
             const int64_t n = std::max<int64_t>(1, (int64_t)std::floor((m0 + span) * perSecond) - a);
             int vlo = 127, vhi = -127;
@@ -1045,7 +1098,9 @@ void TimelineWidget::Impl::drawWaveRow(QPainter& p, const Event& e, const MediaI
             hi = vhi;
         }
         const double ya = std::max(content.top(), mid - hi * amp), yb = std::min(content.bottom(), mid - lo * amp);
-        lines.push_back(QLineF(x + 0.5, std::min(ya, mid - 0.5), x + 0.5, std::max(yb, mid + 0.5)));
+        // peaks always take in the middle line; the sound itself is drawn where it is (one pixel at least)
+        if (have) lines.push_back(QLineF(x + 0.5, std::min(ya, yb - 1.0), x + 0.5, yb));
+        else lines.push_back(QLineF(x + 0.5, std::min(ya, mid - 0.5), x + 0.5, std::max(yb, mid + 0.5)));
     }
     p.setPen(color);
     p.drawLines(lines);
