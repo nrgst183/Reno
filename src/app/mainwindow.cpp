@@ -492,7 +492,7 @@ const std::vector<ShortcutInfo>& shortcutList()
         {"Project Media", "Create Video Proxy / Match Project Video Settings (right-click a file)", "", S::Window,
          "a small copy (<file>.sfvp0, as VEGAS names them) that the Video Preview plays below Best quality; renders use the original"},
         {"Project Media", "Properties > Media > Alpha channel", "", S::Window, "VEGAS's override of a file's transparency: Undefined (as the file says), None, Straight, Premultiplied"},
-        {"Tools", "Audio: Apply Non-Real-Time Event FX...", "", S::Window, "also in the audio event's right-click menu: runs the selected audio events through a chain of plug-ins into new files \"<media> Take 2\", \"Take 3\"... that become the events' active takes; bind a key in Options > Customize Keyboard"},
+        {"Tools", "Audio: Apply Non-Real-Time Event FX...", "", S::Window, "also in the audio event's right-click menu: runs the selected audio events through a chain of plug-ins into new files \"<media> Take 2\", \"Take 3\"... (\"<media> (Reversed) Take 2\" for a reversed event) that become the events' active takes; bind a key in Options > Customize Keyboard"},
         {"Tools", "Clean Project Media", "", S::Window, "the media no event uses taken out of the project"},
         {"Tools", "Rebuild Offline Nested Audio", "", S::Window, "rebuilds missing, outdated or canceled audio proxies (.sfap0) of nested projects; until then their sound is mixed as it plays"},
         {"Tools", "Scripting: Run Script", "", S::Window, "runs a VEGAS script (.cs, .js, .vb or compiled .dll) against Reno's ScriptPortal.Vegas as one undo step (needs .NET Framework 4 on Windows)"},

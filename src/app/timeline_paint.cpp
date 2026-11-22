@@ -1883,15 +1883,18 @@ void TimelineWidget::Impl::drawEdgeSelection(QPainter& p, const Event& e, const 
     if (!edgeSel.expanded) sides.push_back(edgeSel.side);
     else if (e.id == edgeSel.event && edgeSel.which <= 0) sides.push_back(1);
     else if (e.id == edgeSel.other && edgeSel.which >= 0) sides.push_back(-1);
+    for (int side : sides) drawEdgeBracket(p, r, v, side);
+}
+
+void TimelineWidget::Impl::drawEdgeBracket(QPainter& p, const QRectF& r, const QRectF& v, int side)
+{
     p.setRenderHint(QPainter::Antialiasing, false);
     const QColor red(235, 40, 40);
-    for (int side : sides) {
-        const double x = side < 0 ? std::floor(r.left()) : std::floor(r.right()) - 3.0;
-        p.fillRect(QRectF(x, v.top(), 3.0, v.height()), red);
-        const double tip = side < 0 ? x + 3.0 : x - 5.0;
-        p.fillRect(QRectF(tip, v.top(), 5.0, 3.0), red);
-        p.fillRect(QRectF(tip, v.bottom() - 3.0, 5.0, 3.0), red);
-    }
+    const double x = side < 0 ? std::floor(r.left()) : std::floor(r.right()) - 3.0;
+    p.fillRect(QRectF(x, v.top(), 3.0, v.height()), red);
+    const double tip = side < 0 ? x + 3.0 : x - 5.0;
+    p.fillRect(QRectF(tip, v.top(), 5.0, 3.0), red);
+    p.fillRect(QRectF(tip, v.bottom() - 3.0, 5.0, 3.0), red);
 }
 
 void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QRectF& r, const QRectF& v, bool audioEvent)
@@ -1899,6 +1902,8 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
     // the snap offset flag: VEGAS 18 draws it on every audio event (a video event: while selected or moved off its start)
     const bool snapFlag = r.width() > 24.0 && (audioEvent || e.snapOffset > 0 || app.selection().count(e.id) != 0);
     const bool linked = e.syncLink && app.selection().count(e.syncLink) != 0;
+    bool dropEdge = false;
+    for (const std::pair<uint64_t, int>& d : drop.snapEdges) dropEdge = dropEdge || d.first == e.id;
     bool offStart = false, offEnd = false;
     if (opt.showUnquantized) {
         const Project& qp = app.project();
@@ -1906,7 +1911,7 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
         offEnd = std::fabs(qp.quantize(e.end()) - e.end()) > 1e-5 / std::max(1.0, fps());
     }
     if (!offStart && !offEnd && !opt.showMediaMarkers && !(opt.showEventLength && v.width() > 40) && !(opt.showTakeInfo && v.width() > 50) && !(e.locked && v.width() > 16) &&
-        !(edgeSel.event && (edgeSel.event == e.id || (edgeSel.expanded && edgeSel.other == e.id))) && !snapFlag && !linked)
+        !(edgeSel.event && (edgeSel.event == e.id || (edgeSel.expanded && edgeSel.other == e.id))) && !snapFlag && !linked && !dropEdge)
         return;
     p.save();
     p.setClipRect(v, Qt::IntersectClip);
@@ -1929,6 +1934,8 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
     }
     if (e.locked && v.width() > 16) drawLock(p, r, v);
     if (edgeSel.event && (edgeSel.event == e.id || (edgeSel.expanded && edgeSel.other == e.id))) drawEdgeSelection(p, e, r, v);
+    for (const std::pair<uint64_t, int>& d : drop.snapEdges)
+        if (d.first == e.id) drawEdgeBracket(p, r, v, d.second);
     p.restore();
 }
 

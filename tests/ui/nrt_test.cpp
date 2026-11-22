@@ -237,6 +237,10 @@ int main(int argc, char** argv)
         const NrtFile f3 = nextNrtFile(app.project(), A[0], str(mediaDir), "wav");
         check(f3.takeName == "tone Take 3", "naming: a file of that name in another format counts too (never overwritten)", f3.takeName);
         QFile::remove(mediaDir + "/tone Take 2.flac");
+        app.edit("Reverse", [&](Project& pr) { if (Event* e = pr.findEvent(A[0])) e->reverse = true; });
+        const NrtFile f4 = nextNrtFile(app.project(), A[0], str(mediaDir), "wav");
+        check(f4.takeName == "tone (Reversed) Take 2" && QFileInfo(QString::fromStdString(f4.path)).fileName() == "tone (Reversed) Take 2.wav",
+              "naming: a reversed event is '<media> (Reversed) Take <n>'", f4.path);
         A = fresh(1, true);
         check(nrtDefaultFolder(app.project(), A[0]) == str(QFileInfo(mediaDir).absoluteFilePath()), "folder: the media's own folder, saved project or not", nrtDefaultFolder(app.project(), A[0]));
         const auto fm = nrtFormats();
@@ -367,19 +371,19 @@ int main(int argc, char** argv)
         };
         runCommand({E});
         const Event* e = ev(E);
-        check(shown == "tone Take 2 Take 2", "second run on the processed take: ' Take 2' is added again, as VEGAS names it", str(shown));
-        check(e && e->name == "tone Take 2 Take 2" && e->takes.size() == 2, "second run: three takes, the new one active", e ? std::to_string(e->takes.size()) : "");
+        check(shown == "tone Take 3", "second run on the processed take: named after the first take's media, the next number", str(shown));
+        check(e && e->name == "tone Take 3" && e->takes.size() == 2, "second run: three takes, the new one active", e ? std::to_string(e->takes.size()) : "");
         bool hasOrig = false, hasFirst = false;
         for (const Take& t : e->takes) {
             hasOrig = hasOrig || t.mediaId == original;
             hasFirst = hasFirst || t.name == "tone Take 2";
         }
         check(hasOrig && hasFirst, "second run: the original and 'tone Take 2' both stay as takes");
-        check(files(mediaDir, "tone Take *.wav") == QStringList({"tone Take 2 Take 2.wav", "tone Take 2.wav"}), "second run: nothing overwritten, a new file", str(files(mediaDir, "tone Take *.wav").join(",")));
+        check(files(mediaDir, "tone Take *.wav") == QStringList({"tone Take 2.wav", "tone Take 3.wav"}), "second run: nothing overwritten, a new file", str(files(mediaDir, "tone Take *.wav").join(",")));
         app.stepTakes({E}, 1);
         app.stepTakes({E}, 1);
         app.stepTakes({E}, 1);
-        check(ev(E)->name == "tone Take 2 Take 2", "stepping through the three takes comes round");
+        check(ev(E)->name == "tone Take 3", "stepping through the three takes comes round");
         // the original made active and processed again: the next free number for its name
         app.stepTakes({E}, 1);
         while (ev(E)->mediaId != original) app.stepTakes({E}, 1);
@@ -387,7 +391,7 @@ int main(int argc, char** argv)
         drv.take = [](QDialog* d) { clickOk(d); };
         drv.apply = [&](QDialog* d) { shown = d->findChild<QLineEdit*>("nrtFile")->text(); clickRender(d); };
         runCommand({E});
-        check(shown == "tone Take 3" && ev(E)->name == "tone Take 3" && ev(E)->takes.size() == 3, "the original processed again: 'tone Take 3', four takes", str(shown));
+        check(shown == "tone Take 4" && ev(E)->name == "tone Take 4" && ev(E)->takes.size() == 3, "the original processed again: 'tone Take 4', four takes", str(shown));
     }
 
     // ================================================================== Cancel and failures change nothing
@@ -533,7 +537,7 @@ int main(int argc, char** argv)
                   std::string("format ") + c.format + " / " + (c.tmpl[0] ? c.tmpl : "default template") + ": a " + c.ext + " file at " + std::to_string(want) + " Hz",
                   nm ? nm->path + " " + std::to_string(r ? r->info().sampleRate : 0) + " " + err : err);
         }
-        check(files(mediaDir, "tone Take *").size() == 4, "four formats: four files (each processes the take before: Take 2, Take 2 Take 2...)", str(files(mediaDir, "tone Take *").join(",")));
+        check(files(mediaDir, "tone Take *").size() == 4, "four formats: four files (each processes the take before: Take 2, Take 3...)", str(files(mediaDir, "tone Take *").join(",")));
         // the Apply window's lists follow the format
         fresh(1, true);
         chooseFx({"Distortion"});

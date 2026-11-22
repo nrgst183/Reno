@@ -173,30 +173,68 @@ void TimelineWidget::Impl::planDrop(const QMimeData* md, const QPointF& pos, Qt:
             drop.ok = drop.kind == DropKind::Files || !drop.media.empty();
             return;
         }
-        double line = -1;
-        drop.time = snapped(snapTargets(std::set<uint64_t>(), true), timeAtF(pos.x()), mods, &line);
-        showSnap(line, drop.time);
+        // one media id, or several (placed one after another; in man2, all files selected in Project Media, the
+        // clicked one first)
+        std::vector<const MediaItem*> items;
+        MediaItem generated;
+        generated.generated = true;
+        generated.info.hasVideo = true;
         if (drop.kind == DropKind::Media) {
-            // one media id, or several (placed one after another; in man2, all files selected in Project Media, the
-            // clicked one first)
-            double t = drop.time;
             const QByteArray list = md->hasFormat(kMimeMediaListFormat) ? md->data(kMimeMediaListFormat) : QByteArray(drop.data.c_str());
             for (const QString& s : QString::fromUtf8(list).split(QRegularExpression("[\\s,;]+"), Qt::SkipEmptyParts)) {
                 const MediaItem* m = pr.findMedia(s.toULongLong());
                 if (!m || std::find(drop.media.begin(), drop.media.end(), m->id) != drop.media.end()) continue;
                 drop.media.push_back(m->id);
-                for (const Ghost& g : planMedia(*m, t, drop.media.size() == 1 || drop.track != kNewTracksAtEnd ? drop.track : 0)) drop.ghosts.push_back(g);
-                t += mediaLength(*m) - autoOverlap(mediaLength(*m));
+                items.push_back(m);
             }
-            drop.ok = !drop.media.empty();
         } else if (drop.kind == DropKind::Generator) {
-            MediaItem m;
-            m.generated = true;
-            m.info.hasVideo = true;
-            drop.ghosts = planMedia(m, drop.time, drop.track);
-            drop.ok = true;
-        } else {
-            drop.ok = true;
+            items.push_back(&generated);
+        }
+        // where each piece starts and ends, from the first one's start
+        std::vector<double> starts, edges{0.0};
+        double t = 0.0;
+        for (const MediaItem* m : items) {
+            starts.push_back(t);
+            edges.push_back(t);
+            edges.push_back(t + mediaLength(*m));
+            t += mediaLength(*m) - autoOverlap(mediaLength(*m));
+        }
+        // as a move of events does: whichever edge of the pieces (each one's start and end) is nearest a snap target
+        // takes them all there
+        const double raw = timeAtF(pos.x());
+        double line = -1, delta = 0;
+        if (snapOn(mods)) {
+            const std::vector<double> targets = snapTargets(std::set<uint64_t>(), true);
+            const double reach = snapReach();
+            double best = 1e300;
+            for (double edge : edges) {
+                double at = 0;
+                if (nearest(targets, raw + edge, &at, reach) && std::fabs(at - raw - edge) < std::fabs(best)) {
+                    best = at - raw - edge;
+                    line = at;
+                }
+            }
+            if (line >= 0) delta = best;
+        }
+        if (raw + delta < 0) line = -1;
+        drop.time = std::max(0.0, quantized(raw + delta));
+        snapLine = line;
+        for (size_t k = 0; k < items.size(); ++k)
+            for (const Ghost& g : planMedia(*items[k], drop.time + starts[k], k == 0 || drop.track != kNewTracksAtEnd ? drop.track : 0))
+                drop.ghosts.push_back(g);
+        drop.ok = drop.kind != DropKind::Media || !drop.media.empty();
+        if (line >= 0) {
+            // the event edges snapped to, on the tracks the pieces land on (else on any track)
+            std::set<uint64_t> landing;
+            for (const Ghost& g : drop.ghosts)
+                if (g.track) landing.insert(g.track);
+            for (int pass = 0; pass < 2 && drop.snapEdges.empty(); ++pass)
+                for (const Track& tk : pr.tracks) {
+                    if (pass == 0 && !landing.count(tk.id)) continue;
+                    for (const Event& e : tk.events)
+                        for (int side : {-1, 1})
+                            if (std::fabs((side < 0 ? e.start : e.end()) - line) < 1e-9) drop.snapEdges.emplace_back(e.id, side);
+                }
         }
         break;
     }

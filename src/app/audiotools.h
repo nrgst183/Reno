@@ -22,8 +22,9 @@ bool realTimeRenderTo(const std::string& path, std::string* error);
 
 // Tools > Audio > Apply Non-Real-Time Event FX (also the event's right-click menu): for the selected audio events (active takes)
 // shows the Plug-In Chooser, the Take FX window, then the Apply Non Real-Time FX window (name, folder, format, template) and a
-// progress window. Each event's sound goes through the effects into a new file "<media name> Take <n>" (n from 2, never over
-// an existing file, beside that take's media), which is added to Project Media and becomes the event's active take. The
+// progress window. Each event's sound goes through the effects into a new file "<media name> Take <n>" (the media of the
+// event's first take; "<media name> (Reversed) Take <n>" for a reversed event; n from 2, never over an existing file, beside
+// that take's media), which is added to Project Media and becomes the event's active take. The
 // effects are not kept on the event; its fades, volume and envelopes stay. One undo step; cancel or failure leaves the
 // project unchanged.
 struct NrtHooks {
@@ -43,7 +44,8 @@ std::vector<std::pair<std::string, std::string>> nrtFormats();
 std::vector<std::string> nrtTemplates(const std::string& format);
 // Default folder for new files: the event's media folder, else the project's.
 std::string nrtDefaultFolder(const Project& p, uint64_t eventId);
-// Next file for a new take: "<media name> Take <n>.<ext>" in 'folder', n the first number with no file, media item or take of that
+// Next file for a new take: "<media name> Take <n>.<ext>" (the first take's media; " (Reversed)" after the name for a reversed
+// event) in 'folder', n the first number with no file, media item or take of that
 // name and not in 'reserved'.
 struct NrtFile { std::string path, takeName; };
 NrtFile nextNrtFile(const Project& p, uint64_t eventId, const std::string& folder, const std::string& ext, const std::set<std::string>& reserved = {});

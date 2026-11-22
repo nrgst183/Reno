@@ -346,11 +346,18 @@ std::vector<std::string> nrtTemplates(const std::string& format)
 NrtFile nextNrtFile(const Project& p, uint64_t eventId, const std::string& folder, const std::string& ext, const std::set<std::string>& reserved)
 {
     const Event* e = p.findEvent(eventId);
-    const MediaItem* m = e ? p.findMedia(e->mediaId) : nullptr;
+    // the file is named after the event's first take (the video or sound it was made from), not the active take, so a
+    // take processed again is "clip Take 3" and not "clip Take 2 Take 2"; " (Reversed)" follows the name while the
+    // event plays backwards
+    const std::vector<Take> takes = e ? AppState::takesOf(*e) : std::vector<Take>();
+    const MediaItem* m = !takes.empty() ? p.findMedia(takes.front().mediaId) : nullptr;
     QString name = m ? qs(m->path.empty() ? m->name : m->path) : (e ? qs(e->name) : QString());
     QString base = QFileInfo(name).completeBaseName();
+    // a first take that is itself one of these files (an event split off a processed one) gives its own source's name
+    static const QRegularExpression made(R"((?: \(Reversed\))?(?: Take \d+)+$)", QRegularExpression::CaseInsensitiveOption);
+    base.remove(made);
     if (base.isEmpty()) base = "Event";
-    // VEGAS names the file after the take's whole media name: "song Take 2" processed again is "song Take 2 Take 2"
+    if (e && e->reverse) base += " (Reversed)";
     std::set<QString> usedStems;
     for (const MediaItem& x : p.media) usedStems.insert(QFileInfo(qs(x.name)).completeBaseName().toLower());
     for (const Track& t : p.tracks)
@@ -785,7 +792,7 @@ private:
     {
         if (ids_.size() > 1) {
             name_->setEnabled(false);
-            name_->setText("(each event: <media name> Take <number>)");
+            name_->setText("(each event: <media name> [(Reversed)] Take <number>)");
             return;
         }
         if (nameTyped_) return;

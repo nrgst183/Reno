@@ -338,6 +338,8 @@ struct DropState {
     bool onHeader = false;
     std::string data;
     bool takes = false;
+    // the event edges the dropped media snapped to (event, -1 start / 1 end), marked as an edge clicked is
+    std::vector<std::pair<uint64_t, int>> snapEdges;
 };
 
 class BarButton : public QAbstractButton {
@@ -1064,6 +1066,7 @@ struct TimelineWidget::Impl {
     void drawSnapFlag(QPainter& p, const Event& e, const QRectF& r);
     void drawLock(QPainter& p, const QRectF& r, const QRectF& v);
     void drawEdgeSelection(QPainter& p, const Event& e, const QRectF& r, const QRectF& v);
+    void drawEdgeBracket(QPainter& p, const QRectF& r, const QRectF& v, int side);
     void drawEventExtras(QPainter& p, const Event& e, const QRectF& r, const QRectF& v, bool audioEvent);
     static QColor markerColor(const Project::Marker& m);
     void drawCrossFade(QPainter& p, const Row& row, const Event& a, const Event& b, const QRect& c);
