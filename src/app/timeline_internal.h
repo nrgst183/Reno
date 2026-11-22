@@ -1378,6 +1378,7 @@ struct TimelineWidget::Impl {
     void finishMove(const DragState& was);
     void commitVoidMove(const DragState& was);
     void finishEdgeDrag(const DragState& was);
+    void edgeOfClick(const DragState& was);
     void finishZoomRange(const DragState& was, const QPointF& pos);
     void clickedButton(const DragState& was, const QPointF& pos);
     QRegion dragVisualsOf(const DragState& d) const;
