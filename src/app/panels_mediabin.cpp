@@ -15,6 +15,7 @@
 #include "timeline.h"
 #include "../media/media.h"
 #include "lazyrefresh.h"
+#include "onshow.h"
 #include "strconv.h"
 #include <QAbstractButton>
 #include <QApplication>
@@ -897,6 +898,10 @@ uint64_t createSubclip(uint64_t mediaId, double in, double out, const std::strin
 
 struct MediaBin::Impl {
     MediaBin* owner = nullptr;
+    // a project change while the window is closed (and the main window open): the lists are filled again when it is
+    // shown, not on every change (each fill may start thumbnail decodes); 'staleFile': another project was opened
+    bool stale = false, staleFile = false;
+    bool closed() const { return !owner->isVisible() && owner->window() != owner && owner->window()->isVisible(); }
     MediaTree* tree = nullptr;
     MediaTiles* tiles = nullptr;
     BinTree* bins = nullptr;
@@ -1974,13 +1979,21 @@ MediaBin::MediaBin(QWidget* parent) : QWidget(parent), d(new Impl())
             // another project: the thumbnails are of the last one's media (whose ids the new one may reuse)
             impl->icons.clear();
             impl->requested.clear();
-            impl->refresh(true);
+            if (impl->closed()) impl->stale = impl->staleFile = true;
+            else impl->refresh(true);
         } else if (changes & kProject) {
-            impl->refresh();
+            if (impl->closed()) impl->stale = true;
+            else impl->refresh();
         }
         if (changes & kPrefs) impl->applyLook();
     }));
     d->setView(QSettings().value("media/view", 0).toInt());
+    callWhenShown(this, [impl] {
+        if (!impl->stale) return;
+        const bool force = impl->staleFile;
+        impl->stale = impl->staleFile = false;
+        impl->refresh(force);
+    });
 }
 
 MediaBin::~MediaBin() {}

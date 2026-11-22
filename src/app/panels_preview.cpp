@@ -527,7 +527,7 @@ public:
     int channel = 0;
     // right-click menu switches: fit the image to the window (else one preview pixel per screen pixel), use the
     // project's pixel shape, and drop to Preview (Auto) while playing
-    bool scaleToFit = true, simulateAspect = false, adjustForPlayback = false;
+    bool scaleToFit = true, simulateAspect = false, adjustForPlayback = true;
     // Split-screen view: inside splitArea (fractions of the image, from the top left) the other image is shown: the
     // frame without effects (FX Bypassed) or the clipboard image. A drag over the image sets the area (Ctrl+drag when
     // an effect's controls are on it).
@@ -2061,14 +2061,14 @@ void PreviewWidget::Impl::loadSettings()
     QSettings s;
     const std::string q0 = AppState::get().prefs.previewQuality;
     view->quality = q0 == "draft" ? PreviewQuality::Draft : q0 == "good" ? PreviewQuality::Good : q0 == "best" ? PreviewQuality::Best : PreviewQuality::Preview;
-    const int sv = s.value("preview/size", (int)PreviewSize::Full).toInt();
+    const int sv = s.value("preview/size", (int)PreviewSize::Auto).toInt();
     if (sv >= 0 && sv <= 3) view->size = (PreviewSize)sv;
     view->safeAreas = s.value("preview/safeAreas", false).toBool();
     view->grid = s.value("preview/grid", false).toBool();
     view->showOverlays = s.value("preview/fxOverlays", true).toBool();
     view->scaleToFit = s.value("preview/scaleToFit", true).toBool();
     view->simulateAspect = s.value("preview/simulateAspect", false).toBool();
-    view->adjustForPlayback = s.value("preview/adjustForPlayback", false).toBool();
+    view->adjustForPlayback = s.value("preview/adjustForPlayback", true).toBool();
     view->splitClipboard = s.value("preview/splitClipboard", false).toBool();
     const QRectF area = s.value("preview/splitArea", QRectF(0, 0, 0.5, 1)).toRectF();
     if (area.width() > 0.005 && area.height() > 0.005 && QRectF(0, 0, 1, 1).contains(area)) view->splitArea = area;
