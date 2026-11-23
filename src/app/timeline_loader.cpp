@@ -115,20 +115,21 @@ std::shared_ptr<const WaveDetail> Loader::detail(int user, const MediaItem& m, i
     if (first < 0) count = 0;
     if (rate <= 0 || frames <= 0) return nullptr;
     const std::tuple<int, int, int> key(user, first, count);
-    auto it = details_.find(key);
-    if (it != details_.end()) {
-        const WaveDetail& d = *it->second;
-        if (d.rate == rate && start >= d.start && start + frames <= d.start + (int64_t)d.l.size()) return it->second;
+    for (auto it = details_.begin(); it != details_.end(); ++it) {
+        const WaveDetail& d = *it->detail;
+        if (it->key == key && d.rate == rate && start >= d.start && start + frames <= d.start + (int64_t)d.l.size()) {
+            details_.splice(details_.begin(), details_, it);
+            return details_.front().detail;
+        }
     }
-    // asked for already (and not read yet): wait for it, if it covers this
-    auto a = detailAsked_.find(key);
-    if (a != detailAsked_.end() && std::get<0>(a->second) == rate && start >= std::get<1>(a->second) &&
-        start + frames <= std::get<1>(a->second) + std::get<2>(a->second))
-        return nullptr;
+    // asked for already (and not read yet): wait for it
+    std::vector<std::tuple<int, int64_t, int>>& asked = detailAsked_[key];
+    for (const auto& a : asked)
+        if (std::get<0>(a) == rate && start >= std::get<1>(a) && start + frames <= std::get<1>(a) + std::get<2>(a)) return nullptr;
     // half as much again either side, so scrolling a little needs no new read
     const int64_t from = std::max<int64_t>(0, start - frames / 2);
     const int n = (int)std::min<int64_t>(frames * 2LL + 2, 64LL * 1024 * 1024);
-    detailAsked_[key] = std::make_tuple(rate, from, n);
+    asked.emplace_back(rate, from, n);
     Shared::DetailJob j;
     j.key = key;
     j.media = lightCopy(m);
@@ -139,12 +140,19 @@ std::shared_ptr<const WaveDetail> Loader::detail(int user, const MediaItem& m, i
     j.rate = rate;
     j.start = from;
     j.frames = n;
+    std::vector<Shared::DetailJob> dropped;
     {
         std::lock_guard<std::mutex> lk(s_->mutex);
-        for (auto d = s_->details.begin(); d != s_->details.end();)
-            if (d->key == key) d = s_->details.erase(d);
-            else ++d;
         s_->details.push_back(std::move(j));
+        // newest first: what was asked for longest ago is likely scrolled away
+        while (s_->details.size() > 256) {
+            dropped.push_back(std::move(s_->details.front()));
+            s_->details.pop_front();
+        }
+    }
+    for (const Shared::DetailJob& d : dropped) {
+        std::vector<std::tuple<int, int64_t, int>>& v = detailAsked_[d.key];
+        v.erase(std::remove(v.begin(), v.end(), std::make_tuple(d.rate, d.start, d.frames)), v.end());
     }
     s_->cv.notify_one();
     return nullptr;
@@ -158,9 +166,16 @@ bool Loader::takeDetails()
         got.swap(s_->detailsDone);
     }
     for (auto& g : got) {
-        auto a = detailAsked_.find(g.first);
-        if (a != detailAsked_.end() && std::get<0>(a->second) == g.second->rate && std::get<1>(a->second) == g.second->start) detailAsked_.erase(a);
-        details_[g.first] = std::move(g.second);
+        const WaveDetail& d = *g.second;
+        std::vector<std::tuple<int, int64_t, int>>& v = detailAsked_[g.first];
+        v.erase(std::remove(v.begin(), v.end(), std::make_tuple(d.rate, d.start, (int)d.l.size())), v.end());
+        detailBytes_ += d.l.size() * 2 * sizeof(float);
+        details_.push_front(KeptDetail{g.first, std::move(g.second)});
+    }
+    // at most 256 MB of samples kept, the least recently drawn going first
+    while (!details_.empty() && (detailBytes_ > 256u * 1024 * 1024 || details_.size() > 512)) {
+        detailBytes_ -= details_.back().detail->l.size() * 2 * sizeof(float);
+        details_.pop_back();
     }
     return !got.empty();
 }
@@ -206,8 +221,11 @@ void Loader::forgetMedia(int user, const std::string& path)
         else ++it;
     }
     for (auto it = details_.begin(); it != details_.end();) {
-        if (std::get<0>(it->first) == user) it = details_.erase(it);
-        else ++it;
+        if (std::get<0>(it->key) == user) {
+            detailBytes_ -= it->detail->l.size() * 2 * sizeof(float);
+            it = details_.erase(it);
+        } else
+            ++it;
     }
     for (auto it = detailAsked_.begin(); it != detailAsked_.end();) {
         if (std::get<0>(it->first) == user) it = detailAsked_.erase(it);

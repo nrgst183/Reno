@@ -8,6 +8,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -168,8 +169,12 @@ private:
     std::set<ThumbKey> pending_;
     std::set<int> dropped_;
     std::map<std::tuple<int, int, int>, std::shared_ptr<Peaks>> peaks_;
-    std::map<std::tuple<int, int, int>, std::shared_ptr<const WaveDetail>> details_;
-    std::map<std::tuple<int, int, int>, std::tuple<int, int64_t, int>> detailAsked_;     // rate, start, frames
+    // the stretches read, most recently used first (many events may show different parts of one file: each keeps its
+    // own), and the ones asked for and not read yet (rate, start, frames)
+    struct KeptDetail { std::tuple<int, int, int> key; std::shared_ptr<const WaveDetail> detail; };
+    std::list<KeptDetail> details_;
+    size_t detailBytes_ = 0;
+    std::map<std::tuple<int, int, int>, std::vector<std::tuple<int, int64_t, int>>> detailAsked_;
 };
 
 }  // namespace tl
