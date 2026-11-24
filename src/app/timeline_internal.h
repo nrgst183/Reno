@@ -778,7 +778,9 @@ struct TimelineWidget::Impl {
 
     // VEGAS zooms out no further than the whole project (its scroll box then fills the bar): as far as zoom to fit goes
     double minPps() const { const double e = extent(); return viewW() / ((e > 0 ? std::max(1.0, e) : 30.0) * 1.04); }
-    double maxPps() const { return std::max(minPps(), viewW() / (4.0 * frame())); }
+    // Zoomed in as far as VEGAS 18 goes: about 57,000 pixels a second whatever the frame rate (measured in VEGAS: frame
+    // lines 406 pixels apart in a 140 fps project), about a pixel per sample of 48 kHz sound.
+    double maxPps() const { return std::max(minPps(), 56840.0); }
 
     void updateBars();
 

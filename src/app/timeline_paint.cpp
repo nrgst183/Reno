@@ -282,7 +282,7 @@ void TimelineWidget::Impl::overlaysChanged()
     const QRect lanes = lanesRect();
     if (was.snap != now.snap)
         for (double t : {was.snap, now.snap})
-            if (t >= 0) r |= QRect((int)std::floor(xAtF(clampd(t, -1e7, 1e7))) - 1, lanes.top(), 3, lanes.height()).intersected(lanes);
+            if (t >= 0) r |= QRect((int)std::floor(clampd(xAtF(t), -1e7, 1e7)) - 1, lanes.top(), 3, lanes.height()).intersected(lanes);
     if (was.label != now.label) r |= QRegion(was.label) | now.label;
     if (was.band != now.band) r |= QRegion(was.band) | now.band;
     if (was.moveBox != now.moveBox) r |= QRegion(was.moveBox) | now.moveBox;
@@ -509,7 +509,8 @@ void TimelineWidget::Impl::changed(int changes)
             // Only what looks different: the cursor's strips when it is on another pixel, the time display when its
             // text is another (playing moves the cursor about twice a frame, and zoomed out it crosses a pixel far
             // less often than that).
-            const int was = (int)std::floor(xAtF(paintedCursor)), now = (int)std::floor(xAtF(app.cursor()));
+            // (zoomed far in, a cursor off screen can be further away than an int reaches)
+            const int was = (int)std::floor(clampd(xAtF(paintedCursor), -1e7, 1e7)), now = (int)std::floor(clampd(xAtF(app.cursor()), -1e7, 1e7));
             if (was != now) {
                 part |= QRect(was - 8, 0, 17, h);
                 part |= QRect(now - 8, 0, 17, h);
