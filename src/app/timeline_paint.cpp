@@ -1029,17 +1029,18 @@ void TimelineWidget::Impl::drawWaveRow(QPainter& p, const Event& e, const MediaI
         *out = m0;
         return true;
     };
-    // Zoomed in past the peaks (a stretch of them wider than a pixel): the sound itself, as VEGAS draws it, each column
-    // from the lowest to the highest sample it covers and the sound at its two edges, so the columns join into one line
-    // through the samples. Until the loader has read them the peaks are drawn.
+    // Zoomed in to a few samples a pixel: the sound itself, as VEGAS draws it there, each column from the lowest to the
+    // highest sample it covers and the sound at its two edges, so the columns join into one line through the samples.
+    // (Less far in VEGAS still draws the peaks, filled from the middle line, even where a peak is several pixels wide.)
+    // Until the loader has read them the peaks are drawn.
     std::shared_ptr<const WaveDetail> detail;
     if (mip == 0 && perPx < 1.0 && x1 >= x0) {
         double a = 0, b = 0;
         const bool ha = mediaAt(x0, &a), hb = mediaAt(x1, &b);
         const double from = std::min(a, b), to = std::max(a, b) + span;
         // (a looping event whose columns go round the end of the media in view keeps the peaks)
-        if (ha && hb && to - from <= (x1 - x0 + 2) * span * 1.001 + 1e-9) {
-            const int rate = m.info.sampleRate > 0 ? std::min(m.info.sampleRate, 192000) : 48000;
+        const int rate = m.info.sampleRate > 0 ? std::min(m.info.sampleRate, 192000) : 48000;
+        if (ha && hb && span * rate <= 4.0 && to - from <= (x1 - x0 + 2) * span * 1.001 + 1e-9) {
             const int64_t s0 = std::max<int64_t>(0, (int64_t)std::floor(from * rate) - 2);
             const int64_t s1 = (int64_t)std::ceil(to * rate) + 2;
             if (s1 - s0 < 8 * 1024 * 1024) detail = loader->detail(key, m, first, nch, rate, s0, (int)(s1 - s0));
@@ -1942,6 +1943,19 @@ void TimelineWidget::Impl::drawEdgeSelection(QPainter& p, const Event& e, const 
     for (int side : sides) drawEdgeBracket(p, r, v, side);
 }
 
+// An event edge the mouse is near (or dropped media snaps to): VEGAS's light blue glow just inside the edge, brightest
+// at the edge itself.
+void TimelineWidget::Impl::drawEdgeGlow(QPainter& p, const QRectF& r, const QRectF& v, int side)
+{
+    p.setRenderHint(QPainter::Antialiasing, false);
+    const double edge = side < 0 ? std::floor(r.left()) : std::floor(r.right());
+    static const QColor shades[] = {QColor(150, 215, 255), QColor(90, 175, 235, 220), QColor(70, 150, 220, 130), QColor(60, 130, 200, 60)};
+    for (int k = 0; k < 4; ++k) {
+        const double x = side < 0 ? edge + k : edge - 1 - k;
+        p.fillRect(QRectF(x, v.top(), 1.0, v.height()), shades[k]);
+    }
+}
+
 void TimelineWidget::Impl::drawEdgeBracket(QPainter& p, const QRectF& r, const QRectF& v, int side)
 {
     p.setRenderHint(QPainter::Antialiasing, false);
@@ -1960,6 +1974,7 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
     const bool linked = e.syncLink && app.selection().count(e.syncLink) != 0;
     bool dropEdge = false;
     for (const std::pair<uint64_t, int>& d : drop.snapEdges) dropEdge = dropEdge || d.first == e.id;
+    for (const std::pair<uint64_t, int>& d : hoverEdges) dropEdge = dropEdge || d.first == e.id;
     bool offStart = false, offEnd = false;
     if (opt.showUnquantized) {
         const Project& qp = app.project();
@@ -1991,7 +2006,9 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
     if (e.locked && v.width() > 16) drawLock(p, r, v);
     if (edgeSel.event && (edgeSel.event == e.id || (edgeSel.expanded && edgeSel.other == e.id))) drawEdgeSelection(p, e, r, v);
     for (const std::pair<uint64_t, int>& d : drop.snapEdges)
-        if (d.first == e.id) drawEdgeBracket(p, r, v, d.second);
+        if (d.first == e.id) drawEdgeGlow(p, r, v, d.second);
+    for (const std::pair<uint64_t, int>& d : hoverEdges)
+        if (d.first == e.id) drawEdgeGlow(p, r, v, d.second);
     p.restore();
 }
 

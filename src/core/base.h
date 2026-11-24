@@ -125,12 +125,6 @@ int processorLimit();
 int processorCount();
 
 // ---------------------------------------------------------------- audio
-struct AudioBuf {                    // stereo, 32-bit float, not interleaved
-    std::vector<float> ch[2];
-    int frames() const { return (int)ch[0].size(); }
-    void resize(int n) { ch[0].assign((size_t)n, 0.f); ch[1].assign((size_t)n, 0.f); }
-};
-
 inline double dbToGain(double db) { return db <= -90.0 ? 0.0 : std::pow(10.0, db / 20.0); }
 
 }  // namespace reno

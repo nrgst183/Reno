@@ -338,7 +338,7 @@ struct DropState {
     bool onHeader = false;
     std::string data;
     bool takes = false;
-    // the event edges the dropped media snapped to (event, -1 start / 1 end), marked as an edge clicked is
+    // the event edges the dropped media snapped to (event, -1 start / 1 end), lit as an edge the mouse is near
     std::vector<std::pair<uint64_t, int>> snapEdges;
 };
 
@@ -1069,6 +1069,11 @@ struct TimelineWidget::Impl {
     void drawLock(QPainter& p, const QRectF& r, const QRectF& v);
     void drawEdgeSelection(QPainter& p, const Event& e, const QRectF& r, const QRectF& v);
     void drawEdgeBracket(QPainter& p, const QRectF& r, const QRectF& v, int side);
+    void drawEdgeGlow(QPainter& p, const QRectF& r, const QRectF& v, int side);
+    // the event edges lit while the mouse is near them over empty timeline (event, -1 start / 1 end; updateHoverEdges)
+    std::vector<std::pair<uint64_t, int>> hoverEdges;
+    void updateHoverEdges(const QPointF& pos, const Hit& h, Qt::KeyboardModifiers mods);
+    void setHoverEdges(std::vector<std::pair<uint64_t, int>> now);
     void drawEventExtras(QPainter& p, const Event& e, const QRectF& r, const QRectF& v, bool audioEvent);
     static QColor markerColor(const Project::Marker& m);
     void drawCrossFade(QPainter& p, const Row& row, const Event& a, const Event& b, const QRect& c);
@@ -1383,7 +1388,6 @@ struct TimelineWidget::Impl {
     void finishMove(const DragState& was);
     void commitVoidMove(const DragState& was);
     void finishEdgeDrag(const DragState& was);
-    void edgeOfClick(const DragState& was);
     void finishZoomRange(const DragState& was, const QPointF& pos);
     void clickedButton(const DragState& was, const QPointF& pos);
     QRegion dragVisualsOf(const DragState& d) const;

@@ -509,6 +509,7 @@ void TimelineWidget::Impl::press(QMouseEvent* ev)
 {
     const QPointF pos = ev->position();
     q->setFocus(Qt::MouseFocusReason);
+    setHoverEdges({});      // (lit again by the next move without a button held)
     if (pressRight(ev, pos)) return;
 
     if (ev->button() == Qt::LeftButton && drag.right && !drag.started && (ev->buttons() & Qt::RightButton) && opt.tool == EditTool::Normal)

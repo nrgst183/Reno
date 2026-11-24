@@ -729,6 +729,36 @@ void TimelineWidget::Impl::move(QMouseEvent* ev)
         hover = h;
     }
     setPointer(h, ev->modifiers());
+    updateHoverEdges(pos, h, ev->modifiers());
+}
+
+// VEGAS: with the mouse over empty timeline (on any track, or below them) within the snap distance of an event's start
+// or end, that edge lights up on every event that starts or ends there, and a click there puts the cursor on it (the
+// click snaps as any other). Only while snapping is on, with the tools that place the cursor.
+void TimelineWidget::Impl::updateHoverEdges(const QPointF& pos, const Hit& h, Qt::KeyboardModifiers mods)
+{
+    std::vector<std::pair<uint64_t, int>> now;
+    const bool empty = h.part == Part::Lane || (h.part == Part::None && lanesRect().contains(pos.toPoint()));
+    const bool tool = opt.tool != EditTool::Envelope && opt.tool != EditTool::Selection && opt.tool != EditTool::Zoom;
+    if (empty && tool && snapOn(mods)) {
+        double t = 0;
+        if (nearest(snapTargets(std::set<uint64_t>(), false), timeAtF(pos.x()), &t))
+            for (const Track& tr : app.project().tracks)
+                for (const Event& e : tr.events)
+                    for (int side : {-1, 1})
+                        if (std::fabs((side < 0 ? e.start : e.end()) - t) < 1e-9) now.emplace_back(e.id, side);
+    }
+    setHoverEdges(std::move(now));
+}
+
+void TimelineWidget::Impl::setHoverEdges(std::vector<std::pair<uint64_t, int>> now)
+{
+    if (now == hoverEdges) return;
+    QRegion r;
+    for (const auto& x : hoverEdges) r |= eventArea(x.first);
+    for (const auto& x : now) r |= eventArea(x.first);
+    hoverEdges = std::move(now);
+    if (!r.isEmpty()) q->update(r);
 }
 
 void TimelineWidget::Impl::setPointer(const Hit& h, Qt::KeyboardModifiers mods)
@@ -876,45 +906,6 @@ void TimelineWidget::Impl::finishEdgeDrag(const DragState& was)
             moversTracksAndIds(app.project(), was.movers, tracks, ids);
             rememberEdit(tracks, was.movers[0].end(), e->length - was.movers[0].length, ids);
         }
-}
-
-// A click (no drag) with an event tool that left the cursor on an event's edge selects that edge, as in VEGAS: the
-// edge gets the red bracket and the keypad trims it. A click on an edge's trim handle puts the cursor on the edge; a
-// click on an event or empty track near one finds the cursor there already when it snapped to it. Where two events
-// meet, the edge is the one on the side clicked.
-void TimelineWidget::Impl::edgeOfClick(const DragState& was)
-{
-    if (opt.tool == EditTool::Envelope || opt.tool == EditTool::Selection || opt.tool == EditTool::Zoom) return;
-    const Hit& h = was.hit;
-    if ((was.kind == Drag::TrimLeft || was.kind == Drag::TrimRight) && h.event) {
-        const Event* e = app.project().findEvent(h.event);
-        if (!e) return;
-        edgeSel = EdgeSel();
-        edgeSel.event = e->id;
-        edgeSel.side = was.kind == Drag::TrimLeft ? -1 : 1;
-        userCursor(edgeSel.side < 0 ? e->start : e->end());
-        return;
-    }
-    const bool lane = h.part == Part::Lane || h.part == Part::EventBody;
-    if (!lane || !h.track || (was.kind != Drag::Move && was.kind != Drag::RubberBand && was.kind != Drag::LoopRange)) return;
-    const Track* t = findTrackConst(h.track);
-    if (!t) return;
-    const double at = app.cursor(), eps = 1e-9;
-    const bool before = was.pressTime < at;
-    uint64_t id = 0;
-    int side = 0;
-    for (const Event& e : t->events)
-        for (int s : {-1, 1}) {
-            if (std::fabs((s < 0 ? e.start : e.end()) - at) > eps) continue;
-            // the event clicked wins; then the event on the side of the edge that was clicked (its end when the click
-            // was before the edge)
-            const bool better = !id || (e.id == h.event && id != h.event) || (id != h.event && (s > 0) == before);
-            if (better) { id = e.id; side = s; }
-        }
-    if (!id) return;
-    edgeSel = EdgeSel();
-    edgeSel.event = id;
-    edgeSel.side = side;
 }
 
 // The zoom tool let go at 'pos': the dragged area fills the view; a click without a drag zooms to fit.
@@ -1088,7 +1079,6 @@ void TimelineWidget::Impl::release(QMouseEvent* ev)
         break;
     default: break;
     }
-    if (!was.started) edgeOfClick(was);
     if (was.started && was.kind != Drag::Scrub) app.status(std::string());
     if (was.kind == Drag::None) clickedButton(was, ev->position());
     QRegion gone = dragVisualsOf(was);

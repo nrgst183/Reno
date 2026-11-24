@@ -923,6 +923,7 @@ void TimelineWidget::dropEvent(QDropEvent* e) { d->dropped(e); }
 
 void TimelineWidget::leaveEvent(QEvent*)
 {
+    d->setHoverEdges({});
     if (d->hover.part != Part::None) {
         update(d->hotRegion(d->hover));
         d->hover = Hit();
