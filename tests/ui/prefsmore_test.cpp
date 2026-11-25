@@ -168,7 +168,7 @@ int main(int argc, char** argv)
         check(vprefs::on("prefs/useAllCores") && vprefs::number("prefs/decoderThreads") == 0 && vprefs::number("prefs/audioCacheMb") == 256 &&
                   vprefs::number("prefs/thumbCacheMb") == 512 && vprefs::number("prefs/peakCacheMb") == 512 && vprefs::text("prefs/thumbQuality") == "normal" &&
                   !vprefs::on("prefs/autoProxyLongGop") && vprefs::text("prefs/proxyFolder").isEmpty() && vprefs::text("prefs/peakFolder").isEmpty() &&
-                  vprefs::number("prefs/snapDistance") == 8 && !vprefs::on("prefs/scrubAudio") && vprefs::number("prefs/defaultFadeInMs") == 0 &&
+                  vprefs::number("prefs/snapDistance") == 7 && !vprefs::on("prefs/scrubAudio") && vprefs::number("prefs/defaultFadeInMs") == 0 &&
                   vprefs::number("prefs/uiScale") == 100 && vprefs::number("prefs/timelineFontPt") == 0 && vprefs::on("prefs/confirmExit") &&
                   !vprefs::on("prefs/confirmRemoveMedia") && vprefs::on("prefs/scanAtStartup") && app.prefs.autoSaveKeep == 1 && near(vprefs::real("prefs/playbackBuffer"), 0.05),
               "the new settings start as Reno behaved before they could be set");
@@ -430,15 +430,15 @@ int main(int argc, char** argv)
         for (const Track& t : app.project().tracks)
             for (const Event& e : t.events)
                 if (t.type == TrackType::Video) edge = e.start;
-        const QPoint left(tl->xAt(edge) - 7, tl->trackRect(track).top() + 40);
+        const QPoint left(tl->xAt(edge) - 6, tl->trackRect(track).top() + 40);
         app.setCursor(0);
         uitest::mouseClick(tl, left);
-        check(near(app.cursor(), edge), "snap distance: 7 pixels from an edge snaps with the default 8", num(app.cursor()));
+        check(near(app.cursor(), edge), "snap distance: 6 pixels from an edge snaps with the default 7", num(app.cursor()));
         prefs(*w, [](QDialog* d) { setInt(d, "snapDistance", 3); });
         app.setCursor(0);
         uitest::mouseClick(tl, left);
         check(!near(app.cursor(), edge), "snap distance: ... but not with 3", num(app.cursor()));
-        prefs(*w, [](QDialog* d) { setInt(d, "snapDistance", 8); });
+        prefs(*w, [](QDialog* d) { setInt(d, "snapDistance", 7); });
         uitest::buildDemoProject();
     }
 

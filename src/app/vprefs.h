@@ -174,7 +174,7 @@ inline const std::map<QString, QVariant>& defaults()
         {"prefs/newVideoTrackHeight", 0},
         {"prefs/defaultFadeInMs", 0},               // fades that events get when they are put on the timeline
         {"prefs/defaultFadeOutMs", 0},
-        {"prefs/snapDistance", 8},                  // how near (pixels) something must come to snap
+        {"prefs/snapDistance", 7},                  // how near (pixels) something must come to snap (VEGAS 18's "Snap Width (in pixels)", cxSnapWidth: 7)
         {"prefs/scrubAudio", false},                // dragging the cursor on the ruler plays a short piece of sound
         {"prefs/scrubAudioMs", 100},                // ... this long
         {"prefs/scrubVolume", 100},                 // ... and this loud (per cent of what playing is)

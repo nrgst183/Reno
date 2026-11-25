@@ -228,6 +228,12 @@ void TimelineWidget::Impl::pressLane(const Hit& h, Qt::KeyboardModifiers mods)
         drag.kind = Drag::RubberBand;
         return;
     }
+    // VEGAS: over empty timeline the cursor line itself can be taken and dragged (the pointer shows it: setPointer); the
+    // selection and the time selection stay as they are
+    if (onCursorLine(drag.pressPos, h) && !(mods & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier))) {
+        beginScrub(drag.pressPos, mods);
+        return;
+    }
     if (h.part == Part::EventBody && opt.tool == EditTool::Shuffle && !(mods & (Qt::AltModifier | Qt::ControlModifier))) {
         if (!app.selection().count(h.event)) selectGroupOf(h.event);
         drag.kind = Drag::Shuffle;
@@ -509,7 +515,7 @@ void TimelineWidget::Impl::press(QMouseEvent* ev)
 {
     const QPointF pos = ev->position();
     q->setFocus(Qt::MouseFocusReason);
-    setHoverEdges({});      // (lit again by the next move without a button held)
+    setLitEdges({});
     if (pressRight(ev, pos)) return;
 
     if (ev->button() == Qt::LeftButton && drag.right && !drag.started && (ev->buttons() & Qt::RightButton) && opt.tool == EditTool::Normal)

@@ -394,6 +394,9 @@ double TimelineWidget::Impl::flashLevel(uint64_t id) const
 
 void TimelineWidget::Impl::changed(int changes)
 {
+    if (!litEdges.empty() && (changes & (kCursor | kProject)) && drag.kind == Drag::None && !releasing &&
+        (std::fabs(app.cursor() - litTime) > 1e-9 || (changes & kProject)))
+        lightEdgesAt(std::fabs(app.cursor() - litTime) > 1e-9 ? -1.0 : litTime);
     if (app.loopEnd > app.loopStart) {
         lastLoopA = app.loopStart;
         lastLoopB = app.loopEnd;
@@ -2252,7 +2255,7 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         p.setPen(kDimText);
         p.drawText(lanesRect().adjusted(20, 20, -20, -20), Qt::AlignCenter, "Drag media here to start, or right-click to insert a track.");
     }
-    drawEdgeGlows(p, hoverEdges);
+    drawEdgeGlows(p, litEdges);
     drawEdgeGlows(p, drop.snapEdges);
     paintDrop(p, c, tracksBottom);
     paintVoidGhosts(p, c);

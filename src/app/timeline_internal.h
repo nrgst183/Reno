@@ -338,7 +338,7 @@ struct DropState {
     bool onHeader = false;
     std::string data;
     bool takes = false;
-    // the event edges the dropped media snapped to (event, -1 start / 1 end), lit as an edge the mouse is near
+    // the event edges the dropped media snapped to (event, -1 start / 1 end), lit as a dragged cursor's are
     std::vector<std::pair<uint64_t, int>> snapEdges;
 };
 
@@ -1072,10 +1072,17 @@ struct TimelineWidget::Impl {
     static constexpr int kGlowTail = 24;
     QRect edgeGlowArea(const std::vector<std::pair<uint64_t, int>>& edges) const;
     void drawEdgeGlows(QPainter& p, const std::vector<std::pair<uint64_t, int>>& edges);
-    // the event edges lit while the mouse is near them over empty timeline (event, -1 start / 1 end; updateHoverEdges)
-    std::vector<std::pair<uint64_t, int>> hoverEdges;
-    void updateHoverEdges(const QPointF& pos, const Hit& h, Qt::KeyboardModifiers mods);
-    void setHoverEdges(std::vector<std::pair<uint64_t, int>> now);
+    // the event edges lit while a dragged cursor or time selection snaps to them (event, -1 start / 1 end; lightEdgesAt)
+    std::vector<std::pair<uint64_t, int>> litEdges;
+    double litTime = -1;
+    void lightEdgesAt(double t);
+    void setLitEdges(std::vector<std::pair<uint64_t, int>> now);
+    // Whether 'pos' is on the cursor line (within 3 pixels) over empty timeline, with the normal tool: there the line can
+    // be dragged, as in VEGAS.
+    bool onCursorLine(const QPointF& pos, const Hit& h) const
+    {
+        return opt.tool == EditTool::Normal && h.part == Part::Lane && std::fabs(pos.x() - xAtF(app.cursor())) <= 3.0;
+    }
     void drawEventExtras(QPainter& p, const Event& e, const QRectF& r, const QRectF& v, bool audioEvent);
     static QColor markerColor(const Project::Marker& m);
     void drawCrossFade(QPainter& p, const Row& row, const Event& a, const Event& b, const QRect& c);
