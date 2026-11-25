@@ -1052,12 +1052,15 @@ void TimelineWidget::Impl::drawEnvelopeLabel(QPainter& p)
 {
     if (envLabel.isEmpty()) return;
     const QRectF box = envLabelBox();
+    // a Windows tool tip as VEGAS shows it: white, a near-black line round it, the text from the left
     p.save();
-    p.setPen(QColor(20, 20, 20));
-    p.setBrush(QColor(255, 255, 225));
-    p.drawRect(box);
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.setPen(QColor(24, 24, 24));
+    p.setBrush(QColor(255, 255, 255));
+    p.drawRect(box.adjusted(0, 0, -1, -1));
     p.setFont(smallFont);
-    p.drawText(box, Qt::AlignCenter, envLabel);
+    p.setPen(QColor(0, 0, 0));
+    p.drawText(box.adjusted(4, 0, -2, 0), Qt::AlignLeft | Qt::AlignVCenter, envLabel);
     p.restore();
 }
 

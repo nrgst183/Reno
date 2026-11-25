@@ -754,9 +754,7 @@ void TimelineWidget::Impl::updateHoverEdges(const QPointF& pos, const Hit& h, Qt
 void TimelineWidget::Impl::setHoverEdges(std::vector<std::pair<uint64_t, int>> now)
 {
     if (now == hoverEdges) return;
-    QRegion r;
-    for (const auto& x : hoverEdges) r |= eventArea(x.first);
-    for (const auto& x : now) r |= eventArea(x.first);
+    const QRegion r = QRegion(edgeGlowArea(hoverEdges)) | edgeGlowArea(now);
     hoverEdges = std::move(now);
     if (!r.isEmpty()) q->update(r);
 }

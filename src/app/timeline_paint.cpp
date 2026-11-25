@@ -241,10 +241,13 @@ uint64_t TimelineWidget::Impl::fxErrorSignature() const
 
 QRectF TimelineWidget::Impl::envLabelBox() const
 {
-    const double w = smallFm.horizontalAdvance(envLabel) + 10.0, h = smallFm.height() + 4.0;
-    QRectF box(envLabelAt.x() + 10.0, envLabelAt.y() - h - 6.0, w, h);
-    if (box.right() > lanesRight() - 2) box.moveRight(envLabelAt.x() - 10.0);
-    if (box.top() < kTopH + 2) box.moveTop(envLabelAt.y() + 8.0);
+    // where VEGAS 18 puts its tool tip: a pixel right of the pointer and 19 below it (under the pointer's picture), kept
+    // inside the timeline (above the pointer when there is no room below)
+    const double w = smallFm.horizontalAdvance(envLabel) + 8.0, h = smallFm.height() + 4.0;
+    QRectF box(envLabelAt.x() + 1.0, envLabelAt.y() + 19.0, w, h);
+    if (box.right() > lanesRight() - 2) box.moveRight(lanesRight() - 2);
+    if (box.left() < headerW + 2) box.moveLeft(headerW + 2);
+    if (box.bottom() > q->height() - 2) box.moveBottom(envLabelAt.y() - 4.0);
     return box;
 }
 
@@ -755,8 +758,8 @@ int64_t TimelineWidget::Impl::rulerStepNow(double pps) const
 }
 
 // A straight fade line from (xa, ya) to (xb, yb), drawn only between clipL and clipR (events can reach a very long way
-// off screen). With 'shade', the space between the line and the level 'shadeTo' is darkened.
-void TimelineWidget::Impl::drawRamp(QPainter& p, double xa, double ya, double xb, double yb, double clipL, double clipR, bool shade, double shadeTo)
+// off screen).
+void TimelineWidget::Impl::drawRamp(QPainter& p, double xa, double ya, double xb, double yb, double clipL, double clipR)
 {
     if (xb - xa < 0.5) {
         if (xa >= clipL && xa <= clipR) p.drawLine(QPointF(xa, ya), QPointF(xa, yb));
@@ -765,26 +768,16 @@ void TimelineWidget::Impl::drawRamp(QPainter& p, double xa, double ya, double xb
     const double la = std::max(xa, clipL), lb = std::min(xb, clipR);
     if (lb <= la) return;
     const double y0 = ya + (la - xa) / (xb - xa) * (yb - ya), y1 = ya + (lb - xa) / (xb - xa) * (yb - ya);
-    if (shade) {
-        QPolygonF poly;
-        poly << QPointF(la, shadeTo) << QPointF(lb, shadeTo) << QPointF(lb, y1) << QPointF(la, y0);
-        const QPen pen = p.pen();
-        p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0, 0, 0, 112));
-        p.drawPolygon(poly);
-        p.setBrush(Qt::NoBrush);
-        p.setPen(pen);
-    }
     p.drawLine(QPointF(la, y0), QPointF(lb, y1));
 }
 
 // A fade's line from xa to xb with its curve (rising from 'bottom' to 'top' for a fade-in, falling for a fade-out),
-// drawn only between clipL and clipR; with 'shade' the part faded away is darkened.
-void TimelineWidget::Impl::drawFade(QPainter& p, double xa, double xb, double top, double bottom, int curve, bool in, double clipL, double clipR, bool shade)
+// drawn only between clipL and clipR.
+void TimelineWidget::Impl::drawFade(QPainter& p, double xa, double xb, double top, double bottom, int curve, bool in, double clipL, double clipR)
 {
     if (curve == CurveLinear || xb - xa < 0.5) {
-        if (in) drawRamp(p, xa, bottom, xb, top, clipL, clipR, shade, top);
-        else drawRamp(p, xa, top, xb, bottom, clipL, clipR, shade, top);
+        if (in) drawRamp(p, xa, bottom, xb, top, clipL, clipR);
+        else drawRamp(p, xa, top, xb, bottom, clipL, clipR);
         return;
     }
     const double la = std::max(xa, clipL), lb = std::min(xb, clipR);
@@ -795,16 +788,6 @@ void TimelineWidget::Impl::drawFade(QPainter& p, double xa, double xb, double to
         const double level = in ? curveShape(curve, u) : 1.0 - curveShape(curve, u);
         line << QPointF(x, bottom - level * (bottom - top));
         if (x >= lb) break;
-    }
-    if (shade) {
-        QPolygonF poly = line;
-        poly << QPointF(lb, top) << QPointF(la, top);
-        const QPen pen = p.pen();
-        p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0, 0, 0, 112));
-        p.drawPolygon(poly);
-        p.setBrush(Qt::NoBrush);
-        p.setPen(pen);
     }
     p.drawPolyline(line);
 }
@@ -1014,6 +997,14 @@ void TimelineWidget::Impl::drawWaveRow(QPainter& p, const Event& e, const MediaI
     const int64_t count = (int64_t)lv.lo.size(), ready = std::min(count, pk->ready(mip));
     if (ready <= 0) return;
 
+    // as VEGAS draws it, the waveform follows the event's fades (the level of the fade's line there)
+    auto fadeLevel = [&](double t) {
+        double g = 1.0;
+        if (e.fadeIn > 0 && t < e.start + e.fadeIn) g *= curveShape(e.fadeInCurve, clampd((t - e.start) / e.fadeIn, 0.0, 1.0));
+        if (e.fadeOut > 0 && t > e.end() - e.fadeOut)
+            g *= 1.0 - curveShape(e.fadeOutCurve, clampd((t - (e.end() - e.fadeOut)) / e.fadeOut, 0.0, 1.0));
+        return g;
+    };
     QVector<QLineF> lines;
     const int x0 = (int)std::ceil(std::max(content.left(), (double)c.left() - 1.0)), x1 = (int)std::floor(std::min(content.right(), (double)c.right() + 1.0));
     lines.reserve(std::max(0, x1 - x0 + 1));
@@ -1098,6 +1089,11 @@ void TimelineWidget::Impl::drawWaveRow(QPainter& p, const Event& e, const MediaI
             if (vlo > vhi) continue;
             lo = vlo;
             hi = vhi;
+        }
+        if (e.fadeIn > 0 || e.fadeOut > 0) {
+            const double g = fadeLevel(timeAtF(x + 0.5));
+            lo *= g;
+            hi *= g;
         }
         const double ya = std::max(content.top(), mid - hi * amp), yb = std::min(content.bottom(), mid - lo * amp);
         // peaks always take in the middle line; the sound itself is drawn where it is (one pixel at least)
@@ -1558,13 +1554,15 @@ void TimelineWidget::Impl::drawFadesAndGain(QPainter& p, const EventPaint& ev)
     const QRect& c = ev.c;
     const bool narrow = ev.narrow;
     p.setRenderHint(QPainter::Antialiasing, !narrow && !dense);
-    p.setPen(QPen(QColor(250, 250, 250, 220), narrow ? 1.0 : 1.2));
+    // VEGAS 18: a white line about two pixels thick, nothing under it darkened (an audio event's waveform follows the
+    // fade instead: drawWaveRow)
+    p.setPen(QPen(QColor(255, 255, 255), narrow ? 1.0 : 2.0));
     const bool gainLine = hasGainLine(r) && !narrow;
     const double gainY = gainLine ? gainLineY(r, e.gain) : r.top();
     if (e.fadeIn > 0)
-        drawFade(p, r.left(), std::min(xAtF(e.start + e.fadeIn), r.right()), gainY, r.bottom(), narrow ? CurveLinear : e.fadeInCurve, true, v.left(), v.right(), !narrow);
+        drawFade(p, r.left(), std::min(xAtF(e.start + e.fadeIn), r.right()), gainY, r.bottom(), narrow ? CurveLinear : e.fadeInCurve, true, v.left(), v.right());
     if (e.fadeOut > 0)
-        drawFade(p, std::max(xAtF(e.end() - e.fadeOut), r.left()), r.right(), gainY, r.bottom(), narrow ? CurveLinear : e.fadeOutCurve, false, v.left(), v.right(), !narrow);
+        drawFade(p, std::max(xAtF(e.end() - e.fadeOut), r.left()), r.right(), gainY, r.bottom(), narrow ? CurveLinear : e.fadeOutCurve, false, v.left(), v.right());
     if (!gainLine) return;
     // the gain line (audio: volume, video: opacity): across the event at the gain's height, with VEGAS's small cyan
     // handle in the middle (shown on a selected event, under the mouse, and wherever the gain is lowered)
@@ -1943,17 +1941,54 @@ void TimelineWidget::Impl::drawEdgeSelection(QPainter& p, const Event& e, const 
     for (int side : sides) drawEdgeBracket(p, r, v, side);
 }
 
-// An event edge the mouse is near (or dropped media snaps to): VEGAS's light blue glow just inside the edge, brightest
-// at the edge itself.
-void TimelineWidget::Impl::drawEdgeGlow(QPainter& p, const QRectF& r, const QRectF& v, int side)
+// The event edges the mouse is near (or dropped media snaps to), lit as VEGAS 18 lights them (measured from its
+// screen): a light blue glow over the edge line, five pixels into the event and six out of it, brightest a pixel or
+// two either side of the line, from the top of the highest of those events down past the lowest, fading out over the
+// kGlowTail pixels below it.
+QRect TimelineWidget::Impl::edgeGlowArea(const std::vector<std::pair<uint64_t, int>>& edges) const
 {
-    p.setRenderHint(QPainter::Antialiasing, false);
-    const double edge = side < 0 ? std::floor(r.left()) : std::floor(r.right());
-    static const QColor shades[] = {QColor(150, 215, 255), QColor(90, 175, 235, 220), QColor(70, 150, 220, 130), QColor(60, 130, 200, 60)};
-    for (int k = 0; k < 4; ++k) {
-        const double x = side < 0 ? edge + k : edge - 1 - k;
-        p.fillRect(QRectF(x, v.top(), 1.0, v.height()), shades[k]);
+    QRect out;
+    for (const auto& x : edges) {
+        const QRect a = eventArea(x.first);
+        if (!a.isEmpty()) out |= a.adjusted(-8, 0, 8, kGlowTail + 2);
     }
+    return out.intersected(lanesRect());
+}
+
+void TimelineWidget::Impl::drawEdgeGlows(QPainter& p, const std::vector<std::pair<uint64_t, int>>& edges)
+{
+    if (edges.empty()) return;
+    // one glow per pixel column and side, over all the events with an edge there
+    std::map<std::pair<int, int>, std::pair<double, double>> spans;
+    for (const auto& x : edges) {
+        const Track* tr = nullptr;
+        const Event* e = app.project().findEvent(x.first, &tr);
+        const Row* row = (e && tr) ? rowOf(tr->id) : nullptr;
+        if (!row || row->h <= 0) continue;
+        const QRectF r = eventRect(*row, *e);
+        const int col = x.second < 0 ? (int)std::floor(r.left()) : (int)std::floor(r.right()) - 1;
+        auto it = spans.emplace(std::make_pair(col, x.second), std::make_pair(r.top(), r.bottom())).first;
+        it->second.first = std::min(it->second.first, r.top());
+        it->second.second = std::max(it->second.second, r.bottom());
+    }
+    p.save();
+    p.setClipRect(lanesRect(), Qt::IntersectClip);
+    p.setRenderHint(QPainter::Antialiasing, false);
+    // strength by distance from the edge line, into the event (-5) to out of it (+6)
+    static const double strength[12] = {0.13, 0.19, 0.50, 0.57, 0.85, 0.60, 0.55, 0.85, 0.70, 0.55, 0.25, 0.12};
+    for (const auto& s : spans) {
+        const int col = s.first.first, side = s.first.second;
+        const double top = std::floor(s.second.first), bottom = std::ceil(s.second.second);
+        for (int k = 0; k < 12; ++k) {
+            const int off = k - 5;
+            const double x = col + (side > 0 ? off : -off);
+            const int a = (int)std::lround(strength[k] * 255.0);
+            p.fillRect(QRectF(x, top, 1.0, bottom - top), QColor(100, 172, 210, a));
+            for (int t = 0; t < kGlowTail; ++t)
+                p.fillRect(QRectF(x, bottom + t, 1.0, 1.0), QColor(100, 172, 210, (int)std::lround(a * (1.0 - (t + 0.5) / kGlowTail))));
+        }
+    }
+    p.restore();
 }
 
 void TimelineWidget::Impl::drawEdgeBracket(QPainter& p, const QRectF& r, const QRectF& v, int side)
@@ -1972,9 +2007,6 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
     // the snap offset flag: VEGAS 18 draws it on every audio event (a video event: while selected or moved off its start)
     const bool snapFlag = r.width() > 24.0 && (audioEvent || e.snapOffset > 0 || app.selection().count(e.id) != 0);
     const bool linked = e.syncLink && app.selection().count(e.syncLink) != 0;
-    bool dropEdge = false;
-    for (const std::pair<uint64_t, int>& d : drop.snapEdges) dropEdge = dropEdge || d.first == e.id;
-    for (const std::pair<uint64_t, int>& d : hoverEdges) dropEdge = dropEdge || d.first == e.id;
     bool offStart = false, offEnd = false;
     if (opt.showUnquantized) {
         const Project& qp = app.project();
@@ -1982,7 +2014,7 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
         offEnd = std::fabs(qp.quantize(e.end()) - e.end()) > 1e-5 / std::max(1.0, fps());
     }
     if (!offStart && !offEnd && !opt.showMediaMarkers && !(opt.showEventLength && v.width() > 40) && !(opt.showTakeInfo && v.width() > 50) && !(e.locked && v.width() > 16) &&
-        !(edgeSel.event && (edgeSel.event == e.id || (edgeSel.expanded && edgeSel.other == e.id))) && !snapFlag && !linked && !dropEdge)
+        !(edgeSel.event && (edgeSel.event == e.id || (edgeSel.expanded && edgeSel.other == e.id))) && !snapFlag && !linked)
         return;
     p.save();
     p.setClipRect(v, Qt::IntersectClip);
@@ -2005,10 +2037,6 @@ void TimelineWidget::Impl::drawEventExtras(QPainter& p, const Event& e, const QR
     }
     if (e.locked && v.width() > 16) drawLock(p, r, v);
     if (edgeSel.event && (edgeSel.event == e.id || (edgeSel.expanded && edgeSel.other == e.id))) drawEdgeSelection(p, e, r, v);
-    for (const std::pair<uint64_t, int>& d : drop.snapEdges)
-        if (d.first == e.id) drawEdgeGlow(p, r, v, d.second);
-    for (const std::pair<uint64_t, int>& d : hoverEdges)
-        if (d.first == e.id) drawEdgeGlow(p, r, v, d.second);
     p.restore();
 }
 
@@ -2036,14 +2064,14 @@ void TimelineWidget::Impl::drawCrossFade(QPainter& p, const Row& row, const Even
     p.setPen(QPen(QColor(36, 44, 255), 1.4));
     const bool narrow = x1 - x0 < 12.0;
     if (narrow) p.setRenderHint(QPainter::Antialiasing, false);
-    drawFade(p, x0, x1, rb.top() + 1, rb.bottom() - 1, narrow ? CurveLinear : (b.fadeInRecipCurve >= 0 ? b.fadeInRecipCurve : a.fadeOutCurve), false, l, rr, false);
+    drawFade(p, x0, x1, rb.top() + 1, rb.bottom() - 1, narrow ? CurveLinear : (b.fadeInRecipCurve >= 0 ? b.fadeInRecipCurve : a.fadeOutCurve), false, l, rr);
     // an event being dragged over its neighbour: VEGAS draws the new cross-fade's fade-in curve white until the button is let go
     bool live = false;
     if (drag.started && drag.kind == Drag::Move && !transition)
         for (const Mover& m : drag.movers)
             if (m.id == b.id) live = true;
     if (live) p.setPen(QPen(QColor(255, 255, 255), 1.6));
-    drawFade(p, x0, x1, rb.top() + 1, rb.bottom() - 1, narrow ? CurveLinear : b.fadeInCurve, true, l, rr, false);
+    drawFade(p, x0, x1, rb.top() + 1, rb.bottom() - 1, narrow ? CurveLinear : b.fadeInCurve, true, l, rr);
     {
         // the cross-fade's length in a small white box in the middle ("3.09" = 3 s 9 frames; Vegas 8 tutorial 23:44)
         const QString len = secondsFramesLabel(a.end() - b.start, fps());
@@ -2224,6 +2252,8 @@ void TimelineWidget::Impl::paintLanes(QPainter& p, const QRect& clip)
         p.setPen(kDimText);
         p.drawText(lanesRect().adjusted(20, 20, -20, -20), Qt::AlignCenter, "Drag media here to start, or right-click to insert a track.");
     }
+    drawEdgeGlows(p, hoverEdges);
+    drawEdgeGlows(p, drop.snapEdges);
     paintDrop(p, c, tracksBottom);
     paintVoidGhosts(p, c);
     if (snapLine >= 0) {

@@ -1781,13 +1781,14 @@ bool TimelineWidget::Impl::beginEdge()
     }
     drag.movers.clear();
     drag.movers.push_back(moverOf(pr, trackIndex(tr->id), *e));
-    const bool fade = drag.kind == Drag::FadeIn || drag.kind == Drag::FadeOut;
     const bool left = drag.kind == Drag::TrimLeft || drag.kind == Drag::StretchLeft;
-    if (e->group && !fade && !opt.ignoreGrouping && !drag.ignoreGroup) {
-        const double edge = left ? e->start : e->end();
+    // the other events of its group with the same edge there go with it (VEGAS fades a clip's picture and sound together too)
+    const bool atStart = left || drag.kind == Drag::FadeIn;
+    if (e->group && !opt.ignoreGrouping && !drag.ignoreGroup) {
+        const double edge = atStart ? e->start : e->end();
         for (size_t k = 0; k < pr.tracks.size(); ++k)
             for (const Event& o : pr.tracks[k].events)
-                if (o.id != e->id && o.group == e->group && std::fabs((left ? o.start : o.end()) - edge) < frame() * 0.5 && !o.locked)
+                if (o.id != e->id && o.group == e->group && std::fabs((atStart ? o.start : o.end()) - edge) < frame() * 0.5 && !o.locked)
                     drag.movers.push_back(moverOf(pr, (int)k, o));
     }
     std::set<uint64_t> ids;

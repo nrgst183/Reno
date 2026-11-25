@@ -966,8 +966,8 @@ struct TimelineWidget::Impl {
 
     void paint(QPainter& p, const QRect& clip);
     double rulerLabelWidth() const;
-    static void drawRamp(QPainter& p, double xa, double ya, double xb, double yb, double clipL, double clipR, bool shade, double shadeTo);
-    static void drawFade(QPainter& p, double xa, double xb, double top, double bottom, int curve, bool in, double clipL, double clipR, bool shade);
+    static void drawRamp(QPainter& p, double xa, double ya, double xb, double yb, double clipL, double clipR);
+    static void drawFade(QPainter& p, double xa, double xb, double top, double bottom, int curve, bool in, double clipL, double clipR);
     static void drawLinkMark(QPainter& p, const QPointF& at, const QColor& color);
     void drawOutlinedLinkMark(QPainter& p, const QPointF& at);
     static double thumbGrain(double tileSeconds, double mediaFps);
@@ -1069,7 +1069,9 @@ struct TimelineWidget::Impl {
     void drawLock(QPainter& p, const QRectF& r, const QRectF& v);
     void drawEdgeSelection(QPainter& p, const Event& e, const QRectF& r, const QRectF& v);
     void drawEdgeBracket(QPainter& p, const QRectF& r, const QRectF& v, int side);
-    void drawEdgeGlow(QPainter& p, const QRectF& r, const QRectF& v, int side);
+    static constexpr int kGlowTail = 24;
+    QRect edgeGlowArea(const std::vector<std::pair<uint64_t, int>>& edges) const;
+    void drawEdgeGlows(QPainter& p, const std::vector<std::pair<uint64_t, int>>& edges);
     // the event edges lit while the mouse is near them over empty timeline (event, -1 start / 1 end; updateHoverEdges)
     std::vector<std::pair<uint64_t, int>> hoverEdges;
     void updateHoverEdges(const QPointF& pos, const Hit& h, Qt::KeyboardModifiers mods);
