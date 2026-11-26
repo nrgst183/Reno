@@ -618,6 +618,11 @@ void TimelineWidget::Impl::press(QMouseEvent* ev)
     default:
         break;
     }
+    if (drag.kind == Drag::TrimLeft || drag.kind == Drag::TrimRight) {
+        if (const Event* e = app.project().findEvent(h.event)) lightEdgesAt(drag.kind == Drag::TrimLeft ? e->start : e->end());
+    } else if (drag.kind == Drag::Move || drag.kind == Drag::RubberBand || drag.kind == Drag::LoopRange || drag.kind == Drag::Scrub) {
+        lightEdgesAt(app.cursor());
+    }
     const bool dragsView = drag.kind != Drag::None && drag.kind != Drag::Level && drag.kind != Drag::Pan && drag.kind != Drag::Fade &&
                            drag.kind != Drag::HeaderWidth && drag.kind != Drag::SurroundPoint && drag.kind != Drag::Send;
     if (dragsView) autoScroll->start();
@@ -773,7 +778,8 @@ void TimelineWidget::Impl::pressEvent(const Hit& h, Qt::KeyboardModifiers mods)
             const Project& pr = app.project();
             for (int k = r0; k >= 0 && k <= r1 && k < (int)pr.tracks.size(); ++k)
                 for (const Event& e : pr.tracks[(size_t)k].events)
-                    if (e.start >= t0 - 1e-9 && e.end() <= t1 + 1e-9) sel.insert(e.id);
+                    if (e.start >= t0 - 1e-9 && e.end() <= t1 + 1e-9)
+                        for (uint64_t g : withGroup(e.id)) sel.insert(g);   // with its group, as VEGAS (a clip's sound too)
         }
         app.setSelection(sel);
     } else if (!was) {

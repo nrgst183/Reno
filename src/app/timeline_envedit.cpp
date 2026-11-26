@@ -721,6 +721,7 @@ void TimelineWidget::Impl::move(QMouseEvent* ev)
     drag.lastMods = ev->modifiers();
     if ((ev->buttons() & Qt::LeftButton) || (drag.right && (ev->buttons() & Qt::RightButton))) {
         dragTo(pos, ev->modifiers());
+        if (drag.started && !litEdges.empty()) setLitEdges({});
         return;
     }
     const Hit h = hitTest(pos);
@@ -731,18 +732,19 @@ void TimelineWidget::Impl::move(QMouseEvent* ev)
     setPointer(h, ev->modifiers());
 }
 
-// VEGAS: a click that leaves the cursor where events start or end (on an event's edge, or snapped to one from beside
-// it or on the ruler) lights those edges on every event there, until the cursor goes elsewhere or the next click
-// ('t' the cursor's time, < 0: none). Hovering and dragging light nothing.
+// VEGAS: while the mouse button is held after a press that put the cursor where events start or end (on an event's
+// edge, or snapped to one from beside it or on the ruler), those edges light up on every event there; they go out when
+// a drag begins or the button is let go. Hovering lights nothing. 't': the cursor's time (< 0: none); an edge within
+// half a frame counts, as the time of a click is rounded to frames.
 void TimelineWidget::Impl::lightEdgesAt(double t)
 {
-    litTime = t;
     std::vector<std::pair<uint64_t, int>> now;
+    const double near = std::max(1e-9, frame() * 0.5);
     if (t >= 0)
         for (const Track& tr : app.project().tracks)
             for (const Event& e : tr.events)
                 for (int side : {-1, 1})
-                    if (std::fabs((side < 0 ? e.start : e.end()) - t) < 1e-9) now.emplace_back(e.id, side);
+                    if (std::fabs((side < 0 ? e.start : e.end()) - t) <= near) now.emplace_back(e.id, side);
     setLitEdges(std::move(now));
 }
 
@@ -1079,9 +1081,6 @@ void TimelineWidget::Impl::release(QMouseEvent* ev)
         break;
     default: break;
     }
-    if (!was.started && (was.kind == Drag::Move || was.kind == Drag::RubberBand || was.kind == Drag::LoopRange || was.kind == Drag::Scrub ||
-                         was.kind == Drag::TrimLeft || was.kind == Drag::TrimRight))
-        lightEdgesAt(app.cursor());
     if (was.started && was.kind != Drag::Scrub) app.status(std::string());
     if (was.kind == Drag::None) clickedButton(was, ev->position());
     QRegion gone = dragVisualsOf(was);

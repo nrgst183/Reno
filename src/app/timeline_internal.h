@@ -1074,7 +1074,6 @@ struct TimelineWidget::Impl {
     void drawEdgeGlows(QPainter& p, const std::vector<std::pair<uint64_t, int>>& edges);
     // the event edges lit while a dragged cursor or time selection snaps to them (event, -1 start / 1 end; lightEdgesAt)
     std::vector<std::pair<uint64_t, int>> litEdges;
-    double litTime = -1;
     void lightEdgesAt(double t);
     void setLitEdges(std::vector<std::pair<uint64_t, int>> now);
     // Whether 'pos' is on the cursor line (within 3 pixels) over empty timeline, with the normal tool: there the line can

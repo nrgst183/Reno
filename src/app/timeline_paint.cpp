@@ -394,9 +394,6 @@ double TimelineWidget::Impl::flashLevel(uint64_t id) const
 
 void TimelineWidget::Impl::changed(int changes)
 {
-    if (!litEdges.empty() && (changes & (kCursor | kProject)) && drag.kind == Drag::None && !releasing &&
-        (std::fabs(app.cursor() - litTime) > 1e-9 || (changes & kProject)))
-        lightEdgesAt(std::fabs(app.cursor() - litTime) > 1e-9 ? -1.0 : litTime);
     if (app.loopEnd > app.loopStart) {
         lastLoopA = app.loopStart;
         lastLoopB = app.loopEnd;
