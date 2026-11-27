@@ -58,6 +58,15 @@ std::vector<VideoFxEntry> Catalog::video() const
     return video_;
 }
 
+namespace {
+std::atomic<bool> gLoadVegasPlugins{false};
+// a file found in a VEGAS install (or one of VEGAS's own bundles copied elsewhere)
+bool vegasFile(const std::string& path) { return installedWithVegas(path) || ofx::Host::isVegasBundleFile(path); }
+}  // namespace
+
+bool catalogLoadsVegasPlugins() { return gLoadVegasPlugins.load(); }
+void setCatalogLoadsVegasPlugins(bool on) { gLoadVegasPlugins.store(on); }
+
 std::vector<AudioFxEntry> Catalog::audio() const
 {
     std::vector<AudioFxEntry> out;
@@ -65,6 +74,9 @@ std::vector<AudioFxEntry> Catalog::audio() const
         std::lock_guard<std::mutex> lk(mutex_);
         out = audio_;
     }
+    if (!catalogLoadsVegasPlugins())
+        out.erase(std::remove_if(out.begin(), out.end(), [](const AudioFxEntry& e) { return audioPluginFromVegas(e.desc) || audioPluginFromWindows(e.desc); }),
+                  out.end());
     // Reno's own eFX effects (Limiter, Compressor ...) are built in: listed with Reno's other built-in effects whether
     // or not the MAGIX plug-ins are installed. While Reno's versions are the ones used (Preferences), the installed
     // plug-ins' own entries are left out, so each effect is listed once; with the installed ones chosen, those are listed.
@@ -250,8 +262,11 @@ void Catalog::scan(const std::string& probeExe, bool full, const std::function<v
     }
     struct Job { std::string path, kind; };
     std::vector<Job> jobs;
-    for (const auto& f : ofx::Host::get().usableBinaries(vdirs)) jobs.push_back({f, "ofx"});
-    for (const auto& f : findAudioPluginFiles(adirs)) jobs.push_back({f, "audio"});
+    const bool vegas = catalogLoadsVegasPlugins();
+    for (const auto& f : ofx::Host::get().usableBinaries(vdirs))
+        if (vegas || !vegasFile(f)) jobs.push_back({f, "ofx"});
+    for (const auto& f : findAudioPluginFiles(adirs))
+        if (vegas || !vegasFile(f)) jobs.push_back({f, "audio"});
     jobs.push_back({"<DirectX audio effects>", "dx"});
 
     const std::string tmp = pathJoin(userDataDir(), strfmt("probe_%llu.json", (unsigned long long)std::hash<std::string>()(selfExePath())));

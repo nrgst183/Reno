@@ -25,6 +25,13 @@ struct AudioFxEntry {
     std::string error;
 };
 
+// Whether the plug-ins installed with VEGAS Pro (its own video effects, its eFX and its DirectX effects), and the old
+// DirectX effects Windows ships (Chorus, Distortion... which VEGAS listed too), are looked for and listed. Off: Reno's
+// built-in versions are the ones listed, and nothing from a VEGAS install is scanned (effects already in a project
+// still open as before). reno_cli's comparisons with VEGAS load them directly.
+bool catalogLoadsVegasPlugins();
+void setCatalogLoadsVegasPlugins(bool on);
+
 class Catalog {
 public:
     static Catalog& get();

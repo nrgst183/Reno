@@ -8,6 +8,7 @@
 #include <set>
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -154,6 +155,59 @@ static std::string regText(HKEY root, const std::wstring& key, const wchar_t* na
     return out;
 }
 
+bool installedWithVegas(const std::string& path)
+{
+    std::string p = toLower(path);
+    for (char& c : p) if (c == '/') c = '\\';
+    wchar_t env[2048];
+    for (const wchar_t* var : {L"ProgramW6432", L"ProgramFiles", L"ProgramFiles(x86)"}) {
+        const DWORD n = GetEnvironmentVariableW(var, env, 2048);
+        if (n == 0 || n >= 2048) continue;
+        std::string pf = toLower(narrow(env));
+        while (!pf.empty() && pf.back() == '\\') pf.pop_back();
+        for (const char* company : {"\\vegas\\", "\\sony\\", "\\sony creative software\\"})
+            if (p.compare(0, pf.size() + std::strlen(company), pf + company) == 0) return true;
+        if (p.compare(0, pf.size() + 7, pf + "\\magix\\") == 0 && p.find("vegas") != std::string::npos) return true;
+    }
+    return false;
+}
+
+// The DLL registered for a DirectX effect's class ("dmo:{clsid}" / "dshow:{clsid}"); "" if none.
+static std::string dxServerDll(const AudioPluginDesc& desc)
+{
+    const size_t brace = desc.uid.find('{');
+    if (desc.format != "DX" || brace == std::string::npos) return std::string();
+    const std::wstring clsid = widen(desc.uid.substr(brace));
+    for (REGSAM view : {(REGSAM)KEY_WOW64_64KEY, (REGSAM)KEY_WOW64_32KEY}) {
+        const std::string dll = regText(HKEY_CLASSES_ROOT, L"CLSID\\" + clsid + L"\\InprocServer32", nullptr, view);
+        if (!dll.empty()) return dll;
+    }
+    return std::string();
+}
+
+bool audioPluginFromVegas(const AudioPluginDesc& desc)
+{
+    if (desc.format != "DX") return !desc.path.empty() && installedWithVegas(desc.path);
+    const std::string dll = dxServerDll(desc);
+    return !dll.empty() && installedWithVegas(dll);
+}
+
+bool audioPluginFromWindows(const AudioPluginDesc& desc)
+{
+    std::string dll = toLower(dxServerDll(desc));
+    if (dll.empty()) return false;
+    for (char& c : dll) if (c == '/') c = '\\';
+    // registered as "%SystemRoot%\System32\dsdmo.dll" or with the folder written out, or as a bare file name (found in
+    // the system folder)
+    if (dll.find("%systemroot%") != std::string::npos || dll.find("%windir%") != std::string::npos || dll.find('\\') == std::string::npos) return true;
+    wchar_t win[MAX_PATH];
+    const UINT n = GetWindowsDirectoryW(win, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return false;
+    std::string w = toLower(narrow(win));
+    while (!w.empty() && w.back() == '\\') w.pop_back();
+    return dll.compare(0, w.size() + 1, w + "\\") == 0;
+}
+
 static std::vector<std::wstring> regSubkeys(HKEY root, const std::wstring& key, REGSAM view)
 {
     std::vector<std::wstring> out;
@@ -232,6 +286,9 @@ std::vector<std::string> vegasPluginDirs()
 }
 #else
 std::vector<std::string> vegasPluginDirs() { return {}; }
+bool installedWithVegas(const std::string&) { return false; }
+bool audioPluginFromVegas(const AudioPluginDesc&) { return false; }
+bool audioPluginFromWindows(const AudioPluginDesc&) { return false; }
 #endif
 
 std::vector<std::string> audioPluginSearchDirs()

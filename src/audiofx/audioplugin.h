@@ -147,6 +147,15 @@ std::string audioPluginFileHint(const AudioPluginDesc& desc);
 std::string vstIdText(const std::string& uid);
 // DirectX audio effects registered on this machine (Windows only; empty elsewhere).
 std::vector<AudioPluginDesc> listDirectXAudioPlugins();
+// Whether a file was installed with VEGAS Pro: under a "VEGAS" or "Sony" folder of Program Files, or a MAGIX one for
+// VEGAS (its eFX in "VEGAS Pro 18.0\MAGIX Plugins", its DirectX effects in "VEGAS\Shared Plug-Ins"). Always false
+// outside Windows.
+bool installedWithVegas(const std::string& path);
+// Whether an audio plug-in is one of those: a VST file there, or a DirectX effect whose registered DLL is there.
+bool audioPluginFromVegas(const AudioPluginDesc& desc);
+// Whether it is one of the DirectX effects Windows itself ships (Chorus, Compressor, Distortion, Echo... in dsdmo.dll):
+// a DirectX effect whose registered DLL is in the Windows folder. Always false outside Windows.
+bool audioPluginFromWindows(const AudioPluginDesc& desc);
 
 // 32-bit VST2 plug-ins cannot be loaded into this 64-bit program; they run in reno_vst32.exe, a 32-bit host process
 // beside Reno, driven over shared memory and pipes (vst32client.cpp, src/vst32/vst32server.cpp).
