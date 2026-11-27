@@ -1020,19 +1020,29 @@ void TimelineWidget::Impl::drawWaveRow(QPainter& p, const Event& e, const MediaI
         *out = m0;
         return true;
     };
-    // Zoomed in to 64 samples a pixel or fewer: the sound itself, as VEGAS 18 draws it there (a thin line, measured from
-    // its screen: filled peaks at 74 samples a pixel, the line at 44 and at 27), each column from the lowest to the
-    // highest sample it covers and the sound at its two edges, so the columns join into one line through the samples.
-    // Further out the peaks are drawn, filled from the middle line. Until the loader has read the samples the peaks
-    // are drawn.
+    // Zoomed in past the peaks (one of them wider than a pixel): the sound itself, each column from the lowest to the
+    // highest sample it covers and the sound at its two edges, so the columns join into one line through the samples
+    // and the waveform keeps every peak, at every zoom, instead of blurring into peaks drawn several pixels wide.
+    // (Further out each column already holds the lowest and highest of its own stretch.) Until the loader has read the
+    // samples the peaks are drawn.
     std::shared_ptr<const WaveDetail> detail;
     if (mip == 0 && perPx < 1.0 && x1 >= x0) {
-        double a = 0, b = 0;
-        const bool ha = mediaAt(x0, &a), hb = mediaAt(x1, &b);
-        const double from = std::min(a, b), to = std::max(a, b) + span;
+        // the stretch of media the columns wholly inside the event cover (it may begin or end inside the view; a column
+        // over its edge can fall a hair outside it, which a looping event would take round to the media's end)
+        double from = 1e300, to = -1e300;
+        int xa = x1 + 1, xb = x0 - 1;
+        for (int x = x0; x <= x1; ++x) {
+            double m0 = 0;
+            if (timeAtF(x) < e.start - 1e-9 || timeAtF(x + 1) > e.end() + 1e-9 || !mediaAt(x, &m0)) continue;
+            from = std::min(from, m0);
+            to = std::max(to, m0 + span);
+            xa = std::min(xa, x);
+            xb = std::max(xb, x);
+        }
+        const bool ha = xa <= xb, hb = ha;
         // (a looping event whose columns go round the end of the media in view keeps the peaks)
         const int rate = m.info.sampleRate > 0 ? std::min(m.info.sampleRate, 192000) : 48000;
-        if (ha && hb && span * rate <= 64.0 && to - from <= (x1 - x0 + 2) * span * 1.001 + 1e-9) {
+        if (ha && hb && to - from <= (xb - xa + 2) * span * 1.001 + 1e-9) {
             const int64_t s0 = std::max<int64_t>(0, (int64_t)std::floor(from * rate) - 2);
             const int64_t s1 = (int64_t)std::ceil(to * rate) + 2;
             if (s1 - s0 < 8 * 1024 * 1024) detail = loader->detail(key, m, first, nch, rate, s0, (int)(s1 - s0));
