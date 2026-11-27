@@ -386,6 +386,7 @@ private:
     };
     std::map<std::pair<uint64_t, size_t>, PdcLine> pdc_;   // (id of the track or bus, bit 63 for a bus; index of the contribution)
     int64_t pdcNext_ = INT64_MIN;                   // where the shifted mix continues (anything else is primed first)
+    int64_t mixNext_ = INT64_MIN;                   // where the last mix() ended: a block starting anywhere else restarts the effects
     std::vector<float> pdcL_, pdcR_;                // the primed blocks' output, thrown away
     mutable std::mutex peakMutex_;
     std::vector<StripPeak> sharedPeaks_;            // the last finished set, for other threads

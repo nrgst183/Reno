@@ -57,6 +57,11 @@ public:
     virtual bool activate(double sampleRate, int maxBlock) = 0;
     virtual void deactivate() = 0;
     virtual void process(float* left, float* right, int frames, int64_t samplePos, bool playing) = 0;
+    // The sound is about to start again somewhere else (playing starts, the cursor jumps, a loop goes round, a render
+    // begins): what the effect holds from before is let go, as VEGAS does by suspending and resuming every effect. An
+    // effect whose choices are counted from that moment (SlopFX's Stutter Jumble) then sounds the same every time.
+    // Only for an active instance.
+    virtual void restart() {}
     virtual int latencySamples() { return 0; }
 
     // Effects that make the sound longer or shorter (Time Stretch, Gapper/Snipper, Vibrato): a track's effect chain gives

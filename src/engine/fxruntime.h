@@ -41,6 +41,8 @@ public:
     int laneInstances() const;
     uint64_t laneSyncs() const { return laneSyncs_.load(); }
     AudioPlugin* audio(uint64_t slotId) const;
+    // Every audio effect instance starts afresh (AudioPlugin::restart): the mix is about to go on from somewhere else.
+    void restartAudio();
     // 5.1 projects: the master's effects take the six channels as one stream when the plug-in can.
     AudioPlugin* audioExtra(uint64_t slotId, int pair) const;
     // A lock for the whole use of one video effect instance by a render: its input is set, it draws, its input is let

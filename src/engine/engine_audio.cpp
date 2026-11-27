@@ -2317,6 +2317,10 @@ void AudioEngine::mix(const Project& p, int64_t start, int frames, float* left, 
         for (int c = 0; c < 6; ++c) std::memset(six[c], 0, (size_t)std::max(0, frames) * sizeof(float));
     if (frames <= 0) return;
     ++renders_;
+    // the sound jumps (playing starts, a seek, a loop going round, a render's first block): every effect starts afresh,
+    // as in VEGAS, so the same place always sounds the same
+    if (start != mixNext_ && !bypassFx) fx_.restartAudio();
+    mixNext_ = start + frames;
     AudioBlockMixer(*this, p, start, frames, left, right, six, playing).run();
 }
 

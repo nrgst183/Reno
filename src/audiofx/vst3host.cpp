@@ -1106,6 +1106,14 @@ public:
         stopLocked();
     }
 
+    void restart() override
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        if (!component || !processor || !active) return;
+        stopLocked();
+        activateLocked();
+    }
+
     // Points every bus at its buffers. Main input: the first two channels are ours, the rest silence. Other input
     // buses: silence (flagged). Main output: the first two channels are ours. Everything else goes to a buffer
     // nobody reads.

@@ -253,6 +253,16 @@ public:
         active = false;
     }
 
+    void restart() override
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        if (!fx || !active) return;
+        dispatch(effStopProcess);
+        dispatch(effMainsChanged, 0, 0);
+        dispatch(effMainsChanged, 0, 1);
+        dispatch(effStartProcess);
+    }
+
     // ---- six channels (setChannels): VEGAS's way with a 5.1 master. A plug-in with six inputs and outputs (or that
     // gets them when asked for VST's 5.1 speaker arrangement and says so with audioMasterIOChanged) processes
     // L R C LFE Ls Rs as one stream; anything else stays stereo.

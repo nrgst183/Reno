@@ -264,6 +264,21 @@ bool FxRuntime::prepareLanes(const Project& p, int lanes, double from, double sp
     return done;
 }
 
+void FxRuntime::restartAudio()
+{
+    // (called with the instances held by the render; restarted outside the lock, as a plug-in may call back into Reno)
+    std::vector<AudioPlugin*> all;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        for (auto& a : audio_) {
+            if (a.second.plugin) all.push_back(a.second.plugin.get());
+            for (auto& x : a.second.extra)
+                if (x) all.push_back(x.get());
+        }
+    }
+    for (AudioPlugin* p : all) p->restart();
+}
+
 AudioPlugin* FxRuntime::audio(uint64_t id) const
 {
     std::lock_guard<std::mutex> lk(mutex_);
