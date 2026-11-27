@@ -1020,10 +1020,11 @@ void TimelineWidget::Impl::drawWaveRow(QPainter& p, const Event& e, const MediaI
         *out = m0;
         return true;
     };
-    // Zoomed in to a few samples a pixel: the sound itself, as VEGAS draws it there, each column from the lowest to the
+    // Zoomed in to 64 samples a pixel or fewer: the sound itself, as VEGAS 18 draws it there (a thin line, measured from
+    // its screen: filled peaks at 74 samples a pixel, the line at 44 and at 27), each column from the lowest to the
     // highest sample it covers and the sound at its two edges, so the columns join into one line through the samples.
-    // (Less far in VEGAS still draws the peaks, filled from the middle line, even where a peak is several pixels wide.)
-    // Until the loader has read them the peaks are drawn.
+    // Further out the peaks are drawn, filled from the middle line. Until the loader has read the samples the peaks
+    // are drawn.
     std::shared_ptr<const WaveDetail> detail;
     if (mip == 0 && perPx < 1.0 && x1 >= x0) {
         double a = 0, b = 0;
@@ -1031,7 +1032,7 @@ void TimelineWidget::Impl::drawWaveRow(QPainter& p, const Event& e, const MediaI
         const double from = std::min(a, b), to = std::max(a, b) + span;
         // (a looping event whose columns go round the end of the media in view keeps the peaks)
         const int rate = m.info.sampleRate > 0 ? std::min(m.info.sampleRate, 192000) : 48000;
-        if (ha && hb && span * rate <= 4.0 && to - from <= (x1 - x0 + 2) * span * 1.001 + 1e-9) {
+        if (ha && hb && span * rate <= 64.0 && to - from <= (x1 - x0 + 2) * span * 1.001 + 1e-9) {
             const int64_t s0 = std::max<int64_t>(0, (int64_t)std::floor(from * rate) - 2);
             const int64_t s1 = (int64_t)std::ceil(to * rate) + 2;
             if (s1 - s0 < 8 * 1024 * 1024) detail = loader->detail(key, m, first, nch, rate, s0, (int)(s1 - s0));
